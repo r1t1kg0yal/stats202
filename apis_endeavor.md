@@ -58,23 +58,35 @@ local infrastructure layer that doesn't ship.
 
 ## The drag-and-drop contract (target end-state)
 
-Mirrors `.cursor/rules/viz-platforms.mdc` exactly:
+Mirrors `.cursor/rules/viz-platforms.mdc` in spirit (two-sided
+contract, byte-identical payload), with one structural difference:
+apis ships ONE unified payload (`apis-payload/`) with two flat
+subfolders, instead of one payload per source.
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│ Source (this repo)                          PRISM destination       │
-├────────────────────────────────────────────────────────────────────┤
-│ GS/data/apis/<src>/<src>-payload/<src>_client.py                    │
-│                              ──────►   ai_development/mcp/clients/  │
-│                                                                     │
-│ GS/data/apis/<src>/<src>-payload/<src>_guide.md                     │
-│                              ──────►   context/modules/static/      │
-│                                          data_guides/ (or           │
-│                                          instruments/ or tools/)    │
-│                                                                     │
-│ + a one-time PRISM-side wiring change to register the new module    │
-│   in registry.py (one line per source)                              │
-└────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ Source (this repo)                          PRISM destination         │
+├──────────────────────────────────────────────────────────────────────┤
+│ GS/data/apis/apis-payload/clients/<src>_client.py                     │
+│                            ──────►   ai_development/mcp/clients/      │
+│                                       <src>_client.py                 │
+│                                                                       │
+│ GS/data/apis/apis-payload/modules/<src>_*.md                          │
+│                            ──────►   ai_development/context/modules/  │
+│                                       static/{data_guides,            │
+│                                       instruments,tools}/<src>_*.md   │
+│                                       (user sorts into pillar at      │
+│                                        drop time per D7)              │
+│                                                                       │
+│ + 3-line PRISM-side wiring per D9 (one in mcp/clients/__init__.py,    │
+│   two in mcp/tools/script_exec_tools.py) + one MODULE_REGISTRY        │
+│   entry in context/registry.py                                        │
+└──────────────────────────────────────────────────────────────────────┘
+
+Per-iteration drag-and-drop unit: one .py file from
+apis-payload/clients/ + one .md file from apis-payload/modules/.
+Bulk drag-and-drop unit: the entire apis-payload/clients/* and
+apis-payload/modules/* trees at once.
 
 Staging-only (never ships):
 
@@ -83,12 +95,12 @@ Staging-only (never ships):
                           but bodies that fall through to vanilla
                           `requests` so payload runs locally
 
-  GS/data/apis/ai_development/mcp/clients/__init__.py
-                          (if PRISM has a non-trivial export hub)
+  GS/data/apis/dev/_harness.py
+                          sys.path setup helper for demos
 
-  GS/data/apis/dev/
-                          demo harness, sys.path patching, smoke
-                          tests — analogous to GS/viz/altair/dev/
+  GS/data/apis/dev/demos/, dev/output/, dev/archive/_pre_payload/
+                          consolidated dev infra — analogous to
+                          GS/viz/altair/dev/
 ```
 
 The two-sided invariant from viz-platforms.mdc applies verbatim:
@@ -149,22 +161,52 @@ PRISM SSOT (curated; the place new docs land in Session 1)
 │                              source as documentary reference;
 │                              real Kerberos imports kept as written)
 
-Staging-side current state (the messy parallel — to be unified)
+Staging-side state (post-Session 3 scaffolding; per-source files
+unchanged until each is migrated)
 ├── GS/data/apis/
-│   ├── README.md             (24-source inventory + status table)
-│   ├── treasury/
+│   ├── README.md                             (24-source inventory +
+│   │                                          status + payload-model
+│   │                                          section)
+│   │
+│   ├── apis-payload/                         ← drag-and-drop unit
+│   │   ├── clients/                            (PRISM: ai_development/
+│   │   │   └── (Sessions 5+ populate)            mcp/clients/)
+│   │   └── modules/                            (PRISM: ai_development/
+│   │       └── (Sessions 5+ populate)            context/modules/static/
+│   │                                            {data_guides,instruments,
+│   │                                            tools}/, FLAT in payload,
+│   │                                            user sorts on drop)
+│   │
+│   ├── ai_development/                       ← stub mirror (never ships)
+│   │   └── mcp/
+│   │       └── gs_app_proxy_negotiate.py      (Session 3: placeholder
+│   │                                           raise; Session 4: real
+│   │                                           vanilla-requests bodies)
+│   │
+│   ├── dev/                                  ← consolidated dev infra
+│   │   ├── _harness.py                         (sys.path setup)
+│   │   ├── demos/                              (per-source demos here,
+│   │   │                                        named with src prefix)
+│   │   ├── output/                             (demo artifacts)
+│   │   ├── archive/_pre_payload/               (per-source archive
+│   │   │   └── <src>/                            subfolder, populated on
+│   │   │       <src>.py + SKILL.md               each per-source migration)
+│   │   └── notes.md                            (single notes file)
+│   │
+│   ├── treasury/                             ← pre-payload, untouched
 │   │   ├── treasury.py       (~1480 lines, vanilla requests)
 │   │   └── SKILL.md
-│   ├── treasurydirect/
+│   ├── treasurydirect/                       ← pre-payload, untouched
 │   │   ├── treasurydirect.py (~1316 lines, vanilla requests)
 │   │   └── SKILL.md
-│   ├── fdic/
+│   ├── fdic/                                 ← pre-payload, untouched
 │   │   ├── fdic.py
 │   │   └── SKILL.md
-│   ├── bis/
+│   ├── bis/                                  ← pre-payload, untouched
 │   │   ├── bis.py
 │   │   └── SKILL.md
-│   └── ... (20 more)
+│   └── ... (20 more, all pre-payload, all untouched until their
+│            migration session)
 
 Cross-session meta artifacts (this folder)
 ├── staging/
@@ -328,53 +370,78 @@ Carries forward
 
 ---
 
-### Session 3 — apis/ layout scaffolding
+### Session 3 — apis/ layout scaffolding (redesigned 2026-05-02)
 
 ```
 Motivation
-  All design decisions (D4-D12) locked in this session before the
-  handoff. Session 3 itself is the SCAFFOLDING work — turning the
-  decisions into actual on-disk structure that Session 4 can fill in.
+  All design decisions D4-D12 from the post-Session 2 round were
+  locked when the Session 3 handoff was written, but the user's
+  Points 1-2 in that handoff (uniform "one *_client.py + one .md"
+  payload shape, treasury+treasury_direct as a single module)
+  surfaced a structural improvement: instead of per-source
+  <src>-payload/ folders, a SINGLE apis-payload/ at the apis root
+  with flat clients/ + modules/ subfolders mirroring PRISM's
+  destination directories. D4/D6/D7/D8 were redesigned 2026-05-02;
+  D13 (success-criterion loop) was added. Session 3 itself is the
+  SCAFFOLDING work — turning the redesigned decisions into actual
+  on-disk structure that Session 4 fills in.
 
 Deliverables
-  □ Empty directory scaffolding for the locked layout:
-      GS/data/apis/ai_development/mcp/   (D5 — for stub mirror;
-                                          empty .py file with TODO
-                                          stub or placeholder)
-      GS/data/apis/dev/                  (D6 — for shared harness;
-                                          stub _harness.py with
-                                          sys.path setup)
-      GS/data/apis/<src>/                (existing — keep)
-      GS/data/apis/<src>/<src>-payload/  (D4 — empty per source,
-                                          .gitkeep or README)
-      GS/data/apis/<src>/dev/            (D6 — empty per source)
-      GS/data/apis/<src>/dev/archive/_pre_payload/
-                                         (D8 — for archived files)
+  □ Single unified payload skeleton:
+      GS/data/apis/apis-payload/clients/.gitkeep
+      GS/data/apis/apis-payload/modules/.gitkeep
 
-  □ Initial sys.path setup written into GS/data/apis/dev/_harness.py
-    so demos can resolve both `ai_development.mcp.gs_app_proxy
-    _negotiate` (the stub mirror) and `<src>` (whatever client they
-    're testing).
+  □ Stub mirror placeholder per D5:
+      GS/data/apis/ai_development/mcp/gs_app_proxy_negotiate.py
+        (raises NotImplementedError on import; Session 4 writes
+         the real body)
+
+  □ Consolidated dev/ tree per D6:
+      GS/data/apis/dev/_harness.py            (sys.path setup
+                                               placeholder; Session 4
+                                               fills in the real
+                                               body)
+      GS/data/apis/dev/demos/.gitkeep
+      GS/data/apis/dev/output/.gitkeep
+      GS/data/apis/dev/archive/_pre_payload/.gitkeep
+      GS/data/apis/dev/notes.md               (single notes file
+                                               for the entire apis
+                                               project, scaffolded)
+
+  □ NO per-source folder edits. Every existing GS/data/apis/<src>/
+    folder (treasury/, treasurydirect/, fdic/, ...) is entirely
+    untouched in Session 3. Per-source <src>/<src>.py + SKILL.md
+    files migrate to GS/data/apis/dev/archive/_pre_payload/<src>/
+    on their migration session (5/6/8+).
 
   □ Updated GS/data/apis/README.md with a "Payload model (in
-    flight)" section pointing at staging/apis_endeavor.md and
-    sketching the per-source folder structure.
+    flight)" section reflecting the unified-payload design and
+    pointing at staging/apis_endeavor.md.
 
   □ A scaffolding-only commit. NO actual stub mirror code (Session
     4) and NO actual client rebuilds (Session 5+).
 
 Acceptance
-  - Every directory in D4/D5/D6/D8 exists on disk with at least a
-    .gitkeep / README so it survives git operations
-  - GS/data/apis/dev/_harness.py imports cleanly (even if the stub
-    mirror file is empty — Session 4 fills it in)
-  - Existing GS/data/apis/<src>/<src>.py + SKILL.md files remain
-    untouched (Session 5/6 archives them as part of the per-source
-    rebuild)
+  - GS/data/apis/apis-payload/clients/ and apis-payload/modules/
+    exist with .gitkeep
+  - GS/data/apis/ai_development/mcp/gs_app_proxy_negotiate.py
+    exists; importing from it raises NotImplementedError loudly
+    (proves the strict-stub invariant)
+  - GS/data/apis/dev/_harness.py exists and imports cleanly
+    (warns + does sys.path setup; full path-injection magic comes
+    in Session 4)
+  - GS/data/apis/dev/demos/, dev/output/, dev/archive/_pre_payload/
+    exist with .gitkeep
+  - GS/data/apis/dev/notes.md exists with a scaffolded body
+  - Every existing GS/data/apis/<src>/<src>.py + SKILL.md is
+    UNTOUCHED
+  - GS/data/apis/README.md has the "Payload model (in flight)"
+    section appended
+  - prism/_changelog.md has a one-line Session 3 entry
 
 Carries forward
   - Skeleton on disk that Session 4 writes the stub mirror into
-  - Clear per-source landing zones for Sessions 5+
+  - One clear apis-payload/ landing zone for Sessions 5+
 ```
 
 ---
@@ -444,7 +511,7 @@ Why treasury first (vs treasurydirect)
     we just rewrite the request-layer
 
 Deliverables
-  □ GS/data/apis/treasury/treasury-payload/treasury_client.py
+  □ GS/data/apis/apis-payload/clients/treasury_client.py
       - PRISM-style: imports from ai_development.mcp.gs_app_proxy
         _negotiate (which resolves to the local stub here, to the
         real module in PRISM)
@@ -455,17 +522,22 @@ Deliverables
         (get_endpoint, query, get_debt_to_penny, get_avg_interest
         _rates, ...)
       - FiscalDataError preserved
-  □ GS/data/apis/treasury/treasury-payload/treasury_api.md
+  □ GS/data/apis/apis-payload/modules/treasury_api.md
       - The PRISM-bound L2 module (the same content the OCR scan
         §1 documented as currently deployed in PRISM)
+      - Covers BOTH treasury_client and (forthcoming, Session 6)
+        treasury_direct_client per the existing PRISM precedent
+        (treasury_api.md is already the only PRISM L2 module that
+        spans two .py files; under the unified-payload design this
+        is automatic — no special bundling needed)
       - Light freshness pass — fix any OCR scrambles, dated
-        2026-05-01
-  □ Demo gallery: GS/data/apis/treasury/dev/demos/01_*.py through
+        2026-05-02 (or current date when Session 5 runs)
+  □ Demo gallery: GS/data/apis/dev/demos/01_treasury_*.py through
     several scenarios (debt-to-penny pull, MSPD table 5, MTS
     table, FX reporting rates) — all running through the stub
     mirror
   □ Existing GS/data/apis/treasury/treasury.py and SKILL.md moved
-    to GS/data/apis/treasury/dev/archive/_pre_payload/ (NEVER
+    to GS/data/apis/dev/archive/_pre_payload/treasury/ (NEVER
     delete per user rule)
 
 Acceptance
@@ -473,12 +545,16 @@ Acceptance
   - The same treasury_client.py file would (in principle) work
     inside PRISM — verified by inspecting the stub-vs-PRISM
     signature parity in prism/_reference/
-  - SKILL.md → treasury_api.md rename is documented in the
-    apis_endeavor.md decisions section
+  - Test prompt drafted for the user to paste into PRISM, with
+    "let me know if frictions" tag — D13 success-criterion loop
+    completes without frictions
 
 Carries forward
   - Established pattern other clients copy from
   - First "this would drag-and-drop into PRISM today" payload
+  - apis-payload/modules/treasury_api.md is the SHARED file that
+    Session 6's treasury_direct_client.py addition extends rather
+    than replacing
 ```
 
 ---
@@ -493,8 +569,7 @@ Motivation
   mirror handles BOTH transport patterns.
 
 Deliverables
-  □ GS/data/apis/treasurydirect/treasurydirect-payload/
-    treasury_direct_client.py
+  □ GS/data/apis/apis-payload/clients/treasury_direct_client.py
       - Imports manual_https_request from ai_development.mcp.gs
         _app_proxy_negotiate
       - Same public surface as PRISM's treasury_direct_client
@@ -502,24 +577,34 @@ Deliverables
         scrape_refunding_latest, fetch_auction_schedule_xml, ...)
       - MockResponse pattern preserved (or normalized response
         wrapper if Session 4 introduced one in the stub)
-  □ Demo gallery: GS/data/apis/treasurydirect/dev/demos/*.py
+  □ Demo gallery: GS/data/apis/dev/demos/02_treasurydirect_*.py
       - Announced auctions
       - Auction results
       - CUSIP lookup
       - Quarterly refunding scrape
   □ Existing GS/data/apis/treasurydirect/treasurydirect.py and
-    SKILL.md archived to dev/archive/_pre_payload/
-  □ The treasury_api.md module (already covering both Fiscal Data
-    AND TreasuryDirect) updated to reflect that both clients are
-    now staging-owned
+    SKILL.md archived to GS/data/apis/dev/archive/_pre_payload/
+    treasurydirect/
+  □ apis-payload/modules/treasury_api.md (created in Session 5)
+    UPDATED in-place to cover TreasuryDirect specifics (auction
+    schedule, refunding cycle, manual_https_request transport
+    notes). Still one file; still covers both clients.
 
 Acceptance
   - Both transport patterns proven against the local stub
   - manual_https_request stub correctly returns the
     (parsed_data, status_string) tuple in the same shape as PRISM
+  - Test prompt drafted for the user to paste into PRISM, with
+    "let me know if frictions" tag — D13 success-criterion loop
+    completes without frictions for treasury_direct queries
+    (auction schedule, announced auctions, CUSIP lookup)
 
 Carries forward
   - Two reference rebuilds = enough pattern to codify
+  - Both clients now coexist in apis-payload/clients/; the shared
+    treasury_api.md in apis-payload/modules/ is the precedent
+    Session 7's rule documents for "one L2 covers multiple
+    clients" cases (currently only this one)
 ```
 
 ---
@@ -576,11 +661,15 @@ Deliverables
   □ Per-API checklist (template):
       [ ] Read PRISM-side <src>_client.py via list_ai_repo
           (delegate to PRISM round-trip if needed)
-      [ ] Build <src>-payload/<src>_client.py
-      [ ] Build <src>-payload/<src>_guide.md (or _api.md)
-      [ ] 3-5 demos in dev/demos/
-      [ ] Archive existing <src>/<src>.py + SKILL.md
+      [ ] Build apis-payload/clients/<src>_client.py
+      [ ] Build apis-payload/modules/<src>_guide.md (or _api.md)
+      [ ] 3-5 demos in GS/data/apis/dev/demos/ named with
+          source prefix (e.g. 03_fdic_*.py)
+      [ ] Archive existing <src>/<src>.py + SKILL.md to
+          GS/data/apis/dev/archive/_pre_payload/<src>/
       [ ] Verify stub-mirror parity
+      [ ] Run D13 success-criterion loop (test prompt → user
+          drops into PRISM → no frictions)
       [ ] Update GS/data/apis/README.md status table
   □ Execute the checklist for the next 1-3 highest-priority APIs
     as a "rep" to validate the playbook
@@ -657,18 +746,45 @@ Session  Status   Date         Notes
                                 with frontmatter; staging/prompts.md
                                 now reset to "no active prompt"
                                 holding-pattern note.
-   3     [ ]      —            READY TO START in fresh Cursor session.
-                                Handoff prompt at:
-                                  staging/handoffs/session_3.md
-                                All design decisions (D4-D12) locked
-                                this session. Session 3 deliverable
-                                is now SCAFFOLDING (directory tree +
-                                stub _harness.py + README touch-up),
-                                not design. See "Lessons from
-                                Sessions 1+2" below for the
-                                load-bearing context the next session
-                                inherits.
-   4     [ ]
+   3     [x]      2026-05-02   SCAFFOLDING complete with mid-session
+                                redesign. The Session 3 handoff
+                                proposed per-source <src>-payload/
+                                folders (locked D4) but the user's
+                                Points 1-2 in the same handoff
+                                surfaced a structural improvement:
+                                ONE unified apis-payload/ at apis
+                                root with flat clients/ + modules/
+                                subfolders. Redesign locked as
+                                D4/D6/D7/D8 rewrites + new D13
+                                (success-criterion loop) + new L8
+                                (strategic-groupings observation).
+                                On disk:
+                                  - apis-payload/clients/.gitkeep
+                                  - apis-payload/modules/.gitkeep
+                                  - ai_development/mcp/g_a_p_n.py
+                                    (raises NotImplementedError;
+                                     Session 4 fills body)
+                                  - dev/_harness.py (placeholder;
+                                     Session 4 fills body)
+                                  - dev/{demos,output,archive/
+                                     _pre_payload}/.gitkeep
+                                  - dev/notes.md (scaffolded)
+                                Existing per-source folders all
+                                untouched per D8.
+                                Cleanup detour: archived 4 repo-root
+                                cli_*.py files + project-clis.mdc
+                                rule (separate user request).
+   4     [ ]      —            READY TO START. Handoff at:
+                                  staging/handoffs/session_4.md
+                                Stub mirror body + harness body +
+                                1-2 smoke demos that prove the stub
+                                resolves correctly under both
+                                _USE_GS_PROXY tri-modal patterns
+                                (per L2). Build against the
+                                signature spec at
+                                prism/_reference/gs_app_proxy_
+                                negotiate.py. Bodies fall through
+                                to vanilla requests (per D5 + L2).
    5     [ ]
    6     [ ]
    7     [ ]
@@ -869,13 +985,47 @@ Implication for Session 3+:
   principle), and then either include the wiring step in the
   payload or let the user add it manually.
 
+### L8. Strategic client groupings — only treasury+treasury_direct shares an L2
+
+The 17 PRISM-side clients have exactly one structural grouping
+today: `treasury_client` + `treasury_direct_client` share
+`treasury_api.md` (instruments pillar). Every other client maps
+1:1 to its L2 module (or has no L2 at all per L7).
+
+Adjacent-domain pairs were considered as candidate groupings
+during the Session 3 redesign and rejected:
+
+| Candidate pair                     | Reason rejected                                         |
+|---|---|
+| congress + federal_register        | Both legislative, but different schemas / question patterns |
+| ofac + usitc                       | Both trade-policy, but sanctions vs tariffs are distinct |
+| fred + newyorkfed                  | newyorkfed is the function-injection special case (L4); fred is module-injected |
+| fdic + ofr                         | bank-level call reports vs system-level financial-stability metrics |
+
+Implication for Session 3+:
+
+- Default policy: one L2 per source. Revisit per-pair after
+  Session 8 if frictions surface (e.g. PRISM repeatedly asks
+  for context that's "in the other client's L2").
+
+- Under the unified-payload design (D4), treasury+treasury_direct
+  bundling is automatic — both .py files coexist in
+  `apis-payload/clients/`, the shared .md coexists in
+  `apis-payload/modules/`, no special bundling structure required.
+  If more multi-client L2 modules emerge later, the same flat
+  structure absorbs them with no reshape.
+
 ---
 
 ## Locked decisions (carried into Session 3+)
 
-All decisions D1-D10 are now locked. D1-D3 came from Session 1; D4-D10
-were decided 2026-05-01 (post-Session 2 fold) before the Session 3
-handoff was written. The Session 3 work below executes against these.
+D1-D3 came from Session 1. D5/D9/D10/D11/D12 came from the post-Session 2
+multi-choice round (2026-05-01). D4/D6/D7/D8/D13 came from the Session 3
+redesign (2026-05-02), which restructured the payload model from
+per-source `<src>-payload/` folders into a single unified
+`apis-payload/` at the apis root, with flat `clients/` and `modules/`
+subfolders that mirror PRISM's destination directories. Sessions 5+
+execute against these.
 
 ```
 ID    Decision                                                Decided
@@ -890,11 +1040,40 @@ D2    OCR cleanup is aggressive: clean up null/true/false   Session 1
       broken code blocks.
 D3    Cadence: work straight through, show user each file   Session 1
       as it's written, no preview-then-fill pattern.
-D4    apis/ layout = per-source <source>-payload/ folder    Session 3
-      INSIDE GS/data/apis/<source>/ (i.e.                    locked
-      GS/data/apis/treasury/treasury-payload/, mirroring
-      GS/viz/altair/altair-payload/). Each <src>-payload/
-      is the byte-identical drag-and-drop unit.
+D4    apis/ layout = ONE unified apis-payload/ folder at    Session 3
+      apis root with two flat subfolders mirroring PRISM's   (redesigned
+      destination directories:                                2026-05-02)
+
+        GS/data/apis/apis-payload/
+            clients/                  ← all *_client.py
+                treasury_client.py    ← (no __init__.py;
+                treasury_direct_       PRISM-side __init__.py
+                  client.py            is wiring per D9, not
+                fdic_client.py         payload)
+                bis_client.py
+                ... (17 PRISM-bound *_client.py files when
+                full)
+            modules/                  ← all skill markdowns,
+                treasury_api.md         FLAT (no pillar
+                fdic_guide.md           subfolders); user
+                bis_data_guide.md       sorts into PRISM's
+                ... (one .md per         {data_guides,
+                client, except           instruments, tools}/
+                treasury_api.md          on drop per D7)
+                covers BOTH treasury
+                + treasury_direct)
+
+      Drag-and-drop unit is the WHOLE apis-payload/ tree
+      (or any subset of files within it). Per-iteration drop
+      is one .py + one .md per migrated client (per D13's
+      success-criterion loop). Bulk drop is the entire
+      apis-payload/clients/* and apis-payload/modules/*
+      tree at once when all 17 clients are built.
+
+      No per-source <src>-payload/ folders. No per-source
+      __init__.py in the payload (PRISM's __init__.py is
+      wiring, not payload).
+
 D5    Stub mirror at:                                       Session 3
                                                             (Q1 = A)
         GS/data/apis/ai_development/mcp/
@@ -906,66 +1085,110 @@ D5    Stub mirror at:                                       Session 3
       (via sys.path containing GS/data/apis/) and PRISM
       (native path), with no per-side branching. Single
       file (no other shared utils per L6).
-D6    Demo / dev infrastructure layout:                     Session 3
-                                                            (Q2 =
-        GS/data/apis/dev/                  ← shared          per-source
-            _harness.py                       infra          + shared
-            _conftest.py (?)                                 harness)
-        GS/data/apis/<src>/dev/            ← per-source
-            demos/                            demos +
-            output/                           ad-hoc
-            notes.md
-            archive/_pre_payload/
 
-      Each <src>-payload/ folder stays clean and isolated
-      so it can be selected and copy-pasted to PRISM as a
-      unit. The per-source dev/ holds everything that
-      doesn't ship. The shared dev/ at apis root holds
-      reusable harness infra (sys.path setup, stub-mirror
-      path injection) that any per-source demo can import.
-      Mirrors altair (which has dev/demos/_harness.py
-      shared + per-demo files).
-D7    SKILL.md filename: matches PRISM's exact destination   Session 3
-      filename per pillar:                                   (Q3 = A)
+D6    Demo / dev infrastructure = ONE consolidated dev/    Session 3
+      tree at apis root, no per-source <src>/dev/:          (redesigned
+                                                             2026-05-02)
+        GS/data/apis/dev/
+            _harness.py            ← sys.path setup +
+                                     stub-mirror path
+                                     injection
+            demos/                 ← all demos here, named
+                                     with source prefix
+                                     (01_treasury_*.py,
+                                      02_treasurydirect_*.py,
+                                      03_fdic_*.py, ...)
+            output/                ← demo PNGs / JSON /
+                                     other artifacts
+            archive/_pre_payload/  ← per-source archive
+                <treasury>/            subfolder, populated
+                    treasury.py        on each per-source
+                    SKILL.md           migration (D8)
+                <treasurydirect>/
+                    ...
+            notes.md               ← single notes.md for
+                                     the entire apis project
+                                     (analog of viz's
+                                      dev/notes.md)
 
-        data_guides pillar: <src>_guide.md
-          (e.g. fdic_guide.md, bis_data_guide.md,
-           nyfed_guide.md, ofr_guide.md, substack_guide.md,
-           prediction_markets_skill.md, fred_guide.md)
-        instruments pillar: <src>_api.md
-          (e.g. treasury_api.md)
-        tools pillar:       <src>_guide.md
-          (e.g. openfigi_guide.md, sec_edgar_guide.md)
+      Pre-payload per-source folders (GS/data/apis/<src>/)
+      are entirely UNTOUCHED in Session 3 scaffolding.
+      They get touched only at their migration session
+      (5/6/8+) when the existing <src>.py + SKILL.md move
+      to dev/archive/_pre_payload/<src>/.
 
-      Drag-and-drop is byte-identical including filename;
-      wiring step is just placing the file at the right
-      static/{pillar}/ path. Universal SKILL.md is dropped
-      to remove the rename step.
+      Mirrors altair's single-dev-tree precedent.
 
-      During migration, existing GS/data/apis/<src>/SKILL.md
-      gets archived to GS/data/apis/<src>/dev/archive/
-      _pre_payload/SKILL.md (per D8).
+D7    Skill-module filename = PRISM's destination filename  Session 3
+      per pillar (no rename on drop). Inside                 (redesigned
+      apis-payload/modules/ the .md files are FLAT;          2026-05-02)
+      the user sorts each into the correct PRISM pillar
+      destination at copy-in time:
+
+        Goes into PRISM's data_guides/ pillar:
+            fdic_guide.md, fred_guide.md, nyfed_guide.md,
+            bis_data_guide.md, ofr_guide.md,
+            substack_guide.md, prediction_markets_skill.md,
+            cftc_guide.md, congress_guide.md,
+            federal_register_guide.md, usitc_guide.md,
+            ofac_guide.md (only if not retired —
+                            see D11), wikipedia_guide.md
+        Goes into PRISM's instruments/ pillar:
+            treasury_api.md   (covers both treasury_client
+                                and treasury_direct_client;
+                                Point 2 / L8 satisfaction
+                                is automatic under D4 — both
+                                .py files coexist in
+                                apis-payload/clients/, the
+                                shared .md coexists in
+                                apis-payload/modules/, no
+                                special bundling required)
+        Goes into PRISM's tools/ pillar:
+            openfigi_guide.md, sec_edgar_guide.md
+
+      Why flat modules/: the user explicitly chose flat
+      over pillared inside the payload. Drop-time pillar-
+      sorting is preferred over staging-side pillar
+      structure (one fewer layer of folders).
+
+      Universal SKILL.md is NOT used in the payload. During
+      migration, existing GS/data/apis/<src>/SKILL.md
+      archives to GS/data/apis/dev/archive/_pre_payload/
+      <src>/SKILL.md (per D8).
+
 D8    Existing <src>/<src>.py + SKILL.md migrate to:        Session 3
-                                                            (Q4 = A)
-        GS/data/apis/<src>/dev/archive/_pre_payload/
+                                                            (redesigned
+        GS/data/apis/dev/archive/_pre_payload/<src>/         2026-05-02)
             <src>.py
             SKILL.md
             (anything else that lived in <src>/ and is
              not part of the new payload)
 
-      Per-source archive (mirrors viz). Keeps everything
-      related to one source in one folder tree.
+      Consolidated archive at apis root (was per-source
+      <src>/dev/archive/_pre_payload/ in earlier draft;
+      redesigned alongside D6 to live under the unified
+      dev/ tree). Keeps the entire pre-payload history
+      of the apis project in one folder, sortable by
+      source.
+
 D9    Wiring step on PRISM side when payload lands =        Session 7
-      3 lines, encoded in .cursor/rules/api-clients.mdc      (rule)
-      (Session 7):
-        + mcp/clients/__init__.py:
-          from . import <src>_client
-        + mcp/tools/script_exec_tools.py imports:
-          <src>_client as _<src>_client,
-        + mcp/tools/script_exec_tools.py namespace dict:
-          "<src>_client": _<src>_client,
-      Plus PRISM-side context/registry.py addition for
-      the new <src>_guide.md (one MODULE_REGISTRY entry).
+      3 lines + 1 registry entry, encoded in                 (rule)
+      .cursor/rules/api-clients.mdc (Session 7):
+
+        Source-of-truth files in the staging payload:
+          GS/data/apis/apis-payload/clients/<src>_client.py
+          GS/data/apis/apis-payload/modules/<src>_*.md
+
+        PRISM-side wiring on copy-in:
+          + mcp/clients/__init__.py:
+              from . import <src>_client
+          + mcp/tools/script_exec_tools.py imports:
+              <src>_client as _<src>_client,
+          + mcp/tools/script_exec_tools.py namespace dict:
+              "<src>_client": _<src>_client,
+          + context/registry.py:
+              new MODULE_REGISTRY entry per D7 filename
+
 D10   Migration order:                                      Session 3
                                                             (Q7 = A)
         Session 5 = treasury (Bucket A — proves
@@ -979,30 +1202,70 @@ D10   Migration order:                                      Session 3
                     (priority: fdic → bis → ofr → ...
                     Bucket C migrations slot in as
                     quick wins per D11)
+
+      Sessions 5/6 each produce ONE *_client.py file in
+      apis-payload/clients/ and ONE .md file in
+      apis-payload/modules/ (Session 5's .md is
+      treasury_api.md and covers both clients; Session 6
+      adds the second .py file but does NOT add a second
+      .md — treasury_api.md from Session 5 is updated to
+      cover TreasuryDirect specifics).
+
 D11   Orphaned-client policy:                                Session 3
       Six clients have NO L2 module today (cftc, congress,   (Q5 = A)
       federal_register, usitc, ofac, wikipedia). Migration
-      writes a NEW <src>_guide.md per client as a net new
-      contribution to PRISM. The migration is incomplete
-      without it (context-over-code). Each new skill module
-      goes into the right pillar (likely all data_guides
+      writes a NEW <src>_guide.md per client into
+      apis-payload/modules/ as a net new contribution to
+      PRISM. The migration is incomplete without it
+      (context-over-code).
+
+      Each new skill module sorts into the right PRISM
+      pillar at drop time per D7 (likely all data_guides
       except sec_edgar/openfigi which are tools/).
 
       ofac is a special case: commented out of __init__.py,
       not injected. Migration STILL ships the payload but
       flags the L2-curation question to the user (write the
       skill module anyway? or accept the retired status?).
+
 D12   Bucket C (6 direct clients — cftc, congress,          Session 3
       federal_register, usitc, ofac, openfigi):              (Q6 = A)
 
       Same payload formality as Buckets A+B. Each gets
-      <src>-payload/<src>_client.py and <src>-payload/
-      <src>_guide.md. Same dev/ structure. Same wiring
-      step. The only difference: NO stub-mirror dependency
-      to test (their migrations don't exercise
-      gs_app_proxy_negotiate at all). The api-clients.mdc
-      rule (Session 7) will note this as "Bucket C: no
-      stub-mirror smoke test required."
+      one *_client.py in apis-payload/clients/ and one
+      .md in apis-payload/modules/. Same dev/ structure.
+      Same wiring step. The only difference: NO
+      stub-mirror dependency to test (their migrations
+      don't exercise gs_app_proxy_negotiate at all). The
+      api-clients.mdc rule (Session 7) will note this as
+      "Bucket C: no stub-mirror smoke test required."
+
+D13   Success criterion = the per-iteration drag-and-drop  Session 3
+      loop. Each migration is "done" when:                   (locked
+                                                              2026-05-02
+        1. Cursor builds <src>_client.py + <src>_*.md         from user
+           in apis-payload/. Verifies against the local       Point 4)
+           stub mirror via dev/demos/.
+        2. Cursor hands the user a 1-2 sentence test prompt
+           (e.g. "Pull FDIC CRE concentration for the top
+           50 banks as of Q4 2025. Let me know if
+           frictions.").
+        3. User drops apis-payload/clients/<src>_client.py
+           and apis-payload/modules/<src>_*.md into PRISM
+           (with the 3-line wiring + 1 registry entry per
+           D9).
+        4. User pastes the test prompt into PRISM.
+        5. PRISM responds:
+             • No frictions → MIGRATION DONE.
+             • Frictions → user pastes PRISM's reply back;
+               Cursor iterates payload / guide; loop to
+               step 2.
+
+      The success criterion is per-client, not per-
+      session. A session may produce multiple migrations
+      that each go through the loop independently. The
+      loop also serves as the regression check whenever
+      a previously-shipped payload is updated.
 ```
 
 ## Hard rules carried across sessions

@@ -695,3 +695,11 @@ End of handoff. Start by reading
 `staging/apis_endeavor.md` "Locked decisions" + "Lessons from
 Sessions 1+2" sections, then `prism/gs-proxy.md` §7 (transport
 buckets), then begin scaffolding per §4 above.
+
+
+Below are some additional things I was thinking about - these will be likely more unstructured.
+
+1) The payload structure should be very similar across all the APIs - one context file, one *_client.py file.
+2) I think we should continue keeping treasury_client and treasury_direct_client a single module.
+3) Let's think about other cases where we should do strategic grouping of these - basically in cases where the modules are likely to be used together or are complementary.
+4) It may take several iterations but the mark of success is that I drop in the client py file and the markdown context file, you give me a test prompt I ask Prism, I will include the "let me know if frictions" tag at the end, and Prism has no frictions. That's how we know the materials you delivered me are frictionless. It's ok if it takes a few times, once we have working drag and drop files then it's easy to iterate on the clients or their context without actually breaking the GS auth or other internals.

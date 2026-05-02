@@ -1,0 +1,41 @@
+name: Update TOC
+
+on:
+  push:
+    paths:
+      - 'doc/**/*.md'
+
+jobs:
+  doctoc:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install doctoc
+        run: npm install -g doctoc
+
+      - name: Update TOC
+        id: toc
+        run: |
+          find doc -type f -name "*.md" -exec doctoc {} \;
+
+          if [[ -n "$(git status --porcelain doc)" ]]; then
+            echo "modified=1" >> $GITHUB_OUTPUT
+          else
+            echo "modified=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit changes
+        if: steps.toc.outputs.modified == '1'
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+          git add doc
+          git commit -m "docs: auto-update TOC [skip ci]"
+          git push

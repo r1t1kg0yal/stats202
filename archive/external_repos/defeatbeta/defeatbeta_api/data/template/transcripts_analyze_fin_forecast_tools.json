@@ -1,0 +1,53 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "extract_sentences",
+      "description": "Read and analyze the `earnings_call_transcripts` sentence by sentence, extract key sentences.",
+      "strict": true,
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key_sentences": {
+            "type": "array",
+            "description": "Sentences that include the projections of future.",
+            "additionalProperties": false,
+            "items": {
+              "type": "object",
+              "properties": {
+                "sentence": {
+                  "type": "string",
+                  "description": "The sentence must explicitly include specific numerical figures (e.g., percentages, basis points, or monetary amounts) that describe projections, guidance, outlooks, expectations, or forecasts for the future."
+                },
+                "speaker": {
+                  "type": "string",
+                  "description": "Name of the speaker who mentioned the `sentence`."
+                },
+                "paragraph_number": {
+                  "type": "integer",
+                  "description": "Paragraph number in the transcript where the `sentence` is mentioned."
+                },
+                "short_summary": {
+                  "type": "string",
+                  "description": "The short summary of the `sentence`."
+                },
+                "attitude": {
+                  "type": "string",
+                  "enum": ["optimistic", "pessimistic", "neutral"],
+                  "description": "Based on the extracted `outlook` from the `original_metrics`, infer the management’s `attitude` of this forecast (\"optimistic\", \"pessimistic\", or \"neutral\")."
+                },
+                "reason": {
+                  "type": "string",
+                  "description": "Based on the `sentence`, infer the `reason` behind this outlook. The reason should be derived from the full transcript and use management’s own wording. If management does not mention any reason, return an empty string."
+                }
+              },
+              "required": ["sentence", "speaker", "paragraph_number", "short_summary", "attitude", "reason"]
+            }
+          }
+        },
+        "required": ["key_sentences"]
+      }
+    }
+  }
+]

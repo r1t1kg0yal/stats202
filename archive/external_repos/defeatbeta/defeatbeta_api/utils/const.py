@@ -1,0 +1,26 @@
+stock_profile="stock_profile"
+stock_officers="stock_officers"
+stock_tailing_eps="stock_tailing_eps"
+stock_earning_calendar="stock_earning_calendar"
+stock_statement="stock_statement"
+stock_prices="stock_prices"
+stock_dividend_events="stock_dividend_events"
+stock_split_events="stock_split_events"
+exchange_rate="exchange_rate"
+daily_treasury_yield="daily_treasury_yield"
+stock_earning_call_transcripts="stock_earning_call_transcripts"
+stock_news="stock_news"
+stock_revenue_breakdown="stock_revenue_breakdown"
+stock_shares_outstanding="stock_shares_outstanding"
+stock_sec_filing="stock_sec_filing"
+
+tables = [stock_profile, stock_officers, stock_tailing_eps, stock_earning_calendar,
+                stock_statement, stock_prices, stock_dividend_events, stock_split_events, exchange_rate, daily_treasury_yield, stock_earning_call_transcripts,
+                stock_news, stock_revenue_breakdown, stock_shares_outstanding, stock_sec_filing]
+
+income_statement = "income_statement"
+balance_sheet = "balance_sheet"
+cash_flow = "cash_flow"
+
+quarterly = "quarterly"
+annual = "annual"
