@@ -1,14 +1,14 @@
 ---
 session: Portal fonts inventory + Python font-stack audit — what's in ai_development/mysite/fonts/ after the 2026-05-02 GS 2024 rebrand TTF drop, and what font-related Python packages / Django wiring / altair+echarts defaults are in place today
-sent: (pending)
-reply: (pending)
+sent: 2026-05-02
+reply: projects/frontend/dev/scans/2026-05-02_fonts_and_python_font_stack_reply.md
 reply_folded_into:
   - projects/frontend/dev/specs/design_system.md §1.1 (real filenames), §1.2 (@font-face block — collapse variable vs static based on reply §1), §1.3 (font-mono token decision — system `ui-monospace` vs installed Roboto Mono if §3 shows it's loaded), §8 (gaps: matplotlib discovery, PIL freetype, weasyprint/reportlab availability)
   - projects/frontend/README.md ("Design DNA" section — confirm the font-loading approach)
   - projects/frontend/dev/notes.md (CREATE — notes on Python font-stack constraints discovered from reply §4–§7; informs future altair/echarts font-swap work)
   - staging/README.md (frontend row — bump from "v0 design system" toward "v0 design system + font stack audited" once filenames land)
   - prism/ — likely a new short curated doc `prism/portal-fonts.md` (or a §10.6 addition to `prism/dashboards-portal.md`) once §2/§3/§8 reveal the current Django staticfiles story for fonts
-status: OPEN
+status: USED
 ---
 
 Title: Portal fonts + Python font-stack — inventory and integration points

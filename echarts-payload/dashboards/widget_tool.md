@@ -27,6 +27,8 @@ The compiler validates the def, materialises any matrix-input row bindings again
 
 **Compute shape.** The canonical authoring form is the flat `compute_js: "function compute(...){...}"` field. The legacy nested shape `compute: {"kind": "js", "source": "..."}` is also accepted — both normalise to the same internal representation at compile time. The `kind` discriminator was a placeholder for a hypothetical Python compute backend that does not exist in v1 (§5); new defs should use `compute_js`.
 
+**Inline tool defs are MANIFEST-WIPE-FRAGILE.** Because the entire `tool_def` (inputs, outputs, compute_js, matrix bindings) lives inline in `manifest.layout.…[].tool_def`, regenerating the manifest from scratch and overwriting `manifest_template.json` silently destroys the tool widget. When ADDING a new chart / KPI / tab to a dashboard that already has a `widget: tool`, follow READ → MERGE → WRITE on `manifest_template.json` (`dashboards.md` §2.5.4 + `dashboards/recipes.md` §3 for the worked recipe). Never rebuild the manifest as a fresh dict and put-overwrite — the tool def has no separate file backing it; if it's not in the dict you write, it's gone.
+
 ---
 
 ## 2. Cribbing from canonical examples

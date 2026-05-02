@@ -422,6 +422,31 @@ Rogue files are moved to `archive/<UTC>/`, never deleted. `s3_manager.move(...)`
 
 Run `_audit_dashboard_layout(folder_path, manifest)` FIRST when inheriting an existing dashboard folder. If it raises, surface the failure to the user as the cleanup-first protocol — the requested change does not proceed until the folder is back to spec. Cleanup, re-audit, then proceed.
 
+#### 2.5.4 Editing an existing dashboard — manifest preservation
+
+After §2.5.3's folder audit passes, surface changes to an EXISTING dashboard (add a widget, append a tab, add a dataset key, edit a filter range) follow READ → MERGE → WRITE on `manifest_template.json` — never REBUILD-FROM-SCRATCH. Rebuilding the manifest as a fresh dict and writing it to S3 silently destroys any widgets / tabs / filters / datasets PRISM didn't include in this script's dict. The same applies to `manifest_template.json`: regenerating it via `manifest_template(manifest)` from a freshly-built `manifest` overwrites the prior template (which may have carried widgets / tool definitions PRISM no longer remembers).
+
+```python
+# WRONG — wipes everything not in this script's manifest dict
+manifest = {"schema_version": 1, "id": ..., "datasets": {...}, "layout": {...}}
+s3_manager.put(json.dumps(manifest, ...), f"{DASHBOARD_PATH}/manifest.json")
+template = manifest_template(manifest)                                            # fresh template
+s3_manager.put(json.dumps(template, ...), f"{DASHBOARD_PATH}/manifest_template.json")  # OVERWRITES
+
+# RIGHT — preserves everything, surgically merges only the requested change
+tpl = json.loads(s3_manager.get(f"{DASHBOARD_PATH}/manifest_template.json").decode("utf-8"))
+# ... mutate tpl in place: append a widget to a tab.rows[j], add a dataset key, edit a filter range ...
+validate_manifest(tpl)
+s3_manager.put(json.dumps(tpl, indent=2).encode("utf-8"),
+               f"{DASHBOARD_PATH}/manifest_template.json")
+```
+
+`scripts/build.py` is RE-AUTHORED only when the dataset shape it builds against has changed (new dataset key, removed dataset key, column rename). Widget / filter / layout edits live entirely in `manifest_template.json` and the existing `build.py` keeps populating from the same `data/*.csv` keys — leave it alone.
+
+Trigger semantics. Any of these user-asks fall under READ→MERGE→WRITE on `manifest_template.json`, NOT a fresh-build: "add a chart / widget / KPI / tab / row", "edit / update / change a filter / dataset / title / metadata", "extend / append to" an existing dashboard. The fresh-build path is reserved for first-time creation (`§6.1` Tool 1+2+3) and for total demolition (rare; surface to the user before doing).
+
+See `dashboards/recipes.md` for the full worked READ → MERGE → WRITE recipe with surgical mutation helpers.
+
 ---
 
 ## 3. On-demand spec fetching
