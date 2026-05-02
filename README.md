@@ -46,7 +46,7 @@ PRISM right now.
 │                                                                     │
 │  altair       ████████████████████  mature (drag-and-drop ready)    │
 │  echarts      ████████████████████  mature (drag-and-drop verified) │
-│  apis         ████████████████░░░░  payload built (Session 4 ready) │
+│  apis         █████████████████░░░  stub mirror live (Session 5 ready) │
 │  docstrings   ███░░░░░░░░░░░░░░░░░  scaffolded (L1 + L2-T1 stubs)   │
 │  whitepapers  ██████░░░░░░░░░░░░░░  intake from OCR scan complete   │
 │  frontend     █░░░░░░░░░░░░░░░░░░░  scoping (prompt + scans only)   │
@@ -58,7 +58,7 @@ PRISM right now.
 |---------|----------|-----------------------|----------------|-------------------|------|-------------|------------------------|
 | altair | mature | `projects/altair/` | `projects/altair/altair-payload/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` (hub) + `context/modules/static/chart_context/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md`, `mcp-tools.md` §3+§5 | `projects/altair/dev/specs/composites.md` (next feature build) |
 | echarts | mature | `projects/echarts/` | `projects/echarts/echarts-payload/` | `ai_development/dashboards/*.py` + `context/modules/static/tools/dashboards.md` (hub) + `dashboards/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `dashboard-refresh.md`, `dashboards-portal.md` | — |
-| apis | payload built, Session 4 ready | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `mcp/clients/*_client.py` + `context/modules/static/{data_guides,instruments,tools}/*.md` | (future `api-clients.mdc`; Session 7) | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
+| apis | stub mirror live, Session 5 ready | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `mcp/clients/*_client.py` + `context/modules/static/{data_guides,instruments,tools}/*.md` | (future `api-clients.mdc`; Session 7) | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
 | frontend | scoping | `projects/frontend/` | (not yet) | Django views/urls/templates + `mysite/` (TBD) | — | `dashboards-portal.md`, `architecture.md` §10 | — (scoping prompt at `projects/frontend/dev/prompt.md`) |
 | docstrings | scaffolded (L1 + L2 Tier 1 stubs) | `projects/docstrings/` | `projects/docstrings/docstrings-payload/{*.py, *.md}` | L1 tool docstrings in `mcp/tools/{context_tool,global_tools,data_tools}.py` + L2 Tier 1 always-on static modules in `context/modules/static/{core,parsing_issue,code_sandbox_context,search_indexes,directory_tree,security_and_status,macro_style_guide}.md` | — | `mcp-tools.md` §3, `architecture.md` §3.1, §3.3 | — |
 | whitepapers | intake from OCR scan complete | `projects/whitepapers/` | `projects/whitepapers/whitepapers-payload/*.md` | `ai_development/context/white_papers/{whitepaper_data_integrations,whitepaper_user_personalization,whitepaper_world_state_and_reasoning,faq,email_usage_guide}.md` | — | (none yet — sourced from `projects/frontend/dev/scans/Scan May 2, 2026 at 2.36 AM.md`) | — (next: workshop pass + verify against S3 via a `staging/prompts/open/YYYY-MM-DD_whitepapers_s3_verify.md` PRISM round-trip) |
@@ -161,13 +161,14 @@ plug-and-play layout — 20 clients + 20 guide markdowns built as of
 
 | Aspect | Value |
 |---|---|
-| Status | Payload built (`apis-payload/clients/` has 20 `*_client.py`, `apis-payload/modules/` has 20 skill markdowns). Session 4 (stub mirror body + harness + smoke demos) is the next step. |
+| Status | Stub mirror live (`ai_development/mcp/gs_app_proxy_negotiate.py` has real vanilla-`requests` bodies; signature parity with `prism/_reference/`). Both smoke demos pass live (Treasury Fiscal Data + TreasuryDirect). Session 5 (treasury reference rebuild) is the next step. |
 | Canonical payload | `projects/apis/apis-payload/{clients,modules}/` (flat — user sorts `.md` into PRISM pillars on drop per D7) |
-| Stub mirror | `projects/apis/ai_development/mcp/gs_app_proxy_negotiate.py` (placeholder; raises `NotImplementedError` — Session 4 fills body) |
-| Harness | `projects/apis/dev/_harness.py` (placeholder — Session 4 fills body) |
+| Stub mirror | `projects/apis/ai_development/mcp/gs_app_proxy_negotiate.py` (live; vanilla `requests` fallthrough; satisfies all 3 `_USE_GS_PROXY` patterns transparently per L2) |
+| Harness | `projects/apis/dev/_harness.py` (live; `setup_sys_path()` + `banner` / `report` / `run_or_menu` helpers) |
+| Smoke demos | `projects/apis/dev/demos/00_smoke_session_and_auth.py` (Bucket A canonical), `00_smoke_manual_https_request.py` (Bucket B canonical) — both pass live, both expose interactive CLI + argparse |
 | Transport buckets | 3 (per L1 in `apis_endeavor.md`): A = standard requests proxy (6 clients), B = manual CONNECT (5), C = direct vanilla requests (6). Plus `newyorkfed` as a function-injection exception (L4). |
-| Session-by-session plan | `projects/apis/dev/endeavors/apis_endeavor.md` (8 sessions; 1-3 complete) |
-| Next session handoff | `projects/apis/dev/handoffs/session_4.md` |
+| Session-by-session plan | `projects/apis/dev/endeavors/apis_endeavor.md` (8 sessions; 1-4 complete) |
+| Next session | Session 5 — treasury reference rebuild (Bucket A). Shape locked in `apis_endeavor.md` Session 5 block; no separate handoff doc needed. |
 | Pre-payload archives | `projects/apis/dev/archive/_pre_payload/<src>/` (24 per-source folders; each migration archives here) |
 | Source inventory | `projects/apis/README.md` (24 sources + per-source table) |
 | Future rule | `.cursor/rules/api-clients.mdc` — writes in Session 7, after Sessions 5 (treasury) + 6 (treasurydirect) prove the pattern |
