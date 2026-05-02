@@ -48,6 +48,7 @@ PRISM right now.
 │  echarts      ████████████████████  mature (drag-and-drop verified) │
 │  apis         ████████████████░░░░  payload built (Session 4 ready) │
 │  docstrings   ███░░░░░░░░░░░░░░░░░  scaffolded (L1 + L2-T1 stubs)   │
+│  whitepapers  ██████░░░░░░░░░░░░░░  intake from OCR scan complete   │
 │  frontend     █░░░░░░░░░░░░░░░░░░░  scoping (prompt + scans only)   │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -55,11 +56,12 @@ PRISM right now.
 
 | Project | Maturity | Repo path (canonical) | Payload source | PRISM destination | Rule | prism/ refs | Active endeavor / spec |
 |---------|----------|-----------------------|----------------|-------------------|------|-------------|------------------------|
-| altair | mature | `projects/altair/` | `projects/altair/altair-payload/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md` | `projects/altair/dev/specs/composites.md` (next feature build) |
+| altair | mature | `projects/altair/` | `projects/altair/altair-payload/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` (hub) + `context/modules/static/chart_context/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md`, `mcp-tools.md` §3+§5 | `projects/altair/dev/specs/composites.md` (next feature build) |
 | echarts | mature | `projects/echarts/` | `projects/echarts/echarts-payload/` | `ai_development/dashboards/*.py` + `context/modules/static/tools/dashboards.md` (hub) + `dashboards/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `dashboard-refresh.md`, `dashboards-portal.md` | — |
 | apis | payload built, Session 4 ready | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `mcp/clients/*_client.py` + `context/modules/static/{data_guides,instruments,tools}/*.md` | (future `api-clients.mdc`; Session 7) | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
 | frontend | scoping | `projects/frontend/` | (not yet) | Django views/urls/templates + `mysite/` (TBD) | — | `dashboards-portal.md`, `architecture.md` §10 | — (scoping prompt at `projects/frontend/dev/prompt.md`) |
 | docstrings | scaffolded (L1 + L2 Tier 1 stubs) | `projects/docstrings/` | `projects/docstrings/docstrings-payload/{*.py, *.md}` | L1 tool docstrings in `mcp/tools/{context_tool,global_tools,data_tools}.py` + L2 Tier 1 always-on static modules in `context/modules/static/{core,parsing_issue,code_sandbox_context,search_indexes,directory_tree,security_and_status,macro_style_guide}.md` | — | `mcp-tools.md` §3, `architecture.md` §3.1, §3.3 | — |
+| whitepapers | intake from OCR scan complete | `projects/whitepapers/` | `projects/whitepapers/whitepapers-payload/*.md` | `ai_development/context/white_papers/{whitepaper_data_integrations,whitepaper_user_personalization,whitepaper_world_state_and_reasoning,faq,email_usage_guide}.md` | — | (none yet — sourced from `projects/frontend/dev/scans/Scan May 2, 2026 at 2.36 AM.md`) | — (next: workshop pass + verify against S3 via a `staging/prompts/open/YYYY-MM-DD_whitepapers_s3_verify.md` PRISM round-trip) |
 
 Always-applied rule: `.cursor/rules/prism.mdc` (the repo orientation).
 Orthogonal rule: `.cursor/rules/skill-discipline.mdc` (applies to every
@@ -124,12 +126,14 @@ email, and report flows.
 | Aspect | Value |
 |---|---|
 | Drag-and-drop status | READY. 15/15 demos pass. PRISM-runtime introspection confirmed every helper signature + the verbatim 14-entry namespace literal + sole-consumer property (`mcp/tools/script_exec_tools.py`). A live PRISM session is the only remaining verification step. |
-| Canonical payload | `projects/altair/altair-payload/chart_functions.py`, `chart_functions_studio.py`, `chart_context.md` |
+| Canonical payload | `projects/altair/altair-payload/chart_functions.py`, `chart_functions_studio.py`, `chart_context.md` (hub) + `chart_context/*.md` (spokes) |
 | Stub mirror | `projects/altair/ai_development/mcp/utils/*.py` — mirrors the 5 helpers `chart_functions.py` imports |
 | Pinned interpreter | `projects/altair/.venv/` (regenerate after the 2026-05-02 restructure — shebangs point at old `GS/viz/altair/.venv/` paths) |
 | Demo gallery | `projects/altair/dev/demos/01..25_*.py` (one file per demo; `run_all.py --all`) |
+| Skill shape | Hub-and-spoke since 2026-05-02 (mirrors echarts' pattern). `chart_context.md` is the L2 hub; per-primitive depth in `chart_context/{chart_types,mapping,annotations,dual_axis,composites,chart_center}.md`. `TestSpokeDriftPrevention` in `dev/tests.py` pins the hub/spoke/engine triple. |
 | QC workflow | `workflows/altair_qc.md` — adversarial vision + validation hardening |
 | Notes file | `projects/altair/dev/notes.md` |
+| Tests | `projects/altair/dev/tests.py` (`python tests.py` interactive; `python tests.py unit -v` headless). Currently houses the spoke-drift gate. |
 | Active feature work | `projects/altair/dev/specs/composites.md` — 4-batch plan for layered composites, forecast styling, new annotation classes (`BarValueLabels`, `BarHighlight`, `Connector`, `SeriesLabel`), two-level x-axis |
 
 ### echarts — interactive HTML dashboard compiler
@@ -205,6 +209,35 @@ pasted into PRISM source at promote time.
 | Skill-discipline | Applies to both layers per `.cursor/rules/skill-discipline.mdc` — every byte costs context budget at conversation start, weighted by load frequency (Tier 1 = always). |
 | Next step | First scan to land overwrites the relevant placeholder. No `.cursor/rules/docstrings.mdc` yet — same discipline as apis (wait for the pattern to prove itself before codifying). |
 
+### whitepapers — SSOT for portal-facing static documents
+
+White papers (deep technical dives) and how-to guides (FAQs, usage
+guides) that PRISM serves through its portal. Workshopped here, then
+dropped into PRISM at `ai_development/context/white_papers/`. Today
+this is 5 markdown files migrated off S3; the user has flagged the
+inherited content as needing a full refactor and the broader system
+may itself be overhauled.
+
+Carved out from `projects/frontend/` on 2026-05-02 because content
+and showcasing are different concerns with different cadences.
+**Content** (this project) and **portal-side organizing/showcasing**
+(`projects/frontend/`: URLs, listing pages, templates, nav, hero,
+Kerberos visibility) evolve independently.
+
+| Aspect | Value |
+|---|---|
+| Status | INTAKE COMPLETE (from OCR scan). All 5 payload files populated verbatim from `projects/frontend/dev/scans/Scan May 2, 2026 at 2.36 AM.md`. Workshop pass pending. |
+| Canonical payload | `projects/whitepapers/whitepapers-payload/` — flat folder, 5 markdown files. |
+| Files (3 white papers) | `whitepaper_data_integrations.md`, `whitepaper_user_personalization.md`, `whitepaper_world_state_and_reasoning.md` |
+| Files (2 how-to guides) | `faq.md`, `email_usage_guide.md` |
+| PRISM destinations | `ai_development/context/white_papers/<name>.md` — byte-identical drag-and-drop. |
+| Portal coupling | `WHITEPAPER_MAP`, `views.{whitepapers,user_guides,faq,email_guide,download_whitepaper}`, templates `news/{whitepapers,user_guides,doc_page}.html`, URLs `/whitepapers/`, `/user-guides/`, `/faq/`, `/guide/email/`, `/resources/<doc_name>/`. All live in `projects/frontend/`, not here. |
+| Source for content intake | `projects/frontend/dev/scans/Scan May 2, 2026 at 2.36 AM.md` (OCR scan; carries known artifacts — full-section duplication in User Personalization, title-drift on World State & FICC Reasoning vs portal's "World State & Reasoning") |
+| Source for portal wiring | `projects/frontend/dev/scans/Scan May 2, 2026 at 2.52 AM.md` (`WHITEPAPER_MAP`, view bodies, templates) |
+| Workshopping flow | PULL (verbatim, complete) → INQUIRE (verify intake gaps via a dedicated `staging/prompts/open/YYYY-MM-DD_<topic>.md` PRISM round-trip) → WORKSHOP (refactor opinionated) → PROMOTE (staging-upstream from there). Same direction-of-flow shift as docstrings. |
+| Skill-discipline | Applies — every byte serves a portal-rendered page; noise compounds across visitors. |
+| Next step | (a) Generate a `staging/prompts/open/YYYY-MM-DD_whitepapers_s3_verify.md` PRISM round-trip to verify the OCR-extracted content matches S3 bytes and close inventory gaps; (b) workshop pass to collapse the User Personalization OCR duplication, reconcile World State title drift, and apply broader content/aesthetic refactor. No `.cursor/rules/whitepapers.mdc` yet — same wait-for-pattern discipline as apis/docstrings. |
+
 ---
 
 ## staging/ file index
@@ -216,8 +249,8 @@ pasted into PRISM source at promote time.
 | `echarts-payload/` | Ephemeral drag-and-drop copy of `projects/echarts/echarts-payload/`. Same semantics. |
 | `voice_memos.md` | Raw capture space — unstructured thoughts, undated. Content is promoted to a project-side design spec or endeavor file when it matures. Low-friction exception to the "staging has a narrow purpose" rule. |
 | `prompts/` | PRISM-facing context-extraction prompts. |
-| `prompts/active.md` | Current live prompt (holding-pattern note when no round-trip is in flight) |
-| `prompts/archive/` | Dated archive of past prompts (`YYYY-MM-DD_<topic>.md`) with frontmatter metadata |
+| `prompts/open/` | Live prompts waiting to be sent, or sent but with reply not yet folded into `prism/`. One file per prompt, named `YYYY-MM-DD_<topic>.md` (unique topic slug per prompt — concurrent agents never collide on a shared slot). Frontmatter carries the session, send date, reply pointer, and fold-in plan. |
+| `prompts/archive/` | Dated archive of past prompts (`YYYY-MM-DD_<topic>.md`) with frontmatter metadata. A prompt moves here (same filename, no rename) once the PRISM reply has been folded into `prism/` and the frontmatter is finalized with `status: USED` + `reply_folded_into:` pointers. |
 
 No more `handoffs/`, `apis_endeavor.md`, `altair_composites_spec.md`,
 or `archive/` in staging/ — those moved to their projects' `dev/`
