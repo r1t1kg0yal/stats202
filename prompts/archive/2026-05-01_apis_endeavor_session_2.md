@@ -1,7 +1,7 @@
 ---
 session: APIs endeavor — Session 2 (the consolidated PRISM round-trip)
 sent: 2026-05-01 (after Session 1 prism/ uplift completed, before 22:37)
-reply: papers/converted/Scan May 1, 2026 at 10.45 PM.md
+reply: scans/prism/2026-05-01_apis_session_2_reply.md
 reply_folded_into:
   - prism/_reference/gs_app_proxy_negotiate.py (F8/F9/F10 cleared)
   - prism/gs-proxy.md (§3.2 sandbox-interaction; §5.3 _USE_GS_PROXY tri-modal; §7 full transport policy rewrite; §11 sentinels cleared, F19/F20 opened)

@@ -8394,7 +8394,7 @@ def _build_bar(
         # breaks composites -- with a 280px compact_4_grid cell and 17+
         # x-categories the bar would render 3-5x wider than its sibling
         # panels and demolish the 2x2 grid (regression catalysed
-        # 2026-05-02 papers/converted/Scan May 2, 2026 at 1.50 PM.md).
+        # 2026-05-02 projects/altair/dev/feedback/2026-05-02_4pack_blowout.md).
         # Subtract the spacing overhead from the budget BEFORE dividing
         # by n_x_cats so both terms fit; tight 2px inter-facet gap keeps
         # groups visually distinguishable without consuming budget.

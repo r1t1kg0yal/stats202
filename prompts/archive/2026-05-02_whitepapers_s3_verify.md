@@ -1,7 +1,7 @@
 ---
 session: whitepapers SSOT migration — S3 verbatim verification, portal-wiring drift check, dual-surface and scope-extras decisions
-sent: 2026-05-02 (TBD)
-reply: TBD
+sent: 2026-05-02
+reply: projects/whitepapers/dev/scans/2026-05-02_whitepapers_s3_verify_reply.md
 reply_folded_into:
   - projects/whitepapers/whitepapers-payload/whitepaper_data_integrations.md (overwrite OCR-extracted version with §2.1 verbatim if drift)
   - projects/whitepapers/whitepapers-payload/whitepaper_user_personalization.md (overwrite with §2.2; expected to resolve OCR-induced full-section duplication)
@@ -9,9 +9,9 @@ reply_folded_into:
   - projects/whitepapers/whitepapers-payload/faq.md (overwrite with §2.4)
   - projects/whitepapers/whitepapers-payload/email_usage_guide.md (overwrite with §2.5)
   - projects/whitepapers/README.md (resolve §C dual-surface axis from §6 reply; resolve §F scope-extras axis from §5 reply; bump status from "intake from OCR scan" to "intake verified")
-  - projects/frontend/dev/scans/ — flag any drift in WHITEPAPER_MAP / view bodies / listing-page bodies vs `Scan May 2, 2026 at 2.52 AM.md` (§3, §4)
+  - projects/frontend/dev/scans/ — flag any drift in WHITEPAPER_MAP / view bodies / listing-page bodies vs `2026-05-02_portal_views_urls_templates.md` (§3, §4)
   - prism/ — likely a new curated doc covering the customer-facing static-content surface (or an extension to `prism/dashboards-portal.md`) once §5 / §6 / §7 reveal what's actually there
-status: PENDING
+status: USED
 ---
 
 Title: Whitepapers SSOT migration — verify OCR intake, confirm portal wiring, lock dual-surface and scope-extras decisions
@@ -24,7 +24,7 @@ workshops the content before each PRISM drop.
 
 State on the staging side as of this prompt: 5 inherited document
 bodies have already been **extracted from an OCR scan**
-(`projects/frontend/dev/scans/Scan May 2, 2026 at 2.36 AM.md`) and
+(`projects/whitepapers/dev/scans/2026-05-02_whitepapers_intake.md`) and
 landed verbatim in `projects/whitepapers/whitepapers-payload/`. The
 design decision (locked) is to collapse those 5 inherited docs into
 **3 hand-curated docs** during workshop:
@@ -158,7 +158,7 @@ Path: `secondary/technical_docs/email_usage_guide.md`
 ## 3. `WHITEPAPER_MAP` + render views — portal-wiring drift check
 
 Cursor staging has, per
-`projects/frontend/dev/scans/Scan May 2, 2026 at 2.52 AM.md`:
+`projects/frontend/dev/scans/2026-05-02_portal_views_urls_templates.md`:
 
 ```python
 WHITEPAPER_MAP = {
