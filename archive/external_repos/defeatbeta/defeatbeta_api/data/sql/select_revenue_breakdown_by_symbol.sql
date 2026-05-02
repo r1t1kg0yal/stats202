@@ -1,1 +1,0 @@
-SELECT * FROM '{url}' WHERE symbol = '{ticker}' AND breakdown_type = '{breakdown_type}' ORDER BY report_date ASC

@@ -11,7 +11,7 @@ One visual style only — Goldman Sachs brand: GS Navy `#002F6C`, PMS 652 Sky Bl
 
 `compile_dashboard(manifest)` is the only PRISM-facing entry point. It validates a manifest, lowers each `widget: chart` through internal builders, and emits an interactive dashboard HTML + manifest JSON.
 
-Every primitive in this skill's Catalog index is rendered, in MECE-grouped tabs with explanatory headers, by the staging-side `build_showcase` demo (`GS/viz/echarts/dev/demos.py`). That dashboard is the canonical proof-of-coverage artifact: if a primitive doesn't render there, the engine has a regression. Production-flavored demos in the same gallery (`rates_monitor`, `markets_wrap`, `screener_studio`, ...) sit beneath the showcase as safety / redundancy.
+Every primitive in this skill's Catalog index is rendered, in MECE-grouped tabs with explanatory headers, by the staging-side `build_showcase` demo (`projects/echarts/dev/demos.py`). That dashboard is the canonical proof-of-coverage artifact: if a primitive doesn't render there, the engine has a regression. Production-flavored demos in the same gallery (`rates_monitor`, `markets_wrap`, `screener_studio`, ...) sit beneath the showcase as safety / redundancy.
 
 For refresh-pipeline operations / failure modal / runner internals see `prism/dashboard-refresh.md`. This file is purely about authoring.
 

@@ -296,7 +296,7 @@ VALID_KPI_AGGREGATORS = {
 # string. The engine treats it as DATA -- domain-blind. Every tool def
 # travels INLINE inside its dashboard manifest; there is no runtime
 # registry or shared library on disk. Canonical reference templates
-# live in staging at ``GS/viz/echarts/dev/tool_examples/<name>/``;
+# live in staging at ``projects/echarts/dev/tool_examples/<name>/``;
 # PRISM cribs from them at authoring time and emits the def inline.
 #
 # Two equivalent compute shapes are accepted at the input layer:
@@ -329,7 +329,7 @@ def load_tool_def(ref: Any) -> Dict[str, Any]:
         f"library -- bake the def into the manifest. See "
         f"`dashboards.md` section 4.11 for the inline pattern; "
         f"canonical reference templates live at "
-        f"`GS/viz/echarts/dev/tool_examples/<name>/` (staging-only) "
+        f"`projects/echarts/dev/tool_examples/<name>/` (staging-only) "
         f"for cribbing."
     )
 

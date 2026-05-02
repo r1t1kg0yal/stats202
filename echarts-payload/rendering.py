@@ -96,7 +96,7 @@ def _get_prism_logo_b64() -> str:
       2. ``$PRISM_LOGO_PATH`` env var pointing at a local PNG. Works in
          either environment; useful for previewing the prism mark in
          staging without pulling the full PRISM stack.
-      3. ``GS/viz/echarts/assets/prism_logo.png``. Drop a PNG here to
+      3. ``projects/echarts/assets/prism_logo.png``. Drop a PNG here to
          test the prism mark locally.
       4. ``""`` -- the renderer interprets this as "use the GS brand
          mark" (the original staging behaviour).
@@ -1671,7 +1671,7 @@ html, body {
 
 /* Prism AI brand mark -- shown in the header when a logo PNG is
    available (PRISM S3 fetch, $PRISM_LOGO_PATH override, or a file at
-   GS/viz/echarts/assets/prism_logo.png). When no logo can be sourced
+   projects/echarts/assets/prism_logo.png). When no logo can be sourced
    the renderer falls back to the .gs-mark span above, so these rules
    simply have nothing to style and stay inert. */
 .prism-mark {
@@ -14079,7 +14079,7 @@ import re as _re
 # attachment, opened via file://, or served directly from S3 via a
 # presigned URL (which bypasses any Django static handler). The lookup is
 # rooted at os.getcwd(), which in PRISM and in this staging repo's demo
-# convention (`cd GS/viz/echarts && python3 dev/...`) both resolve to the
+# convention (`cd projects/echarts && python3 dev/...`) both resolve to the
 # directory holding `ai_development/mysite/news/static/js/echarts.js`. The
 # string is cached on first read so it doesn't get re-loaded for every
 # rendered dashboard in a session.

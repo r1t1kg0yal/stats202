@@ -31,7 +31,7 @@ The compiler validates the def, materialises any matrix-input row bindings again
 
 ## 2. Cribbing from canonical examples
 
-PRISM doesn't author tool defs from a blank page. Reference templates live in **staging only** at `GS/viz/echarts/dev/tool_examples/<name>/` — a `def.json` schema plus a `compute.js` paired sibling. They are NOT shipped with the payload (the engine has no concept of a tool registry; runtime accepts inline dicts only). Three are shipped today:
+PRISM doesn't author tool defs from a blank page. Reference templates live in **staging only** at `projects/echarts/dev/tool_examples/<name>/` — a `def.json` schema plus a `compute.js` paired sibling. They are NOT shipped with the payload (the engine has no concept of a tool registry; runtime accepts inline dicts only). Three are shipped today:
 
 | Example | Demonstrates | Use it as a template for |
 |---------|-------------|--------------------------|

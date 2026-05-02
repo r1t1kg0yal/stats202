@@ -1,14 +1,39 @@
 # staging/
 
-Cross-project meta layer for the PRISM-staging repo. Every artifact here
-is either (a) a multi-session plan, (b) a design spec, (c) a handoff
-between sessions, (d) an active PRISM context-extraction prompt, or (e)
-the **living projects roster below**. None of this ships to PRISM.
+PRISM-bound outputs + cross-project meta. Everything in this folder is
+either (a) an ephemeral drag-and-drop copy of a project's payload on
+its way into PRISM, (b) the living projects roster below, (c) a
+PRISM-facing context-extraction prompt, or (d) a scratch capture space.
 
-The counterpart is `prism/` — the curated PRISM-side SSOT that Cursor
-reads whenever it edits anything under `GS/` that has to interoperate
-with PRISM. Where `prism/` describes how PRISM works, `staging/`
-describes what is being built for PRISM right now.
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ THREE-SUBTREE REPO MODEL (since 2026-05-02 restructure)             │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│   projects/    ACTIVE MULTI-SESSION DEV                             │
+│                projects/<name>/<name>-payload/  is CANONICAL        │
+│                projects/<name>/dev/             is HOW WORK HAPPENS │
+│                                                                     │
+│   staging/     PRISM-BOUND OUTPUTS                                  │
+│                staging/<name>-payload/          is EPHEMERAL COPY   │
+│                staging/prompts/                 is PRISM PROMPTS    │
+│                staging/README.md                is THIS FILE        │
+│                                                                     │
+│   GS/          LIBRARIES PRISM CONSUMES (non-active)                │
+│                skills, models, scrapers, pipelines, ontologies,     │
+│                knowledge, tools, products                           │
+│                                                                     │
+│   prism/       HOW PRISM WORKS (orientation SSOT)                   │
+│                curated docs Cursor reads before editing projects/   │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+The counterpart to `staging/` is `prism/` — the curated PRISM-side SSOT
+that Cursor reads whenever it edits anything under `projects/` or `GS/`
+that has to interoperate with PRISM. Where `prism/` describes how PRISM
+works, `staging/README.md` below describes what is being built for
+PRISM right now.
 
 ---
 
@@ -21,24 +46,69 @@ describes what is being built for PRISM right now.
 │                                                                     │
 │  altair       ████████████████████  mature (drag-and-drop ready)    │
 │  echarts      ████████████████████  mature (drag-and-drop verified) │
-│  apis         ███████░░░░░░░░░░░░░  scaffolded (Session 4 ready)    │
-│  L1 docstr.   ██░░░░░░░░░░░░░░░░░░  scaffolded (placeholder only)   │
+│  apis         ████████████████░░░░  payload built (Session 4 ready) │
+│  docstrings   ███░░░░░░░░░░░░░░░░░  scaffolded (L1 + L2-T1 stubs)   │
 │  frontend     █░░░░░░░░░░░░░░░░░░░  scoping (prompt + scans only)   │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-| Project | Maturity | Repo path | PRISM destination | Rule | prism/ refs | Active endeavor / SSOT |
-|---------|----------|-----------|-------------------|------|-------------|------------------------|
-| altair | mature | `GS/viz/altair/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md` | `staging/altair_composites_spec.md` (next feature build) |
-| echarts | mature | `GS/viz/echarts/` | `ai_development/dashboards/*.py` + `context/modules/static/tools/dashboards.md` (hub) + `dashboards/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `dashboard-refresh.md`, `dashboards-portal.md` | — |
-| apis | scaffolded | `GS/data/apis/` | `mcp/clients/*_client.py` + `context/modules/static/{data_guides,instruments,tools}/*.md` | (future `api-clients.mdc`; Session 7) | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `staging/apis_endeavor.md` (8-session plan) |
-| frontend | scoping | `GS/frontend/` | Django views/urls/templates + `mysite/` (TBD) | — | `dashboards-portal.md`, `architecture.md` §10 | — (scoping prompt only) |
-| L1 docstrings | proposed | `GS/knowledge/docstrings/` | PRISM tool docstrings in `mcp/tools/context_tool.py`, `mcp/tools/global_tools.py`, `mcp/tools/data_tools.py` | — | `mcp-tools.md` §3, `architecture.md` §3.1 | — |
+| Project | Maturity | Repo path (canonical) | Payload source | PRISM destination | Rule | prism/ refs | Active endeavor / spec |
+|---------|----------|-----------------------|----------------|-------------------|------|-------------|------------------------|
+| altair | mature | `projects/altair/` | `projects/altair/altair-payload/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md` | `projects/altair/dev/specs/composites.md` (next feature build) |
+| echarts | mature | `projects/echarts/` | `projects/echarts/echarts-payload/` | `ai_development/dashboards/*.py` + `context/modules/static/tools/dashboards.md` (hub) + `dashboards/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `dashboard-refresh.md`, `dashboards-portal.md` | — |
+| apis | payload built, Session 4 ready | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `mcp/clients/*_client.py` + `context/modules/static/{data_guides,instruments,tools}/*.md` | (future `api-clients.mdc`; Session 7) | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
+| frontend | scoping | `projects/frontend/` | (not yet) | Django views/urls/templates + `mysite/` (TBD) | — | `dashboards-portal.md`, `architecture.md` §10 | — (scoping prompt at `projects/frontend/dev/prompt.md`) |
+| docstrings | scaffolded (L1 + L2 Tier 1 stubs) | `projects/docstrings/` | `projects/docstrings/docstrings-payload/{*.py, *.md}` | L1 tool docstrings in `mcp/tools/{context_tool,global_tools,data_tools}.py` + L2 Tier 1 always-on static modules in `context/modules/static/{core,parsing_issue,code_sandbox_context,search_indexes,directory_tree,security_and_status,macro_style_guide}.md` | — | `mcp-tools.md` §3, `architecture.md` §3.1, §3.3 | — |
 
 Always-applied rule: `.cursor/rules/prism.mdc` (the repo orientation).
 Orthogonal rule: `.cursor/rules/skill-discipline.mdc` (applies to every
 skill/context file under `context/modules/static/`).
+
+---
+
+## Payload flow
+
+```
+                   ┌──────────────────────────────┐
+   CANONICAL       │ projects/<name>/<name>-      │
+   (source of      │   payload/                   │
+    truth)         │                              │
+                   │ edited here. demos, tests,   │
+                   │ stub mirror, feedback, and   │
+                   │ notes live alongside at      │
+                   │ projects/<name>/{dev,        │
+                   │                  ai_develop- │
+                   │                  ment}/      │
+                   └───────────────┬──────────────┘
+                                   │
+                                   │ user copies by hand
+                                   │ when ready to promote
+                                   ▼
+                   ┌──────────────────────────────┐
+   EPHEMERAL       │ staging/<name>-payload/      │
+   (drag-and-drop  │                              │
+    scratch zone)  │ may be stale between         │
+                   │ promotions. NEVER edited     │
+                   │ directly — always a copy of  │
+                   │ projects/<name>/<name>-      │
+                   │   payload/.                  │
+                   └───────────────┬──────────────┘
+                                   │
+                                   │ user drags into PRISM
+                                   │ (copy-paste into PRISM source)
+                                   ▼
+                   ┌──────────────────────────────┐
+   PRISM           │ ai_development/... in the    │
+                   │ PRISM repo. Downstream-read- │
+                   │ only. Never edited there.    │
+                   └──────────────────────────────┘
+```
+
+This flow applies uniformly to altair, echarts, apis. For docstrings,
+the "copy" step is paste-the-DOCSTRING-string-into-the-tool-function-
+docstring rather than filesystem copy. For frontend the flow
+materialises when the first payload lands.
 
 ---
 
@@ -54,12 +124,13 @@ email, and report flows.
 | Aspect | Value |
 |---|---|
 | Drag-and-drop status | READY. 15/15 demos pass. PRISM-runtime introspection confirmed every helper signature + the verbatim 14-entry namespace literal + sole-consumer property (`mcp/tools/script_exec_tools.py`). A live PRISM session is the only remaining verification step. |
-| Stub mirror | `GS/viz/altair/ai_development/mcp/utils/*.py` — mirrors the 5 helpers `chart_functions.py` imports |
-| Pinned interpreter | `GS/viz/altair/.venv/` |
-| Demo gallery | `GS/viz/altair/dev/demos/01..25_*.py` (one file per demo; `run_all.py --all`) |
+| Canonical payload | `projects/altair/altair-payload/chart_functions.py`, `chart_functions_studio.py`, `chart_context.md` |
+| Stub mirror | `projects/altair/ai_development/mcp/utils/*.py` — mirrors the 5 helpers `chart_functions.py` imports |
+| Pinned interpreter | `projects/altair/.venv/` (regenerate after the 2026-05-02 restructure — shebangs point at old `GS/viz/altair/.venv/` paths) |
+| Demo gallery | `projects/altair/dev/demos/01..25_*.py` (one file per demo; `run_all.py --all`) |
 | QC workflow | `workflows/altair_qc.md` — adversarial vision + validation hardening |
-| Notes file | `GS/viz/altair/dev/notes.md` |
-| Active feature work | `staging/altair_composites_spec.md` — 4-batch plan for layered composites, forecast styling, new annotation classes (`BarValueLabels`, `BarHighlight`, `Connector`, `SeriesLabel`), two-level x-axis |
+| Notes file | `projects/altair/dev/notes.md` |
+| Active feature work | `projects/altair/dev/specs/composites.md` — 4-batch plan for layered composites, forecast styling, new annotation classes (`BarValueLabels`, `BarHighlight`, `Connector`, `SeriesLabel`), two-level x-axis |
 
 ### echarts — interactive HTML dashboard compiler
 
@@ -70,29 +141,31 @@ dependencies at render time.
 | Aspect | Value |
 |---|---|
 | Drag-and-drop status | VERIFIED end-to-end (local tests + demos) |
-| Static-asset mirror | `GS/viz/echarts/ai_development/mysite/news/static/js/echarts.js` (no Python stub mirror needed — stdlib + pandas only) |
-| Playwright sweep | `GS/viz/echarts/dev/inspect_dashboard.py` |
+| Canonical payload | `projects/echarts/echarts-payload/` (__init__.py, config.py, echart_*.py, rendering.py, dashboards.md hub + dashboards/*.md spokes) |
+| Static-asset mirror | `projects/echarts/ai_development/mysite/news/static/js/echarts.js` (no Python stub mirror needed — stdlib + pandas only) |
+| Playwright sweep | `projects/echarts/dev/inspect_dashboard.py` |
 | Skill shape | Hub-and-spoke since 2026-05-01. `dashboards.md` is the L2 hub; per-primitive depth in `dashboards/{charts,widgets,widget_tool,filters,recipes}.md`. `TestSpokeDriftPrevention` pins the hub/spoke/engine triple. |
-| Notes file | `GS/viz/echarts/dev/notes.md` |
+| Notes file | `projects/echarts/dev/notes.md` |
 | QC workflow | `workflows/dashboard_qc.md` — adversarial manifest synth + vision grading |
 
 ### apis — external API client platform
 
 17 PRISM-side clients (treasury, treasurydirect, fdic, bis, ofr,
-sec_edgar, prediction_markets, …) plus 7 staging-only sources. Moving
-from vanilla-`requests` staging scripts + PRISM-side clients into a
-byte-identical plug-and-play model that mirrors the viz pattern.
+sec_edgar, prediction_markets, …) plus 7 staging-only sources. Unified
+plug-and-play layout — 20 clients + 20 guide markdowns built as of
+2026-05-02.
 
 | Aspect | Value |
 |---|---|
-| Status | SCAFFOLDED. Session 4 (stub mirror + harness) is ready to start. |
-| Payload model | Unified `apis-payload/{clients,modules}/` at the apis root (flat — user sorts `.md` into PRISM pillars on drop). Locked 2026-05-02 as D4 in `apis_endeavor.md`. |
-| Stub mirror | `GS/data/apis/ai_development/mcp/gs_app_proxy_negotiate.py` (placeholder; raises `NotImplementedError`) |
-| Harness | `GS/data/apis/dev/_harness.py` (placeholder) |
+| Status | Payload built (`apis-payload/clients/` has 20 `*_client.py`, `apis-payload/modules/` has 20 skill markdowns). Session 4 (stub mirror body + harness + smoke demos) is the next step. |
+| Canonical payload | `projects/apis/apis-payload/{clients,modules}/` (flat — user sorts `.md` into PRISM pillars on drop per D7) |
+| Stub mirror | `projects/apis/ai_development/mcp/gs_app_proxy_negotiate.py` (placeholder; raises `NotImplementedError` — Session 4 fills body) |
+| Harness | `projects/apis/dev/_harness.py` (placeholder — Session 4 fills body) |
 | Transport buckets | 3 (per L1 in `apis_endeavor.md`): A = standard requests proxy (6 clients), B = manual CONNECT (5), C = direct vanilla requests (6). Plus `newyorkfed` as a function-injection exception (L4). |
-| Session-by-session plan | `staging/apis_endeavor.md` (8 sessions; 1-3 complete) |
-| Next session handoff | `staging/handoffs/session_4.md` |
-| Source inventory | `GS/data/apis/README.md` (24 sources + per-source table) |
+| Session-by-session plan | `projects/apis/dev/endeavors/apis_endeavor.md` (8 sessions; 1-3 complete) |
+| Next session handoff | `projects/apis/dev/handoffs/session_4.md` |
+| Pre-payload archives | `projects/apis/dev/archive/_pre_payload/<src>/` (24 per-source folders; each migration archives here) |
+| Source inventory | `projects/apis/README.md` (24 sources + per-source table) |
 | Future rule | `.cursor/rules/api-clients.mdc` — writes in Session 7, after Sessions 5 (treasury) + 6 (treasurydirect) prove the pattern |
 
 ### frontend — staging mockup of PRISM's Django UI
@@ -106,28 +179,31 @@ destination side is Django / mysite / templates, not the MCP layer.
 | Aspect | Value |
 |---|---|
 | Status | SCOPING. Prompt and two OCR scans only; no code, no scaffold. |
-| Scoping doc | `GS/frontend/prompt.md` |
-| Input scans | `GS/frontend/Scan May 2, 2026 at 2.36 AM.md`, `GS/frontend/Scan May 2, 2026 at 2.52 AM.md` |
-| Next step | Comprehensive PRISM context-extraction prompt to capture current frontend structure (views.py, urls.py, templates, mysite/, S3 paths, caching layer) before scaffolding. |
+| Scoping doc | `projects/frontend/dev/prompt.md` |
+| Input scans | `projects/frontend/dev/scans/Scan May 2, 2026 at 2.36 AM.md`, `projects/frontend/dev/scans/Scan May 2, 2026 at 2.52 AM.md` |
+| Next step | Comprehensive PRISM context-extraction prompt to capture current frontend structure (views.py, urls.py, templates, mysite/, S3 paths, caching layer, Kerberos URL resolution). Once that context lands in `prism/`, this project can be scaffolded properly (stub mirror + payload skeleton + first dev iteration). |
 | PRISM references for context | `prism/dashboards-portal.md` (Django identity, PAGE_ACCESS_RULES, share toggle), `prism/architecture.md` §10 (user system, kerberos resolution), `prism/dashboard-refresh.md` (refresh pipeline) |
 
-### L1 docstrings — SSOT for PRISM's always-loaded tool docstrings
+### docstrings — SSOT for PRISM's always-loaded operating instructions
 
-PRISM's L1 context layer = tool signatures + docstrings, always visible
-before any tool call. The docstrings are large and carry critical
-behavior rules (e.g. `get_context`'s "ONCE PER USER MESSAGE" invariant).
-This project holds the SSOT for those docstrings so they can be edited,
-diffed, and reviewed in staging, then pasted into PRISM source at
-promote time.
+PRISM has two parallel "always-loaded" surfaces that both function as
+operating instructions: the L1 tool docstrings (visible before any tool
+call) and the L2 Tier 1 always-on static modules (loaded into
+`<CONTEXT_START>` on every user message). This project owns the SSOT
+for both, so they can be edited, diffed, and reviewed in staging, then
+pasted into PRISM source at promote time.
 
 | Aspect | Value |
 |---|---|
-| Status | SCAFFOLDED. Placeholder files only; actual docstring content pending a PRISM context-extraction round-trip. |
-| Folder | `GS/knowledge/docstrings/` |
-| Files | `README.md`, `get_context.py`, `global_context.py`, `data_context.py` — each with a module-level `DOCSTRING: str` constant |
-| PRISM destinations | `mcp/tools/context_tool.py` (get_context), `mcp/tools/global_tools.py` (global_context), `mcp/tools/data_tools.py` (data_context) — docstrings are embedded in the function bodies; promote = paste the string |
-| Partial verbatim already available | `prism/mcp-tools.md` §3 carries the verbatim `get_context` "ONCE PER USER MESSAGE" / "NEVER CALL TWICE IN ONE TURN" rules. Session 2 of the apis endeavor surfaced much of the `get_context` docstring context. |
-| Next step | Context-extraction prompt to PRISM for verbatim docstrings. No `.cursor/rules/l1-docstrings.mdc` yet — same discipline as apis (wait for the pattern to prove itself before codifying). |
+| Status | SCAFFOLDED. Placeholder files only; actual content pending verbatim PRISM scans (supplied as OCR'd markdown under `papers/converted/`, not via a context-extraction prompt). |
+| Canonical payload | `projects/docstrings/docstrings-payload/` — flat folder with `.py` for L1 docstrings (DOCSTRING constant) and `.md` for L2 Tier 1 modules (raw markdown). |
+| L1 files | `get_context.py`, `global_context.py`, `data_context.py` — each carries a module-level `DOCSTRING: str` constant. |
+| L1 destinations | `mcp/tools/context_tool.py` (`get_context`), `mcp/tools/global_tools.py` (`global_context`), `mcp/tools/data_tools.py` (`data_context`, path TBD). Promote = paste the string between triple quotes into the PRISM function body as its docstring. |
+| L2 Tier 1 files (seed triplet) | `core.md`, `parsing_issue.md`, `macro_style_guide.md`. The other 4 (`code_sandbox_context.md`, `search_indexes.md`, `directory_tree.md`, `security_and_status.md`) get scaffolded as their scans land. `user_context` is also Tier 1 always-on but is a runtime module and out of scope for this project. |
+| L2 Tier 1 destinations | `context/modules/static/<name>.md` in PRISM (except `search_indexes`, which is cached in `context_cache/`). Promote = byte-identical file copy into PRISM. |
+| Partial verbatim already available | `prism/mcp-tools.md` §3 carries the verbatim `get_context` "ONCE PER USER MESSAGE" / "NEVER CALL TWICE IN ONE TURN" rules. `prism/architecture.md` §3.3 lists the Tier 1 module catalog. |
+| Skill-discipline | Applies to both layers per `.cursor/rules/skill-discipline.mdc` — every byte costs context budget at conversation start, weighted by load frequency (Tier 1 = always). |
+| Next step | First scan to land overwrites the relevant placeholder. No `.cursor/rules/docstrings.mdc` yet — same discipline as apis (wait for the pattern to prove itself before codifying). |
 
 ---
 
@@ -136,13 +212,16 @@ promote time.
 | File / folder | Role |
 |---|---|
 | `README.md` | This file — the living projects roster |
-| `apis_endeavor.md` | Active multi-session plan for the apis project |
-| `altair_composites_spec.md` | One-shot design spec for altair's next feature (composites + forecast) |
-| `voice_memos.md` | Raw capture space — unstructured thoughts, undated. Content is promoted to a design spec or an endeavor file when it matures. |
-| `prompts.md` | Active PRISM context-extraction prompt. Holding pattern ("no active prompt") when no round-trip is in flight. |
-| `handoffs/` | Per-session handoff prompts. `session_<N>.md` for apis sessions; `<workflow>_session_<N>.md` for workflow runs (e.g. `dashboard_qc_session_1.md`). |
-| `prompts_archive/` | Archived context-extraction prompts. Dated-named (`YYYY-MM-DD_<topic>.md`) with frontmatter metadata. |
-| `archive/external_repos/` | Archived external repo references |
+| `altair-payload/` | Ephemeral drag-and-drop copy of `projects/altair/altair-payload/`. User refreshes before promoting to PRISM. |
+| `echarts-payload/` | Ephemeral drag-and-drop copy of `projects/echarts/echarts-payload/`. Same semantics. |
+| `voice_memos.md` | Raw capture space — unstructured thoughts, undated. Content is promoted to a project-side design spec or endeavor file when it matures. Low-friction exception to the "staging has a narrow purpose" rule. |
+| `prompts/` | PRISM-facing context-extraction prompts. |
+| `prompts/active.md` | Current live prompt (holding-pattern note when no round-trip is in flight) |
+| `prompts/archive/` | Dated archive of past prompts (`YYYY-MM-DD_<topic>.md`) with frontmatter metadata |
+
+No more `handoffs/`, `apis_endeavor.md`, `altair_composites_spec.md`,
+or `archive/` in staging/ — those moved to their projects' `dev/`
+subfolders or to `archive/` at repo root in the 2026-05-02 restructure.
 
 ---
 
@@ -150,9 +229,12 @@ promote time.
 
 | Folder | What it is | When it's relevant |
 |---|---|---|
+| `projects/` | Canonical source of truth for all 5 active multi-session projects. Each `projects/<name>/` has payload + stub mirror + dev infrastructure. | Most non-trivial work touches one of these. |
 | `prism/` | Curated PRISM-side SSOT (architecture, helpers, tool contracts) | Always, when editing anything that PRISM consumes. `prism/README.md` is the routing table. |
 | `workflows/` | Timeless, pasteable workflow prompts (`altair_qc.md`, `dashboard_qc.md`, …) | When kicking off a named workflow-type session. Not session-specific. |
 | `papers/converted/` | OCR scans that feed knowledge ingestion and PRISM curation | When a scan is the input for a curation pass, it's referenced by line ranges from the relevant `prism/<topic>.md`. |
+| `GS/` | Library material PRISM consumes (skills, models, scrapers, pipelines, ontologies, knowledge, tools, products). Minus the 5 projects which moved to `projects/`. | When adding a scraper, a skill module, a model, or anything else library-shaped. |
+| `archive/` | Archived content (never delete — always move here). `archive/external_repos/` was relocated from `staging/archive/` in the 2026-05-02 restructure. | Clean up: relocate stale files here instead of deleting. |
 | `.cursor/rules/` | Agent behavior rules (`prism.mdc` is always-applied) | Always — `prism.mdc` is the repo orientation rule |
 
 ---
@@ -165,17 +247,14 @@ no roster. Update this file whenever any of the following happens:
 
 | Event | What to update here |
 |---|---|
-| A project's maturity changes (scoping → scaffolded → mature) | The status-at-a-glance bar + the summary-table Maturity column + the per-project subsection |
-| A new staging project starts (new folder under `GS/`) | A new row in the summary table + a new per-project subsection + a status bar entry |
+| A project's maturity changes (scoping → scaffolded → payload built → mature) | The status-at-a-glance bar + the summary-table Maturity column + the per-project subsection |
+| A new staging project starts (new folder under `projects/`) | A new row in the summary table + a new per-project subsection + a status bar entry |
 | A project retires or merges into another | Move the section to an `archive/` reference (never delete), update the table row, update the status bar |
-| A new endeavor file lands under `staging/` | Update the relevant project's "Active endeavor" cell + add to the staging/ file index if not already present |
+| A new endeavor file lands under `projects/<name>/dev/endeavors/` | Update the relevant project's "Active endeavor" cell |
+| A new design spec lands under `projects/<name>/dev/specs/` | Update the relevant project's subsection with the spec pointer |
 | A new rule lands that governs a project | Update the relevant project's Rule cell + the per-project subsection |
 | A PRISM destination path changes (rare — PRISM-side restructure) | Update the PRISM destination cell + the per-project subsection + verify `prism/codebase-tree.md` matches |
-
-This freshness invariant is identical in spirit to the one in the
-archived `project-clis.mdc` rule (which governs the `cli_<project>.py`
-files at the repo root): if the roster doesn't match reality, it lies,
-and agents are misled.
+| The staging/projects/GS/ three-subtree model itself changes | Update the top-of-file diagram + the per-project paths + `.cursor/rules/prism.mdc` "Repo-to-PRISM Mapping" section in lockstep |
 
 A stale cheat sheet is a bug. Treat "cheat sheet drift detected" the
 same way you'd treat "PRISM payload drift detected": stop, fix it, then
