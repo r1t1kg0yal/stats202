@@ -153,25 +153,82 @@ reference / mechanics.
 
 ---
 
-## 4. Authoring rules
+## 4. Design defaults: compose + annotate
 
-### 4.1 Max lines per chart (soft guideline)
+Two LLM-default behaviours that distinguish a published chart from
+a data dump. Apply both unless the user has explicitly asked otherwise.
+
+### 4.1 Default to a composite when there's more than one story
+
+If the data tells more than one related story (regional split,
+level vs change, before/after, mixed chart types), reach for
+`make_2pack_horizontal` / `make_2pack_vertical` /
+`make_3pack_triangle` / `make_4pack_grid` / `make_6pack_grid`
+BEFORE producing multiple standalone PNGs. Single PNG, single QC
+call, per-panel scales / palettes independent. Up to N-1 sub-charts
+can fail and survivors still render.
+
+| Shape | Layout |
+|---|---|
+| 2-3 related angles | `make_2pack_horizontal` / `_vertical` |
+| 4 panels (regional / sector grid) | `make_4pack_grid` |
+| 1 headline + 2 supporting | `make_3pack_triangle` |
+| 6-panel dashboard | `make_6pack_grid` |
+| 9+ series | aggregate / group, or `heatmap` |
+
+Single charts only for genuinely unrelated topics or when the user
+explicitly asked for one. Composite design depth (`ChartSpec`,
+per-panel mapping rules, common patterns): fetch
+`chart_context/composites.md`.
+
+### 4.2 Annotations make charts argue
+
+A published chart almost always benefits from at least one
+annotation -- a line at a threshold, a band over a regime, a callout
+on the latest print, direct labels via `LastValueLabel`. Default-
+include the annotation that makes the chart's point legible at-a-
+glance.
+
+| Intent | Reach for |
+|---|---|
+| Threshold (Fed 2%, recession 0%, PMI 50) | `HLine` |
+| Regime / shaded period | `Band` |
+| Point at latest / max / min / event | `Callout` |
+| Direct-label series, drop the legend | `LastValueLabel` |
+| Event date | `VLine` |
+| Forecast / regime-change segment | `Segment` |
+| Best-fit on scatter | `Trendline` (or `mapping['trendline']=True`) |
+| Corner caption | `PlotText` |
+
+Annotation specs + per-class params + the "is this annotation worth
+it?" filter + chart-type compatibility: fetch
+`chart_context/annotations.md`.
+
+A chart with no annotation is appropriate when the user asked for a
+clean reference plot OR the purpose is exploratory (looking for
+patterns rather than arguing for one). Otherwise, annotate.
+
+---
+
+## 5. Authoring rules
+
+### 5.1 Max lines per chart (soft guideline)
 
 <= 4 lines per `multi_line` chart; 5+ lines cause clutter. For >4-series
 data, use a composite (`composites.md` §1).
 
-### 4.2 Y-axis labels: plain English, max 16 chars
+### 5.2 Y-axis labels: plain English, max 16 chars
 
 Always set `y_title` if the column name is coded or exceeds 16 chars
 (`JXCHF@USECON` -> `Core CPI (YoY %)`; `Population (Millions)` (21 chars)
 -> `Pop. (Millions)`).
 
-### 4.3 Date column requirements
+### 5.3 Date column requirements
 
 X column must be named `'date'` for time series and must be a column (not
 just the index): `df = df.rename(columns={'datetime': 'date'}).reset_index()`.
 
-### 4.4 Multi-line long-format pattern (with rename discipline)
+### 5.4 Multi-line long-format pattern (with rename discipline)
 
 For multi-series with `color`: melt to long format AFTER renaming columns
 (`reset_index()` uses the original index name; rename immediately after
@@ -186,13 +243,13 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series'}
 mapping = {'x': 'date', 'y': ['Series A', 'Series B']}
 ```
 
-### 4.5 No source attribution in title/subtitle
+### 5.5 No source attribution in title/subtitle
 
 Title/subtitle make the argument; source tracking lives in Prism metadata.
 Good: `title='Inflation Has Peaked'`, `subtitle='Core CPI decelerating 6
 months'`. Bad: `title='US CPI Data'`, `subtitle='Source: Haver'`.
 
-### 4.6 Data cleaning before charting
+### 5.6 Data cleaning before charting
 
 ```python
 df['value'] = pd.to_numeric(df['value'], errors='coerce')
@@ -203,7 +260,7 @@ assert len(df) > 0, "DataFrame is empty"
 Max 12 color categories, 16 facet categories. Time series above 5,000 rows
 auto-downsample to ~2,000 (warning in `result.warnings`).
 
-### 4.7 Never plot placeholder/zero-fill data
+### 5.7 Never plot placeholder/zero-fill data
 
 If data is unavailable, skip the panel (smaller composite) or add a text
 annotation. Never use `np.zeros()` as fallback -- it produces misleading
@@ -211,7 +268,7 @@ flat lines at 0.
 
 ---
 
-## 5. profile_df: pre-charting DataFrame analysis
+## 6. profile_df: pre-charting DataFrame analysis
 
 Use before `make_chart()` to verify columns, dtypes, missingness,
 cardinality, and date coverage. Returns a `DataProfile` (dataclass) with
@@ -230,7 +287,7 @@ print(profile.numeric_stats)      # {'value': {'mean':..., 'std':..., ...}}
 
 ---
 
-## 6. Dimensions
+## 7. Dimensions
 
 | Preset | Size | Best For |
 |--------|------|----------|
@@ -248,7 +305,7 @@ When request is from Teams, always use `dimensions='teams'` (or
 
 ---
 
-## 7. Chart time horizon guidelines
+## 8. Chart time horizon guidelines
 
 ### Default lookback
 
@@ -269,7 +326,7 @@ regardless of frequency.
 
 ---
 
-## 8. Failure transparency
+## 9. Failure transparency
 
 Never silently substitute a different layout or rationalize a substitution.
 If a requested chart shape isn't feasible, tell the user and offer

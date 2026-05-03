@@ -50,19 +50,15 @@ PRISM right now.
 │                                       preservation guidance landed  │
 │                                       2026-05-02)                   │
 │  apis         ████████████████████  rule codified (S8 batch ready)  │
-│  docstrings   ████████████░░░░░░░░  12/14 operating-instruction     │
-│                                       surfaces SCAFFOLDED + intake- │
-│                                       ready (INQUIRY → VERBATIM     │
-│                                       → WORKSHOP next; 1 still      │
-│                                       needs a body source)          │
 │  whitepapers  ████████████░░░░░░░░  intake VERIFIED (S3 round-trip  │
 │                                       reply landed; workshop pass   │
 │                                       unblocked)                    │
-│  frontend     ████░░░░░░░░░░░░░░░░  scoping + font stack audited    │
-│                                       (design system fully          │
-│                                       populated; dev/notes.md       │
-│                                       created with Python font      │
-│                                       constraints)                  │
+│  frontend     ████████████░░░░░░░░  MVP RUNNING (partial-scan       │
+│                                       payload; design system        │
+│                                       realized in CSS; staging      │
+│                                       boots end-to-end via          │
+│                                       run_staging.py; awaiting      │
+│                                       PRISM-verbatim payload sync)  │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -72,8 +68,7 @@ PRISM right now.
 | altair | mature | `projects/altair/` | `projects/altair/altair-payload/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` (hub) + `context/modules/static/chart_context/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md`, `mcp-tools.md` §3+§5 | `projects/altair/dev/specs/composites.md` (next feature build) |
 | echarts | mature | `projects/echarts/` | `projects/echarts/echarts-payload/` | `ai_development/dashboards/*.py` + `context/modules/static/tools/dashboards.md` (hub) + `dashboards/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `dashboard-refresh.md`, `dashboards-portal.md` | — |
 | apis | 2/24 rebuilt + rule codified, Session 8 batch ready | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `mcp/clients/*_client.py` + `context/modules/static/{data_guides,instruments,tools}/*.md` | `.cursor/rules/api-clients.mdc` | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
-| frontend | scoping + v0 design system | `projects/frontend/` | (not yet) | Django views/urls/templates + `mysite/` (TBD) | — | `dashboards-portal.md`, `architecture.md` §10 | `projects/frontend/dev/specs/design_system.md` (v0 — colors / fonts / type scale / component rules, DNA-inspired by gs.com 2024 rebrand); scoping prompt at `projects/frontend/dev/prompt.md` |
-| docstrings | 12/14 operating-instruction surfaces intake-landed (workshop next) | `projects/docstrings/` | `projects/docstrings/docstrings-payload/{*.py, *.md}` | L1 tool docstrings (4) in `mcp/tools/{context_tool,global_tools,data_tools,world_state_tools-or-data_tools}.py` + L2 strict Tier 1 always-on (5: `core, parsing_issue, code_sandbox_context, session_hygiene, security_and_status`) + L2 conditionally always-on auto-included for end_user (3: `macro_style_guide, output_format_guide, observations_worldview`) + 1 borderline composite-or-separate (`end_user_abstraction`, currently inside core composite) — all in `context/modules/static/`. Plus runtime/cached (`search_indexes, directory_tree`) tracked separately as shape-contract-only. | — | `mcp-tools.md` §3, `architecture.md` §3.1, §3.3 | sourced from `projects/docstrings/dev/scans/2026-05-02_l1_l2t1_intake.md` (4/4 L1 + 5/5 strict T1 + 2/3 conditionally always-on + 1 borderline). Next: SCAFFOLD 7 new placeholders (world_state_context.py + 6 .md) → INQUIRY pass (per `prism-freshness.mdc`) → VERBATIM pass → WORKSHOP. Open decisions: end_user_abstraction composite-or-separate; observations_worldview body still needs a separate scan. |
+| frontend | MVP RUNNING (partial-scan payload) | `projects/frontend/` | `projects/frontend/frontend-payload/ai_development/` | `ai_development/mysite/` + `ai_development/mysite/news/static/css/{tokens,fonts,base}.css` (NEW) + settings.py PATCH (STATICFILES_DIRS) | — | `dashboards-portal.md`, `architecture.md` §10 | `projects/frontend/dev/specs/design_system.md` (v0 — now realized in CSS); `staging/prompts/open/2026-05-02_frontend_full_context.md` (PRISM-verbatim sync prompt) |
 | whitepapers | intake VERIFIED (S3 round-trip reply landed) | `projects/whitepapers/` | `projects/whitepapers/whitepapers-payload/*.md` | `ai_development/context/white_papers/{whitepaper_data_integrations,whitepaper_user_personalization,whitepaper_world_state_and_reasoning,faq,email_usage_guide}.md` | — | sourced from `projects/whitepapers/dev/scans/2026-05-02_whitepapers_intake.md` (OCR) + `2026-05-02_whitepapers_s3_verify_reply.md` (S3 verbatim verify). | dual-surface design (PRISM-recommended Shared SSOT) PENDING USER LOCK before workshop pass starts. Next: (a) user-lock dual-surface, (b) overwrite user_personalization.md from §2.2 of verify reply, (c) workshop pass to collapse 5 → 3 docs ("What is Prism" / "Using Prism" / "How Prism Works"), (d) promote (byte-overwrite the stale `ai_development/context/white_papers/` files — directory already exists). |
 
 Always-applied rule: `.cursor/rules/prism.mdc` (the repo orientation).
@@ -120,10 +115,8 @@ skill/context file under `context/modules/static/`).
                    └──────────────────────────────┘
 ```
 
-This flow applies uniformly to altair, echarts, apis. For docstrings,
-the "copy" step is paste-the-DOCSTRING-string-into-the-tool-function-
-docstring rather than filesystem copy. For frontend the flow
-materialises when the first payload lands.
+This flow applies uniformly to altair, echarts, apis. For frontend the
+flow materialises when the first payload lands.
 
 ---
 
@@ -131,26 +124,25 @@ materialises when the first payload lands.
 
 Every project's payload folder carries a `test_prompts/` subfolder.
 Apis (D7 / D13 in `projects/apis/dev/endeavors/apis_endeavor.md`)
-established the shape; altair / echarts / docstrings adopted it on
-2026-05-02. Whitepapers is deferred (portal-served documents, not
-chat-loaded context — `test_prompts/` is reconsidered after the
-workshop pass). Frontend is N/A (no payload yet).
+established the shape; altair / echarts adopted it on 2026-05-02.
+Whitepapers is deferred (portal-served documents, not chat-loaded
+context — `test_prompts/` is reconsidered after the workshop pass).
+Frontend is N/A (no payload yet).
 
 ```
 projects/<name>/<name>-payload/test_prompts/
 ├── <unit_1>_test.md     ← one file per natural unit:
 ├── <unit_2>_test.md       per-spoke (altair, echarts)
-└── ...                    per-docstring / per-module (docstrings)
-                            per-source (apis)
+└── ...                    per-source (apis)
 ```
 
 | Aspect | Rule |
 |---|---|
-| Files per project | One per natural unit (spoke / docstring / module / source). 5-7 files per project today. |
+| Files per project | One per natural unit (spoke / module / source). 5-7 files per project today. |
 | Prompts per file | 7 canonical prompts that mix broad regression coverage AND specific recent-implementation tests for that unit. |
 | Format | Pure prompt bodies separated by `---` horizontal rules. No headers, no frontmatter, no annotations. |
 | Per-prompt convention | Each body is 1-3 sentences ending with "Let me know if frictions." |
-| Drag-and-drop status | STAGING-ONLY. Carve-out from the byte-identical-payload invariant: `test_prompts/` does NOT ship to PRISM. The user drops `clients/` + `modules/` (apis), or the payload `.py` / `.md` files (altair / echarts / docstrings) — NEVER `test_prompts/`. |
+| Drag-and-drop status | STAGING-ONLY. Carve-out from the byte-identical-payload invariant: `test_prompts/` does NOT ship to PRISM. The user drops `clients/` + `modules/` (apis), or the payload `.py` / `.md` files (altair / echarts) — NEVER `test_prompts/`. |
 | Two purposes | (1) **Per-iteration verification** — Cursor surfaces the 1-2 most discriminating prompts to the user as the success-criterion loop after promoting a unit to PRISM. (2) **Regression sweep** — re-paste any subset after a payload update to verify nothing regressed. |
 | Loop shape | User pastes prompt body into PRISM → PRISM responds → no frictions = unit is done; frictions = user pastes the reply back, Cursor iterates payload + prompt, loop. The same `<unit>_test.md` is reusable across iterations. |
 
@@ -160,17 +152,15 @@ Per-project unit count and file inventory:
 |---|---|---|
 | apis | per-source | 2 today (`treasury_test.md`, `treasury_direct_test.md`); grows as more clients are rebuilt (target ~20) |
 | altair | per-spoke | 6 (`chart_types`, `mapping`, `annotations`, `dual_axis`, `composites`, `chart_center`) |
-| echarts | per-spoke | 5 (`charts`, `widgets`, `widget_tool`, `filters`, `recipes`) — 1/5 bodies seeded as of 2026-05-02 (`widget_tool_test.md`: 4 manifest-preservation regression prompts + 3 fresh-build cribs of the bond_pricer / option_bsm / fed_scenario_swaps canonical examples). 4 remaining (`charts`, `widgets`, `filters`, `recipes`) still empty pending feedback distillation per the project README's "Feedback queue" section |
-| docstrings | per-unit (4 L1 + 8-9 L2 covering strict T1 + conditionally always-on + borderline) | 6 today (`get_context`, `global_context`, `data_context`, `core`, `parsing_issue`, `macro_style_guide`); will grow to ~12-13 as the next session scaffolds `world_state_context`, `code_sandbox_context`, `security_and_status`, `session_hygiene`, `output_format_guide`, `end_user_abstraction` (if split), `observations_worldview` (when its body lands) per the docstrings-side README + handoff |
+| echarts | per-spoke | 6 (`charts`, `widgets`, `widget_tool`, `filters`, `recipes`, `pipelines`) — 6/6 bodies seeded as of 2026-05-02. `widget_tool_test.md` (4 manifest-preservation regression + 3 canonical-example cribs); `widgets_test.md` (3 popup-parity regression + 4 row_click drill-down / KPI / stat_grid / pivot); `recipes_test.md` (2 data-pipeline coupling + 2 revert + 3 long-form/dual-axis/RV/computed-columns); `charts_test.md` (broad coverage of the 30-type catalog + corner cases: correlation_matrix, scatter_studio, multi-axis, computed columns, heatmap palette); `filters_test.md` (10 types + 11 ops + cascading + dataZoom sync + click_emit + compound rule + scope + show_when); `pipelines_test.md` (catalog the pipeline graph + 3 reuse-ladder paths + active-pipeline integrity + re-author end-to-end + session folder health check) |
 | whitepapers | — (deferred) | 0 |
 | frontend | — (no payload) | 0 |
 
 This convention is intentionally **not codified as a `.cursor/rules/`
 file yet** — same wait-for-pattern-to-prove-itself discipline applied
-to apis (no `api-clients.mdc` until Session 7), docstrings, and
-whitepapers. After at least one full feedback loop on a non-apis
-project, the cross-project shape can be promoted to a rule if drift
-warrants it.
+to apis (no `api-clients.mdc` until Session 7) and whitepapers. After
+at least one full feedback loop on a non-apis project, the cross-
+project shape can be promoted to a rule if drift warrants it.
 
 ---
 
@@ -210,11 +200,11 @@ dependencies at render time.
 | Canonical payload | `projects/echarts/echarts-payload/` (__init__.py, config.py, echart_*.py, rendering.py, dashboards.md hub + dashboards/*.md spokes) |
 | Static-asset mirror | `projects/echarts/ai_development/mysite/news/static/js/echarts.js` (no Python stub mirror needed — stdlib + pandas only) |
 | Playwright sweep | `projects/echarts/dev/inspect_dashboard.py` |
-| Skill shape | Hub-and-spoke since 2026-05-01. `dashboards.md` is the L2 hub; per-primitive depth in `dashboards/{charts,widgets,widget_tool,filters,recipes}.md`. `TestSpokeDriftPrevention` pins the hub/spoke/engine triple. |
+| Skill shape | Hub-and-spoke since 2026-05-01. `dashboards.md` is the L2 hub; per-primitive depth in `dashboards/{charts,widgets,widget_tool,filters,recipes,pipelines}.md`. The 6th spoke (`pipelines.md`) landed 2026-05-02 alongside the hub-level "2-script nucleus" framing — covers pipeline cataloging, the reuse decision ladder, active-pipeline integrity rules, end-to-end re-authoring of `pull_data.py`, and the session folder health check. `TestSpokeDriftPrevention` pins the hub/spoke/engine triple. |
 | Notes file | `projects/echarts/dev/notes.md` |
 | QC workflow | `workflows/dashboard_qc.md` — adversarial manifest synth + vision grading |
-| Test prompts | `echarts-payload/test_prompts/{charts,widgets,widget_tool,filters,recipes}_test.md` — one per spoke, 7 prompts each. Per the cross-project convention. STAGING-ONLY (does NOT ship). 1/5 seeded as of 2026-05-02: `widget_tool_test.md` carries 4 manifest-preservation regression prompts (add chart/tab to tool-bearing dashboard; edit a tool input default; append tool widget to chart-only dashboard; update title + methodology) interleaved with 3 fresh-build prompts cribbing the bond_pricer / option_bsm / fed_scenario_swaps canonical examples. Round-trip verifies the §2.5.4 + recipes §3 + widget_tool §1 fix landed the same day. The 4 remaining spokes (`charts`, `widgets`, `filters`, `recipes`) await prompts seeded against the active feedback queue below. |
-| Feedback queue (UPDATED 2026-05-02) | 6 distinct dashboard incidents in `projects/echarts/dev/feedback/` covering 4 dashboards across 11 days: Fed Scenario Tool (manifest loss on rebuild), Fed Taylor Rule (parameterised inputs), NFP InstantRead × 3 (tab-3 birth-death + popup MA toggle bug; sector-wage chart redesign + revert; tab-1 row_click popup + AHE MoM/YoY mismatch), TIPS RV (3-iteration manifest validation series with the same `BUILD UPDATED MANIFEST + manifest_template = manifest_template(manifest)` overwrite pattern that wiped tabs/widgets/datasets). The recurring "manifest got wiped on edit" pattern across 2 dashboards prompted the **MANIFEST-PRESERVATION** skill update landed 2026-05-02: `dashboards.md` §2.5.4 (rule + concise anti-pattern) + `dashboards/recipes.md` §3 (worked READ → MERGE → WRITE recipe with `_add_widget` / `_set_dataset` / `_update_filter` helpers + edit-vs-build decision table) + `dashboards/widget_tool.md` §1 (inline `tool_def` is wipe-fragile note). Other cross-cutting patterns still pending fold-in: popup widget parity, data-pipeline coupling detection, revert workflow, PRISM-self-ticketing as a real interaction shape. Per-incident → spoke routing + distillation order in `projects/echarts/README.md` "Feedback queue (active absorption)". |
+| Test prompts | `echarts-payload/test_prompts/{charts,widgets,widget_tool,filters,recipes,pipelines}_test.md` — one per spoke, 7 prompts each. Per the cross-project convention. STAGING-ONLY (does NOT ship). 6/6 seeded as of 2026-05-02: `widget_tool_test.md` (manifest-preservation regression + canonical-example cribs); `widgets_test.md` (popup-parity regression + row_click drill-down + thesis/watch/risk markdown + KPI/stat_grid + pivot); `recipes_test.md` (data-pipeline coupling + revert + long-form/dual-axis/RV/computed); `charts_test.md` (30-type catalog coverage + correlation_matrix, scatter_studio, multi-axis, computed columns, heatmap palette); `filters_test.md` (10 types × 11 ops, cascading, dataZoom sync, click_emit, compound rule, scope, show_when); `pipelines_test.md` (catalog the pipeline graph + reuse-ladder paths + active-pipeline integrity + re-author end-to-end + session folder health check). The full set verifies the manifest-preservation + popup-parity + data-pipeline-coupling + revert + parameterised-input fixes plus the new 2-script nucleus + pipeline-aware framing landed across `dashboards.md` §0 + §6.0 + `dashboards/{pipelines,recipes,widgets,widget_tool}.md` on 2026-05-02. |
+| Feedback queue (UPDATED 2026-05-02) | 6 distinct dashboard incidents in `projects/echarts/dev/feedback/` covering 4 dashboards across 11 days: Fed Scenario Tool (manifest loss on rebuild), Fed Taylor Rule (parameterised inputs), NFP InstantRead × 3 (tab-3 birth-death + popup MA toggle bug; sector-wage chart redesign + revert; tab-1 row_click popup + AHE MoM/YoY mismatch), TIPS RV (3-iteration manifest validation series). All four cross-cutting patterns ADDRESSED 2026-05-02 via skill-side fold-ins: **MANIFEST-PRESERVATION** (`dashboards.md` §2.5.4 + `dashboards/recipes.md` §3 + `dashboards/widget_tool.md` §1; READ → MERGE → WRITE with surgical mutation helpers); **POPUP-PARITY** (`dashboards/widgets.md` §3 capability-allow-list + filter-scoping rule); **DATA-PIPELINE COUPLING** (`dashboards/recipes.md` §4 propose-and-confirm decision table + refresh-runner namespace audit); **REVERT WORKFLOW** (`dashboards/recipes.md` §5 chat-description / history / archive recovery paths); **PARAMETERISED-INPUT** (`dashboards/widget_tool.md` §3.2 scalars-plus-series pattern + §2 crib clarification). All five fold-ins have round-trip regression coverage in the corresponding `test_prompts/*_test.md` files (5/5 seeded). Engine-side hardening for each (strict-mode replace_existing, popup canvas full-feature, first-class revert primitive, refresh-runner namespace expansion) is flagged in `projects/echarts/dev/notes.md` "Still open" for a future session. Per-incident → spoke routing in `projects/echarts/README.md` "Feedback queue (active absorption)". |
 
 ### apis — external API client platform
 
@@ -249,41 +239,20 @@ destination side is Django / mysite / templates, not the MCP layer.
 
 | Aspect | Value |
 |---|---|
-| Status | SCOPING + FONT STACK AUDITED. Scoping brief + 2 in-folder OCR scans + 1 small feedback intake + `dev/specs/design_system.md` (v0 token SSOT, ~840 lines) + `dev/notes.md` (Python font-stack constraints + open items) in place; no code, no Django scaffold yet. GS 2024 rebrand TTFs (GS Sans + GS Sans Condensed; 20 static cuts; NO GS Serif in this drop) dropped into PRISM `ai_development/mysite/fonts/` on 2026-05-02 and inventoried via the s3_verify-style fonts-and-Python-font-stack round-trip on the same day. |
+| Status | MVP RUNNING (partial-scan payload). Staging boots end-to-end via `python dev/run_staging.py` — Flask report-server shim on port 5001 + Django on port 8000 + auto-opens browser. All 32 routes return 200 against fixture data (5 users, 6 dashboards across owner/community/observatory tiers, 3 demo observations, 4 whitepaper/FAQ markdowns, 3 logos). New design-system tokens (GS Sans + GS Sans Condensed + the §2 color palette) wired into base.html replacing Inter / Lora. 15 API endpoints (cabinet upload, share toggle, refresh status, prompt processing) return 501 with TODO pointing at the PRISM-verbatim sync prompt. |
 | Scoping doc | `projects/frontend/dev/prompt.md` |
-| Design system | `projects/frontend/dev/specs/design_system.md` — v0 SSOT (~840 lines). Every color, font, type size, spacing unit, and component primitive resolved to a named CSS variable. DNA-inspired by goldmansachs.com 2024 rebrand language (`#092C61` "Sky Blue" navy, alpha-on-black text tiers, sharp corners `--radius-none`, tight letter-spacing with `1px` only on uppercase labels). PRISM-voiced, not a gs.com clone. §1 fully populated against the fonts reply: §1.1 has all 20 exact filenames, §1.2 has the per-cut `@font-face` block, §1.3 assigns typographic roles using GS Sans + GS Sans Condensed (no GS Serif → `--type-display-1/2/stat-lg` use GS Sans Condensed 900 Black as the substitute, §8.1 tracks the gap). §8 has 14 enumerated gaps. Tightens further into a delta spec after the broader PRISM context-extraction prompt returns. |
-| Notes file | `projects/frontend/dev/notes.md` — §A matplotlib font registration helper plan for altair (cross-project edit, sequenced after staging fonts mirror lands), §B quarantine-package audit (weasyprint / playwright / cairo* not installed — confirm "not vetted" vs "not installed"), §C echarts font inheritance (already-correct, just waiting), §D open items (font asset policy, filename ambiguity, CSS migration scope) |
+| Design system | `projects/frontend/dev/specs/design_system.md` — v0 SSOT (~840 lines). Every color, font, type size, spacing unit, and component primitive resolved to a named CSS variable. DNA-inspired by goldmansachs.com 2024 rebrand language (`#092C61` "Sky Blue" navy, alpha-on-black text tiers, sharp corners `--radius-none`, tight letter-spacing with `1px` only on uppercase labels). **Now REALIZED in CSS** at `frontend-payload/ai_development/mysite/news/static/css/{tokens.css, fonts.css, base.css}`. Spec remains the SSOT — every token in `tokens.css` traces back to a §-numbered row. §8 has 14 enumerated gaps. |
+| Payload skeleton | `projects/frontend/frontend-payload/ai_development/mysite/` — Django app: settings.py (PATCHED with STATICFILES_DIRS = `[('fonts', BASE_DIR / 'fonts')]` + STATIC_ROOT), urls.py, news/{views.py (~600 lines, ~30 view fns), urls.py, context_processors.py, apps.py}, 15 templates (base, home, dashboards, profile, whitepapers, user_guides, doc_page, observation views, access_denied, _todo, ...), static/css/{tokens,fonts,base}.css, static/images/{prism,gs}_logo.png. Byte-identical-to-PRISM target. |
+| Staging stub mirror | `projects/frontend/ai_development/{core,staging_*.py}` — s3_bucket_manager mock (file-backed against dev/fixtures/s3/), report_server.py Flask shim (port 5001), staging_settings.py (wraps payload settings to set ROOT_URLCONF), staging_urls.py (mounts /staging-s3/<path>), staging_views.py (file server with magic-bytes content-type detection). Staging-only; never ships. PEP 420 namespace package trick lets `ai_development.*` resolve from BOTH frontend-payload/ AND projects/frontend/ at runtime. |
+| Fixtures | `projects/frontend/dev/fixtures/s3/` — file-backed mock S3: prism_users_list, 2 access groups, goyalri/gaursi user manifests + dashboard registries + dashboard.html files, observatory snapshot with 3 demo observations, observatory dashboards registry with 3 system dashboards + dashboard.html files, 4 whitepaper/FAQ markdowns, 3 logos (SVG-content-named-as-PNG). |
+| Entrypoint | `projects/frontend/dev/run_staging.py` — interactive CLI (default) + argparse subcommands (`up`, `django-only`, `flask-only`, `check`, `info`). Boots Flask + Django, sets sys.path / env / Kerberos cookie, opens browser. |
+| Notes file | `projects/frontend/dev/notes.md` — §A matplotlib font registration helper plan for altair (cross-project edit, sequenced after staging fonts mirror lands), §B quarantine-package audit (weasyprint / playwright / cairo* not installed — confirm "not vetted" vs "not installed"), §C echarts font inheritance (already-correct, just waiting), §D open items |
 | Input scans | `projects/whitepapers/dev/scans/2026-05-02_whitepapers_intake.md`, `projects/frontend/dev/scans/2026-05-02_portal_views_urls_templates.md`, `projects/frontend/dev/scans/2026-05-02_fonts_and_python_font_stack_reply.md` |
 | Input feedback | `projects/frontend/dev/feedback/2026-05-02_s3_logo_storage_paths.md` |
-| Open prompt loop | `staging/prompts/archive/2026-05-02_fonts_and_python_font_stack.md` (now-archived; reply pointer set to `projects/frontend/dev/scans/2026-05-02_fonts_and_python_font_stack_reply.md`; `reply_folded_into:` 5 fold-in targets all applied: design_system §1.1/1.2/1.3/8, frontend README "Design DNA" section, dev/notes.md created, this row, plus the prism/ portal-fonts curated doc still pending). |
-| Next step | (a) Comprehensive PRISM context-extraction prompt for the broader frontend structure (views.py / urls.py / templates / mysite/ / S3 caching / Kerberos URL resolution) — once that lands in `prism/`, scaffold the project properly (stub mirror + payload skeleton + first dev iteration). (b) Lock the font asset policy decision (gitignore + manual copy / git-lfs / `dev/fetch_fonts.py`) per design_system §8.5 + dev/notes.md §D. (c) Spin up `staging/prompts/open/YYYY-MM-DD_pdf_snapshot_audit.md` to convert quarantined-vs-installable into a binary answer for weasyprint / playwright (per dev/notes.md §B). (d) Eventually: cross-project altair `_register_gs_fonts()` helper edit per dev/notes.md §A, sequenced after frontend's staging fonts mirror lands. |
+| venv | `projects/frontend/.venv/` — Python 3.11.15 (matches altair); `Django 5.2.13`, `Flask 3.1.3`, `requests 2.33.1`, `markdown 3.10.2`. Recreate via `/opt/homebrew/opt/python@3.11/bin/python3.11 -m venv .venv` + `pip install Django Flask requests markdown`. |
+| Open prompt loop | `staging/prompts/open/2026-05-02_frontend_full_context.md` (1,092 lines) — comprehensive PRISM-verbatim sync prompt. Frontmatter updated with current staging state. Reply backfills the 15 API endpoint bodies + load-bearing template diffs (profile.html PRISM is 1,157 lines; staging is best-guess) + real S3 caching architecture + verifies inline-CSS migration faithfulness. The 2026-05-02 fonts prompt is archived. |
+| Next step | (a) Send `2026-05-02_frontend_full_context.md` to PRISM; reply upgrades payload from "partial-scan-derived" to "PRISM-verbatim". (b) Manually copy 20 GS Sans TTFs from PRISM repo into `frontend-payload/ai_development/mysite/fonts/` (Option A locked 2026-05-02; gitignored). (c) Spin up `staging/prompts/open/YYYY-MM-DD_pdf_snapshot_audit.md` per dev/notes.md §B. (d) Cross-project altair `_register_gs_fonts()` helper edit per dev/notes.md §A, sequenced after step (b). |
 | PRISM references for context | `prism/dashboards-portal.md` (Django identity, PAGE_ACCESS_RULES, share toggle), `prism/architecture.md` §10 (user system, kerberos resolution), `prism/dashboard-refresh.md` (refresh pipeline) |
-
-### docstrings — SSOT for PRISM's always-loaded operating instructions
-
-PRISM has two parallel "always-loaded" surfaces that both function as
-operating instructions: the L1 tool docstrings (visible before any tool
-call) and the L2 Tier 1 always-on static modules (loaded into
-`<CONTEXT_START>` on every user message). This project owns the SSOT
-for both, so they can be edited, diffed, and reviewed in staging, then
-pasted into PRISM source at promote time.
-
-| Aspect | Value |
-|---|---|
-| Status | INTAKE LANDED. The 2026-05-02 OCR scan (filed at `projects/docstrings/dev/scans/2026-05-02_l1_l2t1_intake.md`, 2,714 lines) covers 12/14 operating-instruction surfaces. SCAFFOLD + INQUIRY + VERBATIM + WORKSHOP passes are the active work surface from here. |
-| Canonical payload | `projects/docstrings/docstrings-payload/` — flat folder with `.py` for L1 docstrings (DOCSTRING constant) and `.md` for L2 always-on modules (raw markdown). |
-| L1 files (4 of 4 covered, 4 of 4 scaffolded as of 2026-05-02) | `get_context.py` (1-313), `global_context.py` (314-602), `data_context.py` (603-920), `world_state_context.py` (921-1027 — NEW, scaffolded 2026-05-02 from the intake's PRISM WORLD STATE GUIDE section that was previously conflated into data_context's range). Each carries a module-level `DOCSTRING: str` constant. All 4 currently `[TBD — placeholder]` with intake line-range pointers in their module docstrings. |
-| L1 destinations | `mcp/tools/context_tool.py` (`get_context`), `mcp/tools/global_tools.py` (`global_context`), `mcp/tools/data_tools.py` (`data_context`, path TBD), `mcp/tools/data_tools.py` or `mcp/tools/world_state_tools.py` (`world_state_context`, path TBD). Promote = paste the string between triple quotes into the PRISM function body as its docstring. |
-| L2 strict Tier 1 (5 of 5 covered, 5 of 5 scaffolded as of 2026-05-02) | `code_sandbox_context.md` (1028-1436), `core.md` (1437-1920), `parsing_issue.md` (2325-2484 — "Critical Response Formatting Rules"), `security_and_status.md` (2486-2566), `session_hygiene.md` (2567-2714). All 5 scaffolded as `[TBD — placeholder, not promotable]` with intake line-range pointers + INQUIRY cross-checks. Awaiting INQUIRY → VERBATIM. |
-| L2 conditionally always-on (2 of 3 covered, 2 of 3 scaffolded as of 2026-05-02) | Auto-included by the assembler for end_user and most specializations: `macro_style_guide.md` (2032-2160 — IN INTAKE, scaffolded), `output_format_guide.md` (2162-2323 — IN INTAKE, scaffolded; previously wrongly mapped under parsing_issue), `observations_worldview.md` (NOT IN INTAKE — needs separate scan, NOT scaffolded). For end_user (PRISM's most common surface) these are effectively always-on; same skill-discipline weighting as strict Tier 1. |
-| L2 borderline composite-or-separate (1 of 1 covered, 1 of 1 scaffolded as of 2026-05-02) | `end_user_abstraction.md` (1921-2030 — IN INTAKE, scaffolded as separate file per option B). Currently a sibling .md inside PRISM's `core/` composite per the whitepapers s3_verify_reply §7.1 (PRISM has `core/core_architecture.md` AND `core/end_user_abstraction.md`). Workshop pass decides: keep merged into core.md (option A — delete this file then) OR keep as sibling matching PRISM's actual file shape (option B — recommended, current state). |
-| L2 destinations | `context/modules/static/<name>.md` in PRISM. Promote = byte-identical file copy into PRISM. The composite `core/` may resolve to `context/modules/static/core/core_architecture.md` + `context/modules/static/core/end_user_abstraction.md` (verify at promote per the borderline decision). |
-| Out of scope or pattern-different | `search_indexes.md` (cached in S3 — body auto-generated; this project owns shape contract only), `directory_tree.md` (auto-generated from `ai_development/` tree — same pattern), `observations_summary.md` (runtime data — top 5 observation headlines), `user_context` (runtime module already explicitly out of scope). Workshop pass to confirm whether shape-contract specs for the first two land here. |
-| Partial verbatim already available | `prism/mcp-tools.md` §3 carries the verbatim `get_context` "ONCE PER USER MESSAGE" / "NEVER CALL TWICE IN ONE TURN" rules. `prism/architecture.md` §3.3 lists the Tier 1 module catalog. |
-| Skill-discipline | Applies to ALL layers per `.cursor/rules/skill-discipline.mdc` — every byte costs context budget at conversation start. For end_user (most common surface) the conditionally-always-on modules carry IDENTICAL Tier 1 weighting — apply the filter test ("does PRISM make a different decision because of this content?") with the same rigor. |
-| Test prompts | `docstrings-payload/test_prompts/{get_context,global_context,data_context,core,parsing_issue,macro_style_guide}_test.md` — one per unit (3 L1 + 3 L2), 7 prompts each. Each prompt exercises a behavior the docstring/module is supposed to govern. STAGING-ONLY (does NOT ship). Will grow to ~12 files post-scaffold (one per operating-instruction surface). |
-| Pending refactor (now actionable) | **Move echarts spoke routing into L1** — described in `projects/docstrings/README.md` "Pending refactors". The L1 docstring intake landing satisfies the dependency that was gating the refactor; awaiting workshop-pass-stable docstring bodies before the routing rule can be drafted against the actual L1 surface. |
-| Next step | See `projects/docstrings/dev/handoffs/2026-05-02_intake_to_workshop.md` for the full 6-step action queue. Step 1 (SCAFFOLD) is **DONE** as of 2026-05-02 — 6 new placeholder files created (world_state_context.py + code_sandbox_context + security_and_status + session_hygiene + output_format_guide + end_user_abstraction; each with intake line-range pointer + INQUIRY cross-checks). Remaining: (2) RAISE end_user_abstraction composite-or-separate decision to user; (3) INQUIRY pass on the intake scan per `.cursor/rules/prism-freshness.mdc`; (4) VERBATIM pass on all 12 covered surfaces; (5) WORKSHOP pass(es) — opinionated, holistic across all 12 modules; (6) PENDING REFACTOR — move echarts spoke routing into L1. No `.cursor/rules/docstrings.mdc` yet — same discipline as apis. |
 
 ### whitepapers — SSOT for portal-facing static documents
 
@@ -312,11 +281,11 @@ Kerberos visibility) evolve independently.
 | Source for portal wiring | `projects/frontend/dev/scans/2026-05-02_portal_views_urls_templates.md` (`WHITEPAPER_MAP`, view bodies, templates) — confirmed drift-free 2026-05-02 by the s3_verify_reply §3 |
 | Dual-surface design | PRISM-RECOMMENDED **(a) Shared SSOT** (per §7 of verify reply): same `white_papers/<x>.md` doubles as both the customer-facing portal doc and the L2 module PRISM loads when describing itself. Aligns with Context-Over-Code. **PENDING USER LOCK** — captured in `projects/whitepapers/README.md` as a dedicated section; the workshop pass should start with the constraint visible (every paragraph serves both customer + L2 always-on cost). Today PRISM admits it's on **(c) Parallel** convention (separate L2 self-knowledge files in `core/`); Shared SSOT is direction-of-travel, not current state. |
 | Render path support | Standard Python `markdown` lib + `[tables, fenced_code, toc, nl2br]` extensions. Mermaid renders client-side via `news/base.html` (`mermaid.min.js`). NO LaTeX/MathJax, NO syntax highlighting, NO native chart embedding — `<details>` / `<summary>` survive (good for the OCR scan's `<details>` blocks). Per §5 of verify reply. |
-| Workshopping flow | PULL (verbatim, complete) → INQUIRE (verify intake gaps via a dedicated `staging/prompts/open/YYYY-MM-DD_<topic>.md` PRISM round-trip) → WORKSHOP (refactor opinionated) → PROMOTE (staging-upstream from there). Same direction-of-flow shift as docstrings. **Step 1 (PULL) is COMPLETE** as of 2026-05-02. Step 2 (INQUIRE) was the verify reply itself; remaining inquiry deltas to be raised inline as workshop unfolds. Steps 3-4 are the active surface. |
+| Workshopping flow | PULL (verbatim, complete) → INQUIRE (verify intake gaps via a dedicated `staging/prompts/open/YYYY-MM-DD_<topic>.md` PRISM round-trip) → WORKSHOP (refactor opinionated) → PROMOTE (staging-upstream from there). **Step 1 (PULL) is COMPLETE** as of 2026-05-02. Step 2 (INQUIRE) was the verify reply itself; remaining inquiry deltas to be raised inline as workshop unfolds. Steps 3-4 are the active surface. |
 | Skill-discipline | Applies — every byte serves a portal-rendered page; noise compounds across visitors. Under Shared SSOT (if locked), discipline tightens further: Tier 1 always-on weighting applies. |
 | Test prompts | DEFERRED. Whitepapers are portal-served customer documents, not chat-loaded context. The `test_prompts/` model (per-iteration PRISM round-trip) doesn't map cleanly until the workshop pass clarifies what "testing" means for portal docs (RAG-style? rendered-page check?). Re-evaluate after workshop. |
 | Open prompt loop | `staging/prompts/archive/2026-05-02_whitepapers_s3_verify.md` (now-archived; reply pointer set to `projects/whitepapers/dev/scans/2026-05-02_whitepapers_s3_verify_reply.md`; `reply_folded_into:` carries 7 fold-in targets). |
-| Next step | (a) USER LOCKS dual-surface direction (Shared SSOT vs Parallel) — gates the workshop pass cost model; (b) overwrite `whitepaper_user_personalization.md` from §2.2 of the verify reply to collapse the OCR duplication; (c) workshop pass to collapse the 5 inherited docs into 3 hand-curated docs ("What is Prism" / "Using Prism" / "How Prism Works"); (d) promote workshopped docs to `ai_development/context/white_papers/` (byte-overwrite the stale 2026-05-02 versions); (e) `projects/frontend/` rewires `views.py` from `secondary/technical_docs/` to the codebase path. No `.cursor/rules/whitepapers.mdc` yet — same wait-for-pattern discipline as apis/docstrings. |
+| Next step | (a) USER LOCKS dual-surface direction (Shared SSOT vs Parallel) — gates the workshop pass cost model; (b) overwrite `whitepaper_user_personalization.md` from §2.2 of the verify reply to collapse the OCR duplication; (c) workshop pass to collapse the 5 inherited docs into 3 hand-curated docs ("What is Prism" / "Using Prism" / "How Prism Works"); (d) promote workshopped docs to `ai_development/context/white_papers/` (byte-overwrite the stale 2026-05-02 versions); (e) `projects/frontend/` rewires `views.py` from `secondary/technical_docs/` to the codebase path. No `.cursor/rules/whitepapers.mdc` yet — same wait-for-pattern discipline as apis. |
 
 ---
 
@@ -327,6 +296,7 @@ Kerberos visibility) evolve independently.
 | `README.md` | This file — the living projects roster |
 | `altair-payload/` | Ephemeral drag-and-drop copy of `projects/altair/altair-payload/`. User refreshes before promoting to PRISM. |
 | `echarts-payload/` | Ephemeral drag-and-drop copy of `projects/echarts/echarts-payload/`. Same semantics. |
+| `frontend-payload/` | (FUTURE — not yet promoted) Will be the ephemeral drag-and-drop copy of `projects/frontend/frontend-payload/ai_development/`. Same semantics; lands when the first PRISM promotion happens after the `2026-05-02_frontend_full_context.md` reply lands. |
 | `voice_memos.md` | Raw capture space — unstructured thoughts, undated. Content is promoted to a project-side design spec or endeavor file when it matures. Low-friction exception to the "staging has a narrow purpose" rule. |
 | `prompts/` | PRISM-facing context-extraction prompts. |
 | `prompts/open/` | Live prompts waiting to be sent, or sent but with reply not yet folded into `prism/`. One file per prompt, named `YYYY-MM-DD_<topic>.md` (unique topic slug per prompt — concurrent agents never collide on a shared slot). Frontmatter carries the session, send date, reply pointer, and fold-in plan. |

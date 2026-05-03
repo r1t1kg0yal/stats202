@@ -2135,6 +2135,16 @@ class Callout(Annotation):
         if not self.label:
             return alt.Chart(pd.DataFrame({"_": []})).mark_point()
 
+        if abs(self.dx) > 80:
+            logger.warning(
+                "[Callout] dx=%d exceeds typical 80px budget; label "
+                "may extend off-canvas when the data point sits near "
+                "the chart edge. Typical range is 0-60. Engine has no "
+                "chart-width context here to clamp safely; reduce dx "
+                "or place the Callout further from the edge.",
+                self.dx,
+            )
+
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
         x_type = _resolve_axis_type(df, x_col)
@@ -2797,6 +2807,15 @@ class PlotText(Annotation):
             )
         else:
             resolved_position = self.position
+            if resolved_position.startswith("middle-"):
+                logger.warning(
+                    "[PlotText] position=%r anchors INSIDE the plot "
+                    "region; no collision detection vs data, axes, "
+                    "or legend. Use 'auto' or a corner anchor "
+                    "(top-*/bottom-*) when the chart's middle is "
+                    "occupied.",
+                    resolved_position,
+                )
 
         align = self._resolve_align(resolved_position)
         baseline = self._resolve_baseline(resolved_position)
@@ -12210,7 +12229,24 @@ def _resolve_side_width(
     if raw is not None:
         val = float(raw)
         if val <= 1.0:
+            if val < 0.05 or val > 0.50:
+                clamped = max(0.05, min(0.50, val))
+                logger.warning(
+                    "[SidePanel] width_pct=%.2f outside soft range "
+                    "[0.05, 0.50]; clamped to %.2f. Wider panels "
+                    "produce a thin text column + squished chart.",
+                    val, clamped,
+                )
+                val = clamped
             return max(40, int(chart_width * val))
+        max_px = int(chart_width * 0.50)
+        if val > max_px:
+            logger.warning(
+                "[SidePanel] width_pct=%dpx exceeds 50%% of chart "
+                "width (%dpx); clamped to %dpx.",
+                int(val), chart_width, max_px,
+            )
+            val = float(max_px)
         return max(40, int(val))
     return _autofit_side_width(cfg, chart_width, default_pct)
 

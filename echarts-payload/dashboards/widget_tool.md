@@ -47,13 +47,15 @@ These folders are reference-only. The engine never reads them at compile time an
 2. Demo / test code can materialise a def via `from tool_examples_loader import read_example_tool_def; d = read_example_tool_def("bond_pricer")` (staging-side import; the helper lives at `dev/tool_examples_loader.py`) and inline the result.
 3. Vetted, math-correct implementations of canonical tools have a single home in the staging repo.
 
-When PRISM is asked for a tool that resembles one of the examples, the path is: read the example's def + compute, ADAPT to the asked-for shape, emit inline in the manifest. PRISM does NOT reference an example by name in `tool_def`; the engine rejects string refs.
+When PRISM is asked for a tool that resembles one of the examples, the path is: read the SHAPE description in the §2 table above (input kinds, output kinds, compute math), match the structure to the user's ask, then emit a fresh inline `tool_def` in the manifest. The example `def.json` + `compute.js` files at `dev/tool_examples/<name>/` are staging-only — they do NOT ship with PRISM, and PRISM cannot reference them at runtime. The §3.1 inline Taylor rule below is the canonical paste-and-adapt template; the §2 table tells PRISM which canonical to model after for which problem class. PRISM does NOT reference an example by name in `tool_def`; the engine rejects string refs.
 
 If a custom tool earns shared shelf space, drop a `def.json` + `compute.js` under `dev/tool_examples/<new_name>/` so the next person authoring something similar can crib it. The on-disk files never become runtime assets.
 
 ---
 
-## 3. Inline pattern, full example
+## 3. Inline patterns
+
+### 3.1 Basic — many scalars + one stat output
 
 ```python
 manifest["layout"]["rows"].append([{
@@ -92,6 +94,62 @@ manifest["layout"]["rows"].append([{
 ```
 
 The `compute_js` value is a Python triple-quoted string that the JSON serialiser carries verbatim into the dashboard payload. The runtime wraps it in `new Function(...)` and runs it on every input change.
+
+### 3.2 Parameterised — many scalars + a series output (model fitting / payoff curves)
+
+When the model output is a CURVE (Taylor rule fitted policy path, option payoff vs spot, RV ranking with cutoff), declare a `series` output instead of a `stat`. The chart renders inside the tool tile and re-renders on every input change. For comparison against historical data, place a sibling chart in the same row whose `mapping.annotations[]` consume `x_from: "input.<id>"` to track a single live scalar:
+
+```python
+{"widget": "tool", "id": "taylor_path", "w": 6,
+  "title": "Taylor rule — fitted policy path",
+  "tool_def": {
+      "name": "taylor_rule_path",
+      "compute_js": '''
+          function compute(i) {
+              var path = [];
+              var ff = +i.starting_ff_pct / 100;
+              for (var q = 0; q < 8; q++) {
+                  var pi  = +i["inflation_q" + q] / 100;
+                  var u   = +i["unemp_q"     + q] / 100;
+                  var gap = (+i.nairu_pct - +i.unemp_q0 * 100) / 100;
+                  var implied = +i.neutral_rate_pct/100 + pi
+                                + i.phi_pi * (pi - +i.target_pct/100)
+                                + i.phi_y * gap;
+                  ff = i.inertia * ff + (1 - i.inertia) * implied;
+                  path.push({quarter: i["quarter_q" + q], rate: ff * 100});
+              }
+              return {fitted: path};
+          }
+      ''',
+      "inputs": [
+          {"id":"starting_ff_pct",  "kind":"scalar","type":"number","default":4.50},
+          {"id":"target_pct",       "kind":"scalar","type":"number","default":2.0},
+          {"id":"neutral_rate_pct", "kind":"scalar","type":"number","default":2.0},
+          {"id":"nairu_pct",        "kind":"scalar","type":"number","default":4.5},
+          {"id":"phi_pi",           "kind":"scalar","type":"number","default":1.5},
+          {"id":"phi_y",            "kind":"scalar","type":"number","default":0.5},
+          {"id":"inertia",          "kind":"scalar","type":"number","default":0.85},
+          # plus 8 quarters of (quarter, inflation, unemployment) inputs ...
+      ],
+      "outputs": [
+          {"id":"fitted", "kind":"series",
+            "x_key":"quarter", "y_key":"rate",
+            "x_format":"date", "y_format":"percent"}
+      ],
+}}
+
+# Sibling chart on the right showing historical fed funds + a vline
+# tracking the live value of one tool input (e.g. NAIRU)
+{"widget": "chart", "id": "ff_history", "w": 6,
+  "spec": {"chart_type": "line", "dataset": "fed_funds_history",
+            "mapping": {"x": "date", "y": "ff_rate",
+                         "annotations": [
+                             {"type": "vline", "x_from": "input.nairu_pct",
+                              "label": "current NAIRU", "color": "#7399C6"}
+                         ]}}}
+```
+
+`x_from: "input.<id>"` is the only cross-widget wire today; the sibling chart's full data is static. Wiring the tool's full series output INTO the sibling chart (so historical + fitted live on the same axes) is `bind_from`, deferred to Phase 6 (§5). Until then, side-by-side composition is the v1 idiom: tool tile renders the model output; sibling chart renders the historical reference; the eye composes them.
 
 ---
 

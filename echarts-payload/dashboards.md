@@ -19,6 +19,20 @@ This hub covers the always-needed contract, schema, persistence flow, anti-patte
 
 ---
 
+## The dashboard is two scripts
+
+A persistent dashboard's true artifact is `scripts/pull_data.py` (the data pipelines) and `scripts/build.py` (the manifest assembler). The other files in the folder (`data/<stem>.csv`, `manifest_template.json`, `manifest.json`, `dashboard.html`) are REGENERATED from those two scripts on every refresh by the cron runner. What this means for PRISM:
+
+| Implication | Practical rule |
+|-------------|----------------|
+| Editing a dashboard means editing the two scripts | Don't mutate derived files directly; tomorrow's refresh re-runs the unmodified script and the change vanishes |
+| The build flow (§6.1 Tools 1+2+3) IS the refresh smoke test | When the in-session build succeeds end-to-end, the persisted scripts are proven against today's data; no separate verification step exists |
+| Editing an existing dashboard requires reading the existing scripts FIRST | Build the pipeline → CSV → dataset_key → widget graph (`dashboards/pipelines.md` §2), then plan the edit against that graph — not against a clean-room rebuild |
+
+`dashboards/pipelines.md` is the SSOT for pipeline cataloging, the reuse decision ladder, active-pipeline integrity rules, end-to-end re-authoring, and the post-edit session-folder health check.
+
+---
+
 ## Catalog index
 
 Every named primitive PRISM picks between, with a pointer to the hub section OR spoke file that carries the per-primitive spec.
@@ -461,7 +475,8 @@ This hub covers every primitive's catalog row + the always-needed contract. For 
 | `dashboards/widgets.md` | KPI, table (incl. `row_click`), pivot, stat_grid, image, markdown, divider; provenance; `show_when` / `initial_state` / stat strip; markdown grammar | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
 | `dashboards/widget_tool.md` | `widget: tool` (form-driven compute) — pricers, scenarios, calculators; tool def shape; input + output kinds; canonical examples | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widget_tool.md"], mode="full")` |
 | `dashboards/filters.md` | 10 filter types + 11 ops; cascading filters; per-chart `dataZoom`; `click_emit_filter`; compound rule filters; links (sync + brush) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/filters.md"], mode="full")` |
-| `dashboards/recipes.md` | Worked recipes (long-form multi_line, dual axis, RV bullet, thesis+watch); 21 data-shape archetypes → chart types | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
+| `dashboards/recipes.md` | Worked recipes (long-form multi_line, dual axis, RV bullet, thesis+watch); 21 data-shape archetypes → chart types; READ → MERGE → WRITE editing pattern; data-pipeline coupling detection; revert workflow | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
+| `dashboards/pipelines.md` | The 2-script nucleus; pipeline cataloging (build the widget → dataset_key → CSV → pipeline graph); reuse decision ladder (reuse-existing-CSV / extend-existing-pipeline / add-new-pipeline); active-pipeline integrity rules; re-authoring `pull_data.py` end-to-end; session folder health check | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md"], mode="full")` |
 
 **Common combos** (one call, multiple file_paths):
 
@@ -472,6 +487,7 @@ This hub covers every primitive's catalog row + the always-needed contract. For 
 | Charts + widgets + filters | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/charts.md", "context/modules/static/tools/dashboards/widgets.md", "context/modules/static/tools/dashboards/filters.md"], mode="full")` |
 | Pricer / scenario tool | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widget_tool.md", "context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
 | "Show me a worked pattern" | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
+| Editing / extending an existing dashboard | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md", "context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
 
 Each spoke is well under the 20 KB warning threshold (largest is `widgets.md` at ~12 KB). Fetch only the spokes you need; avoid fetching all five preemptively — that defeats the hub-spoke purpose.
 
@@ -543,6 +559,8 @@ Optional `manifest.header_actions[]` appends custom buttons / links to the heade
 ## 6. Persistence + refresh (the build flow)
 
 For browser-side refresh failure modal / runner internals / registry schema see `prism/dashboard-refresh.md`. This section is purely about the PRISM-side build flow.
+
+The build flow that follows is the only path that produces or updates a persistent dashboard. Each tool persists one of the two nucleus scripts (or the registry entry that makes the dashboard discoverable to the cron runner) and execs it from S3 — so the in-session run uses the same bytes the daily refresh will run tomorrow. Build-time and refresh-time are byte-identical by construction. See `dashboards/pipelines.md` for the pipeline-aware editing model: catalog existing pipelines first (§2), pick a reuse path (§3), preserve active-pipeline integrity (§4), re-author end-to-end (§5), run the post-edit health check (§6).
 
 **Atomicity contract (Rule 7).** Tools 1, 2, and 3 below are non-divisible. PRISM runs them in a single uninterrupted sequence and surfaces nothing to the user until Tool 3 has completed cleanly. There is no in-session "preview" of a half-built dashboard — every artefact below must be on S3 and both audits must pass before any user-facing message:
 

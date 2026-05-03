@@ -174,6 +174,24 @@ Template substitution `{field:format}` matches column formats (`number:N`, `sign
 | heatmap / calendar_heatmap | reconstruct unique x/y categories and match pair / match `mapping.date` cell `== params.value[0]` |
 | histogram / radar / gauge / sankey / graph / tree / parallel_coords / boxplot | not row-resolvable; click is a no-op |
 
+**Popup chart capabilities (subset of inline).** The chart inside a `detail.sections[type=chart]` (or chart `click_popup`) renders in a modal canvas with fewer interactive controls than an inline chart. Today's allow-list:
+
+| Feature | Inline | Popup |
+|---|---|---|
+| `chart_type` ∈ `line` / `bar` / `area` / `multi_line` | yes | yes |
+| Other chart types | yes | no |
+| `mapping.y` (single col or list) | yes | yes |
+| `annotations` (hline / vline / band / arrow / point) | yes | yes |
+| Series legend with click-to-toggle visibility | yes | no |
+| MA overlay via `initial_state.smoothing` | yes | no |
+| `chart_zoom` slider / inside | yes | no |
+| `click_emit_filter` / nested `click_popup` | yes | no |
+| Brush / sync linkage via `links[]` | yes | no |
+
+When the user asks for interactive controls inside the popup (series toggle, MA overlay, brush, dataZoom) and the engine cannot render them, surface the limitation upfront. Two clean fallbacks: (a) inline the charts in a row instead of nesting in a popup, (b) ship a simpler popup with static series and route the interactive view to a sibling inline chart. Do not author a popup spec with a feature outside the allow-list and report success.
+
+**Filter scoping for popup charts.** A popup chart's dataset MUST contain a column named `filter_field` whose values match the parent row's `row_key` cell. If the dataset has only `(date, val)` columns and the popup tries `filter_field: metric`, the popup renders empty. Verify at build time before authoring the manifest: load the dataset, run `df[df[filter_field] == row_key].head()`, and require `len(rows) > 0`. Empty popup charts silently shipped to the user is the canonical row_click failure mode — catch it pre-author.
+
 ---
 
 ## 4. Provenance

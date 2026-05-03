@@ -157,6 +157,8 @@ df = df.dropna(subset=['date', 'value'])
 
 When the user asks to ADD / EDIT / UPDATE / EXTEND an existing dashboard (vs. building one from scratch), follow READ → MERGE → WRITE on `manifest_template.json`. Never rebuild the manifest dict from scratch and overwrite — that wipes any widgets / tabs / filters / datasets PRISM didn't include in this script's dict (the canonical manifest-wipe footgun, see `dashboards.md` §2.5.4).
 
+The same READ → PLAN → WRITE discipline applies to `pull_data.py` and `build.py` themselves; the manifest template is one of three editable surfaces, all with the same fragility shape. See `dashboards/pipelines.md` for the full pipeline-aware editing model: catalog existing pipelines (§2), pick a reuse path (§3), preserve active-pipeline integrity (§4), re-author end-to-end (§5), run the post-edit health check (§6).
+
 ```python
 import json
 from copy import deepcopy
@@ -228,3 +230,45 @@ When in doubt about whether a request is "edit existing" vs "build new":
 | "build me a dashboard for X" (no existing surfaced) | Fresh-build (Tools 1+2+3) |
 
 When user intent is ambiguous ("can you also show <metric>?" on a dashboard with prior history), treat as MERGE by default — the surgical change is recoverable; a fresh-build is not.
+
+---
+
+## 4. Data-pipeline coupling detection
+
+When a chart redesign references a column / lag / window / aggregation that doesn't exist in the current dataset, the change is NOT manifest-only — `scripts/pull_data.py` must be edited too. The detection rule below is the gating step before the deeper pipeline-aware path in `dashboards/pipelines.md` §3 (the reuse decision ladder: reuse-existing-CSV / extend-existing-pipeline / add-new-pipeline). Use this section to detect that pipeline work is needed; use `pipelines.md` to pick which of the three paths.
+
+Decision rule before authoring `_add_widget` / `_set_dataset` (§3) on an existing dashboard:
+
+| Asked-for column / window exists in `df.columns`? | Route |
+|---|---|
+| YES | manifest-only — READ → MERGE → WRITE per §3 |
+| NO; the closest existing column is an acceptable proxy | propose the existing column as a partial fix; let the user accept or override |
+| NO; pipeline edit is the only path | propose the `pull_data.py` change; wait for user confirmation before re-authoring |
+| NO; neither acceptable | skip the chart; surface that the data isn't there |
+
+Detection cue: every Tool 1 verify prints `df.columns`. Reference any `mapping.<key>` against that set before authoring. The compiler raises `chart_mapping_column_missing` regardless, but pre-author detection saves a round-trip and keeps the user in the loop on the trade-off.
+
+**Pipeline-edit propose-and-confirm.** Before re-authoring `pull_data.py`:
+
+> "The current dataset has [<existing columns>]. To implement [<asked-for column / lag / window>] I'd need to add [<derivation>] to `scripts/pull_data.py` (and re-author `scripts/build.py` if the dataset shape changes). Want me to proceed with the pipeline change, or ship the simpler version using existing data?"
+
+Wait for confirmation. After confirming, re-author `pull_data.py` end-to-end (not inline deltas), exec from S3, verify the new CSV, then re-author `build.py` only if dataset shape changed (column rename, drop, key add).
+
+**Refresh-runner namespace audit.** Before re-authoring `pull_data.py`, confirm every helper used is in the runner namespace (`dashboards.md` §6.5). Runner injects `pd` / `np` / `io` / `json` / `os` / `datetime` / `s3_manager` / `SESSION_PATH` plus the four pull primitives plus compile / populate / template / validate helpers. NOT `save_artifact`, NOT alt-data clients (`fdic_client`, `sec_edgar_client`, `bis_client`, …). Using a not-injected name lets the in-session build pass and breaks the daily refresh — set the registry entry's `refresh_frequency: "manual"` if you can't avoid them; the browser `Refresh` button stays available.
+
+---
+
+## 5. Revert workflow
+
+There is no first-class "revert dashboard to prior state" primitive today. When the user asks to undo recent changes, the recovery path depends on what's available:
+
+| Source of prior state | Path |
+|---|---|
+| User can describe the prior layout in chat | Re-build the prior `manifest_template.json` from scratch following the description; surface a diff vs current state before writing |
+| Dashboard has `keep_history: true` in its registry entry | Load the most recent snapshot from `{DASHBOARD_PATH}/history/` (runner-managed), restore its template via §3 WRITE step |
+| Prior `manifest_template.json` was quarantined to `archive/<UTC>/` (§2.5.2 of dashboards.md) | Read the archived file, validate it, restore via §3 WRITE step |
+| None of the above | Surface the limitation: "I don't have a clean revert primitive today. Can you describe the prior layout in chat, or point me at a known-good manifest file?" |
+
+In all four paths, run `_audit_dashboard_layout` (§2.5.3 of dashboards.md) on the restored folder before declaring revert complete. Then run the full session-folder health check (`dashboards/pipelines.md` §6) — a revert is just a special case of script editing where the "edit" is "use a prior version of the script", and every pipeline-integrity rule still applies. The pre-edit catalog (§5.2 of pipelines.md) and post-restore CSV-column diff are the load-bearing checks.
+
+PRISM rule: never silently rebuild a "best-guess" prior version. Either restore from a real source (history / archive / chat description) or surface the limitation. A botched revert is harder to recover from than the original bad change.
