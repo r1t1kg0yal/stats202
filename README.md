@@ -53,11 +53,13 @@ PRISM right now.
 │  whitepapers  ████████████░░░░░░░░  intake VERIFIED (S3 round-trip  │
 │                                       reply landed; workshop pass   │
 │                                       unblocked)                    │
-│  frontend     ████████████░░░░░░░░  MVP RUNNING (partial-scan       │
-│                                       payload; design system        │
-│                                       realized in CSS; staging      │
-│                                       boots end-to-end via          │
-│                                       run_staging.py; awaiting      │
+│  frontend     █████████████░░░░░░░  MVP RUNNING + FULL REFACTOR     │
+│                                       (URL grammar unified, white   │
+│                                       papers from filesystem via    │
+│                                       symlinks to whitepapers SSOT, │
+│                                       design tokens fully realized, │
+│                                       zero non-dynamic inline styles│
+│                                       across 15 templates; awaiting │
 │                                       PRISM-verbatim payload sync)  │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -68,7 +70,7 @@ PRISM right now.
 | altair | mature | `projects/altair/` | `projects/altair/altair-payload/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` (hub) + `context/modules/static/chart_context/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md`, `mcp-tools.md` §3+§5 | `projects/altair/dev/specs/composites.md` (next feature build) |
 | echarts | mature | `projects/echarts/` | `projects/echarts/echarts-payload/` | `ai_development/dashboards/*.py` + `context/modules/static/tools/dashboards.md` (hub) + `dashboards/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `dashboard-refresh.md`, `dashboards-portal.md` | — |
 | apis | 2/24 rebuilt + rule codified, Session 8 batch ready | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `mcp/clients/*_client.py` + `context/modules/static/{data_guides,instruments,tools}/*.md` | `.cursor/rules/api-clients.mdc` | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
-| frontend | MVP RUNNING (partial-scan payload) | `projects/frontend/` | `projects/frontend/frontend-payload/ai_development/` | `ai_development/mysite/` + `ai_development/mysite/news/static/css/{tokens,fonts,base}.css` (NEW) + settings.py PATCH (STATICFILES_DIRS) | — | `dashboards-portal.md`, `architecture.md` §10 | `projects/frontend/dev/specs/design_system.md` (v0 — now realized in CSS); `staging/prompts/open/2026-05-02_frontend_full_context.md` (PRISM-verbatim sync prompt) |
+| frontend | MVP RUNNING + FULL REFACTOR | `projects/frontend/` | `projects/frontend/frontend-payload/ai_development/` | `ai_development/mysite/` + `ai_development/mysite/news/static/css/{tokens,fonts,base}.css` + settings.py PATCH (STATICFILES_DIRS) + URL-grammar unification (10 legacy URLs 301 to canonical) + filesystem reads from `ai_development/context/white_papers/` (was S3 `secondary/technical_docs/`) | — | `dashboards-portal.md`, `architecture.md` §10 | `projects/frontend/dev/specs/design_system.md` (now §1-§10 covering tokens + components + URL grammar); `staging/prompts/open/2026-05-02_frontend_full_context.md` (PRISM-verbatim sync prompt — frontmatter post-refactor-updated) |
 | whitepapers | intake VERIFIED (S3 round-trip reply landed) | `projects/whitepapers/` | `projects/whitepapers/whitepapers-payload/*.md` | `ai_development/context/white_papers/{whitepaper_data_integrations,whitepaper_user_personalization,whitepaper_world_state_and_reasoning,faq,email_usage_guide}.md` | — | sourced from `projects/whitepapers/dev/scans/2026-05-02_whitepapers_intake.md` (OCR) + `2026-05-02_whitepapers_s3_verify_reply.md` (S3 verbatim verify). | dual-surface design (PRISM-recommended Shared SSOT) PENDING USER LOCK before workshop pass starts. Next: (a) user-lock dual-surface, (b) overwrite user_personalization.md from §2.2 of verify reply, (c) workshop pass to collapse 5 → 3 docs ("What is Prism" / "Using Prism" / "How Prism Works"), (d) promote (byte-overwrite the stale `ai_development/context/white_papers/` files — directory already exists). |
 
 Always-applied rule: `.cursor/rules/prism.mdc` (the repo orientation).
@@ -239,7 +241,7 @@ destination side is Django / mysite / templates, not the MCP layer.
 
 | Aspect | Value |
 |---|---|
-| Status | MVP RUNNING (partial-scan payload). Staging boots end-to-end via `python dev/run_staging.py` — Flask report-server shim on port 5001 + Django on port 8000 + auto-opens browser. All 32 routes return 200 against fixture data (5 users, 6 dashboards across owner/community/observatory tiers, 3 demo observations, 4 whitepaper/FAQ markdowns, 3 logos). New design-system tokens (GS Sans + GS Sans Condensed + the §2 color palette) wired into base.html replacing Inter / Lora. 15 API endpoints (cabinet upload, share toggle, refresh status, prompt processing) return 501 with TODO pointing at the PRISM-verbatim sync prompt. |
+| Status | MVP RUNNING + FULL REFACTOR LANDED (2026-05-02 night). Staging boots via `python dev/run_staging.py`. **URL grammar unified** under `/dashboards/[<category>|<author>]/<id>/`, `/whitepapers/<slug>/`, `/guides/<slug>/`; 10 legacy URLs 301 to canonical (back-compat preserved). **White papers read from filesystem**, not S3 — `frontend-payload/ai_development/context/white_papers/<name>.md` symlinks to canonical `projects/whitepapers/whitepapers-payload/`. **Full token migration** — 84 inline styles → 10 new component classes in base.css; templates carry zero non-dynamic inline styles (only the 4 dynamic data-driven ones remain). **GS fonts** via `dev/setup_fonts.sh` one-line copy from user's PRISM repo (Option A locked). 15 API endpoints still return 501 with TODO pointing at the PRISM-verbatim sync prompt. |
 | Scoping doc | `projects/frontend/dev/prompt.md` |
 | Design system | `projects/frontend/dev/specs/design_system.md` — v0 SSOT (~840 lines). Every color, font, type size, spacing unit, and component primitive resolved to a named CSS variable. DNA-inspired by goldmansachs.com 2024 rebrand language (`#092C61` "Sky Blue" navy, alpha-on-black text tiers, sharp corners `--radius-none`, tight letter-spacing with `1px` only on uppercase labels). **Now REALIZED in CSS** at `frontend-payload/ai_development/mysite/news/static/css/{tokens.css, fonts.css, base.css}`. Spec remains the SSOT — every token in `tokens.css` traces back to a §-numbered row. §8 has 14 enumerated gaps. |
 | Payload skeleton | `projects/frontend/frontend-payload/ai_development/mysite/` — Django app: settings.py (PATCHED with STATICFILES_DIRS = `[('fonts', BASE_DIR / 'fonts')]` + STATIC_ROOT), urls.py, news/{views.py (~600 lines, ~30 view fns), urls.py, context_processors.py, apps.py}, 15 templates (base, home, dashboards, profile, whitepapers, user_guides, doc_page, observation views, access_denied, _todo, ...), static/css/{tokens,fonts,base}.css, static/images/{prism,gs}_logo.png. Byte-identical-to-PRISM target. |
