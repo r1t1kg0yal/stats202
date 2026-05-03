@@ -1377,12 +1377,31 @@ class VLine(Annotation):
         # data's max so it sits near the top inside the plot. If y is
         # nominal (e.g. horizontal-bar's category axis), pin the label to
         # the top of the chart frame using a screen-coordinate y value.
+        #
+        # On a dual-axis chart, ``df[y_field_user]`` contains BOTH sides'
+        # values stacked together (long format), so ``.max()`` picks up
+        # whichever axis has the larger numeric range (typically the
+        # right axis: e.g. WTI at ~$100 dominates a 2s10s spread peaking
+        # at ~+50 bp). After ``render_annotations`` reroutes the label
+        # encoding through the LEFT scale, that out-of-range y position
+        # falls above the visible plot. Anchor to the LEFT axis's
+        # configured top instead, with a 5% headroom margin so the
+        # ``dy=-10`` offset (label drawn 10px above y_pos) still lands
+        # INSIDE the plot frame rather than colliding with the title
+        # band above.
         if (
             y_field_user
             and y_field_user in df.columns
             and pd.api.types.is_numeric_dtype(df[y_field_user])
         ):
-            y_pos = float(df[y_field_user].max())
+            dual_cfg = mapping.get("dual_axis_config") or {}
+            left_domain = dual_cfg.get("y_domain_left")
+            if left_domain is not None:
+                lo = float(min(left_domain[0], left_domain[1]))
+                hi = float(max(left_domain[0], left_domain[1]))
+                y_pos = hi - (hi - lo) * 0.05
+            else:
+                y_pos = float(df[y_field_user].max())
             label_df = pd.DataFrame({x_col: [self.x], y_field: [y_pos]})
             text = (
                 alt.Chart(label_df)
@@ -1521,7 +1540,12 @@ class HLine(Annotation):
 
 @dataclass
 class Band(Annotation):
-    """Shaded vertical (x1..x2) or horizontal (y1..y2) band."""
+    """Shaded vertical (x1..x2) or horizontal (y1..y2) band.
+
+    On a dual-axis chart, ``axis='right'`` routes a horizontal band's
+    y values against the right scale (default ``'left'``). Vertical
+    bands ignore ``axis`` -- they have no y values to anchor.
+    """
 
     x1: Optional[Any] = None
     x2: Optional[Any] = None
@@ -1529,6 +1553,7 @@ class Band(Annotation):
     y2: Optional[float] = None
     color: str = "#CCCCCC"
     opacity: float = 0.3
+    axis: Literal["left", "right"] = "left"
 
     # Aliases for common LLM mistakes; kept out of repr.
     x_start: Optional[Any] = field(default=None, repr=False)
@@ -1673,6 +1698,9 @@ class PointLabel(Annotation):
     when it sits on top of a chart line, gridline, or dense scatter cloud.
     Set ``halo=False`` to opt out (e.g. when placing labels in clearly
     empty space).
+
+    On a dual-axis chart, ``axis='right'`` interprets ``y`` in
+    right-axis units (default ``'left'``).
     """
 
     x: Any = None
@@ -1684,6 +1712,7 @@ class PointLabel(Annotation):
     halo: bool = True
     halo_color: str = "#FFFFFF"
     halo_width: float = 4.0
+    axis: Literal["left", "right"] = "left"
 
     def to_layer(
         self,
@@ -1759,6 +1788,9 @@ class Arrow(Annotation):
     to a pixel-approximate angle (axes have different units, so rotation is
     computed in normalized [0, 1] space with an aspect-ratio correction).
     Curved arrows are deprecated and silently rendered straight.
+
+    On a dual-axis chart, ``axis='right'`` interprets ``y1`` and ``y2``
+    in right-axis units (default ``'left'``).
     """
 
     x1: Any = None
@@ -1777,6 +1809,8 @@ class Arrow(Annotation):
     label_position: Literal["start", "middle", "end"] = "middle"
     label_offset_x: int = 5
     label_offset_y: int = -10
+
+    axis: Literal["left", "right"] = "left"
 
     # Aliases.
     x_start: Optional[Any] = field(default=None, repr=False)
@@ -3244,7 +3278,22 @@ def _auto_stagger_vline_labels(
     if not groups:
         return annotations
 
-    if clamped_domain is not None:
+    # Pick the y-range the cluster's PointLabels will be staggered
+    # within. On a dual-axis chart, ``clamped_domain`` and
+    # ``df[y_field]`` both span the MERGED range (LEFT + RIGHT) -- using
+    # those would land cluster labels in the right-axis range, which
+    # the dual-axis annotation rewriter then forces onto the LEFT
+    # scale, pushing them above the visible plot. Honor
+    # ``mapping['dual_axis_config']['y_domain_left']`` first so the
+    # stagger ladder lives entirely inside the LEFT axis's visible
+    # range (where the labels will actually be encoded).
+    dual_cfg = mapping.get("dual_axis_config") or {}
+    left_domain = dual_cfg.get("y_domain_left")
+    if left_domain is not None:
+        y_lo = float(min(left_domain[0], left_domain[1]))
+        y_hi = float(max(left_domain[0], left_domain[1]))
+        y_range = (y_hi - y_lo) if y_hi != y_lo else 1.0
+    elif clamped_domain is not None:
         y_hi = float(clamped_domain[1])
         y_lo = float(clamped_domain[0])
         y_range = y_hi - y_lo
@@ -3719,6 +3768,139 @@ def _stagger_lvl_text_y(
 # render_annotations: layer annotations on top of a base chart
 # ---------------------------------------------------------------------------
 
+def _rewrite_y_encodings_for_dual_axis(
+    layer: alt.Chart,
+    domain: List[float],
+    orient: str,
+) -> alt.Chart:
+    """Force every field-based y encoding inside ``layer`` to use the
+    chosen dual-axis side's scale with a hidden axis.
+
+    Why this exists. The dual-axis builder produces a ``LayerChart`` with
+    ``resolve_scale(y='independent')`` so each side keeps its own y
+    domain. When ``render_annotations`` splices an annotation layer into
+    that LayerChart and the annotation's ``to_layer()`` emits a y
+    encoding against the user's ``mapping['y']`` (typically
+    ``"value"``), Vega-Lite gives that new field its own scale --
+    rendering a third y-axis on the LEFT, with the field name
+    ("value") as the axis title. The same root cause appears for every
+    annotation whose ``to_layer()`` output carries a field-based y
+    encoding (VLine label, Arrow body / head / label, PointLabel halo
+    + text, Band(y1,y2) rect + halo + text, plus PointHighlight /
+    Callout when ``axis='left'``).
+
+    The fix mirrors the pattern already in place inside
+    ``LastValueLabel.to_layer`` (and the dedicated dual-axis branches
+    for HLine / Segment / PointHighlight axis='right' / Callout
+    axis='right'): pin the layer's y scale to the chosen side's domain
+    and suppress its axis rendering. The data column name does not
+    have to be renamed -- ``resolve_scale(y='independent')`` already
+    isolates this layer's scale, and an explicit ``domain=...``
+    plus ``labels=False / ticks=False / domain=False / title=None``
+    leaves the layer positioned but invisible as an axis.
+
+    Implementation walks the alt.Chart object directly (recursing into
+    LayerCharts) and re-encodes each leaf chart's y channel via
+    ``chart.encode(y=alt.Y(...))``. We deliberately avoid the
+    ``to_dict()`` + ``from_dict()`` round-trip because Altair's
+    ``LayerChart.from_dict`` adds top-only attributes (``$schema``,
+    ``datasets``) that ``add_layers`` then refuses to splice as a
+    sub-spec.
+
+    Pixel-positioned y encodings (``y=alt.value(N)``, used by VLine's
+    nominal-y branch) carry no ``field`` and are left untouched.
+
+    Args:
+        layer: alt.Chart returned by an annotation's ``to_layer()``.
+        domain: ``[lo, hi]`` from ``mapping['dual_axis_config']``
+            (``y_domain_left`` for left-axis annotations,
+            ``y_domain_right`` for right-axis).
+        orient: ``"left"`` or ``"right"`` -- only affects which side
+            the (hidden) axis is anchored to.
+
+    Returns:
+        Rewritten chart (LayerChart or Chart). Falls back to the input
+        layer on any failure -- the rewrite is best-effort and never
+        blocks rendering.
+    """
+    scale = alt.Scale(domain=[float(domain[0]), float(domain[1])])
+    axis = alt.Axis(
+        orient=orient,
+        title=None,
+        labels=False,
+        ticks=False,
+        domain=False,
+        grid=False,
+    )
+
+    def _has_field_y(chart: alt.Chart) -> Optional[str]:
+        """Return the y field name if ``chart`` has a field-based y
+        encoding, else ``None``. Skips pixel-positioned (``alt.value``)
+        and absent encodings.
+
+        Resolves via ``y_enc.to_dict()`` rather than ``y_enc.field``
+        because altair stores ``alt.Y('value:Q')`` as a ``shorthand``
+        attribute, leaving ``field`` as ``Undefined`` until the
+        shorthand is parsed at serialization time. Reading ``field``
+        directly is the wrong probe -- ``to_dict()`` is the canonical
+        evaluation hook.
+        """
+        enc = getattr(chart, "encoding", None)
+        if enc is None or enc is alt.Undefined:
+            return None
+        y_enc = getattr(enc, "y", None)
+        if y_enc is None or y_enc is alt.Undefined:
+            return None
+        try:
+            y_dict = y_enc.to_dict()
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(y_dict, dict):
+            return None
+        field = y_dict.get("field")
+        if isinstance(field, str) and field:
+            return field
+        return None
+
+    def _walk(chart: alt.Chart) -> alt.Chart:
+        # LayerChart: recurse into each child; rebuild via `.copy()` so
+        # we keep resolve_scale, properties, etc.
+        if isinstance(chart, alt.LayerChart):
+            try:
+                sub_layers = [_walk(sub) for sub in chart.layer]
+                rebuilt = chart.copy(deep=False)
+                rebuilt.layer = sub_layers
+                return rebuilt
+            except Exception:  # noqa: BLE001
+                return chart
+
+        # Leaf Chart with a field-based y encoding: re-encode y to add
+        # the explicit scale + hidden axis, leaving every other encoding
+        # (x, x2, y2, color, text, ...) untouched. ``chart.encode(y=...)``
+        # is the canonical altair way to update a single encoding
+        # channel without disturbing the rest.
+        field = _has_field_y(chart)
+        if field is None:
+            return chart
+        try:
+            return chart.encode(
+                y=alt.Y(
+                    f"{field}:Q", scale=scale, axis=axis,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            return chart
+
+    try:
+        return _walk(layer)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[render_annotations] dual-axis y-encoding rewrite failed: %s",
+            exc,
+        )
+        return layer
+
+
 def render_annotations(
     chart: alt.Chart,
     annotations: List[Annotation],
@@ -3808,6 +3990,33 @@ def render_annotations(
 
     is_dual_axis = bool(mapping.get("dual_axis_series"))
     dual_axis_config: Dict[str, Any] = mapping.get("dual_axis_config") or {}
+
+    # ---- Trendline on dual-axis: declared unsupported, drop silently ----
+    # Trendline.to_layer wires a transform_regression against the
+    # ORIGINAL ``mapping['x']`` / ``mapping['y']`` field names, which on
+    # dual-axis no longer exist as columns (the builder renamed them to
+    # safe per-side fields). The resulting spec passes Altair's
+    # validators but explodes inside Vega-Lite at PNG render time
+    # (``Cannot read properties of undefined (reading 'marktype')``).
+    # Skill ``chart_context.md`` §9.3 already routes PRISM toward
+    # building per-series single-axis charts and combining via
+    # ``make_2pack_vertical()``; the engine matches that contract by
+    # dropping the annotation cleanly with a logger warning rather
+    # than crashing the render.
+    if is_dual_axis:
+        trendlines = [a for a in annotations if isinstance(a, Trendline)]
+        if trendlines:
+            logger.warning(
+                "[render_annotations] Suppressed %d Trendline annotation"
+                "(s) on a dual-axis chart -- Trendline is not supported "
+                "on dual-axis ``multi_line``. Build a single-axis chart "
+                "per series and combine via ``make_2pack_vertical()`` "
+                "instead.",
+                len(trendlines),
+            )
+            annotations = [a for a in annotations if not isinstance(a, Trendline)]
+            if not annotations:
+                return chart
 
     # ---- horizontal-layout detection -----------------------------------
     # On horizontal-bar (and any chart whose value axis is x and whose
@@ -4146,6 +4355,30 @@ def render_annotations(
                     )
                     continue
 
+        # ---- helper: which y-domain governs this annotation's bounds ----
+        # On a dual-axis chart, ``clamped_domain`` is the MERGED y-range
+        # (LEFT data + RIGHT data stacked together in long format). An
+        # annotation tagged ``axis='right'`` whose y values fall above
+        # the LEFT range but inside the RIGHT range should NOT be
+        # dropped; conversely, ``axis='left'`` values inside the merged
+        # range but above the LEFT range alone should be dropped.
+        # This helper picks the per-side domain when the chart is
+        # dual-axis and ``dual_axis_config`` is populated, else falls
+        # back to ``clamped_domain``.
+        def _ann_y_domain() -> Optional[List[float]]:
+            if is_dual_axis and dual_axis_config:
+                ax = getattr(annotation, "axis", "left")
+                side_key = (
+                    "y_domain_right" if ax == "right" else "y_domain_left"
+                )
+                d = dual_axis_config.get(side_key)
+                if d is not None:
+                    return [
+                        float(min(d[0], d[1])),
+                        float(max(d[0], d[1])),
+                    ]
+            return clamped_domain
+
         # ---- out-of-range filtering: HLine ------------------------------
         if isinstance(annotation, HLine):
             if annotation.axis == "right" and dual_axis_config:
@@ -4211,15 +4444,16 @@ def render_annotations(
         if isinstance(annotation, Band):
             band_y_drop = False
             band_y_reason = ""
+            band_y_domain = _ann_y_domain()
             if (
                 annotation.y1 is not None
                 and annotation.y2 is not None
-                and clamped_domain is not None
+                and band_y_domain is not None
             ):
                 try:
                     y1_val = float(annotation.y1)
                     y2_val = float(annotation.y2)
-                    lo, hi = clamped_domain[0], clamped_domain[1]
+                    lo, hi = band_y_domain[0], band_y_domain[1]
                     # 10% padding tolerance (mirrors Callout / PointLabel /
                     # PointHighlight) so a band edge marginally beyond the
                     # data's natural padding doesn't fire on visually-fine
@@ -4304,14 +4538,15 @@ def render_annotations(
         # when EITHER coordinate falls clearly outside the plot domain.
         if isinstance(annotation, Callout):
             callout_outside = False
-            if clamped_domain is not None and annotation.y is not None:
+            callout_y_domain = _ann_y_domain()
+            if callout_y_domain is not None and annotation.y is not None:
                 try:
                     cy = float(annotation.y)
-                    domain_range = clamped_domain[1] - clamped_domain[0]
+                    domain_range = callout_y_domain[1] - callout_y_domain[0]
                     pad_y = domain_range * 0.10 if domain_range > 0 else 1.0
                     if (
-                        cy < (clamped_domain[0] - pad_y)
-                        or cy > (clamped_domain[1] + pad_y)
+                        cy < (callout_y_domain[0] - pad_y)
+                        or cy > (callout_y_domain[1] + pad_y)
                     ):
                         callout_outside = True
                 except (TypeError, ValueError):
@@ -4370,14 +4605,19 @@ def render_annotations(
         # the title up. 10% padding tolerance (mirrors Callout / Band)
         # avoids firing on annotations that just nudge past the data's
         # natural padding. Single-axis only (Arrow has no `axis` field).
-        if isinstance(annotation, Arrow) and clamped_domain is not None:
+        if isinstance(annotation, Arrow):
+            arrow_y_domain = _ann_y_domain()
             try:
                 arr_y1 = float(annotation.y1)
                 arr_y2 = float(annotation.y2)
             except (TypeError, ValueError):
                 arr_y1 = arr_y2 = None
-            if arr_y1 is not None and arr_y2 is not None:
-                lo, hi = clamped_domain[0], clamped_domain[1]
+            if (
+                arr_y1 is not None
+                and arr_y2 is not None
+                and arrow_y_domain is not None
+            ):
+                lo, hi = arrow_y_domain[0], arrow_y_domain[1]
                 domain_range = hi - lo
                 pad_y = domain_range * 0.10 if domain_range > 0 else 1.0
                 out_y1 = arr_y1 < (lo - pad_y) or arr_y1 > (hi + pad_y)
@@ -4404,14 +4644,15 @@ def render_annotations(
         # Mirrors Callout's 10%-padding rule for off-data points.
         if isinstance(annotation, PointLabel):
             pl_outside = False
-            if clamped_domain is not None and annotation.y is not None:
+            pl_y_domain = _ann_y_domain()
+            if pl_y_domain is not None and annotation.y is not None:
                 try:
                     py = float(annotation.y)
-                    domain_range = clamped_domain[1] - clamped_domain[0]
+                    domain_range = pl_y_domain[1] - pl_y_domain[0]
                     pad_y = domain_range * 0.10 if domain_range > 0 else 1.0
                     if (
-                        py < (clamped_domain[0] - pad_y)
-                        or py > (clamped_domain[1] + pad_y)
+                        py < (pl_y_domain[0] - pad_y)
+                        or py > (pl_y_domain[1] + pad_y)
                     ):
                         pl_outside = True
                 except (TypeError, ValueError):
@@ -4472,32 +4713,18 @@ def render_annotations(
         # chart frame.
         if isinstance(annotation, PointHighlight):
             ph_outside = False
-            if annotation.y is not None:
+            ph_y_domain = _ann_y_domain()
+            if annotation.y is not None and ph_y_domain is not None:
                 try:
                     pyv = float(annotation.y)
-                    if (
-                        annotation.axis == "right"
-                        and is_dual_axis
-                        and dual_axis_config
-                    ):
-                        domain = dual_axis_config.get("y_domain_right")
-                        if domain is not None:
-                            lo = min(domain[0], domain[1])
-                            hi = max(domain[0], domain[1])
-                            pad_y = (
-                                (hi - lo) * 0.10
-                                if hi > lo else max(abs(hi), 1.0) * 0.10
-                            )
-                            if pyv < (lo - pad_y) or pyv > (hi + pad_y):
-                                ph_outside = True
-                    elif clamped_domain is not None:
-                        domain_range = clamped_domain[1] - clamped_domain[0]
-                        pad_y = domain_range * 0.10 if domain_range > 0 else 1.0
-                        if (
-                            pyv < (clamped_domain[0] - pad_y)
-                            or pyv > (clamped_domain[1] + pad_y)
-                        ):
-                            ph_outside = True
+                    lo, hi = ph_y_domain[0], ph_y_domain[1]
+                    pad_y = (
+                        (hi - lo) * 0.10
+                        if hi > lo
+                        else max(abs(hi), 1.0) * 0.10
+                    )
+                    if pyv < (lo - pad_y) or pyv > (hi + pad_y):
+                        ph_outside = True
                 except (TypeError, ValueError):
                     pass
             if not ph_outside and annotation.x is not None:
@@ -4940,6 +5167,37 @@ def render_annotations(
 
         # ---- default: delegate to the annotation's own to_layer() -------
         layer = annotation.to_layer(chart, df, mapping, skin_config)
+
+        # Dual-axis safety net. Annotations that did not take a
+        # dedicated branch above (HLine, Segment, PointHighlight /
+        # Callout when axis='right') will have y encodings against the
+        # user's ``mapping['y']`` (typically ``"value"``). Splicing
+        # those into the dual-axis ``LayerChart`` -- which uses
+        # ``resolve_scale(y='independent')`` -- creates an extra,
+        # phantom y-axis on the left titled with the field name. Force
+        # every field-based y encoding to ride the chosen side's scale
+        # with a hidden axis so the layer aligns with the dual-axis
+        # side without painting its own axis. ``axis`` defaults to
+        # ``"left"`` for annotations without an axis attr (VLine /
+        # Arrow / PointLabel / Band(y1, y2)); honors the explicit
+        # ``axis`` value on PointHighlight / Callout when
+        # ``axis='left'`` (the right-axis case is already handled in
+        # the dedicated branch above and ``continue``s past here).
+        if is_dual_axis and dual_axis_config:
+            annotation_axis = getattr(annotation, "axis", "left")
+            side_domain_key = (
+                "y_domain_right" if annotation_axis == "right"
+                else "y_domain_left"
+            )
+            side_domain = dual_axis_config.get(side_domain_key)
+            if side_domain is not None:
+                side_orient = (
+                    "right" if annotation_axis == "right" else "left"
+                )
+                layer = _rewrite_y_encodings_for_dual_axis(
+                    layer, side_domain, side_orient,
+                )
+
         layers.append(layer)
 
     if len(layers) == 1:
@@ -12494,26 +12752,37 @@ def _build_single_chart(
 
     # Resolve named-dataset references to inline values so the spec
     # round-trips cleanly through ``alt.LayerChart.from_dict``.
+    #
+    # Walk recursively through every nested layer / hconcat / vconcat:
+    # annotations whose ``to_layer()`` returns a LayerChart of sub-charts
+    # with DIFFERENT inline data per sub-layer (VLine = rule + label,
+    # Arrow = body + head + label, Band(x1, x2) = rect + halo + label,
+    # PointLabel halo + text) make altair serialize each sub-layer's
+    # data as a SEPARATE named dataset. The wrapper carries no shared
+    # data attribute, so a one-level inliner orphans those references
+    # when ``datasets`` gets popped -- the annotation silently
+    # disappears in the composite render. Recursion catches every
+    # depth; cheap because each chart has at most a handful of layers.
     datasets = chart_spec_dict.pop("datasets", {})
     if datasets:
-        if (
-            isinstance(chart_spec_dict.get("data"), dict)
-            and "name" in chart_spec_dict["data"]
-            and "values" not in chart_spec_dict["data"]
-        ):
-            ds_name = chart_spec_dict["data"]["name"]
-            if ds_name in datasets:
-                chart_spec_dict["data"] = {"values": datasets[ds_name]}
-        if "layer" in chart_spec_dict:
-            for layer in chart_spec_dict["layer"]:
+        def _inline_data_refs(node: Any) -> None:
+            if isinstance(node, dict):
+                d = node.get("data")
                 if (
-                    isinstance(layer.get("data"), dict)
-                    and "name" in layer["data"]
-                    and "values" not in layer["data"]
+                    isinstance(d, dict)
+                    and "name" in d
+                    and "values" not in d
                 ):
-                    ds_name = layer["data"]["name"]
+                    ds_name = d["name"]
                     if ds_name in datasets:
-                        layer["data"] = {"values": datasets[ds_name]}
+                        node["data"] = {"values": datasets[ds_name]}
+                for v in node.values():
+                    _inline_data_refs(v)
+            elif isinstance(node, list):
+                for item in node:
+                    _inline_data_refs(item)
+
+        _inline_data_refs(chart_spec_dict)
 
     # Per-sub-chart text panels (caption / side_left / side_right). Wraps
     # the data spec in hconcat/vconcat at the dict level so the

@@ -605,9 +605,9 @@ they would not otherwise see", omit it.
 | `VLine` | `x`, `label`, `color` (default `"#666666"`), `style` (`'solid'`/`'dashed'`/`'dotted'`), `stroke_dash`, `stroke_width`, `label_color`. Vertical rule spanning the full y-axis. Auto-staggers labels when multiple VLines cluster together. |
 | `HLine` | `y`, `axis` (`'left'`/`'right'`), `label`, `color`, `style`, `stroke_dash`, `stroke_width`, `label_color`. Spans the FULL x-axis. `axis` only for dual-axis (default `'left'`). Default `stroke_dash` is `[4,4]`. |
 | `Segment` | `x1`, `x2`, `y1`, `y2`, `label`, `color`, `style`, `stroke_dash`, `stroke_width`, `axis` (`'left'`/`'right'`), `label_position` (`'start'`/`'middle'`/`'end'`), `label_offset_x`, `label_offset_y`, `label_color`. Finite line segment (NOT full-axis). Common patterns: horizontal segment (`y1==y2`) for windowed average, vertical segment (`x1==x2`) for finite event mark, diagonal for ad-hoc connector. Aliases: `x_start`/`x_end`, `y_start`/`y_end`. |
-| `Band` | `x1`/`x2` (vertical) OR `y1`/`y2` (horizontal), `label`, `color`, `opacity` (default `0.3`), `label_color`. Aliases: `x_start`/`x_end`, `y_start`/`y_end`, `start_x`/`end_x`. |
-| `Arrow` | `x1`/`y1` (start), `x2`/`y2` (end), `label`, `color`, `stroke_width`, `stroke_dash`, `head_size`, `head_type` (`'triangle'`/`'none'`), `label_position` (`'start'`/`'middle'`/`'end'`), `label_color`. Aliases: `x_start`/`x_end`, `y_start`/`y_end`. |
-| `PointLabel` | `x`, `y`, `label`, `dx`, `dy` (pixel offsets), `font_size`, `align`, `label_color`. Plain floating text. Use sparingly. |
+| `Band` | `x1`/`x2` (vertical) OR `y1`/`y2` (horizontal), `label`, `color`, `opacity` (default `0.3`), `axis` (`'left'`/`'right'`, horizontal bands only), `label_color`. Aliases: `x_start`/`x_end`, `y_start`/`y_end`, `start_x`/`end_x`. |
+| `Arrow` | `x1`/`y1` (start), `x2`/`y2` (end), `label`, `color`, `stroke_width`, `stroke_dash`, `head_size`, `head_type` (`'triangle'`/`'none'`), `label_position` (`'start'`/`'middle'`/`'end'`), `axis` (`'left'`/`'right'`), `label_color`. Aliases: `x_start`/`x_end`, `y_start`/`y_end`. |
+| `PointLabel` | `x`, `y`, `label`, `dx`, `dy` (pixel offsets), `font_size`, `align`, `axis` (`'left'`/`'right'`), `label_color`. Plain floating text. Use sparingly. |
 | `PointHighlight` | `x`, `y`, `label`, `color` (default `"#C00000"`), `size` (default `100`), `opacity`, `shape` (`'circle'`/`'square'`/`'diamond'`/`'triangle'`/`'cross'`/`'stroke'`), `filled`, `stroke_color`, `stroke_width`, `axis` (`'left'`/`'right'`), `label_color`. Filled marker at a specific point. Often combined with `Callout` or `PointLabel` for a "labeled marker" effect. |
 | `Callout` | `x`, `y`, `label`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`box_padding_y`, `box_opacity`, `box_corner_radius`, `color`, `dx`, `dy`, `font_size`, `font_weight`, `align`, `axis` (`'left'`/`'right'`), `label_color`. Text annotation with halo (text-stroke trick) or box background. Solves the "PointLabel fights gridlines" readability problem. Default `'halo'` is best for most charts. Keep `dx` in 0-60 (typical); `abs(dx) > 80` risks off-canvas labels and the engine emits a warning. |
 | `LastValueLabel` | `show_value` (default `False`), `value_format` (default `None` -- auto-pick magnitude-aware decimals; or pass a Python format like `"{:+.2f}"`/`"{:.0%}"`), `show_dot` (default `True`), `dot_size`, `dot_color`, `dx`, `font_size`, `font_weight`, `include_right_axis` (default `False`), `label_color`. Direct end-of-line labels for `multi_line` charts (FT/Bloomberg style; replaces the legend). Auto-derives labels from the color column. `label` is ignored on multi-series charts; for single-series it overrides the y-field name. |
@@ -724,10 +724,13 @@ mapping = {
 
 ### 9.4 Annotations against the right axis
 
-`HLine`, `Segment`, and `PointHighlight` accept an `axis` parameter
-(`'left'` / `'right'`, default `'left'`). On a dual-axis chart, `axis='right'`
-encodes against the right y-axis field/domain — pass values in
-right-axis units, not left.
+`HLine`, `Segment`, `PointHighlight`, `Callout`, `Arrow`, `Band` (horizontal
+form), and `PointLabel` accept an `axis` parameter (`'left'` / `'right'`,
+default `'left'`). On a dual-axis chart, `axis='right'` interprets the
+annotation's y values in right-axis units. `VLine` is axis-agnostic
+(spans both vertically) — its label position auto-anchors to the left
+range. `LastValueLabel` uses `include_right_axis=True` to opt right-axis
+series into labelling.
 
 ```python
 annotations = [
@@ -737,8 +740,17 @@ annotations = [
             axis='right', label='ISM expansion threshold', color='#999999'),
     PointHighlight(x=T('2023-06'), y=48.5, axis='right',
                    color='#C00000', size=120),
+    Arrow(x1=T('2023-01'), y1=46, x2=T('2023-06'), y2=48.5,
+          axis='right', label='ISM rebound'),
+    Band(y1=48, y2=52, axis='right', label='Neutral zone',
+         color='#CCCCCC', opacity=0.3),
 ]
 ```
+
+Annotation y values that fall outside the chosen side's domain are
+silently dropped (the same out-of-range protection that applies to
+single-axis charts) — pass values in the units of the side you're
+targeting.
 
 `Trendline` does not currently apply on dual-axis `multi_line` — for a
 trendline-on-dual-axis story, build a single-axis chart per series and

@@ -52,6 +52,37 @@ A persistent dashboard's true artifact is `scripts/pull_data.py` (the data pipel
 
 ---
 
+## PRISM edits only the two scripts
+
+The only files PRISM authors directly are `scripts/pull_data.py` and `scripts/build.py` (plus the registry entry — a separate seam, §6.1 Tool 3). Everything else in the folder — `manifest.json`, `manifest_template.json`, `dashboard.html`, every CSV under `data/` — is **derived**. PRISM never edits them in place; they regenerate by re-running the two scripts. Three consequences:
+
+- **PRISM never directly touches `dashboard.html`** (or the other derived artefacts). Hand-editing them produces drift that vanishes on the next refresh — and worse, masks bugs in the scripts that should have been caught at build time. If a render looks wrong, the fix lives in `build.py` (or `pull_data.py` if the data is wrong); never in the rendered HTML.
+- **Re-runs are how PRISM marks state to market.** When PRISM picks up an existing dashboard mid-session and needs to know what shape `data/<key>.csv` has on disk today, what `manifest.json` actually contains, or whether a render is broken, the answer is to re-run `pull_data.py` then `build.py` (or invoke the canonical refresh subprocess, §6.1 Tool 4). The fresh output IS the current truth. Reasoning from prior in-session memory or a stale `manifest.json` read is unreliable — those drift the moment a script changes underneath them.
+- **Re-runs overwrite, never create.** Running `pull_data.py` + `build.py` against an existing folder MUST NOT produce any new top-level paths — the §2.2 canonical artefacts are overwritten in place, and nothing else. No timestamped CSVs (`rates_eod.20260503.csv`), no `manifest_v2.json`, no debug `.json` siblings, no per-source subfolders (Rule 5 enforces this for the pull side). If a re-run leaves new files behind, the script is buggy, not the folder. Fix the script; quarantine the strays to `archive/<UTC>/` (§2.5.2); re-audit.
+
+This is what keeps the §2.5 canonical layout stable session over session. A PRISM session may iterate on a dashboard many times — rebuild, refresh, edit a tab, adjust a filter — and the canonical-layout invariant (Rule 4) only stays true because the scripts themselves are filesystem-idempotent. Each re-run lands the folder back on the §2.2 whitelist by construction. Session hygiene at the dashboard-folder level mirrors session hygiene at the conversation-folder level (`prism/session-hygiene.md`): deterministic names, overwrite-not-append, no version sprawl.
+
+---
+
+## Compliance comes before the surface change
+
+When PRISM picks up an existing dashboard — to add a tab, change a filter, debug a render, anything — the FIRST question is: is this folder/system compliant with the canonical expected structure? Before any surface change PRISM was asked to make. Compliance has two concrete checks:
+
+| Audit | Verifies | Defined in |
+|-------|----------|------------|
+| `_audit_dashboard_layout(folder_path, manifest)` | Folder matches the §2.2 exclusive whitelist — every `[REQUIRED · 1]` row present, no rogue paths, no version sprawl, scripts filesystem-idempotent (above) | §2.5 |
+| `_audit_registry_state(kerberos, dashboard_id)` | Registry entry sits in `registry["dashboards"][]` (not as a top-level key), user-manifest pointer reflects it, both reachable by the runner | §6.1 Tool 3 |
+
+If either raises, PRISM realigns first:
+
+- **Realignment takes priority over the requested change.** Cleanup, re-audit, THEN make the requested change. Do NOT bolt a new tab onto a folder that already has `manifest_v2.json` next to `manifest.json`, or `scripts/build_old.py` next to `scripts/build.py`, or a registry entry stuck under a top-level key. A new feature on a broken foundation compounds the problem and pushes the eventual fix downstream into a much harder cleanup.
+- **Surface the trade transparently.** Tell the user: "this folder has [N] non-canonical drift items that block [original request]; realigning takes priority; here's what I'm cleaning up". Don't silently fix in the background — the user should know the original ask is paused until compliance is restored.
+- **Quarantine, never delete.** Rogue files move to `archive/<UTC>/` (§2.5.2). The prior version stays recoverable; the runner ignores it; the audit ignores it. Cleanup is reversible.
+
+Why: a non-compliant folder is silently broken. The runner picks up whichever bytes the lexicographic scan lands on (Rule 4), the registry entry may not be discoverable, the user's portal URL may serve stale content, tomorrow's refresh is unpredictable. Compliance is the gate to any change — every time. Rule 3's third bullet (non-compliant via bypassed compiler / hand-written HTML) and §2.5.3's cleanup-first protocol are specific instances of this principle; the principle is the general statement that governs them.
+
+---
+
 ## Catalog index
 
 Every named primitive PRISM picks between, with a pointer to the hub section OR spoke file that carries the per-primitive spec.
@@ -106,7 +137,7 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 
 - `pull_data.py` must complete with real DataFrames (printed `df.shape` / `df.head()` / `df.dtypes`) before `build.py` is authored.
 - Write the manifest against verified shapes, not imagined columns.
-- Inheriting a non-compliant dashboard (bypasses `compile_dashboard()`, hand-writes HTML/CSS/JS, types numbers into `datasets[*].source`, skips persistence) → bringing it back to spec takes priority over whatever surface change was originally asked for. Surface the trade transparently.
+- Non-compliant inheritance — the manifest bypasses `compile_dashboard()`, hand-writes HTML/CSS/JS, types numbers into `datasets[*].source`, or skips persistence — falls under the compliance-first principle ("Compliance comes before the surface change", top of file): realignment takes priority over the requested surface change. Surface the trade transparently.
 
 ### Rule 4 — canonical layout, exclusive whitelist
 
@@ -1222,7 +1253,7 @@ Brand hex anchors for `series_colors`: GS Navy `#002F6C`, GS Sky `#7399C6`, GS G
 | Manifest-orphan CSVs in `data/` (`data/old_dataset.csv` with no `manifest.datasets["old_dataset"]`) | Either register the key in `manifest.datasets` or quarantine the CSV. The audit's allowed-data set is derived from the manifest, so orphan CSVs raise |
 | Scratch siblings at dashboard scope (`dashboard_results.md`, `_artifacts.json`, `notes.txt`, `README.md`) | Session-scope artefacts belong under `{SESSION_PATH}/`, not `{DASHBOARD_PATH}/`. The audit flags any non-canonical top-level path |
 | Auto-deleting rogue files when the audit raises (`s3_manager.delete()` in a loop) | `s3_manager.move(...)` to `archive/<UTC>/` instead. Rogue files sometimes turn out to be the real artefact mis-named; archive is recoverable, delete is not (§2.5.2) |
-| Inheriting an existing non-compliant dashboard and proceeding directly with the surface change the user asked for | Audit first. If it raises, surface to the user: "Folder violates §2.5 whitelist; cleanup-first protocol takes priority over the requested change." Cleanup, re-audit, then proceed (§2.5.3) |
+| Inheriting an existing non-compliant dashboard and proceeding directly with the surface change the user asked for | Compliance-first principle (top of file): audit first; if it raises, realignment takes priority over the requested change. Surface the trade transparently; cleanup; re-audit; then proceed. See §2.5.3 for the canonical cleanup-first protocol |
 | Suppressing the audit (commenting it out, wrapping in `try/except: pass`) because "the dashboard renders fine" | The audit catches refresh-time footguns that don't surface at build time. The compiler validates the manifest; the audit validates the **folder around** the manifest. Both are load-bearing |
 
 ---
