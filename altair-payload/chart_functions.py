@@ -3,12 +3,33 @@ chart_functions.py
 ==================
 
 Vega/Altair chart engine for PRISM. Single-file consolidation of the
-``vega_charts`` package: ``make_chart()``, the composite layout helpers
-(``make_2pack_*``, ``make_3pack_triangle``, ``make_4pack_grid``,
-``make_6pack_grid``), the annotation primitives (``VLine``, ``HLine``,
-``Segment``, ``Band``, ``Arrow``, ``PointLabel``, ``PointHighlight``,
-``Callout``, ``LastValueLabel``, ``Trendline``, ``PlotText``), and the
-static-spec / PNG export pipeline.
+``vega_charts`` package, exposing TWO public APIs that share one
+rendering pipeline:
+
+  * **v1 surface** (legacy / verbose, currently the canonical
+    PRISM-facing API): ``make_chart()``, the composite layout helpers
+    (``make_2pack_horizontal``, ``make_2pack_vertical``,
+    ``make_3pack_triangle``, ``make_4pack_grid``, ``make_6pack_grid``),
+    ``ChartSpec``, ``check_charts_quality``.
+  * **v2 surface** (cleaner builder API, opt-in): the ``Chart`` class
+    for both standalone and composite use, and ``render_grid`` for
+    one-call composites. Auto QC + cleanup + URL printing are
+    absorbed into the render path; flat kwargs replace the v1
+    ``mapping={...}`` dict; ``s3_manager`` / ``session_path`` resolve
+    automatically from the calling frame.
+
+Both surfaces produce byte-identical output for equivalent inputs --
+v2 simply translates flat kwargs into v1's mapping dict and delegates
+to ``make_chart`` / ``make_composite``. The two coexist so PRISM can
+A/B-test either skill module (``chart_context.md`` for v1,
+``chart_context_v2.md`` for v2) against the same drag-and-drop
+engine.
+
+Annotation primitives (``VLine``, ``HLine``, ``Segment``, ``Band``,
+``Arrow``, ``PointLabel``, ``PointHighlight``, ``Callout``,
+``LastValueLabel``, ``Trendline``, ``PlotText``), result types
+(``ChartResult``, ``CompositeResult``, ``DataProfile``), and
+``profile_df`` are shared between the two surfaces.
 
 PRISM-coupled helpers (S3, error mailer, presigned URLs, Gemini vision
 QC) are imported from ``ai_development.mcp.utils.*`` -- the same paths
@@ -18,7 +39,7 @@ provides filesystem-backed / no-op equivalents sufficient for local
 development. This file is the canonical PRISM-bound payload; nothing
 under ``ai_development/`` ships with it.
 
-Usage::
+Usage (v1)::
 
     from chart_functions import make_chart, profile_df, ChartResult
     from chart_functions import VLine, HLine, Segment, Band, Arrow
@@ -26,8 +47,14 @@ Usage::
     from chart_functions import LastValueLabel, Trendline, PlotText
     from chart_functions import ChartSpec, make_2pack_horizontal
 
-This module is built up in stages; see the section banners (``MODULE: ...``)
-for the layout.
+Usage (v2)::
+
+    from chart_functions import Chart, render_grid
+    from chart_functions import VLine, HLine, Band, Arrow
+
+This module is built up in stages; see the section banners
+(``MODULE: ...``) for the layout. The v2 surface lives at the bottom,
+right before ``__all__``.
 """
 
 from __future__ import annotations
@@ -43,6 +70,7 @@ import logging
 import math
 import os
 import re
+import sys
 import traceback
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -13511,22 +13539,948 @@ def create_static_composite_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ===========================================================================
+# MODULE: V2 API SURFACE (Chart class + render_grid)
+# ===========================================================================
+#
+# Cleaner public surface that sits alongside the v1 surface
+# (``make_chart``, ``ChartSpec``, ``make_2pack_*``,
+# ``check_charts_quality``). Same rendering pipeline underneath -- the
+# v2 functions translate flat kwargs into v1's ``mapping`` dict and
+# delegate to ``make_chart`` / ``make_composite``. Chart output is
+# byte-identical between the two APIs.
+#
+# Goals (vs v1):
+#   * Single ``Chart`` class for both standalone and composite use
+#     (replaces the ``make_chart`` + ``ChartSpec`` duality).
+#   * Flat keyword arguments; no ``mapping={...}`` dict.
+#   * One ``render_grid`` for composites (replaces 5 ``make_*pack_*``
+#     wrappers).
+#   * Auto QC + cleanup + URL printing absorbed into ``Chart.render`` /
+#     ``render_grid`` -- the post-chart boilerplate disappears.
+#   * ``s3_manager`` / ``session_path`` / ``user_id`` resolved from the
+#     calling frame -- never threaded through call sites.
+#
+# Annotation primitives, ``ChartResult``, ``CompositeResult``,
+# ``DataProfile``, ``profile_df`` are shared with v1 -- no duplication.
+
+# --- Runtime context resolution -------------------------------------------
+#
+# PRISM injects ``s3_manager`` and ``SESSION_PATH`` (and optionally
+# ``user_id``) as bindings in the script's execution namespace inside
+# ``execute_analysis_script``. v1 forces the script to thread them
+# through every ``make_chart`` / ``make_composite`` call. v2 walks the
+# call stack at render time and picks them up automatically -- the
+# script never has to mention them.
+#
+# Single resolution strategy, raises loudly on miss. There is no
+# fallback chain.
+
+_V2_SESSION_PATH_KEYS: Tuple[str, ...] = ("SESSION_PATH", "session_path")
+_V2_USER_ID_KEYS: Tuple[str, ...] = ("user_id", "USER_ID")
+
+
+@dataclass(frozen=True)
+class _RuntimeContext:
+    """Bundle of PRISM-injected runtime bindings consumed by v2."""
+
+    s3_manager: Any
+    session_path: str
+    user_id: Optional[str]
+
+
+def _resolve_runtime_context(start_depth: int = 2) -> _RuntimeContext:
+    """Walk the call stack to find PRISM-injected runtime bindings.
+
+    Searches each frame's ``f_locals`` then ``f_globals`` for the
+    binding ``s3_manager``. When found, also pulls ``SESSION_PATH``
+    (or lowercase ``session_path``) and ``user_id`` from the same
+    frame so the three bindings come from the same logical scope.
+
+    PRISM-side: every script ``execute_analysis_script`` runs has
+    these injected into its exec namespace. The script's frame is
+    typically two levels up from this function.
+
+    Local-dev: demos / tests bind them in their own ``__main__`` /
+    test scope before invoking ``Chart.render`` or ``render_grid``.
+
+    Raises:
+        RuntimeError: if no frame in the stack carries an
+            ``s3_manager`` binding. The message points at the
+            normal injection sites.
+    """
+    frame = sys._getframe(start_depth)
+    while frame is not None:
+        for ns in (frame.f_locals, frame.f_globals):
+            s3 = ns.get("s3_manager")
+            if s3 is not None:
+                session_path = ""
+                for key in _V2_SESSION_PATH_KEYS:
+                    if key in ns and ns[key]:
+                        session_path = ns[key]
+                        break
+                user_id: Optional[str] = None
+                for key in _V2_USER_ID_KEYS:
+                    if key in ns and ns[key]:
+                        user_id = ns[key]
+                        break
+                return _RuntimeContext(
+                    s3_manager=s3,
+                    session_path=session_path,
+                    user_id=user_id,
+                )
+        frame = frame.f_back
+    raise RuntimeError(
+        "chart_functions (v2): could not resolve `s3_manager` from any "
+        "frame in the call stack. PRISM injects this into every "
+        "execute_analysis_script namespace; for local dev, ensure "
+        "`s3_manager = S3BucketManager(...)` is bound in the script's "
+        "globals before calling Chart.render() or render_grid()."
+    )
+
+
+# --- Translation constants ------------------------------------------------
+
+# Layout names accepted by ``render_grid``. The common geometric forms
+# ('1x2', '2x2', '3x2', 'triangle') are the canonical names; v1's
+# longer names ('2_horizontal', '4_grid', '6_grid', ...) are also
+# accepted for ergonomic interop.
+_V2_LAYOUT_ALIASES: Dict[str, str] = {
+    # canonical short names
+    "1x2": "2_horizontal",
+    "2x1": "2_vertical",
+    "2x2": "4_grid",
+    "3x2": "6_grid",
+    "triangle": "3_triangle",
+    # v1 long names (passthrough)
+    "2_horizontal": "2_horizontal",
+    "2_vertical": "2_vertical",
+    "3_triangle": "3_triangle",
+    "3_inverted": "3_inverted",
+    "3_horizontal": "3_horizontal",
+    "3_vertical": "3_vertical",
+    "4_grid": "4_grid",
+    "4_horizontal": "4_horizontal",
+    "4_vertical": "4_vertical",
+    "6_grid": "6_grid",
+}
+
+# Keys that move into v1's ``mapping`` dict. Anything else stays as a
+# top-level kwarg on ``make_chart``. The Chart class uses this to split
+# its kwargs into the right buckets at render time.
+_V2_MAPPING_KEYS: Tuple[str, ...] = (
+    "x", "y", "color", "value", "theta",
+    "x_title", "y_title", "y_title_right",
+    "x_sort", "y_sort", "x_type",
+    "dual_axis_series", "invert_right_axis",
+    "stack", "trendline", "trendlines",
+    "strokeDash", "strokeDashScale", "strokeDashLegend",
+    "x_low", "x_high", "color_by", "label",
+    "color_scheme",
+)
+
+# Sentinel for "kwarg not provided". We use this rather than ``None``
+# because some mapping values legitimately default to None (e.g.
+# ``stack`` -- ``None`` means "let the engine decide"). The Chart
+# class only puts an explicitly-provided value into the v1 mapping.
+_V2_UNSET = object()
+
+
+# Per-chart-type dimension defaults. The v2 surface deliberately does
+# NOT expose ``dimensions=`` to the LLM -- the engine picks the right
+# canvas for each chart type so PRISM never has to think about it.
+# Override path: ``Chart.with_dimensions(preset)`` (escape hatch, not
+# taught in the v2 skill).
+_V2_AUTO_DIMENSIONS: Dict[str, str] = {
+    "multi_line":      "wide",     # 700x350 - time series default
+    "timeseries":      "wide",
+    "area":            "wide",
+    "bar":             "wide",     # vertical bars / categorical comparisons
+    "histogram":       "wide",     # distributions read better wide
+    "boxplot":         "wide",
+    "waterfall":       "wide",     # decomposition needs horizontal room
+    "bullet":          "wide",
+    "scatter":         "square",   # 450x450 - X-Y relationships
+    "scatter_multi":   "square",
+    "heatmap":         "square",
+    "donut":           "square",
+    "bar_horizontal":  "tall",     # 400x550 - rankings / many categories
+}
+
+
+def _v2_auto_dimensions(chart_type: str) -> str:
+    """Return the engine-picked dimension preset for ``chart_type``.
+
+    Single source of truth for "what canvas does this chart type want".
+    Falls through to ``'wide'`` for any chart type without an explicit
+    entry, matching the long-running engine default.
+    """
+    return _V2_AUTO_DIMENSIONS.get(chart_type, "wide")
+
+
+def _v2_resolve_layout(layout: str, n_charts: int) -> str:
+    """Resolve a v2 layout name to v1's internal layout token.
+
+    'auto' picks based on chart count: 2 -> 1x2, 3 -> triangle,
+    4 -> 2x2, 6 -> 3x2. 1, 5, and >6 with 'auto' raise.
+    """
+    if layout == "auto":
+        auto_map = {2: "1x2", 3: "triangle", 4: "2x2", 6: "3x2"}
+        if n_charts not in auto_map:
+            raise ValueError(
+                f"render_grid(layout='auto') only resolves for "
+                f"len(charts) in (2, 3, 4, 6); got {n_charts}. "
+                f"Pass layout=... explicitly (e.g. '2x2') for "
+                f"non-canonical counts."
+            )
+        return _V2_LAYOUT_ALIASES[auto_map[n_charts]]
+    if layout in _V2_LAYOUT_ALIASES:
+        return _V2_LAYOUT_ALIASES[layout]
+    raise ValueError(
+        f"render_grid: unknown layout {layout!r}. "
+        f"Valid: {sorted(_V2_LAYOUT_ALIASES)} or 'auto'."
+    )
+
+
+# --- The Chart class ------------------------------------------------------
+
+class Chart:
+    """A single chart specification, renderable standalone or as a panel.
+
+    Replaces v1's ``make_chart`` + ``ChartSpec`` duality with one
+    class. Construction collects the spec; ``.render()`` produces a
+    PNG (and Chart Center HTML companion) and returns a
+    ``ChartResult``. ``render_grid([c1, c2, ...])`` consumes the same
+    objects for composite layouts.
+
+    All fields are keyword-only after the positional ``df`` and
+    ``type``. Anything that was a key inside v1's ``mapping={...}``
+    dict is now a flat kwarg.
+
+    Quick reference (full guide in ``chart_context_v2.md``)::
+
+        c = Chart(
+            df, type='multi_line',
+            x='date', y='value', color='series',
+            y_title='CPI YoY (%)',
+            title='Inflation Has Peaked',
+            subtitle='Core CPI decelerating 6 months',
+            annotations=[VLine(x='2022-03', label='Hike start'),
+                         HLine(y=2.0, label='Fed target')],
+        )
+        result = c.render(save_as='charts/cpi.png')
+
+    Per-chart-type kwargs are accepted but only emitted into the
+    underlying v1 mapping dict when explicitly provided -- so the
+    common multi_line / scatter / bar paths stay readable even though
+    waterfall / bullet / heatmap kwargs all live on the same surface.
+    """
+
+    # The canonical set of mapping-bound kwargs (consulted by
+    # ``_to_v1_mapping``). Module-level ``_V2_MAPPING_KEYS`` is the
+    # source of truth; the class attribute exists so subclasses or
+    # power users can override.
+    _MAPPING_PARAMS = _V2_MAPPING_KEYS
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        type: ChartType,
+        *,
+        # ----- Column references --------------------------------------
+        x: Any = _V2_UNSET,
+        y: Any = _V2_UNSET,
+        color: Any = _V2_UNSET,
+        value: Any = _V2_UNSET,
+        theta: Any = _V2_UNSET,
+        # ----- Display labels -----------------------------------------
+        x_title: Any = _V2_UNSET,
+        y_title: Any = _V2_UNSET,
+        y_title_right: Any = _V2_UNSET,
+        # ----- Axis behaviour -----------------------------------------
+        x_sort: Any = _V2_UNSET,
+        y_sort: Any = _V2_UNSET,
+        x_type: Any = _V2_UNSET,
+        # ----- Dual axis ----------------------------------------------
+        dual_axis_series: Any = _V2_UNSET,
+        invert_right_axis: Any = _V2_UNSET,
+        # ----- Per-chart-type behaviour ------------------------------
+        stack: Any = _V2_UNSET,
+        trendline: Any = _V2_UNSET,
+        trendlines: Any = _V2_UNSET,
+        strokeDash: Any = _V2_UNSET,
+        strokeDashScale: Any = _V2_UNSET,
+        strokeDashLegend: Any = _V2_UNSET,
+        x_low: Any = _V2_UNSET,
+        x_high: Any = _V2_UNSET,
+        color_by: Any = _V2_UNSET,
+        label: Any = _V2_UNSET,
+        type_col: Any = _V2_UNSET,  # waterfall: column naming bar type;
+                                    # translates to mapping['type'] in v1
+        color_scheme: Any = _V2_UNSET,
+        # ----- Metadata -----------------------------------------------
+        title: Optional[str] = None,
+        subtitle: Optional[str] = None,
+        # ----- Annotations / overlays / text panels -------------------
+        annotations: Optional[List[Annotation]] = None,
+        layers: Optional[List[Dict[str, Any]]] = None,
+        caption: Union[str, Dict[str, Any], None] = None,
+        side_left: Union[str, Dict[str, Any], None] = None,
+        side_right: Union[str, Dict[str, Any], None] = None,
+        # ----- Style --------------------------------------------------
+        # NB: ``dimensions`` is intentionally NOT a public kwarg --
+        # the engine picks per chart_type (see ``_v2_auto_dimensions``).
+        # Use ``Chart.with_dimensions(preset)`` if you really need to
+        # override (escape hatch, not taught in the skill).
+        skin: str = "gs_clean",
+        intent: IntentType = "explore",
+        auto_beautify: bool = True,
+        # ----- Power-user escape hatch --------------------------------
+        mapping_overrides: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        # Quick early-fail validation -- catches typos at construction
+        # rather than at render(). All other validation runs inside
+        # the v1 pipeline at render time.
+        valid_types = {
+            "multi_line", "timeseries", "scatter", "scatter_multi",
+            "bar", "bar_horizontal", "area", "heatmap", "histogram",
+            "boxplot", "donut", "bullet", "waterfall",
+        }
+        if type not in valid_types:
+            raise ValueError(
+                f"Chart: unknown type {type!r}. Valid: {sorted(valid_types)}."
+            )
+        if skin not in AVAILABLE_SKINS:
+            raise ValueError(
+                f"Chart: unknown skin {skin!r}. "
+                f"Available: {list(AVAILABLE_SKINS.keys())}"
+            )
+
+        self._df = df
+        self._type = type
+        # Mapping-bound kwargs.
+        self._x = x
+        self._y = y
+        self._color = color
+        self._value = value
+        self._theta = theta
+        self._x_title = x_title
+        self._y_title = y_title
+        self._y_title_right = y_title_right
+        self._x_sort = x_sort
+        self._y_sort = y_sort
+        self._x_type = x_type
+        self._dual_axis_series = dual_axis_series
+        self._invert_right_axis = invert_right_axis
+        self._stack = stack
+        self._trendline = trendline
+        self._trendlines = trendlines
+        self._strokeDash = strokeDash
+        self._strokeDashScale = strokeDashScale
+        self._strokeDashLegend = strokeDashLegend
+        self._x_low = x_low
+        self._x_high = x_high
+        self._color_by = color_by
+        self._label = label
+        self._type_col = type_col
+        self._color_scheme = color_scheme
+        # Top-level kwargs.
+        self._title = title
+        self._subtitle = subtitle
+        self._annotations: List[Annotation] = list(annotations) if annotations else []
+        self._layers: List[Dict[str, Any]] = list(layers) if layers else []
+        self._caption = caption
+        self._side_left = side_left
+        self._side_right = side_right
+        self._skin = skin
+        self._intent = intent
+        # ``self._dimensions`` is the OVERRIDE slot. None means "let
+        # the engine pick per chart_type" via ``_v2_auto_dimensions``.
+        # Set by ``.with_dimensions(preset)`` for power-user override.
+        self._dimensions: Optional[DimensionPreset] = None
+        self._auto_beautify = auto_beautify
+        self._mapping_overrides = (
+            dict(mapping_overrides) if mapping_overrides else {}
+        )
+
+    # ----- Fluent helpers ----------------------------------------------
+
+    def annotate(self, *anns: Annotation) -> "Chart":
+        """Append annotations in place, return self for chaining.
+
+        Example::
+
+            chart.annotate(VLine(x='2022-03'), HLine(y=2.0))
+        """
+        self._annotations.extend(anns)
+        return self
+
+    def layer(self, *layer_dicts: Dict[str, Any]) -> "Chart":
+        """Append overlay layers (regression / rule / point), return self."""
+        self._layers.extend(layer_dicts)
+        return self
+
+    def with_data(self, df: pd.DataFrame) -> "Chart":
+        """Return a copy with ``df`` replaced.
+
+        Useful for templates: build a Chart once, swap the data per
+        render. Annotations / titles / mapping all carry over.
+        """
+        copy_chart = self._copy()
+        copy_chart._df = df
+        return copy_chart
+
+    def with_title(
+        self,
+        title: Optional[str] = None,
+        subtitle: Optional[str] = None,
+    ) -> "Chart":
+        """Return a copy with title / subtitle replaced."""
+        copy_chart = self._copy()
+        if title is not None:
+            copy_chart._title = title
+        if subtitle is not None:
+            copy_chart._subtitle = subtitle
+        return copy_chart
+
+    def with_dimensions(self, preset: DimensionPreset) -> "Chart":
+        """Power-user escape hatch: override the engine's auto-picked dimension preset.
+
+        Not taught in the v2 skill -- the engine picks correctly per
+        chart type for ~all real workflows. Reach for this only when
+        a specific external constraint (slide aspect ratio, etc.)
+        forces a non-default canvas, or during local QC.
+        """
+        if preset not in DIMENSION_PRESETS:
+            raise ValueError(
+                f"with_dimensions: unknown preset {preset!r}. "
+                f"Available: {list(DIMENSION_PRESETS.keys())}"
+            )
+        copy_chart = self._copy()
+        copy_chart._dimensions = preset
+        return copy_chart
+
+    def _copy(self) -> "Chart":
+        """Internal: shallow-copy this Chart preserving all parameters."""
+        new = Chart.__new__(Chart)
+        new.__dict__.update(self.__dict__)
+        new._annotations = list(self._annotations)
+        new._layers = list(self._layers)
+        new._mapping_overrides = dict(self._mapping_overrides)
+        return new
+
+    # ----- Translation to v1 -------------------------------------------
+
+    def _to_v1_mapping(self) -> Dict[str, Any]:
+        """Build the v1 ``mapping`` dict from this Chart's kwargs.
+
+        Only includes keys that were explicitly provided (not _V2_UNSET).
+        Translates v2's ``type_col`` to v1's ``mapping['type']``.
+        Mapping overrides win.
+        """
+        mapping: Dict[str, Any] = {}
+        for key in self._MAPPING_PARAMS:
+            val = getattr(self, "_" + key, _V2_UNSET)
+            if val is _V2_UNSET:
+                continue
+            mapping[key] = val
+        # Waterfall: v2 ``type_col`` -> v1 ``mapping['type']``. Avoids
+        # the kwarg-name collision with the chart ``type=...`` param.
+        if self._type_col is not _V2_UNSET:
+            mapping["type"] = self._type_col
+        # Overrides take precedence.
+        mapping.update(self._mapping_overrides)
+        return mapping
+
+    def to_v1_chartspec(self) -> "ChartSpec":
+        """Build a v1 ``ChartSpec`` (used internally by ``render_grid``).
+
+        Exposed publicly so power users can interop with v1 composite
+        helpers if they need to. PRISM should not normally need this.
+        """
+        return ChartSpec(
+            df=self._df,
+            chart_type=self._type,
+            mapping=self._to_v1_mapping(),
+            title=self._title,
+            subtitle=self._subtitle,
+            annotations=self._annotations or None,
+            layers=self._layers or None,
+            caption=self._caption,
+            side_left=self._side_left,
+            side_right=self._side_right,
+        )
+
+    # ----- Rendering ----------------------------------------------------
+
+    def _resolved_dimensions(self) -> str:
+        """Return the dimension preset to use for this chart.
+
+        Override (set via ``.with_dimensions()``) wins; otherwise the
+        engine auto-picks per chart type.
+        """
+        return self._dimensions or _v2_auto_dimensions(self._type)
+
+    def preview(self) -> Dict[str, Any]:
+        """Return the planned Vega-Lite spec without writing PNG / S3.
+
+        Builds the chart through the v1 pipeline up to spec emission;
+        returns the dict for inspection. Useful for debugging mapping
+        translation, confirming auto-melt behaviour, or feeding the
+        spec into a custom renderer.
+        """
+        ctx = _resolve_runtime_context()
+        result = make_chart(
+            df=self._df,
+            chart_type=self._type,
+            mapping=self._to_v1_mapping(),
+            title=self._title,
+            subtitle=self._subtitle,
+            skin=self._skin,
+            intent=self._intent,
+            dimensions=self._resolved_dimensions(),
+            annotations=self._annotations or None,
+            layers=self._layers or None,
+            caption=self._caption,
+            side_left=self._side_left,
+            side_right=self._side_right,
+            auto_beautify=self._auto_beautify,
+            session_path=ctx.session_path,
+            s3_manager=ctx.s3_manager,
+            user_id=ctx.user_id,
+        )
+        return result.vegalite_json
+
+    def render(
+        self,
+        save_as: Optional[str] = None,
+        *,
+        run_qc: bool = True,
+        cleanup_on_qc_fail: bool = True,
+        verbose: bool = True,
+        filename_prefix: Optional[str] = None,
+        filename_suffix: Optional[str] = None,
+    ) -> ChartResult:
+        """Build the chart, render PNG + editor HTML, run QC, print URLs.
+
+        This is the single I/O entry point. All boilerplate that PRISM
+        used to write per chart (QC, cleanup-on-fail, URL printing) is
+        absorbed here.
+
+        Args:
+            save_as: Fixed S3 path (relative to ``session_path``).
+                Use for dashboard / report charts where a stable URL
+                matters. Omit for one-off chats; the engine generates
+                a timestamped slug.
+            run_qc: When True (default), runs Gemini-vision QC after
+                rendering. Failed charts are marked
+                ``result.success=False`` with a QC reason.
+            cleanup_on_qc_fail: When True (default), automatically
+                deletes the PNG and editor HTML for QC-failed charts
+                so the session folder only contains good charts.
+            verbose: When True (default), prints PNG and Chart Center
+                URLs on success; prints failure reason on QC fail.
+                Set False inside batch loops where the caller will
+                aggregate URLs itself.
+            filename_prefix / filename_suffix: Optional slug components.
+
+        Returns:
+            ``ChartResult`` -- always returned, including on render
+            failure or QC failure. Check ``result.success``,
+            ``result.error_message``, ``result.warnings``.
+        """
+        ctx = _resolve_runtime_context()
+        result = make_chart(
+            df=self._df,
+            chart_type=self._type,
+            mapping=self._to_v1_mapping(),
+            title=self._title,
+            subtitle=self._subtitle,
+            skin=self._skin,
+            intent=self._intent,
+            dimensions=self._resolved_dimensions(),
+            annotations=self._annotations or None,
+            layers=self._layers or None,
+            caption=self._caption,
+            side_left=self._side_left,
+            side_right=self._side_right,
+            save_as=save_as,
+            filename_prefix=filename_prefix,
+            filename_suffix=filename_suffix,
+            auto_beautify=self._auto_beautify,
+            session_path=ctx.session_path,
+            s3_manager=ctx.s3_manager,
+            user_id=ctx.user_id,
+        )
+        return _v2_post_render(
+            result,
+            ctx=ctx,
+            run_qc=run_qc,
+            cleanup_on_qc_fail=cleanup_on_qc_fail,
+            verbose=verbose,
+            label=self._title or self._type,
+        )
+
+    # ----- Introspection ------------------------------------------------
+
+    def __repr__(self) -> str:
+        parts = [
+            f"Chart(type={self._type!r}",
+            f"df.shape={self._df.shape if hasattr(self._df, 'shape') else None}",
+        ]
+        if self._title:
+            parts.append(f"title={self._title!r}")
+        if self._x is not _V2_UNSET and self._y is not _V2_UNSET:
+            parts.append(f"x={self._x!r}, y={self._y!r}")
+        if self._color is not _V2_UNSET:
+            parts.append(f"color={self._color!r}")
+        if self._dual_axis_series is not _V2_UNSET:
+            parts.append(f"dual_axis_series={self._dual_axis_series!r}")
+        if self._annotations:
+            kinds = ",".join(type(a).__name__ for a in self._annotations)
+            parts.append(f"annotations=[{kinds}]")
+        return ", ".join(parts) + ")"
+
+
+# --- render_grid ----------------------------------------------------------
+
+def render_grid(
+    charts: List[Chart],
+    *,
+    layout: str = "auto",
+    title: Optional[str] = None,
+    subtitle: Optional[str] = None,
+    caption: Union[str, Dict[str, Any], None] = None,
+    narrative_left: Union[str, Dict[str, Any], None] = None,
+    narrative_right: Union[str, Dict[str, Any], None] = None,
+    save_as: Optional[str] = None,
+    skin: str = "gs_clean",
+    spacing: int = 20,
+    filename_prefix: Optional[str] = None,
+    filename_suffix: Optional[str] = None,
+    run_qc: bool = True,
+    cleanup_on_qc_fail: bool = True,
+    verbose: bool = True,
+) -> CompositeResult:
+    """Compose multiple ``Chart`` objects into a single grid layout.
+
+    Replaces v1's five composite wrappers (``make_2pack_horizontal``,
+    ``make_2pack_vertical``, ``make_3pack_triangle``, ``make_4pack_grid``,
+    ``make_6pack_grid``) with one function. Layout is a string and is
+    inferred from chart count when ``layout='auto'``.
+
+    Per-panel canvas size is picked automatically by the engine
+    (``compact`` for 4- and 6-grids and triangles, ``wide`` for the
+    2x1 vertical pack). PRISM does not see a ``dimensions`` knob.
+
+    Args:
+        charts: List of ``Chart`` objects, one per panel. The order
+            is row-major within the chosen layout.
+        layout: Layout token. Canonical: ``'auto' | '1x2' | '2x1' |
+            '2x2' | '3x2' | 'triangle'``. v1's longer names
+            (``'2_horizontal'``, ``'4_grid'``, etc.) are also
+            accepted. ``'auto'`` resolves by chart count: 2 -> 1x2,
+            3 -> triangle, 4 -> 2x2, 6 -> 3x2.
+        title / subtitle: Composite-level title and subtitle (the
+            top of the whole pack). For per-panel titles, set
+            ``title`` on each Chart.
+        caption: Below-pack caption text or style dict.
+        narrative_left / narrative_right: Side panels flanking the
+            entire pack. (For per-panel side panels, set
+            ``side_left`` / ``side_right`` on each Chart.)
+        save_as: Fixed S3 path (relative to session_path).
+        skin / spacing: Style knobs.
+        filename_prefix / filename_suffix: Optional slug components.
+        run_qc: Auto-run Gemini-vision QC over the composite.
+        cleanup_on_qc_fail: Auto-delete the composite PNG + editor
+            HTML on QC fail.
+        verbose: Print PNG and Chart Center URLs on success; print
+            failure reasons on QC fail.
+
+    Returns:
+        ``CompositeResult`` -- always returned. ``result.chart_errors``
+        carries per-panel build failures (the composite still renders
+        with surviving panels as long as 2+ succeed).
+
+    Example::
+
+        c1 = Chart(us_df, type='multi_line', x='date', y='value',
+                   color='series', y_title='CPI YoY %',
+                   title='US')
+        c2 = Chart(eu_df, type='multi_line', x='date', y='value',
+                   color='series', y_title='CPI YoY %',
+                   title='EU')
+        result = render_grid([c1, c2], layout='1x2',
+                             title='Inflation Has Peaked')
+    """
+    if not charts:
+        raise ValueError("render_grid: charts list is empty.")
+    if len(charts) == 1:
+        # Single-chart "composite" is a code smell; degrade to a plain
+        # chart render so the caller still gets a sensible result.
+        return _v2_single_as_composite(
+            charts[0],
+            save_as=save_as,
+            filename_prefix=filename_prefix,
+            filename_suffix=filename_suffix,
+            run_qc=run_qc,
+            cleanup_on_qc_fail=cleanup_on_qc_fail,
+            verbose=verbose,
+        )
+
+    v1_layout = _v2_resolve_layout(layout, len(charts))
+    expected = _get_expected_chart_count(v1_layout)
+    if expected != len(charts):
+        raise ValueError(
+            f"render_grid: layout {layout!r} (resolved to {v1_layout!r}) "
+            f"requires {expected} charts; got {len(charts)}."
+        )
+
+    # Per-panel default dimension. Mirrors v1's per-wrapper defaults so
+    # output is byte-identical: 2x1 vertical packs default to 'wide';
+    # the rest default to 'compact'. PRISM does not get a knob for
+    # this -- engine picks per layout shape.
+    dimension_preset: DimensionPreset = (
+        "wide" if v1_layout == "2_vertical" else "compact"
+    )
+
+    ctx = _resolve_runtime_context()
+    specs = [c.to_v1_chartspec() for c in charts]
+
+    result = make_composite(
+        specs,
+        v1_layout,
+        title=title,
+        subtitle=subtitle,
+        skin=skin,
+        dimension_preset=dimension_preset,
+        spacing=spacing,
+        save_as=save_as,
+        filename_prefix=filename_prefix,
+        filename_suffix=filename_suffix,
+        session_path=ctx.session_path,
+        s3_manager=ctx.s3_manager,
+        user_id=ctx.user_id,
+        caption=caption,
+        narrative_left=narrative_left,
+        narrative_right=narrative_right,
+    )
+    return _v2_post_render(
+        result,
+        ctx=ctx,
+        run_qc=run_qc,
+        cleanup_on_qc_fail=cleanup_on_qc_fail,
+        verbose=verbose,
+        label=title or f"{v1_layout} composite",
+    )
+
+
+def _v2_single_as_composite(
+    chart: Chart,
+    *,
+    save_as: Optional[str],
+    filename_prefix: Optional[str],
+    filename_suffix: Optional[str],
+    run_qc: bool,
+    cleanup_on_qc_fail: bool,
+    verbose: bool,
+) -> CompositeResult:
+    """Promote ``chart.render()`` output into a ``CompositeResult`` shape.
+
+    Used when ``render_grid`` is called with a single Chart -- we
+    delegate to a regular render but return the result wrapped so the
+    caller doesn't need to branch on type.
+    """
+    cr = chart.render(
+        save_as=save_as,
+        run_qc=run_qc,
+        cleanup_on_qc_fail=cleanup_on_qc_fail,
+        verbose=verbose,
+        filename_prefix=filename_prefix,
+        filename_suffix=filename_suffix,
+    )
+    return CompositeResult(
+        png_path=cr.png_path,
+        layout="single",
+        n_charts=1,
+        success=cr.success,
+        error_message=cr.error_message,
+        warnings=cr.warnings,
+        download_url=cr.download_url,
+        vegalite_json=cr.vegalite_json,
+        skin=cr.skin,
+        chart_errors=[],
+        editor_html_path=cr.editor_html_path,
+        editor_download_url=cr.editor_download_url,
+    )
+
+
+# --- Post-render pipeline (QC, cleanup, URL printing) ---------------------
+
+def _v2_post_render(
+    result: Any,
+    *,
+    ctx: _RuntimeContext,
+    run_qc: bool,
+    cleanup_on_qc_fail: bool,
+    verbose: bool,
+    label: str,
+) -> Any:
+    """Run the standard post-make_chart / make_composite pipeline.
+
+    1. If render failed, print why (verbose) and return as-is.
+    2. If run_qc, ask Gemini whether the chart passes.
+    3. On QC fail and cleanup_on_qc_fail, delete the PNG + editor
+       HTML, mark the result success=False with a QC reason.
+    4. On success, print PNG + Chart Center URLs.
+    """
+    if not getattr(result, "success", False):
+        if verbose and getattr(result, "error_message", None):
+            print(f"[Chart:{label}] FAIL build: {result.error_message}")
+        for w in getattr(result, "warnings", []) or []:
+            if verbose:
+                print(f"[Chart:{label}] WARN: {w}")
+        return result
+
+    if run_qc:
+        try:
+            verdicts = check_charts_quality(
+                [result], s3_manager=ctx.s3_manager,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(f"[Chart:{label}] QC infra error (fail-open): {exc}")
+            verdicts = [{"passed": True, "reason": f"infra error: {exc}"}]
+        verdict = verdicts[0] if verdicts else {"passed": True}
+        if not verdict.get("passed", True):
+            reason = verdict.get("reason", "unknown")
+            if verbose:
+                print(f"[Chart:{label}] QC FAIL: {reason}")
+            if cleanup_on_qc_fail:
+                _v2_cleanup_failed(result, ctx.s3_manager)
+            result.success = False
+            existing_msg = getattr(result, "error_message", None)
+            qc_msg = f"QC failed: {reason}"
+            result.error_message = (
+                f"{existing_msg}; {qc_msg}" if existing_msg else qc_msg
+            )
+            return result
+
+    if verbose:
+        png_url = getattr(result, "download_url", None)
+        editor_url = getattr(result, "editor_download_url", None)
+        if png_url:
+            print(f"[Chart:{label}] PNG: {png_url}")
+        if editor_url:
+            print(f"[Chart:{label}] Chart Center: {editor_url}")
+        for w in getattr(result, "warnings", []) or []:
+            print(f"[Chart:{label}] WARN: {w}")
+    return result
+
+
+def _v2_cleanup_failed(result: Any, s3_manager: Any) -> None:
+    """Delete PNG + editor HTML for a QC-failed chart.
+
+    Failed charts in the session folder mislead reports / dashboards /
+    session reloads; the cleanup keeps the folder honest.
+    """
+    for path_attr in ("png_path", "editor_html_path"):
+        path = getattr(result, path_attr, None)
+        if path and hasattr(s3_manager, "delete"):
+            try:
+                s3_manager.delete(path)
+            except Exception as exc:  # noqa: BLE001
+                # Cleanup is best-effort; a deletion failure isn't
+                # fatal -- the QC-failed chart already has
+                # success=False and won't be referenced downstream.
+                if hasattr(result, "warnings"):
+                    result.warnings.append(
+                        f"Cleanup failed for {path_attr} ({path}): {exc}"
+                    )
+
+
+# --- Batch helpers --------------------------------------------------------
+
+def render_all(
+    charts: List[Chart],
+    *,
+    save_prefix: Optional[str] = None,
+    run_qc: bool = True,
+    cleanup_on_qc_fail: bool = True,
+    verbose: bool = True,
+) -> List[ChartResult]:
+    """Render N independent charts (NOT a composite).
+
+    Use when you want N standalone PNGs, not a packed grid. Each
+    Chart renders to its own PNG via the same pipeline; URLs print
+    individually.
+
+    Args:
+        save_prefix: When set, each chart saves to
+            ``{save_prefix}/{i}_{title_slug}.png``. Omit for
+            timestamped slugs.
+    """
+    out: List[ChartResult] = []
+    for i, chart in enumerate(charts):
+        save_as = None
+        if save_prefix is not None:
+            slug = (chart._title or chart._type).lower().replace(" ", "_")
+            slug = "".join(ch for ch in slug if ch.isalnum() or ch == "_")
+            save_as = f"{save_prefix}/{i:02d}_{slug}.png"
+        out.append(chart.render(
+            save_as=save_as,
+            run_qc=run_qc,
+            cleanup_on_qc_fail=cleanup_on_qc_fail,
+            verbose=verbose,
+        ))
+    return out
+
+
+# v2 namespace constant -- the names PRISM should auto-inject when
+# the v2 skill (chart_context_v2.md) is loaded. See ``__all__`` for
+# the full module export list (which carries both v1 and v2 names).
+_ENGINE_NAMESPACE_V2: Tuple[str, ...] = (
+    # Builders
+    "Chart",
+    "render_grid",
+    "render_all",
+    # Result types (shared with v1)
+    "ChartResult",
+    "CompositeResult",
+    "DataProfile",
+    # Pre-charting helper (shared with v1)
+    "profile_df",
+    # Annotations (shared with v1)
+    "VLine",
+    "HLine",
+    "Segment",
+    "Band",
+    "Arrow",
+    "PointLabel",
+    "PointHighlight",
+    "Callout",
+    "LastValueLabel",
+    "Trendline",
+    "PlotText",
+)
+
+
+# ===========================================================================
 # MODULE: PUBLIC API SURFACE
 # ===========================================================================
 
 # Anything not listed here is internal and may change without notice.
 __all__ = [
-    # Type aliases
+    # ---- Type aliases ----------------------------------------------
     "ChartType",
     "IntentType",
     "DimensionPreset",
     "LayoutType",
-    # Result types
+    # ---- Result / profile types (shared) --------------------------
     "ChartResult",
     "CompositeResult",
     "DataProfile",
     "ChartSpec",
-    # Core entry points
+    # ---- v1 entry points ------------------------------------------
     "make_chart",
     "make_composite",
     "make_2pack_horizontal",
@@ -13536,7 +14490,11 @@ __all__ = [
     "make_6pack_grid",
     "check_charts_quality",
     "profile_df",
-    # Annotations
+    # ---- v2 entry points ------------------------------------------
+    "Chart",
+    "render_grid",
+    "render_all",
+    # ---- Annotations (shared) -------------------------------------
     "Annotation",
     "VLine",
     "HLine",
@@ -13544,7 +14502,7 @@ __all__ = [
     "Arrow",
     "PointLabel",
     "Trendline",
-    # Skins / dimensions
+    # ---- Skins / dimensions ---------------------------------------
     "AVAILABLE_SKINS",
     "DIMENSION_PRESETS",
     "DATE_FORMAT_PRESETS",
@@ -13553,17 +14511,17 @@ __all__ = [
     "get_dimensions",
     "list_skins",
     "list_dimension_presets",
-    # Validation / errors
+    # ---- Validation / errors --------------------------------------
     "ValidationError",
     "YAxisLabelTooLongError",
     "validate_plot_ready_df",
-    # Static spec utilities
+    # ---- Static spec utilities ------------------------------------
     "create_static_spec",
     "create_static_composite_spec",
     "clean_chart",
-    # Phase B helpers exposed to PRISM
+    # ---- Phase B helpers exposed to PRISM -------------------------
     "TYPOGRAPHY_OVERRIDES",
-    # Phase C utility functions
+    # ---- Phase C utility functions --------------------------------
     "prepare_timeseries_df",
     "process_data",
     "top_k_categories",
@@ -13574,7 +14532,9 @@ __all__ = [
     "check_for_outliers",
     "suggest_chart_type",
     "validate_data",
+    # ---- Engine namespace constant (PRISM-side injection consumer)
+    "_ENGINE_NAMESPACE_V2",
 ]
 
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

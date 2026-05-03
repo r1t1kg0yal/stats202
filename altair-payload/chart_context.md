@@ -21,7 +21,7 @@ Every named primitive PRISM picks between, with a pointer to the section that ca
 | Mapping keys (~20) | `x`, `y`, `color`, `y_title`, `y_title_right`, `x_title`, `x_sort`, `y_sort`, `x_type`, `dual_axis_series`, `invert_right_axis`, `trendline`, `trendlines`, `stack`, `strokeDash`, `strokeDashScale`, `strokeDashLegend`, `value`, `theta`, `x_low`, `x_high`, `color_by`, `label`, `type` | §7 |
 | Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §8 |
 | Composite functions (5) | `make_2pack_horizontal`, `make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`, `make_6pack_grid` | §10 |
-| Dimension presets (7) | `wide`, `square`, `tall`, `compact`, `presentation`, `thumbnail`, `teams` | §12 |
+| Dimension presets (6) | `wide`, `square`, `tall`, `compact`, `presentation`, `thumbnail` | §12 |
 | Skin (1, only published) | `gs_clean` | §1 (signature) |
 | Intent values (3) | `'explore'`, `'publish'`, `'monitor'` | §1 (signature) |
 | Layer types (3) | `regression`, `rule`, `point` | §8.5 |
@@ -863,11 +863,8 @@ deliver the PNG and note Chart Center was unavailable, never silently omit.
 | `compact` | 400x300 | Dashboard components |
 | `presentation` | 900x500 | Slides |
 | `thumbnail` | 300x200 | Previews |
-| `teams` | 420x210 | Required for Teams medium |
 
-When request is from Teams, always use `dimensions='teams'` (or
-`dimension_preset='teams'` for composites). Typography auto-scales for
-`teams`, `thumbnail`, and `compact` presets.
+Typography auto-scales for `thumbnail` and `compact` presets.
 
 ---
 

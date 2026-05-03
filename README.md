@@ -67,7 +67,7 @@ PRISM right now.
 
 | Project | Maturity | Repo path (canonical) | Payload source | PRISM destination | Rule | prism/ refs | Active endeavor / spec |
 |---------|----------|-----------------------|----------------|-------------------|------|-------------|------------------------|
-| altair | mature | `projects/altair/` | `projects/altair/altair-payload/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` (hub) + `context/modules/static/chart_context/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md`, `mcp-tools.md` §3+§5 | `projects/altair/dev/specs/composites.md` (next feature build) |
+| altair | mature | `projects/altair/` | `projects/altair/altair-payload/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` (single-file L2 module) | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md`, `mcp-tools.md` §3+§5 | `projects/altair/dev/specs/composites.md` (next feature build) |
 | echarts | mature | `projects/echarts/` | `projects/echarts/echarts-payload/` | `ai_development/dashboards/*.py` + `context/modules/static/tools/dashboards.md` (hub) + `dashboards/*.md` (spokes) | `.cursor/rules/viz-platforms.mdc` | `dashboard-refresh.md`, `dashboards-portal.md` | — |
 | apis | 2/24 rebuilt + rule codified, Session 8 batch ready | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `mcp/clients/*_client.py` + `context/modules/static/{data_guides,instruments,tools}/*.md` | `.cursor/rules/api-clients.mdc` | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
 | frontend | MVP RUNNING + FULL REFACTOR | `projects/frontend/` | `projects/frontend/frontend-payload/ai_development/` | `ai_development/mysite/` + `ai_development/mysite/news/static/css/{tokens,fonts,base}.css` + settings.py PATCH (STATICFILES_DIRS) + URL-grammar unification (10 legacy URLs 301 to canonical) + filesystem reads from `ai_development/context/white_papers/` (was S3 `secondary/technical_docs/`) | — | `dashboards-portal.md`, `architecture.md` §10 | `projects/frontend/dev/specs/design_system.md` (now §1-§10 covering tokens + components + URL grammar); `staging/prompts/open/2026-05-02_frontend_full_context.md` (PRISM-verbatim sync prompt — frontmatter post-refactor-updated) |
@@ -134,13 +134,13 @@ Frontend is N/A (no payload yet).
 ```
 projects/<name>/<name>-payload/test_prompts/
 ├── <unit_1>_test.md     ← one file per natural unit:
-├── <unit_2>_test.md       per-spoke (altair, echarts)
+├── <unit_2>_test.md       per-topic (altair), per-spoke (echarts),
 └── ...                    per-source (apis)
 ```
 
 | Aspect | Rule |
 |---|---|
-| Files per project | One per natural unit (spoke / module / source). 5-7 files per project today. |
+| Files per project | One per natural unit (topic / spoke / source). 5-7 files per project today. |
 | Prompts per file | 7 canonical prompts that mix broad regression coverage AND specific recent-implementation tests for that unit. |
 | Format | Pure prompt bodies separated by `---` horizontal rules. No headers, no frontmatter, no annotations. |
 | Per-prompt convention | Each body is 1-3 sentences ending with "Let me know if frictions." |
@@ -153,7 +153,7 @@ Per-project unit count and file inventory:
 | Project | Units | Files in `test_prompts/` |
 |---|---|---|
 | apis | per-source | 2 today (`treasury_test.md`, `treasury_direct_test.md`); grows as more clients are rebuilt (target ~20) |
-| altair | per-spoke | 6 (`chart_types`, `mapping`, `annotations`, `dual_axis`, `composites`, `chart_center`) |
+| altair | per-topic | 6 (`chart_types`, `mapping`, `annotations`, `dual_axis`, `composites`, `chart_center`) — topic split is independent of the single-file `chart_context.md` skill |
 | echarts | per-spoke | 6 (`charts`, `widgets`, `widget_tool`, `filters`, `recipes`, `pipelines`) — 6/6 bodies seeded as of 2026-05-02. `widget_tool_test.md` (4 manifest-preservation regression + 3 canonical-example cribs); `widgets_test.md` (3 popup-parity regression + 4 row_click drill-down / KPI / stat_grid / pivot); `recipes_test.md` (2 data-pipeline coupling + 2 revert + 3 long-form/dual-axis/RV/computed-columns); `charts_test.md` (broad coverage of the 30-type catalog + corner cases: correlation_matrix, scatter_studio, multi-axis, computed columns, heatmap palette); `filters_test.md` (10 types + 11 ops + cascading + dataZoom sync + click_emit + compound rule + scope + show_when); `pipelines_test.md` (catalog the pipeline graph + 3 reuse-ladder paths + active-pipeline integrity + re-author end-to-end + session folder health check) |
 | whitepapers | — (deferred) | 0 |
 | frontend | — (no payload) | 0 |
@@ -178,17 +178,17 @@ email, and report flows.
 | Aspect | Value |
 |---|---|
 | Drag-and-drop status | READY. 15/15 demos pass. PRISM-runtime introspection confirmed every helper signature + the verbatim 14-entry namespace literal + sole-consumer property (`mcp/tools/script_exec_tools.py`). A live PRISM session is the only remaining verification step. |
-| Canonical payload | `projects/altair/altair-payload/chart_functions.py`, `chart_functions_studio.py`, `chart_context.md` (hub) + `chart_context/*.md` (spokes) |
+| Canonical payload | `projects/altair/altair-payload/chart_functions.py`, `chart_functions_studio.py`, `chart_context.md` (single-file L2 module) |
 | Stub mirror | `projects/altair/ai_development/mcp/utils/*.py` — mirrors the 5 helpers `chart_functions.py` imports |
 | Pinned interpreter | `projects/altair/.venv/` (regenerate after the 2026-05-02 restructure — shebangs point at old `GS/viz/altair/.venv/` paths) |
 | Demo gallery | `projects/altair/dev/demos/01..25_*.py` (one file per demo; `run_all.py --all`) |
-| Skill shape | Hub-and-spoke since 2026-05-02 (mirrors echarts' pattern). `chart_context.md` is the L2 hub; per-primitive depth in `chart_context/{chart_types,mapping,annotations,dual_axis,composites,chart_center}.md`. `TestSpokeDriftPrevention` in `dev/tests.py` pins the hub/spoke/engine triple. |
+| Skill shape | Single-file L2 module. `chart_context.md` carries the full surface (~900 lines / ~43 KB) — namespace + QC + design defaults + authoring rules + chart types + mapping + annotations + dual-axis + composites + Chart Center + dimensions + horizons + failure transparency. `TestChartContextCoverage` in `dev/tests.py` pins skill/engine drift (every chart type / annotation class / composite function in the engine appears in the skill). Hub-and-spoke split landed 2026-05-02 and was reverted same-week in favor of single-file ergonomics. |
 | QC workflow | `workflows/altair_qc.md` — adversarial vision + validation hardening |
 | Notes file | `projects/altair/dev/notes.md` |
-| Tests | `projects/altair/dev/tests.py` (`python tests.py` interactive; `python tests.py unit -v` headless). Currently houses the spoke-drift gate. |
-| Test prompts | `altair-payload/test_prompts/{chart_types,mapping,annotations,dual_axis,composites,chart_center}_test.md` — one per spoke, 7 prompts each. Per the cross-project convention. STAGING-ONLY (does NOT ship). |
+| Tests | `projects/altair/dev/tests.py` (`python tests.py` interactive; `python tests.py unit -v` headless). Currently houses `TestChartContextCoverage` (skill/engine drift gate) + `TestGroupedBarCellBudget` (cell-budget regression). |
+| Test prompts | `altair-payload/test_prompts/{chart_types,mapping,annotations,dual_axis,composites,chart_center}_test.md` — one per topic area, 7 prompts each. Per the cross-project convention. STAGING-ONLY (does NOT ship). The 6-topic split is regression-coverage scaffolding, independent of the single-file skill. |
 | Active feature work | `projects/altair/dev/specs/composites.md` — 4-batch plan for layered composites, forecast styling, new annotation classes (`BarValueLabels`, `BarHighlight`, `Connector`, `SeriesLabel`), two-level x-axis |
-| Feedback queue + external signals (UPDATED 2026-05-02) | 3 distinct incidents + 1 cross-project signal in `projects/altair/dev/feedback/` and `dev/notes.md` §External-signals / §Cross-project-signals. **FEEDBACK (3):** (a) `2026-04-26-2333-stress-test-results.md` — engine stress harness; (b) `2026-05-02_4pack_blowout.md` — grouped-bar 4-pack cell-budget blowout (RESOLVED — facet-width math now subtracts spacing overhead; 3px readability gate raises `GROUPED BAR CELL-BUDGET ERROR`; `TestGroupedBarCellBudget` pins); (c) `2026-05-02_chartspec_y_title_kwarg.md` — `ChartSpec(y_title=...)` hallucinated kwarg (skill-first disposition pending next `chart_context/mapping.md` pass; optional engine convenience kwarg). **PRISM DIAGNOSTIC (1):** `scans/prism/2026-05-02_bimodal_stir_report_diagnostic.md` issue 2 — heatmap >12 color cardinality silent-fail (next spoke pass: `chart_types.md` heatmap section + optional `_validate_chart_inputs` binning-named error). **CROSS-PROJECT SIGNAL (1, NEW 2026-05-02):** GS Sans font registration for matplotlib — `projects/frontend/dev/notes.md` §A has the plan; sequenced AFTER frontend staging fonts mirror lands. Engine edit adds `_register_gs_fonts()` at `chart_functions.py` import time (matplotlib sandbox workaround — PRISM hard-blocks matplotlib imports at the sandbox surface) and flips `GS_CLEAN` `"font.family"` from `"Liberation Sans, Arial, sans-serif"` to `"GS Sans, Helvetica Neue, Arial, sans-serif"`. Details in `projects/altair/dev/notes.md` "Cross-project signals". |
+| Feedback queue + external signals (UPDATED 2026-05-03) | 3 distinct incidents + 1 cross-project signal in `projects/altair/dev/feedback/` and `dev/notes.md` §External-signals / §Cross-project-signals. **FEEDBACK (3):** (a) `2026-04-26-2333-stress-test-results.md` — engine stress harness; (b) `2026-05-02_4pack_blowout.md` — grouped-bar 4-pack cell-budget blowout (RESOLVED — facet-width math now subtracts spacing overhead; 3px readability gate raises `GROUPED BAR CELL-BUDGET ERROR`; `TestGroupedBarCellBudget` pins); (c) `2026-05-02_chartspec_y_title_kwarg.md` — `ChartSpec(y_title=...)` hallucinated kwarg (skill rule lives in `chart_context.md` §7.1 + §10.2; optional engine convenience kwarg remains open). **PRISM DIAGNOSTIC (1):** `scans/prism/2026-05-02_bimodal_stir_report_diagnostic.md` issue 2 — heatmap >12 color cardinality silent-fail (skill rule lives in `chart_context.md` §6.3; optional `_validate_chart_inputs` binning-named error remains open). **CROSS-PROJECT SIGNAL (1, NEW 2026-05-02):** GS Sans font registration for matplotlib — `projects/frontend/dev/notes.md` §A has the plan; sequenced AFTER frontend staging fonts mirror lands. Engine edit adds `_register_gs_fonts()` at `chart_functions.py` import time (matplotlib sandbox workaround — PRISM hard-blocks matplotlib imports at the sandbox surface) and flips `GS_CLEAN` `"font.family"` from `"Liberation Sans, Arial, sans-serif"` to `"GS Sans, Helvetica Neue, Arial, sans-serif"`. Details in `projects/altair/dev/notes.md` "Cross-project signals". |
 
 ### echarts — interactive HTML dashboard compiler
 
