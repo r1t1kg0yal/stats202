@@ -62,6 +62,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Standard library
 # ---------------------------------------------------------------------------
+import concurrent.futures
 import copy
 import hashlib
 import io
@@ -368,6 +369,27 @@ class YAxisLabelTooLongError(ValidationError):
 # (raw column names, generated tokens) without being too pedantic about
 # borderline-long human labels.
 _Y_AXIS_LABEL_MAX_CHARS = 24
+
+# Minimum distinct (x, y) coordinates that fall inside the visible plot
+# region for a scatter to read as a relationship rather than an anecdote.
+# Enforced by ``_build_scatter`` before chart construction; sparse scatters
+# raise ``ValidationError`` so the caller expands the data window,
+# aggregates to denser distinct points, or picks a chart type that suits
+# sparse data instead of shipping a misleading chart. Inherited by
+# ``_build_scatter_multi`` because it dispatches through ``_build_scatter``
+# on the full DataFrame (chart-level total, not per-color group).
+_MIN_SCATTER_VISIBLE_DOTS = 8
+
+# Minimum fraction of the visible y-axis span that any single series in a
+# multi-series single-y-axis time-series chart (``multi_line`` /
+# ``timeseries``) must occupy to read as anything other than a flat line.
+# Below this threshold ``_validate_y_scale_homogeneity`` raises
+# ``ValidationError`` with the three reshape options (2-pack composite,
+# dual-axis, normalize). Catches the canonical "gold + WTI" and
+# "FCI components at disparate levels" failure modes where a high-magnitude
+# (or high-level) series dominates the y-axis domain and the others
+# collapse to flat horizontal rails.
+_MIN_SERIES_VERTICAL_SHARE = 0.10
 
 
 def _validate_y_axis_label(y_title: Optional[str], mapping: Dict[str, Any]) -> None:
@@ -965,6 +987,132 @@ def _validate_chart_data_integrity(
                 f"Column '{y_field}' has inf values that cannot be plotted.\n"
                 f"Use df[y_field].replace([np.inf, -np.inf], np.nan) to remove them."
             )
+
+    # Validation 5: y-axis scale homogeneity for single-axis multi-series
+    # time-series charts. Catches gold + WTI / FCI-components-at-disparate-
+    # levels patterns where one series compresses to a flat line.
+    _validate_y_scale_homogeneity(df, mapping, chart_type)
+
+
+def _validate_y_scale_homogeneity(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> None:
+    """Reject multi-series single-y-axis charts where the level / range
+    mix would compress one or more series below
+    ``_MIN_SERIES_VERTICAL_SHARE`` of the visible y-axis space.
+
+    Canonical failure mode: plotting series with disparate magnitudes
+    (gold $2000 + WTI $70; equity index + 2Y yield) or disparate levels
+    with small variations (FCI components clustered at 30 / 60 / 10) on
+    a shared linear y-axis. The high-magnitude (or high-level) series
+    sets the axis domain and the others collapse to flat horizontal
+    rails near their own level, defeating the chart's purpose.
+
+    The error message routes the LLM toward three reshape options:
+      (a) split into a 2-panel composite (``make_2pack_horizontal`` /
+          ``make_2pack_vertical``) so each series gets its own y-axis;
+      (b) keep on one chart but route the smallest-scale series to a
+          right axis via ``mapping['dual_axis_series']=[...]``;
+      (c) z-score-normalize or rebase-to-100 every series so all
+          variations show on a comparable dimensional scale.
+
+    Scope:
+      - Applies to ``multi_line`` and ``timeseries`` (the canonical
+        single-y-axis time-series shapes). ``area`` is intentionally
+        excluded because it is always stacked-additive (each series's
+        vertical share IS its share of the stack, by design). ``bar`` /
+        ``boxplot`` / etc. use different visual paradigms where this
+        flatness heuristic does not transfer cleanly.
+      - Skipped when ``mapping['dual_axis_series']`` is set (caller has
+        already split series across two axes -- no single-axis flatness
+        conflict).
+      - Skipped when fewer than 2 distinct series are present (one
+        series defines its own scale -- nothing to flatten against).
+      - Skipped when the global y span is zero (all values equal --
+        flatness has no meaning).
+    """
+    if chart_type not in {"multi_line", "timeseries"}:
+        return
+    if mapping.get("dual_axis_series"):
+        return
+
+    color_field = _get_field(mapping, "color")
+    y_field = _get_field(mapping, "y")
+    if not (color_field and y_field):
+        return
+    if color_field not in df.columns or y_field not in df.columns:
+        return
+    if not pd.api.types.is_numeric_dtype(df[y_field]):
+        return
+
+    series_names = list(df[color_field].dropna().unique())
+    if len(series_names) < 2:
+        return
+
+    # Per-series spans + global min/max across all series.
+    series_spans: Dict[str, Tuple[float, float, float]] = {}
+    global_min = float("inf")
+    global_max = float("-inf")
+    for name in series_names:
+        s = pd.to_numeric(
+            df.loc[df[color_field] == name, y_field], errors="coerce"
+        ).dropna()
+        if len(s) == 0:
+            continue
+        s_min, s_max = float(s.min()), float(s.max())
+        series_spans[str(name)] = (s_min, s_max, s_max - s_min)
+        global_min = min(global_min, s_min)
+        global_max = max(global_max, s_max)
+
+    if len(series_spans) < 2:
+        return  # Only one series had any valid numeric values.
+    global_span = global_max - global_min
+    if global_span <= 0:
+        return  # All values identical across all series; flatness has no meaning.
+
+    flat_series: List[Tuple[str, float, float]] = []
+    for name, (_smin, _smax, s_span) in series_spans.items():
+        share = s_span / global_span
+        if share < _MIN_SERIES_VERTICAL_SHARE:
+            flat_series.append((name, s_span, share))
+
+    if not flat_series:
+        return
+
+    # Smallest-share first -- stable + actionable error messages.
+    flat_series.sort(key=lambda t: t[2])
+    flat_desc = "; ".join(
+        f"'{name}' span={s_span:.4g} ({share * 100:.1f}% of y-axis)"
+        for name, s_span, share in flat_series
+    )
+    full_desc = "; ".join(
+        f"'{name}' [{s_min:.4g} .. {s_max:.4g}] span={s_max - s_min:.4g}"
+        for name, (s_min, s_max, _) in sorted(series_spans.items())
+    )
+    smallest = flat_series[0][0]
+    threshold_pct = int(_MIN_SERIES_VERTICAL_SHARE * 100)
+
+    raise ValidationError(
+        f"Y-AXIS SCALE MISMATCH: {len(flat_series)} of {len(series_spans)} "
+        f"series would compress below {threshold_pct}% of the visible "
+        f"y-axis span (would read as flat horizontal rails at different "
+        f"levels). Flat: {flat_desc}. All series: {full_desc}. Global "
+        f"y-axis span: {global_span:.4g} [{global_min:.4g} .. "
+        f"{global_max:.4g}]. Three reshape options:\n"
+        f"  (a) Split into a 2-panel composite -- "
+        f"`make_2pack_horizontal(...)` or `make_2pack_vertical(...)` -- "
+        f"so each series gets its own y-axis (canonical fix for "
+        f"two-series scale mismatches like gold + WTI).\n"
+        f"  (b) Route the smallest-scale series to a right axis: "
+        f"`mapping['dual_axis_series']=['{smallest}']` plus "
+        f"`mapping['y_title_right']='...'`. Best when the argument is "
+        f"co-movement of two series with different magnitudes.\n"
+        f"  (c) Z-score-normalize or rebase-to-100 every series before "
+        f"plotting so all variations share a dimensional scale (loses "
+        f"absolute level but preserves co-movement; best for 3+ series)."
+    )
 
 
 # ===========================================================================
@@ -3839,10 +3987,18 @@ def render_annotations(
                 hline_val = None
             label_lower = (annotation.label or "").lower()
             y_title_lower = (mapping.get("y_title") or "").lower()
-            if hline_val == 0.0 and not annotation.label:
+            if hline_val == 0.0:
+                # The y-axis grid line at zero is the implicit baseline on
+                # every chart whose data crosses (or touches) zero. An
+                # explicit HLine(y=0) -- with or without a label -- is
+                # always redundant; drop the rule AND any label silently
+                # so the chart reads cleanly. If zero matters narratively,
+                # call it out in the title / subtitle, not as a duplicate
+                # rule on top of the axis grid line.
                 logger.warning(
-                    "Suppressed HLine(y=0) without a label: zero line "
-                    "is already implicit on a y-axis crossing zero."
+                    "Suppressed HLine(y=0)%s: zero line is already implicit "
+                    "on a y-axis crossing zero (label dropped with the rule).",
+                    f" with label {annotation.label!r}" if annotation.label else "",
                 )
                 continue
             # y=50 + PMI/ISM context -- but only suppress when the label
@@ -3893,6 +4049,102 @@ def render_annotations(
                     "Fed 2%% target is universally known."
                 )
                 continue
+
+        # ---- drop horizontal Segment at y=0 (mirrors the HLine y=0 rule)
+        # A horizontal Segment with y1 == y2 == 0 is the windowed form of
+        # HLine(y=0) -- still redundant against the y-axis grid line at
+        # zero. Drop the segment AND any label silently for the same
+        # reason: the implicit zero baseline already conveys it.
+        if isinstance(annotation, Segment):
+            try:
+                seg_y1 = float(annotation.y1)
+                seg_y2 = float(annotation.y2)
+            except (TypeError, ValueError):
+                seg_y1 = seg_y2 = None
+            if seg_y1 == 0.0 and seg_y2 == 0.0:
+                logger.warning(
+                    "Suppressed horizontal Segment at y=0 (y1=y2=0)%s: "
+                    "zero baseline is already implicit on a y-axis crossing "
+                    "zero (label dropped with the segment).",
+                    f" with label {annotation.label!r}" if annotation.label else "",
+                )
+                continue
+
+        # ---- drop identity-line / "45 degree" Segments on scatter -------
+        # Common PRISM anti-pattern: passing
+        # ``Segment(x1=v, y1=v, x2=w, y2=w)`` to draw a "y = x" reference
+        # on a macro / rates scatter. The axes are typically in different
+        # units (basis points vs %, dollars vs index points), so the line
+        # has no analytical meaning AND the endpoints often extend outside
+        # the data range, stretching the chart frame and creating large
+        # blocks of whitespace. Drop the segment and any label silently;
+        # if a regression line is wanted, use ``Trendline`` (or
+        # ``mapping['trendline']=True``) instead.
+        if (
+            isinstance(annotation, Segment)
+            and chart_type in {"scatter", "scatter_multi"}
+        ):
+            try:
+                seg_x1 = _to_numeric_x(annotation.x1)
+                seg_x2 = _to_numeric_x(annotation.x2)
+                seg_y1 = float(annotation.y1)
+                seg_y2 = float(annotation.y2)
+            except (TypeError, ValueError):
+                seg_x1 = seg_x2 = seg_y1 = seg_y2 = None
+            if (
+                seg_x1 is not None and seg_x2 is not None
+                and seg_y1 is not None and seg_y2 is not None
+                and seg_x1 == seg_y1 and seg_x2 == seg_y2
+            ):
+                logger.warning(
+                    "Suppressed identity-line Segment on %s (x1==y1, "
+                    "x2==y2)%s: a 'y=x' reference line on a macro / "
+                    "rates scatter has no analytical meaning -- the axes "
+                    "are typically in different units. Use Trendline "
+                    "(or mapping['trendline']=True) for a regression "
+                    "overlay instead.",
+                    chart_type,
+                    f" with label {annotation.label!r}" if annotation.label else "",
+                )
+                continue
+
+        # ---- drop Segments whose y-endpoints fall outside the visible
+        # y-axis domain (mirrors the HLine out-of-range filter below and
+        # the existing dual-axis Segment check). Without this, Vega-Lite's
+        # shared y-scale takes the union of the base data range and the
+        # Segment's line_df y values, stretching the chart frame to
+        # include the offending endpoint and producing large blocks of
+        # whitespace. ``mark_rule(clip=True)`` clips PIXELS but does not
+        # remove the data point from the scale-resolution union, so an
+        # explicit drop is required.
+        if (
+            isinstance(annotation, Segment)
+            and not is_dual_axis
+            and clamped_domain is not None
+        ):
+            try:
+                seg_y1 = float(annotation.y1)
+                seg_y2 = float(annotation.y2)
+            except (TypeError, ValueError):
+                seg_y1 = seg_y2 = None
+            if seg_y1 is not None and seg_y2 is not None:
+                lo, hi = clamped_domain[0], clamped_domain[1]
+                out_y1 = seg_y1 < lo or seg_y1 > hi
+                out_y2 = seg_y2 < lo or seg_y2 > hi
+                if out_y1 or out_y2:
+                    which = (
+                        "both endpoints" if (out_y1 and out_y2) else "one endpoint"
+                    )
+                    logger.warning(
+                        "Suppressed Segment with %s outside the visible "
+                        "y-axis domain [%g, %g]: y1=%g, y2=%g. Endpoints "
+                        "outside the data range stretch the chart frame "
+                        "and create whitespace; use Segment endpoints "
+                        "inside the y range or rely on HLine for "
+                        "full-axis horizontal lines.",
+                        which, lo, hi, seg_y1, seg_y2,
+                    )
+                    continue
 
         # ---- out-of-range filtering: HLine ------------------------------
         if isinstance(annotation, HLine):
@@ -3947,28 +4199,51 @@ def render_annotations(
                     pass
 
         # ---- out-of-range filtering: Band -------------------------------
-        # A Band placed entirely outside the visible plot domain causes
-        # Vega-Lite to stretch the canvas to fit it, squashing the data
-        # into a narrow strip. Suppress + warn when both edges fall
-        # outside the domain (matches HLine / VLine off-range behaviour).
+        # A Band whose edges extend beyond the visible plot domain forces
+        # Vega-Lite's shared scale to grow to include the offending edge,
+        # stretching the chart canvas (often pushing the title up to make
+        # room for the over-extended shaded zone). For HORIZONTAL bands
+        # (y1, y2 set) the strict rule mirrors Segment / HLine: drop if
+        # EITHER edge falls outside the y-axis domain. For VERTICAL bands
+        # (x1, x2 set) keep the looser "entirely outside" rule -- vertical
+        # bands intentionally extending past the data on x are a
+        # legitimate pattern (forecast / forward window).
         if isinstance(annotation, Band):
-            band_y_outside = False
+            band_y_drop = False
+            band_y_reason = ""
             if (
                 annotation.y1 is not None
                 and annotation.y2 is not None
                 and clamped_domain is not None
             ):
                 try:
-                    band_lo = min(float(annotation.y1), float(annotation.y2))
-                    band_hi = max(float(annotation.y1), float(annotation.y2))
-                    if (
-                        band_hi < clamped_domain[0]
-                        or band_lo > clamped_domain[1]
-                    ):
-                        band_y_outside = True
+                    y1_val = float(annotation.y1)
+                    y2_val = float(annotation.y2)
+                    lo, hi = clamped_domain[0], clamped_domain[1]
+                    # 10% padding tolerance (mirrors Callout / PointLabel /
+                    # PointHighlight) so a band edge marginally beyond the
+                    # data's natural padding doesn't fire on visually-fine
+                    # cases. Segment uses strict bounds because Segment is
+                    # a line (clipping changes meaning); Band / Arrow get
+                    # the same point-style 10% tolerance.
+                    domain_range = hi - lo
+                    pad_y = domain_range * 0.10 if domain_range > 0 else 1.0
+                    out_y1 = y1_val < (lo - pad_y) or y1_val > (hi + pad_y)
+                    out_y2 = y2_val < (lo - pad_y) or y2_val > (hi + pad_y)
+                    if out_y1 or out_y2:
+                        band_y_drop = True
+                        which = (
+                            "both edges" if (out_y1 and out_y2) else "one edge"
+                        )
+                        band_y_reason = (
+                            f"horizontal Band with {which} outside the visible "
+                            f"y-axis domain [{lo:g}, {hi:g}] (10% tolerance): "
+                            f"y1={y1_val:g}, y2={y2_val:g}"
+                        )
                 except (TypeError, ValueError):
                     pass
-            band_x_outside = False
+            band_x_drop = False
+            band_x_reason = ""
             if (
                 annotation.x1 is not None
                 and annotation.x2 is not None
@@ -3987,7 +4262,12 @@ def render_annotations(
                                 band_hi_x < x_min_val
                                 or band_lo_x > x_max_val
                             ):
-                                band_x_outside = True
+                                band_x_drop = True
+                                band_x_reason = (
+                                    f"vertical Band entirely outside the "
+                                    f"visible x range: x1={annotation.x1}, "
+                                    f"x2={annotation.x2}"
+                                )
                         elif pd.api.types.is_numeric_dtype(df[x_col]):
                             x1_val = float(annotation.x1)
                             x2_val = float(annotation.x2)
@@ -3999,15 +4279,22 @@ def render_annotations(
                                 band_hi_x < x_min_val
                                 or band_lo_x > x_max_val
                             ):
-                                band_x_outside = True
+                                band_x_drop = True
+                                band_x_reason = (
+                                    f"vertical Band entirely outside the "
+                                    f"visible x range: x1={x1_val:g}, "
+                                    f"x2={x2_val:g}"
+                                )
                     except (TypeError, ValueError):
                         pass
-            if band_y_outside or band_x_outside:
+            if band_y_drop or band_x_drop:
+                reason = band_y_reason or band_x_reason
                 logger.warning(
-                    "[render_annotations] Suppressing Band entirely "
-                    "outside the visible data range: y1=%s y2=%s x1=%s x2=%s",
-                    annotation.y1, annotation.y2,
-                    annotation.x1, annotation.x2,
+                    "Suppressed %s. Out-of-range Band edges stretch the "
+                    "chart frame and push the title up; clamp band "
+                    "endpoints to the visible data range, or use HLine / "
+                    "VLine for full-axis rules.",
+                    reason,
                 )
                 continue
 
@@ -4073,6 +4360,191 @@ def render_annotations(
                     "[render_annotations] Suppressing Callout outside "
                     "the visible data range: x=%s y=%s label=%r",
                     annotation.x, annotation.y, annotation.label,
+                )
+                continue
+
+        # ---- out-of-range filtering: Arrow ------------------------------
+        # An Arrow with either endpoint outside the visible y-axis domain
+        # forces Vega-Lite's shared y-scale to expand and include the
+        # offending coordinate, stretching the chart frame and pushing
+        # the title up. 10% padding tolerance (mirrors Callout / Band)
+        # avoids firing on annotations that just nudge past the data's
+        # natural padding. Single-axis only (Arrow has no `axis` field).
+        if isinstance(annotation, Arrow) and clamped_domain is not None:
+            try:
+                arr_y1 = float(annotation.y1)
+                arr_y2 = float(annotation.y2)
+            except (TypeError, ValueError):
+                arr_y1 = arr_y2 = None
+            if arr_y1 is not None and arr_y2 is not None:
+                lo, hi = clamped_domain[0], clamped_domain[1]
+                domain_range = hi - lo
+                pad_y = domain_range * 0.10 if domain_range > 0 else 1.0
+                out_y1 = arr_y1 < (lo - pad_y) or arr_y1 > (hi + pad_y)
+                out_y2 = arr_y2 < (lo - pad_y) or arr_y2 > (hi + pad_y)
+                if out_y1 or out_y2:
+                    which = (
+                        "both endpoints" if (out_y1 and out_y2) else "one endpoint"
+                    )
+                    logger.warning(
+                        "Suppressed Arrow with %s outside the visible "
+                        "y-axis domain [%g, %g] (10%% tolerance): y1=%g, "
+                        "y2=%g. Endpoints outside the data range stretch "
+                        "the chart frame and push the title up; clamp "
+                        "Arrow endpoints to the visible y range.",
+                        which, lo, hi, arr_y1, arr_y2,
+                    )
+                    continue
+
+        # ---- out-of-range filtering: PointLabel -------------------------
+        # PointLabel pins floating text to a (x, y) data coordinate; if
+        # the data coord falls outside the visible plot domain the chart
+        # canvas grows to include it (the dx/dy pixel offsets do NOT
+        # extend the frame, only the underlying x/y data coord does).
+        # Mirrors Callout's 10%-padding rule for off-data points.
+        if isinstance(annotation, PointLabel):
+            pl_outside = False
+            if clamped_domain is not None and annotation.y is not None:
+                try:
+                    py = float(annotation.y)
+                    domain_range = clamped_domain[1] - clamped_domain[0]
+                    pad_y = domain_range * 0.10 if domain_range > 0 else 1.0
+                    if (
+                        py < (clamped_domain[0] - pad_y)
+                        or py > (clamped_domain[1] + pad_y)
+                    ):
+                        pl_outside = True
+                except (TypeError, ValueError):
+                    pass
+            if not pl_outside and annotation.x is not None:
+                x_col = mapping.get("x", "x")
+                if x_col in df.columns:
+                    try:
+                        if pd.api.types.is_datetime64_any_dtype(df[x_col]):
+                            px = pd.Timestamp(annotation.x)
+                            x_min_val = df[x_col].min()
+                            x_max_val = df[x_col].max()
+                            x_range_td = x_max_val - x_min_val
+                            x_pad_td = (
+                                x_range_td * 0.10
+                                if x_range_td.total_seconds() > 0
+                                else pd.Timedelta(days=1)
+                            )
+                            if (
+                                px < (x_min_val - x_pad_td)
+                                or px > (x_max_val + x_pad_td)
+                            ):
+                                pl_outside = True
+                        elif pd.api.types.is_numeric_dtype(df[x_col]):
+                            px = float(annotation.x)
+                            x_min_val = float(df[x_col].min())
+                            x_max_val = float(df[x_col].max())
+                            x_range_val = x_max_val - x_min_val
+                            x_pad_val = (
+                                x_range_val * 0.10
+                                if x_range_val > 0
+                                else (
+                                    abs(x_max_val) * 0.10
+                                    if x_max_val != 0 else 1.0
+                                )
+                            )
+                            if (
+                                px < (x_min_val - x_pad_val)
+                                or px > (x_max_val + x_pad_val)
+                            ):
+                                pl_outside = True
+                    except (TypeError, ValueError):
+                        pass
+            if pl_outside:
+                logger.warning(
+                    "Suppressed PointLabel outside the visible data "
+                    "range: x=%s y=%s label=%r. Off-data points stretch "
+                    "the chart frame.",
+                    annotation.x, annotation.y, annotation.label,
+                )
+                continue
+
+        # ---- out-of-range filtering: PointHighlight ---------------------
+        # PointHighlight pins a filled marker at a (x, y) data coord with
+        # optional axis='right' for dual-axis routing. Drop when the
+        # coord falls outside the visible domain (10% padding, mirrors
+        # Callout / PointLabel) so an off-data marker can't stretch the
+        # chart frame.
+        if isinstance(annotation, PointHighlight):
+            ph_outside = False
+            if annotation.y is not None:
+                try:
+                    pyv = float(annotation.y)
+                    if (
+                        annotation.axis == "right"
+                        and is_dual_axis
+                        and dual_axis_config
+                    ):
+                        domain = dual_axis_config.get("y_domain_right")
+                        if domain is not None:
+                            lo = min(domain[0], domain[1])
+                            hi = max(domain[0], domain[1])
+                            pad_y = (
+                                (hi - lo) * 0.10
+                                if hi > lo else max(abs(hi), 1.0) * 0.10
+                            )
+                            if pyv < (lo - pad_y) or pyv > (hi + pad_y):
+                                ph_outside = True
+                    elif clamped_domain is not None:
+                        domain_range = clamped_domain[1] - clamped_domain[0]
+                        pad_y = domain_range * 0.10 if domain_range > 0 else 1.0
+                        if (
+                            pyv < (clamped_domain[0] - pad_y)
+                            or pyv > (clamped_domain[1] + pad_y)
+                        ):
+                            ph_outside = True
+                except (TypeError, ValueError):
+                    pass
+            if not ph_outside and annotation.x is not None:
+                x_col = mapping.get("x", "x")
+                if x_col in df.columns:
+                    try:
+                        if pd.api.types.is_datetime64_any_dtype(df[x_col]):
+                            pxv = pd.Timestamp(annotation.x)
+                            x_min_val = df[x_col].min()
+                            x_max_val = df[x_col].max()
+                            x_range_td = x_max_val - x_min_val
+                            x_pad_td = (
+                                x_range_td * 0.10
+                                if x_range_td.total_seconds() > 0
+                                else pd.Timedelta(days=1)
+                            )
+                            if (
+                                pxv < (x_min_val - x_pad_td)
+                                or pxv > (x_max_val + x_pad_td)
+                            ):
+                                ph_outside = True
+                        elif pd.api.types.is_numeric_dtype(df[x_col]):
+                            pxv = float(annotation.x)
+                            x_min_val = float(df[x_col].min())
+                            x_max_val = float(df[x_col].max())
+                            x_range_val = x_max_val - x_min_val
+                            x_pad_val = (
+                                x_range_val * 0.10
+                                if x_range_val > 0
+                                else (
+                                    abs(x_max_val) * 0.10
+                                    if x_max_val != 0 else 1.0
+                                )
+                            )
+                            if (
+                                pxv < (x_min_val - x_pad_val)
+                                or pxv > (x_max_val + x_pad_val)
+                            ):
+                                ph_outside = True
+                    except (TypeError, ValueError):
+                        pass
+            if ph_outside:
+                logger.warning(
+                    "Suppressed PointHighlight outside the visible data "
+                    "range: x=%s y=%s axis=%s. Off-data markers stretch "
+                    "the chart frame.",
+                    annotation.x, annotation.y, annotation.axis,
                 )
                 continue
 
@@ -7873,6 +8345,44 @@ def _build_scatter(
         y_max = float(df[y_field].max())
         y_padding = (y_max - y_min) * 0.05 if y_max != y_min else max(abs(y_max), 1.0) * 0.05
         y_domain = [y_min - y_padding, y_max + y_padding]
+
+    # ---- visible-dot density gate ---------------------------------------
+    # A scatter only conveys a relationship when the visible plot region
+    # carries enough distinct points. Below ``_MIN_SCATTER_VISIBLE_DOTS``
+    # the chart reads as anecdote, not pattern -- reject up-front so the
+    # caller expands the data window, aggregates, or picks a non-scatter
+    # chart type. Counts DISTINCT (x, y) coordinate pairs inside the
+    # visible domain (overplotted coincident points read as one dot).
+    visible_pairs = valid_pairs
+    if x_domain is not None and pd.api.types.is_numeric_dtype(visible_pairs[x_field]):
+        visible_pairs = visible_pairs[
+            (visible_pairs[x_field] >= x_domain[0])
+            & (visible_pairs[x_field] <= x_domain[1])
+        ]
+    if y_domain is not None and pd.api.types.is_numeric_dtype(visible_pairs[y_field]):
+        visible_pairs = visible_pairs[
+            (visible_pairs[y_field] >= y_domain[0])
+            & (visible_pairs[y_field] <= y_domain[1])
+        ]
+    visible_dot_count = int(
+        len(visible_pairs.drop_duplicates(subset=[x_field, y_field]))
+    )
+    logger.debug(
+        "[_build_scatter] visible distinct dots: %d (total valid pairs: %d)",
+        visible_dot_count, len(valid_pairs),
+    )
+    if visible_dot_count < _MIN_SCATTER_VISIBLE_DOTS:
+        raise ValidationError(
+            f"Scatter would render only {visible_dot_count} distinct dot(s) "
+            f"inside the visible plot area (need >= "
+            f"{_MIN_SCATTER_VISIBLE_DOTS} to convey a relationship). "
+            f"Total valid (x, y) pairs: {len(valid_pairs)}; after deduping "
+            f"coincident points and clipping to the visible domain only "
+            f"{visible_dot_count} remain. A scatter this sparse reads as "
+            f"anecdote, not pattern. Either expand the data window, "
+            f"aggregate to denser distinct points, or pick a chart type "
+            f"that suits sparse data (e.g. `bar`, `multi_line`)."
+        )
 
     # ---- titles ---------------------------------------------------------
     x_title = _format_label(x_field, mapping, "x")
@@ -13279,17 +13789,59 @@ def make_6pack_grid(
 # MODULE: QUALITY GATE
 # ===========================================================================
 
+_QC_MAX_WORKERS = 8
+
+
+def _qc_one(
+    r: Any, s3_manager: Any,
+) -> Dict[str, Any]:
+    """QC a single result. Used as a worker by ``check_charts_quality``.
+
+    Mirrors PRISM's ``_check_single`` inside ``check_charts_quality_parallel``:
+    fail-open on infrastructure errors (S3 fetch, Gemini timeout); a
+    real BAD verdict from ``check_chart_quality`` propagates through.
+    """
+    png_path = getattr(r, "png_path", None)
+    if not getattr(r, "success", True) or not png_path:
+        return {
+            "passed": False,
+            "reason": getattr(r, "error_message", None) or "no png_path",
+            "png_path": png_path,
+        }
+    try:
+        png_bytes = s3_manager.get(png_path)
+        verdict = check_chart_quality(png_bytes)
+        verdict.setdefault("png_path", png_path)
+        return verdict
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[QualityGate] Quality check error (fail-open): %s -- %s",
+            exc, png_path,
+        )
+        return {
+            "passed": True,
+            "reason": f"infra error (fail-open): {exc}",
+            "png_path": png_path,
+        }
+
+
 def check_charts_quality(
     results: List[Any],
     s3_manager: Optional[Any] = None,
+    max_workers: int = _QC_MAX_WORKERS,
 ) -> List[Dict[str, Any]]:
     """Run the chart-quality gate over a list of ``ChartResult`` /
-    ``CompositeResult`` objects.
+    ``CompositeResult`` objects in parallel.
 
     For each result with a valid ``png_path``, fetches the PNG from S3
     and forwards it to ``check_chart_quality`` (PRISM: Gemini Flash;
-    local: pass-through). Returns a list of ``{passed, reason, ...}``
-    dicts in the same order as ``results``.
+    local: pass-through). Gemini calls are dispatched concurrently via
+    ``ThreadPoolExecutor`` (default 8 workers, capped at chart count)
+    so wall-clock time is one Gemini latency for up to 8 charts. This
+    matches PRISM's ``check_charts_quality_parallel`` shape.
+
+    Returns a list of ``{passed, reason, ...}`` dicts in the same order
+    as ``results``.
 
     Fail-open: any infrastructure error (missing png, S3 failure,
     Gemini timeout) treats the chart as passing so a quality-gate
@@ -13303,32 +13855,31 @@ def check_charts_quality(
             "explicitly."
         )
 
-    out: List[Dict[str, Any]] = []
-    for r in results:
-        png_path = getattr(r, "png_path", None)
-        if not getattr(r, "success", True) or not png_path:
-            out.append({
-                "passed": False,
-                "reason": getattr(r, "error_message", None) or "no png_path",
-                "png_path": png_path,
-            })
-            continue
-        try:
-            png_bytes = s3_manager.get(png_path)
-            verdict = check_chart_quality(png_bytes)
-            verdict.setdefault("png_path", png_path)
-            out.append(verdict)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[QualityGate] Quality check error (fail-open): %s -- %s",
-                exc, png_path,
-            )
-            out.append({
-                "passed": True,
-                "reason": f"infra error (fail-open): {exc}",
-                "png_path": png_path,
-            })
-    return out
+    n = len(results)
+    if n == 0:
+        return []
+
+    out: List[Optional[Dict[str, Any]]] = [None] * n
+    workers = max(1, min(max_workers, n))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {
+            ex.submit(_qc_one, results[i], s3_manager): i for i in range(n)
+        }
+        for fut in concurrent.futures.as_completed(futures):
+            idx = futures[fut]
+            try:
+                out[idx] = fut.result()
+            except Exception as exc:  # noqa: BLE001 - belt-and-suspenders
+                logger.warning(
+                    "[QualityGate] worker %d crashed (fail-open): %s",
+                    idx, exc,
+                )
+                out[idx] = {
+                    "passed": True,
+                    "reason": f"worker crash (fail-open): {exc}",
+                    "png_path": getattr(results[idx], "png_path", None),
+                }
+    return [v if v is not None else {"passed": True, "reason": "no verdict"} for v in out]
 
 
 # ===========================================================================
@@ -14054,39 +14605,39 @@ class Chart:
         self,
         save_as: Optional[str] = None,
         *,
-        run_qc: bool = True,
-        cleanup_on_qc_fail: bool = True,
         verbose: bool = True,
         filename_prefix: Optional[str] = None,
         filename_suffix: Optional[str] = None,
     ) -> ChartResult:
-        """Build the chart, render PNG + editor HTML, run QC, print URLs.
+        """Build the chart, upload PNG + editor HTML, print URLs.
 
-        This is the single I/O entry point. All boilerplate that PRISM
-        used to write per chart (QC, cleanup-on-fail, URL printing) is
+        This is the single I/O entry point. The boilerplate that PRISM
+        used to write per chart (URL printing, warning surfacing) is
         absorbed here.
+
+        Quality control is intentionally NOT run inline: PRISM's
+        post-script sweep (``_check_charts_quality_injected`` in
+        ``script_exec_tools.py``) parallel-QCs every session chart
+        automatically after the script returns. Running QC inline per
+        ``render()`` blocked each chart on a serial Gemini call,
+        adding ~N x Gemini-latency to script wall time without
+        catching anything the post-exec sweep wouldn't catch.
 
         Args:
             save_as: Fixed S3 path (relative to ``session_path``).
                 Use for dashboard / report charts where a stable URL
                 matters. Omit for one-off chats; the engine generates
                 a timestamped slug.
-            run_qc: When True (default), runs Gemini-vision QC after
-                rendering. Failed charts are marked
-                ``result.success=False`` with a QC reason.
-            cleanup_on_qc_fail: When True (default), automatically
-                deletes the PNG and editor HTML for QC-failed charts
-                so the session folder only contains good charts.
             verbose: When True (default), prints PNG and Chart Center
-                URLs on success; prints failure reason on QC fail.
-                Set False inside batch loops where the caller will
-                aggregate URLs itself.
+                URLs on success; prints build-failure reason on
+                failure. Set False inside batch loops where the
+                caller will aggregate URLs itself.
             filename_prefix / filename_suffix: Optional slug components.
 
         Returns:
             ``ChartResult`` -- always returned, including on render
-            failure or QC failure. Check ``result.success``,
-            ``result.error_message``, ``result.warnings``.
+            failure. Check ``result.success``, ``result.error_message``,
+            ``result.warnings``.
         """
         ctx = _resolve_runtime_context()
         result = make_chart(
@@ -14113,9 +14664,6 @@ class Chart:
         )
         return _v2_post_render(
             result,
-            ctx=ctx,
-            run_qc=run_qc,
-            cleanup_on_qc_fail=cleanup_on_qc_fail,
             verbose=verbose,
             label=self._title or self._type,
         )
@@ -14157,8 +14705,6 @@ def render_grid(
     spacing: int = 20,
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
-    run_qc: bool = True,
-    cleanup_on_qc_fail: bool = True,
     verbose: bool = True,
 ) -> CompositeResult:
     """Compose multiple ``Chart`` objects into a single grid layout.
@@ -14171,6 +14717,10 @@ def render_grid(
     Per-panel canvas size is picked automatically by the engine
     (``compact`` for 4- and 6-grids and triangles, ``wide`` for the
     2x1 vertical pack). PRISM does not see a ``dimensions`` knob.
+
+    Quality control is NOT run inline; PRISM's post-script sweep
+    handles QC in parallel after the script returns (see ``Chart.render``
+    docstring).
 
     Args:
         charts: List of ``Chart`` objects, one per panel. The order
@@ -14190,11 +14740,8 @@ def render_grid(
         save_as: Fixed S3 path (relative to session_path).
         skin / spacing: Style knobs.
         filename_prefix / filename_suffix: Optional slug components.
-        run_qc: Auto-run Gemini-vision QC over the composite.
-        cleanup_on_qc_fail: Auto-delete the composite PNG + editor
-            HTML on QC fail.
-        verbose: Print PNG and Chart Center URLs on success; print
-            failure reasons on QC fail.
+        verbose: Print PNG and Chart Center URLs on success;
+            print build-failure reasons on failure.
 
     Returns:
         ``CompositeResult`` -- always returned. ``result.chart_errors``
@@ -14222,8 +14769,6 @@ def render_grid(
             save_as=save_as,
             filename_prefix=filename_prefix,
             filename_suffix=filename_suffix,
-            run_qc=run_qc,
-            cleanup_on_qc_fail=cleanup_on_qc_fail,
             verbose=verbose,
         )
 
@@ -14266,9 +14811,6 @@ def render_grid(
     )
     return _v2_post_render(
         result,
-        ctx=ctx,
-        run_qc=run_qc,
-        cleanup_on_qc_fail=cleanup_on_qc_fail,
         verbose=verbose,
         label=title or f"{v1_layout} composite",
     )
@@ -14280,8 +14822,6 @@ def _v2_single_as_composite(
     save_as: Optional[str],
     filename_prefix: Optional[str],
     filename_suffix: Optional[str],
-    run_qc: bool,
-    cleanup_on_qc_fail: bool,
     verbose: bool,
 ) -> CompositeResult:
     """Promote ``chart.render()`` output into a ``CompositeResult`` shape.
@@ -14292,8 +14832,6 @@ def _v2_single_as_composite(
     """
     cr = chart.render(
         save_as=save_as,
-        run_qc=run_qc,
-        cleanup_on_qc_fail=cleanup_on_qc_fail,
         verbose=verbose,
         filename_prefix=filename_prefix,
         filename_suffix=filename_suffix,
@@ -14314,88 +14852,44 @@ def _v2_single_as_composite(
     )
 
 
-# --- Post-render pipeline (QC, cleanup, URL printing) ---------------------
+# --- Post-render pipeline (URL printing only) -----------------------------
 
 def _v2_post_render(
     result: Any,
     *,
-    ctx: _RuntimeContext,
-    run_qc: bool,
-    cleanup_on_qc_fail: bool,
     verbose: bool,
     label: str,
 ) -> Any:
     """Run the standard post-make_chart / make_composite pipeline.
 
     1. If render failed, print why (verbose) and return as-is.
-    2. If run_qc, ask Gemini whether the chart passes.
-    3. On QC fail and cleanup_on_qc_fail, delete the PNG + editor
-       HTML, mark the result success=False with a QC reason.
-    4. On success, print PNG + Chart Center URLs.
+    2. On success, print PNG + Chart Center URLs and any warnings.
+
+    Quality control is NOT run here. PRISM's post-script sweep
+    (``_check_charts_quality_injected`` in ``script_exec_tools.py``)
+    parallel-QCs every session chart automatically after the script
+    returns; running QC inline per render() blocked each chart on a
+    serial Gemini round-trip and added ~N x Gemini-latency to script
+    wall time without catching anything the post-exec sweep wouldn't.
     """
-    if not getattr(result, "success", False):
-        if verbose and getattr(result, "error_message", None):
-            print(f"[Chart:{label}] FAIL build: {result.error_message}")
-        for w in getattr(result, "warnings", []) or []:
-            if verbose:
-                print(f"[Chart:{label}] WARN: {w}")
+    if not verbose:
         return result
-
-    if run_qc:
-        try:
-            verdicts = check_charts_quality(
-                [result], s3_manager=ctx.s3_manager,
-            )
-        except Exception as exc:  # noqa: BLE001
-            if verbose:
-                print(f"[Chart:{label}] QC infra error (fail-open): {exc}")
-            verdicts = [{"passed": True, "reason": f"infra error: {exc}"}]
-        verdict = verdicts[0] if verdicts else {"passed": True}
-        if not verdict.get("passed", True):
-            reason = verdict.get("reason", "unknown")
-            if verbose:
-                print(f"[Chart:{label}] QC FAIL: {reason}")
-            if cleanup_on_qc_fail:
-                _v2_cleanup_failed(result, ctx.s3_manager)
-            result.success = False
-            existing_msg = getattr(result, "error_message", None)
-            qc_msg = f"QC failed: {reason}"
-            result.error_message = (
-                f"{existing_msg}; {qc_msg}" if existing_msg else qc_msg
-            )
-            return result
-
-    if verbose:
-        png_url = getattr(result, "download_url", None)
-        editor_url = getattr(result, "editor_download_url", None)
-        if png_url:
-            print(f"[Chart:{label}] PNG: {png_url}")
-        if editor_url:
-            print(f"[Chart:{label}] Chart Center: {editor_url}")
+    if not getattr(result, "success", False):
+        err = getattr(result, "error_message", None)
+        if err:
+            print(f"[Chart:{label}] FAIL build: {err}")
         for w in getattr(result, "warnings", []) or []:
             print(f"[Chart:{label}] WARN: {w}")
+        return result
+    png_url = getattr(result, "download_url", None)
+    editor_url = getattr(result, "editor_download_url", None)
+    if png_url:
+        print(f"[Chart:{label}] PNG: {png_url}")
+    if editor_url:
+        print(f"[Chart:{label}] Chart Center: {editor_url}")
+    for w in getattr(result, "warnings", []) or []:
+        print(f"[Chart:{label}] WARN: {w}")
     return result
-
-
-def _v2_cleanup_failed(result: Any, s3_manager: Any) -> None:
-    """Delete PNG + editor HTML for a QC-failed chart.
-
-    Failed charts in the session folder mislead reports / dashboards /
-    session reloads; the cleanup keeps the folder honest.
-    """
-    for path_attr in ("png_path", "editor_html_path"):
-        path = getattr(result, path_attr, None)
-        if path and hasattr(s3_manager, "delete"):
-            try:
-                s3_manager.delete(path)
-            except Exception as exc:  # noqa: BLE001
-                # Cleanup is best-effort; a deletion failure isn't
-                # fatal -- the QC-failed chart already has
-                # success=False and won't be referenced downstream.
-                if hasattr(result, "warnings"):
-                    result.warnings.append(
-                        f"Cleanup failed for {path_attr} ({path}): {exc}"
-                    )
 
 
 # --- Batch helpers --------------------------------------------------------
@@ -14404,15 +14898,14 @@ def render_all(
     charts: List[Chart],
     *,
     save_prefix: Optional[str] = None,
-    run_qc: bool = True,
-    cleanup_on_qc_fail: bool = True,
     verbose: bool = True,
 ) -> List[ChartResult]:
     """Render N independent charts (NOT a composite).
 
     Use when you want N standalone PNGs, not a packed grid. Each
     Chart renders to its own PNG via the same pipeline; URLs print
-    individually.
+    individually. QC happens automatically post-script (see
+    ``Chart.render``).
 
     Args:
         save_prefix: When set, each chart saves to
@@ -14428,8 +14921,6 @@ def render_all(
             save_as = f"{save_prefix}/{i:02d}_{slug}.png"
         out.append(chart.render(
             save_as=save_as,
-            run_qc=run_qc,
-            cleanup_on_qc_fail=cleanup_on_qc_fail,
             verbose=verbose,
         ))
     return out

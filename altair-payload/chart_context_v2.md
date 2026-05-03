@@ -10,9 +10,8 @@
 
 `Chart` is the single builder for both standalone and composite use;
 `render_grid` lays multiple `Chart` objects out into one of six
-geometric layouts. Quality control, S3 cleanup, and download-URL
-printing are absorbed into the render path -- you build the chart,
-the engine handles the plumbing.
+geometric layouts. Download-URL printing is absorbed into the render
+path -- you build the chart, the engine handles the plumbing.
 
 `Chart`, `render_grid`, the annotation classes, and `profile_df` are
 auto-injected into `execute_analysis_script()`. Raw matplotlib is
@@ -24,13 +23,14 @@ blocked. Do NOT import chart functions.
 
 | Primitive | Names | Where |
 |---|---|---|
-| Chart types (12) | `multi_line`, `scatter`, `scatter_multi`, `bar`, `bar_horizontal`, `heatmap`, `histogram`, `boxplot`, `area`, `donut`, `bullet`, `waterfall` | §5 |
+| Chart types (12) | `multi_line`, `scatter`, `scatter_multi`, `bar`, `bar_horizontal`, `heatmap`, `histogram`, `boxplot`, `area`, `donut`, `bullet`, `waterfall` | §6 |
 | Encoding kwargs | flat kwargs on `Chart(...)` | §2 |
-| Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §6 |
-| Layouts (6) | `'auto'`, `'1x2'`, `'2x1'`, `'2x2'`, `'3x2'`, `'triangle'` | §4 |
+| Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §7 |
+| Layouts (6) | `'auto'`, `'1x2'`, `'2x1'`, `'2x2'`, `'3x2'`, `'triangle'` | §5 |
 | Skin (1, only published) | `gs_clean` | §2 |
 | Intent values (3) | `'explore'`, `'publish'`, `'monitor'` | §2 |
-| Layer types (3) | `regression`, `rule`, `point` | §6.5 |
+| Layer types (3) | `regression`, `rule`, `point` | §7.5 |
+| Freeform-analysis defaults (3) | scatter, change-space dual-axis, lead-lag | §4 |
 
 Canvas size is auto-picked by the engine per chart type and per
 composite layout. PRISM does not pick or pass a `dimensions` value.
@@ -91,8 +91,8 @@ result = chart.render(save_as='charts/cpi.png')
 | Kwarg | Type | Default | Notes |
 |---|---|---|---|
 | `title` / `subtitle` | str | None | Title required for production; never use subtitle for source attribution |
-| `annotations` | list | None | See §6 |
-| `layers` | list[dict] | None | Regression / rule / point overlays; see §6.5 |
+| `annotations` | list | None | See §7 |
+| `layers` | list[dict] | None | Regression / rule / point overlays; see §7.5 |
 | `caption` / `side_left` / `side_right` | str or dict | None | Text panels |
 | `skin` | str | `'gs_clean'` | Only published skin |
 | `intent` | str | `'explore'` | `'explore'` / `'publish'` / `'monitor'` |
@@ -102,11 +102,11 @@ result = chart.render(save_as='charts/cpi.png')
 
 | Method | Returns | Purpose |
 |---|---|---|
-| `chart.render(save_as=None, *, run_qc=True, verbose=True)` | `ChartResult` | Build + QC + URL printing |
+| `chart.render(save_as=None, *, verbose=True)` | `ChartResult` | Build + upload + URL printing |
 | `chart.preview()` | `dict` (Vega-Lite spec) | Inspect spec without writing PNG |
 | `chart.annotate(*anns)` | `self` | Append annotations in place |
 | `chart.layer(*layer_dicts)` | `self` | Append overlay layers in place |
-| `chart.with_data(df)` | new `Chart` | Copy with data replaced (templates; see §13) |
+| `chart.with_data(df)` | new `Chart` | Copy with data replaced (templates; see §14) |
 | `chart.with_title(title, subtitle=None)` | new `Chart` | Copy with title replaced |
 
 ### `ChartResult` (dataclass, NOT dict)
@@ -118,7 +118,7 @@ Access via dot notation only (`result.png_path`, never `result['png_path']`).
 | `png_path` / `download_url` | PNG S3 path / presigned URL |
 | `editor_html_path` / `editor_download_url` | Chart Center HTML / presigned URL |
 | `vegalite_json` | Final Vega-Lite spec dict |
-| `success` / `error_message` | Render+QC succeeded? + error details |
+| `success` / `error_message` | Render succeeded? + error details |
 | `warnings` | Non-fatal (auto-melt, downsample, ...) |
 
 `CompositeResult` (returned by `render_grid`) adds `layout`,
@@ -128,14 +128,9 @@ Access via dot notation only (`result.png_path`, never `result['png_path']`).
 
 ## 3. Render contract
 
-`Chart.render()` and `render_grid()` automatically run Gemini-vision
-QC over the rendered PNG, delete failed charts from S3 (so the
-session folder never accumulates rejects), and print PNG + Chart
-Center URLs to stdout. PRISM does NOT write `check_charts_quality()`,
-`s3_manager.delete()`, or URL prints.
-
-Opt-out flags (rare): `run_qc=False`, `cleanup_on_qc_fail=False`,
-`verbose=False`.
+`Chart.render()` and `render_grid()` build the PNG + Chart Center
+HTML, upload to S3, and print URLs to stdout. PRISM does not write
+URL prints -- the engine handles them.
 
 ### Delivering URLs to the user (mandatory)
 
@@ -156,7 +151,49 @@ If `result.success=False`, do NOT include the chart in the reply; say
 
 ---
 
-## 4. Composites: `render_grid`
+## 4. Freeform analysis defaults: target relationship charts
+
+When the user asks for "analysis", "what's interesting", or
+otherwise hands PRISM the chart-type pick (no chart type implied by
+the prompt), lean toward charts that DEMONSTRATE A RELATIONSHIP
+between variables. A single-series time series narrates what
+happened; a relationship chart argues what RELATES.
+
+| Shape | Use case | Build with |
+|---|---|---|
+| Scatter (+ trendline) | Direct X-Y relationship: is X correlated with Y? Shows shape (linear / log / hump), strength (tight cloud vs loose), and outliers in one frame | `Chart(df, type='scatter', x=..., y=..., trendline=True)`. For per-group fits use `type='scatter_multi'` + `color=...` + `trendlines=True` |
+| Dual-axis multi_line in change space | Co-movement over time: do X and Y move together? Both columns transformed to the SAME change measure (YoY %, MoM %, log-diff) BEFORE charting so magnitudes line up; dual axes preserve per-series scale while the eye lands on co-movement | `Chart(df_long, type='multi_line', x='date', y='value', color='series', dual_axis_series=[...])` -- see §9 for the long-format declaration. Levels-on-dual-axis is a weaker default than change-space-on-dual-axis when the question is correlation |
+| Lead-lag | Does X anticipate Y? Either as scatter (`Y_t` vs `X_{t-N}`) or as dual-axis line with one series shifted on the time axis | Scatter form: `df['x_lagged'] = df['x'].shift(N)` then plot `y` vs `x_lagged`. Time-shift form: `.shift(-N)` one series, rebuild long-format DataFrame, dual-axis line. Sweep N (1, 3, 6, 12 periods for monthly) when the lag is unknown -- one chart per N, then `render_grid([..])` to compose |
+
+Anti-pattern: a single-series `multi_line` of one variable across
+time when the question was "is anything happening?" That shape
+narrates one series' trajectory; it does not argue any relationship.
+Use single-series only when the question is genuinely about that one
+series.
+
+The engine rejects scatters that would render < 8 distinct (x, y)
+coords inside the visible plot region (sparse scatter reads as
+anecdote, not pattern). If `result.success=False` mentions
+"distinct dot(s) inside the visible plot area", expand the data
+window, disaggregate, or switch to a chart type that suits sparse
+data (e.g. `bar`, `multi_line`).
+
+Pair the relationship shape with a 2-panel composite by default
+(see §5): scatter + supporting time series, level + change,
+US + EU, lead-lag at two horizons, point estimate + range. 2 panels
+is the argument sweet spot -- 1 reads as anecdote, 4+ reads as a
+dashboard.
+
+For correlation-on-time-series stories where the two series have
+very different magnitudes (gold + WTI; equity + yield) or sit at
+clustered-but-different levels (FCI components 30 / 60 / 10), the
+engine REJECTS the single-y-axis `multi_line` rather than letting
+one series flatten -- pick a 2-pack composite OR a dual-axis with
+`dual_axis_series=[...]` instead. See §9.
+
+---
+
+## 5. Composites: `render_grid`
 
 ```python
 result = render_grid(
@@ -174,11 +211,11 @@ result = render_grid(
 
 | Layout | Charts | Use case |
 |---|---|---|
-| `'1x2'` | 2 side-by-side | US vs EU comparison |
-| `'2x1'` | 2 stacked | Level + decomposition |
-| `'2x2'` | 4 in 2x2 | Regional 4-panel |
-| `'triangle'` | 3 (1 top, 2 bottom) | Headline + 2 supporting |
-| `'3x2'` | 6 in 3x2 | Sector / macro dashboard |
+| `'1x2'` (**argument default**) | 2 side-by-side | Compare / contrast: US vs EU, scatter + supporting time series, level + range |
+| `'2x1'` (**argument default**, vertical) | 2 stacked | Level + decomposition; level + change; chart + commentary |
+| `'triangle'` | 3 (1 top, 2 bottom) | Headline + 2 supporting -- when one comparison would lose context |
+| `'2x2'` | 4 in 2x2 | Regional / sector / scenario grid where the grid IS the point |
+| `'3x2'` | 6 in 3x2 | True dashboards (cross-asset / cross-region monitor); not for arguments |
 | `'auto'` | 2, 3, 4, or 6 | Layout inferred from `len(charts)` |
 
 For 5 or 7+ charts, `'2x2'` / `'3x2'` with one purposeful blank
@@ -186,9 +223,19 @@ panel, OR rethink the composition.
 
 ### Composite rules
 
+- **2 panels (`'1x2'` or `'2x1'`) is the default composite shape
+  for making an argument.** One chart is a narrative; 4+ panels
+  read as a dashboard (audience attention splits, through-line
+  dilutes). 2 panels lets the eye land on ONE comparison: US vs EU,
+  level vs change, before vs after, scatter + supporting time
+  series, lead-lag at two horizons. Reach for `'2x2'` / `'3x2'`
+  only when the topic genuinely demands a grid (regional / sector
+  breakdown, true dashboards), and `'triangle'` when there's one
+  headline plus two supporting angles.
 - Default to a composite when there's more than one related story
   (US vs EU, level vs change, regional grid). Single charts only for
-  unrelated topics.
+  unrelated topics or when the question is genuinely about one
+  series' trajectory.
 - Per-panel titles live on each `Chart`; `render_grid(title=...)`
   describes the whole pack.
 - Per-panel scales / palettes resolve independently.
@@ -206,9 +253,9 @@ panel, OR rethink the composition.
 
 ---
 
-## 5. Chart types
+## 6. Chart types
 
-### 5.1 Type catalog
+### 6.1 Type catalog
 
 | Type | Use case | Required encoding |
 |---|---|---|
@@ -228,7 +275,7 @@ panel, OR rethink the composition.
 `multi_line` auto-detects non-datetime x-axis -> ordinal mode. Tenor
 values (`1M`, `2Y`, `10Y`) auto-sort by maturity.
 
-### 5.2 Bar family
+### 6.2 Bar family
 
 `stack=True` (default with color) sums components into a stacked
 total. `stack=False` produces grouped bars. Use stacked for
@@ -241,7 +288,7 @@ Annotation compatibility: single-series and stacked bars accept
 (`stack=False`) do NOT render annotations -- convey thresholds via
 title / subtitle, or switch to `stack=True`.
 
-### 5.3 Heatmap
+### 6.3 Heatmap
 
 Continuous values must be binned to <=12 categories before charting:
 
@@ -258,7 +305,7 @@ Chart(df, type='heatmap',
 Matrix-shape DataFrames (correlation / distance matrices) auto-melt
 internally when `x` and `y` are `'columns'` / `'index'`.
 
-### 5.4 Bullet
+### 6.4 Bullet
 
 Current values within historical ranges; marker color encodes
 severity via z-score or percentile.
@@ -270,7 +317,7 @@ Chart(df, type='bullet',
       color_by='z_score', label='percentile')
 ```
 
-### 5.5 Waterfall
+### 6.5 Waterfall
 
 Additive decomposition (CPI / GDP, P&L, FCI impulse). `type_col` is
 optional -- if absent, first / last rows are totals, intermediates
@@ -283,7 +330,7 @@ Chart(df, type='waterfall',
       y_title='CPI YoY (%)')
 ```
 
-### 5.6 Haver frequency hygiene
+### 6.6 Haver frequency hygiene
 
 Haver stores many monthly / quarterly series at business-daily
 granularity (same value repeated ~22 days). Symptom: stair-step
@@ -300,9 +347,9 @@ everything to the lowest common frequency before `concat` / `merge`.
 
 ---
 
-## 6. Annotations & layers
+## 7. Annotations & layers
 
-### 6.1 The "is this annotation worth it?" filter
+### 7.1 The "is this annotation worth it?" filter
 
 Annotations must be EXTREMELY useful and core to the chart's
 argument -- otherwise omit. Default to zero annotations; add one
@@ -320,11 +367,13 @@ annotations = [
 ]
 ```
 
-### 6.2 Anti-patterns (DO NOT)
+### 7.2 Anti-patterns (DO NOT)
 
 | Anti-pattern | Why trivial |
 |---|---|
-| `HLine(y=0)` on a spread chart | y-axis already shows zero |
+| `HLine(y=0, ...)` on any chart (with or without label) | y-axis grid line at zero is the implicit baseline; engine drops the rule AND any label silently. Same for `Segment(y1=0, y2=0)`. If zero matters narratively, put it in the title / subtitle. |
+| `Segment(x1=v, y1=v, x2=w, y2=w)` "y=x / 45-degree / identity" line on a scatter | Macro / rates scatter axes are in different units (bp vs %, dollars vs index points) — `y=x` has no analytical meaning AND the endpoints stretch the chart frame, creating whitespace. Engine drops it silently on `scatter` / `scatter_multi`. Use `trendline=True` for a regression overlay. |
+| Any annotation with a coordinate outside the visible plot domain — `Band(y1, y2)` with one edge above the data; `Segment` / `Arrow` endpoint outside; `PointLabel` / `PointHighlight` / `Callout` at an off-data coord | Vega-Lite's shared scale expands to include the offending coord, stretching the chart frame and pushing the title up. Engine drops the annotation silently on single-axis charts (10% padding for point-style; strict bounds for Band / Segment / Arrow). For "highlight above X" patterns clamp the band's upper edge to `df['value'].max()` instead of an arbitrary upper bound; for narrative thresholds outside the data use title / subtitle. |
 | `HLine(y=2.0, label='Fed target')` on inflation | Every reader knows it; use the title |
 | `HLine(y=last_value)` | `LastValueLabel` already does this |
 | `VLine` at right edge labeled "Today" | The right edge IS today |
@@ -333,7 +382,7 @@ annotations = [
 | Round-number threshold lines (`HLine(y=50)`) | No info unless it's a policy / regime level |
 | Multiple annotations crowding < 6 months | Pick one; demote rest to subtitle |
 
-### 6.3 Annotation parameters
+### 7.3 Annotation parameters
 
 | Class | Key parameters |
 |---|---|
@@ -353,7 +402,7 @@ All classes inherit `label` and `label_color` from base `Annotation`.
 Use `style=` or `stroke_dash=` for dash patterns -- there is no
 `dash` / `linestyle` parameter.
 
-### 6.4 Chart-type compatibility
+### 7.4 Chart-type compatibility
 
 Rule-style annotations (`HLine`, `VLine`, `Band`, `Callout`,
 `PointLabel`, `PointHighlight`) are silently dropped on non-Cartesian
@@ -361,7 +410,7 @@ chart types (`donut`, `pie`, `bullet`) -- use `title` / `subtitle`
 instead. `LastValueLabel` only on `multi_line` / `area`; `Trendline`
 only on scatter.
 
-### 6.5 Layers
+### 7.5 Layers
 
 ```python
 layers = [
@@ -376,7 +425,7 @@ for regression / rule / secondary-point overlays.
 
 ---
 
-## 7. Authoring rules
+## 8. Authoring rules
 
 - **Max 4 lines per `multi_line`.** For >4 series, use `render_grid`.
 - **`y_title` plain English, max 16 chars.** Always set if column name
@@ -396,7 +445,7 @@ for regression / rule / secondary-point overlays.
 
 ---
 
-## 8. Dual-axis charts
+## 9. Dual-axis charts
 
 Use when two series belong on the same chart but have different
 scales (equity index vs ISM, 2s10s vs WTI). The reader's eye lands
@@ -432,6 +481,25 @@ values in right-axis units. `Trendline` does NOT apply on dual-axis;
 for trendline-on-dual-axis stories, build single-axis charts and
 combine via `render_grid([..], layout='2x1')`.
 
+**Engine y-scale flatness gate.** The engine REJECTS multi-series
+single-y-axis `multi_line` / `timeseries` charts where any series
+would compress below 10% of the visible y-axis span (would read as a
+flat horizontal rail). Canonical triggers: gold + WTI on one axis
+($2000 vs $70 → WTI ~2% of span), FCI components clustered at
+disparate levels (e.g. 30 / 60 / 10 with small per-series variation),
+equity index + 2Y yield. When `result.success=False` mentions
+`Y-AXIS SCALE MISMATCH`, three reshape options -- pick by series
+count and intent:
+
+| Fix | Best when |
+|---|---|
+| **2-panel composite** (`render_grid([c1, c2], layout='1x2')` or `'2x1'`) | 2 series with disparate magnitudes; each panel gets its own y-axis. Canonical fix for gold + WTI. |
+| **Dual-axis** -- route the smallest-scale series to a right axis via `dual_axis_series=['<name>']` + `y_title_right='...'` | 2-3 series where the argument is co-movement of differently-scaled shapes |
+| **Normalize** -- z-score, rebase-to-100, or pct-change every series before plotting | 3+ series; loses absolute level but preserves co-movement on one comparable scale |
+
+The error message names the smallest-scale series and provides the
+exact `dual_axis_series=[...]` payload to drop in.
+
 When NOT to use dual-axis:
 
 | Intent | Better shape |
@@ -440,9 +508,14 @@ When NOT to use dual-axis:
 | 3+ series with scale problems | z-score normalize, single axis with `multi_line` |
 | Per-series regime annotations | `multi_line` per series in `render_grid` |
 
+For freeform-analysis correlation stories, prefer dual-axis with
+both series in CHANGE SPACE (YoY %, MoM %, log-diff) over levels --
+levels with disparate magnitudes obscure co-movement, change space
+puts both in the same dimensional space. See §4.
+
 ---
 
-## 9. `profile_df`: pre-charting analysis
+## 10. `profile_df`: pre-charting analysis
 
 ```python
 profile = profile_df(df)
@@ -457,7 +530,7 @@ Returns a `DataProfile` dataclass; `.to_dict()` to serialise.
 
 ---
 
-## 10. Chart Center
+## 11. Chart Center
 
 Every successful render produces a Chart Center HTML editor on
 `result.editor_download_url`: ~140 editable knobs (themes, palettes,
@@ -474,7 +547,7 @@ the **narrative** (title, subtitle).
 
 ---
 
-## 11. Chart time horizon
+## 12. Chart time horizon
 
 | Frequency | Default | Use case |
 |---|---|---|
@@ -492,18 +565,18 @@ X"), use Long (20-50y) regardless of frequency.
 
 ---
 
-## 12. Failure transparency
+## 13. Failure transparency
 
 Never silently substitute a different layout or rationalise it. If a
 requested shape isn't feasible, tell the user and offer alternatives.
 Max 2 retries per chart concept; after 2 failures, deliver the best
-version with a note OR ask the user. Build / QC failure details land
+version with a note OR ask the user. Build failure details land
 in `result.error_message`, `result.warnings`, and (composites)
 `result.chart_errors`.
 
 ---
 
-## 13. Template pattern
+## 14. Template pattern
 
 Build a `Chart` once, swap the data per render. Annotations / titles
 / encoding kwargs all carry over via `with_data` / `with_title`.

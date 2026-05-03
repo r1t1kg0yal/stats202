@@ -116,30 +116,38 @@ acceptable; showing a failed one is not.
 
 ---
 
-## 3. Design defaults: compose + annotate
+## 3. Design defaults: compose + annotate + relate
 
-Two LLM-default behaviours that distinguish a published chart from
-a data dump. Apply both unless the user has explicitly asked otherwise.
+Three LLM-default behaviours that distinguish a published chart from
+a data dump. Apply unless the user has explicitly asked otherwise.
 
 ### 3.1 Default to a composite when there's more than one story
 
 If the data tells more than one related story (regional split,
-level vs change, before/after, mixed chart types), reach for
-`make_2pack_horizontal` / `make_2pack_vertical` /
-`make_3pack_triangle` / `make_4pack_grid` / `make_6pack_grid`
-BEFORE producing multiple standalone PNGs. Single PNG, single QC
-call, per-panel scales / palettes independent. Up to N-1 sub-charts
-can fail and survivors still render.
+level vs change, before/after, mixed chart types), reach for a
+composite BEFORE producing multiple standalone PNGs. Single PNG,
+single QC call, per-panel scales / palettes independent. Up to
+N-1 sub-charts can fail and survivors still render.
 
-| Shape | Layout |
-|---|---|
-| 2-3 related angles | `make_2pack_horizontal` / `_vertical` |
-| 4 panels (regional / sector grid) | `make_4pack_grid` |
-| 1 headline + 2 supporting | `make_3pack_triangle` |
-| 6-panel dashboard | `make_6pack_grid` |
-| 9+ series | aggregate / group, or `heatmap` |
+**2-panel side-by-side is the default composite shape for making
+an argument.** One chart is a narrative (a single observation);
+4+ panels become a dashboard (audience attention splits across
+panels and the through-line dilutes). 2 panels lets the eye land
+on ONE comparison: US vs EU, level vs change, before vs after,
+scatter + supporting time series, lead-lag at two horizons.
+Reach for the larger composites only when the topic genuinely
+demands them.
 
-Single charts only for genuinely unrelated topics or when the user
+| Shape | Layout | Use case |
+|---|---|---|
+| **2 panels (default for arguments)** | `make_2pack_horizontal` / `_vertical` | Compare / contrast: US vs EU, level + change, scatter + supporting time series, before vs after, point estimate + range |
+| 1 headline + 2 supporting | `make_3pack_triangle` | One main chart with two supporting angles -- when one comparison would lose context |
+| 4 panels | `make_4pack_grid` | Regional / sector / scenario grid where each panel adds an independent fact and the grid IS the point |
+| 6-panel dashboard | `make_6pack_grid` | True dashboards (cross-asset / cross-region monitor); not for arguments |
+| 9+ series | aggregate / group, or `heatmap` | Too many for any panel-based composite |
+
+Single charts only for genuinely unrelated topics, when the
+question is about one series' trajectory, or when the user
 explicitly asked for one. Composite design depth (`ChartSpec`,
 per-panel mapping rules, common patterns): see §10.
 
@@ -168,6 +176,46 @@ it?" filter + chart-type compatibility: see §8.
 A chart with no annotation is appropriate when the user asked for a
 clean reference plot OR the purpose is exploratory (looking for
 patterns rather than arguing for one). Otherwise, annotate.
+
+### 3.3 Default to relationship charts in freeform analysis
+
+When the user asks for "analysis", "what's interesting", or
+otherwise hands PRISM the chart-type pick (no `chart_type` specified
+and no shape implied by the prompt), lean toward charts that
+DEMONSTRATE A RELATIONSHIP between variables. A single time series
+of one variable narrates what happened; a relationship chart argues
+what RELATES. The three go-to shapes:
+
+| Shape | Use case | Reach for |
+|---|---|---|
+| Scatter (+ trendline) | Direct X-Y relationship: is X correlated with Y? Shows shape (linear / log / hump), strength (tight cloud vs loose), and outliers in one frame | `chart_type='scatter'` + `mapping['trendline']=True`. For per-group fits use `chart_type='scatter_multi'` + `color=...` + `mapping['trendlines']=True` |
+| Dual-axis multi_line in change space | Co-movement over time: do X and Y move together? Both columns transformed to the SAME change measure (YoY %, MoM %, log-diff) BEFORE charting so magnitudes line up; dual axes preserve the per-series scale while the eye lands on co-movement | `chart_type='multi_line'` + `mapping['dual_axis_series']=[...]`. See §9 for the long-format declaration pattern. Levels-on-dual-axis is a weaker default than change-space-on-dual-axis when the question is correlation |
+| Lead-lag | Does X anticipate Y? Either as scatter (`Y_t` vs `X_{t-N}`) or as dual-axis line with one series shifted on the time axis | Scatter form: `df['x_lagged'] = df['x'].shift(N)` then plot `y` vs `x_lagged`. Time-shift form: `.shift(-N)` one series and rebuild the long-format DataFrame, then dual-axis line. Sweep N (1, 3, 6, 12 periods for monthly data) when the lag is unknown -- one chart per N, then `make_*pack_*` to compose |
+
+Anti-pattern: a single-series `multi_line` of one variable across
+time when the question was "is anything happening?" That shape tells
+the user what happened, not what relates. Use it only when the
+question is about a single series' trajectory.
+
+The engine rejects scatters that would render < 8 distinct (x, y)
+coords inside the visible plot region (sparse scatter reads as
+anecdote, not pattern). If `make_chart()` returns
+`success=False, error_message=...` mentioning "distinct dot(s)
+inside the visible plot area", expand the data window, disaggregate,
+or switch to a chart type that suits sparse data.
+
+Pair the relationship shape with a 2-panel composite by default
+(see §3.1): scatter + supporting time series, level + change,
+US + EU, lead-lag at two horizons, point estimate + range. 2 panels
+is the argument sweet spot -- 1 reads as anecdote, 4+ reads as a
+dashboard.
+
+For correlation-on-time-series stories where the two series have
+very different magnitudes (gold + WTI; equity + yield) or sit at
+clustered-but-different levels (FCI components 30 / 60 / 10), the
+engine REJECTS the single-y-axis `multi_line` rather than letting
+one series flatten -- pick a 2-pack composite OR a dual-axis with
+`mapping['dual_axis_series']=[...]` instead. See §9.1.
 
 ---
 
@@ -533,7 +581,9 @@ annotation?" If no, omit.
 
 | Anti-Pattern | Why It's Trivial | Do Instead |
 |---|---|---|
-| `HLine(y=0, label='Zero'/'Flat'/'Break-even')` on a spread chart | The y-axis already shows zero | Omit; call out zero-crossings in narrative if they matter |
+| `HLine(y=0, ...)` on any chart (with or without label) | The y-axis grid line at zero is the implicit baseline; an explicit rule on top adds nothing | Engine drops it silently, label included. Same applies to `Segment(y1=0, y2=0)` (windowed zero baseline). If zero matters narratively, call it out in the title / subtitle |
+| `Segment(x1=v, y1=v, x2=w, y2=w)` "y=x / 45-degree / identity" line on a scatter | PRISM's macro / rates scatters have axes in DIFFERENT units (basis points vs %, dollars vs index points) — a `y=x` line has no analytical meaning, and the endpoints typically extend outside the data range, stretching the chart frame and creating large whitespace blocks | Engine drops it silently on `scatter` / `scatter_multi`, label included. Use `Trendline` (or `mapping['trendline']=True`) for a regression overlay, or an `HLine` at a meaningful threshold |
+| Any annotation whose data coordinate falls outside the visible plot domain — `Band(y1=A, y2=B)` with one edge above the data, `Segment` / `Arrow` with an endpoint above the data, `PointLabel` / `PointHighlight` / `Callout` at an off-data coordinate | Vega-Lite's shared scale expands to include the offending coordinate, stretching the chart frame and pushing the title up to make room | Engine drops the annotation silently. Keep all annotation coordinates inside the data range; for narrative thresholds outside the data, use the title / subtitle. For full-axis horizontal lines use `HLine` (drops if `y` is outside but doesn't stretch). For "highlight a band above X" patterns, clamp the band's upper edge to the data's max — `Band(y1=X, y2=df['value'].max())` — instead of using an arbitrary upper bound |
 | `HLine(y=2.0, label='Fed 2% Target')` on inflation chart | Every macro reader knows the 2% target | Use the title: "Core PCE Still 80bp Above Target" |
 | `HLine(y=last_value)` to label the latest reading | `LastValueLabel` already does this | Use `LastValueLabel(show_value=True)` |
 | `VLine` at the latest data point labeled "Today" / "Now" | The chart's right edge IS today | Omit |
@@ -616,6 +666,16 @@ result = make_chart(
     title='Equities Track Manufacturing',
 )
 ```
+
+**Engine y-scale flatness gate.** The engine REJECTS multi-series single-y-axis `multi_line` / `timeseries` charts where any series would compress below 10% of the visible y-axis span (would read as a flat horizontal rail). Canonical triggers: gold + WTI on one axis ($2000 vs $70 → WTI ~2% of span), FCI components clustered at disparate levels (e.g. 30 / 60 / 10 with small per-series variation), equity index + 2Y yield. When `make_chart()` returns `success=False` with `error_message` starting `Y-AXIS SCALE MISMATCH`, three reshape options — pick by series count and intent:
+
+| Fix | Best when |
+|---|---|
+| **2-panel composite** (`make_2pack_horizontal` / `_vertical`) | 2 series with disparate magnitudes; each panel gets its own y-axis. Canonical fix for gold + WTI. |
+| **Dual-axis** — route the smallest-scale series to a right axis via `mapping['dual_axis_series']=['<name>']` + `mapping['y_title_right']='...'` | 2-3 series where the argument is co-movement of differently-scaled shapes |
+| **Normalize** — z-score, rebase-to-100, or pct-change every series before plotting | 3+ series; loses absolute level but preserves co-movement on one comparable scale |
+
+The error message names the smallest-scale series and provides the exact `dual_axis_series=[...]` payload to drop in.
 
 ### 9.2 Series-name discipline
 

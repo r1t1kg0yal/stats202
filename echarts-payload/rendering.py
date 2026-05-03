@@ -2169,7 +2169,7 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
 
 /* chart tile */
 .chart-tile .tile-body { padding: 6px 8px 8px; }
-.chart-div { width: 100%; min-height: 240px; }
+.chart-div { width: 100%; min-height: 320px; }
 
 /* chart controls drawer
    Lives between the tile header and the chart canvas. Closed by
@@ -13321,7 +13321,18 @@ def _tile_footer_html(w: Dict[str, Any]) -> str:
 
 def _render_chart_widget(w: Dict[str, Any], cols: int,
                           wid: str, style: str) -> str:
-    height = int(w.get("h_px", 280))
+    # Layout-aware default height: 3-up chart tiles (w=cols//3) sit
+    # at ~1/3 of the viewport width, so 360px keeps the aspect ratio
+    # readable; 2-up tiles (w=cols//2) sit at ~1/2 viewport width and
+    # need 400px to avoid the squashed-ribbon look (where slope-zero
+    # white space dominates the canvas). The validator rejects any
+    # other chart width, so widget-width falls into one of these two
+    # buckets in practice. The same w-default (cols//2) is used here
+    # as in the validator -- an omitted w is legal and tile-sized
+    # for 2-up. Authors can still override with explicit h_px.
+    wval = w.get("w", cols // 2)
+    default_h = 400 if isinstance(wval, int) and wval >= cols // 2 else 360
+    height = int(w.get("h_px", default_h))
     cls = _tile_class(w, "tile chart-tile")
     # The controls drawer container is always emitted; the JS
     # populates it lazily on first toggle and the CSS hides it
@@ -15046,8 +15057,13 @@ def save_dashboard_pngs(
                 # already provides one (raw option / ref passthrough).
                 opt = json.loads(json.dumps(opt))
                 opt, title_px = _inject_widget_title_into_option(opt, w)
-                height = int(w.get("h_px", 320)) + title_px
                 w_cols = int(w.get("w", cols))
+                # Same layout-aware default as the HTML render path
+                # (_render_chart_widget): 400 for 2-up tiles, 360 for
+                # 3-up. Keeps the PNG export and the on-screen tile
+                # at the same aspect ratio.
+                _default_h = 400 if w_cols >= cols // 2 else 360
+                height = int(w.get("h_px", _default_h)) + title_px
                 width = max(
                     min_width,
                     _cell_px(w_cols, container_px, cols, gap_px),

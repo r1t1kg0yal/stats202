@@ -46,15 +46,22 @@ Example: JSON-first (PRISM's preferred shape)
         "kind": "tabs",
         "tabs": [{
           "id": "overview", "label": "Overview",
-          "rows": [[{
-            "widget": "chart", "id": "curve", "w": 12,
-            "spec": {
-              "chart_type": "multi_line",
-              "dataset": "rates",
-              "mapping": {"x": "date", "y": ["us_2y", "us_10y"]},
-              "title": "UST curve"
-            }
-          }]]
+          "rows": [[
+            {"widget": "chart", "id": "curve", "w": 6,
+             "spec": {
+               "chart_type": "multi_line",
+               "dataset": "rates",
+               "mapping": {"x": "date", "y": ["us_2y", "us_10y"]},
+               "title": "UST curve"
+             }},
+            {"widget": "chart", "id": "spread", "w": 6,
+             "spec": {
+               "chart_type": "line",
+               "dataset": "rates",
+               "mapping": {"x": "date", "y": "2s10s"},
+               "title": "2s10s"
+             }},
+          ]]
         }]
       }
     }
@@ -75,11 +82,15 @@ Example: Python builder
           .add_filter(GlobalFilter(id="lookback", type="dateRange",
                                     default="6M", targets=["*"]))
           .add_row([
-              ChartRef(id="curve", w=12,
+              ChartRef(id="curve", w=6,
                         spec={"chart_type": "multi_line",
                               "dataset": "rates",
                               "mapping": {"x": "date",
                                           "y": ["us_2y", "us_10y"]}}),
+              ChartRef(id="spread", w=6,
+                        spec={"chart_type": "line",
+                              "dataset": "rates",
+                              "mapping": {"x": "date", "y": "2s10s"}}),
           ]))
     r = db.build(session_path="sessions/demo")
 """
@@ -672,6 +683,30 @@ def _validate_chart_widget(w: Dict[str, Any], wbase: str,
             errs.append(_err(f"{wbase}.spec.mapping", "required"))
         elif not isinstance(spec["mapping"], dict):
             errs.append(_err(f"{wbase}.spec.mapping", "must be a dict"))
+        # Line-shaped y-series cardinality cap (wide-form: mapping.y is
+        # a list). Long-form (mapping.y scalar + mapping.color column)
+        # fires from chart_data_diagnostics once the DataFrame is
+        # materialised. Always-blocking via _err in validate_manifest.
+        if (ct in _LINE_SHAPED_CHART_TYPES
+                and isinstance(spec.get("mapping"), dict)):
+            mapping = spec["mapping"]
+            y = mapping.get("y")
+            if isinstance(y, list) and len(y) > _MAX_LINE_SERIES:
+                wid_repr = f" id='{w.get('id')}'" if w.get('id') else ""
+                errs.append(_err(
+                    f"{wbase}.spec.mapping.y",
+                    f"chart_too_many_series: chart_type '{ct}'{wid_repr} "
+                    f"has {len(y)} y-series ({y!r}); cap is "
+                    f"{_MAX_LINE_SERIES}. Too many overlaid lines "
+                    f"crowd the legend, break color discrimination, "
+                    f"and make any single series untraceable across "
+                    f"the canvas. Drop to <= {_MAX_LINE_SERIES} "
+                    f"series, split into small multiples (separate "
+                    f"widgets, one per category or paired theme), or "
+                    f"pivot to a different framing (Index=100 "
+                    f"normalisation, correlation_matrix, "
+                    f"aggregate stat_grid)."
+                ))
         palette = spec.get("palette")
         if palette:
             from config import PALETTES
@@ -740,6 +775,33 @@ def _validate_kpi_widget(w: Dict[str, Any], wbase: str,
     for req in ("label",):
         if req not in w:
             errs.append(_err(f"{wbase}.{req}", f"required for kpi"))
+    # Rule 1: every visible number must trace to ``pull_data.py`` output.
+    # KPIs must be data-bound -- ``source`` is the canonical wire to a
+    # ``manifest.datasets`` entry; hand-typed ``value`` without ``source``
+    # ships stale on the next refresh because the runner's re-exec of
+    # build.py won't touch it. Build-time computation IS allowed (build.py
+    # reads CSV -> writes manifest.datasets[<key>] -> KPI references via
+    # source) -- the rule rejects only the ``value``-without-``source``
+    # shape that bypasses the data layer entirely.
+    has_source = bool(w.get("source"))
+    if not has_source and "value" in w:
+        errs.append(_err(
+            f"{wbase}.value",
+            "kpi_static_value_forbidden: KPI has 'value' but no "
+            "'source'; hand-typed static values do not refresh when "
+            "pull_data.py reruns. Wire to a dataset: source=\""
+            "<dataset>.<aggregator>.<col>\" "
+            "(see dashboards/widgets.md \u00a72 KPI aggregators). If the "
+            "number isn't already in a CSV, add a column to "
+            "pull_data.py first (Rule 1)."
+        ))
+    elif not has_source and "value" not in w:
+        errs.append(_err(
+            f"{wbase}.source",
+            "kpi requires 'source' (canonical, data-bound). Set "
+            "source=\"<dataset>.<aggregator>.<col>\" so the value "
+            "refreshes with pull_data.py."
+        ))
 
 
 def _validate_table_widget(w: Dict[str, Any], wbase: str,
@@ -877,7 +939,9 @@ def _validate_pivot_widget(w: Dict[str, Any], wbase: str,
 
 def _validate_stat_grid_widget(w: Dict[str, Any], wbase: str,
                                  errs: List[str], dataset_names: Any) -> None:
-    """Validate a ``widget: stat_grid`` entry."""
+    """Validate a ``widget: stat_grid`` entry. Each stat item must be
+    data-bound (Rule 1) -- ``source`` required, ``value``-without-
+    ``source`` rejected with ``stat_grid_static_value_forbidden``."""
     stats = w.get("stats")
     if not isinstance(stats, list) or not stats:
         errs.append(_err(f"{wbase}.stats",
@@ -889,10 +953,25 @@ def _validate_stat_grid_widget(w: Dict[str, Any], wbase: str,
             continue
         if "label" not in st:
             errs.append(_err(f"{wbase}.stats[{si}].label", "required"))
-        if "value" not in st and "source" not in st:
+        has_source = bool(st.get("source"))
+        if not has_source and "value" in st:
             errs.append(_err(
-                f"{wbase}.stats[{si}]",
-                "requires 'value' or 'source'"
+                f"{wbase}.stats[{si}].value",
+                "stat_grid_static_value_forbidden: stat has 'value' "
+                "but no 'source'; hand-typed static values do not "
+                "refresh when pull_data.py reruns. Wire to a dataset: "
+                "source=\"<dataset>.<aggregator>.<col>\" "
+                "(see dashboards/widgets.md \u00a76 stat_grid). "
+                "Build-time computation lands in "
+                "manifest.datasets[<key>] and the stat references "
+                "it via source."
+            ))
+        elif not has_source and "value" not in st:
+            errs.append(_err(
+                f"{wbase}.stats[{si}].source",
+                "stat requires 'source' (canonical, data-bound). "
+                "Set source=\"<dataset>.<aggregator>.<col>\" so the "
+                "value refreshes with pull_data.py."
             ))
 
 
@@ -1468,12 +1547,45 @@ def _validate_layout(manifest: Dict[str, Any],
                         ctx.chart_ids.add(wid)
                     if wt in FILTER_TARGETABLE_WIDGETS:
                         ctx.filter_target_ids.add(wid)
-                width = w.get("w", cols)
+                # Chart widgets are constrained to 2-up or 3-up of
+                # cols (i.e. exactly 1/2 or 1/3 of the row). Full-
+                # width charts flatten slopes into ribbons of zero-
+                # slope white space; unbalanced widths (w=8 of 12,
+                # etc.) crowd out the side-by-side comparison framing
+                # the dashboard idiom depends on. Other widgets
+                # (KPI strips, tables, markdown, notes, dividers) may
+                # still span any width -- they are not lossy at full
+                # width.
+                #
+                # Default ``w`` differs by widget kind: chart widgets
+                # default to ``cols // 2`` (2-up) so an omitted ``w``
+                # is legal; non-chart widgets default to full row.
+                # The chart-width rule is always-blocking via _err in
+                # validate_manifest, so the compile fails before any
+                # HTML is rendered.
+                width_default = cols // 2 if wt == "chart" else cols
+                width = w.get("w", width_default)
                 if not isinstance(width, int) or width <= 0 or width > cols:
                     errs.append(_err(f"{wbase}.w",
                                        f"width must be 1..{cols}, got {width!r}"))
                 else:
                     total_w += width
+                    if wt == "chart":
+                        legal_widths = (cols // 3, cols // 2)
+                        if width not in legal_widths:
+                            errs.append(_err(
+                                f"{wbase}.w",
+                                f"chart widget width must be "
+                                f"{legal_widths[0]} (3-up) or "
+                                f"{legal_widths[1]} (2-up) of cols="
+                                f"{cols}; got {width}. Charts may "
+                                f"never span the full row or other "
+                                f"widths. Pair the chart with a "
+                                f"companion chart, KPI strip, table, "
+                                f"or note widget so each row is "
+                                f"either 2-up (two w={legal_widths[1]} "
+                                f"widgets) or 3-up (three w="
+                                f"{legal_widths[0]} widgets)."))
                 # Generic widget knobs (apply to every widget type)
                 show_when = w.get("show_when")
                 if show_when is not None:
@@ -1863,8 +1975,8 @@ class ChartRef:
     option: Optional[Dict[str, Any]] = None    # inline raw ECharts option
     spec: Optional[Dict[str, Any]] = None      # high-level spec (compiled)
     dataset_ref: Optional[str] = None
-    w: int = 12
-    h_px: int = 320
+    w: int = 6
+    h_px: int = 400
     title: str = ""
     theme: Optional[str] = None
 
@@ -4686,6 +4798,10 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     "chart_mapping_column_all_nan",
     "chart_dataset_empty",
     "chart_build_failed",
+    # Line-shaped chart with too many overlaid series: legend crowds,
+    # color discrimination breaks, no series is traceable across the
+    # canvas. See ``_LINE_SHAPED_CHART_TYPES`` / ``_MAX_LINE_SERIES``.
+    "chart_too_many_series",
     # KPI source failures: tile renders ``--``.
     "kpi_no_value_no_source",
     "kpi_value_is_placeholder",
@@ -4694,6 +4810,13 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     "kpi_source_aggregator_unknown",
     "kpi_source_column_missing",
     "kpi_source_no_numeric_values",
+    # KPI / stat_grid hand-typed static values: do not refresh on
+    # pull_data.py rerun (Rule 1). Validator-stage codes (string-
+    # error path); kept here for documentary completeness so that
+    # any future CDD-stage emission of the same code is also
+    # always-blocking.
+    "kpi_static_value_forbidden",
+    "stat_grid_static_value_forbidden",
     # stat_grid source failures: cell renders ``--``.
     "stat_grid_source_unresolvable",
     # Table column failures: column header renders but cells are empty.
@@ -4701,6 +4824,24 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     # Filter failures: filter is a no-op (silently filters nothing).
     "filter_field_missing_in_target",
 })
+
+# -----------------------------------------------------------------------------
+# Line-shaped chart series cardinality cap
+# -----------------------------------------------------------------------------
+# Line / multi_line / area widgets with too many overlaid series collapse
+# into spaghetti: the legend wraps to multiple rows, palette colors stop
+# being distinguishable past ~5 categorical entries, and no single series
+# is traceable across the canvas. The hub's `dashboards.md` §9 anti-
+# patterns table cross-references the cap; the corrective action is to
+# drop the count, split into small multiples (one widget per category),
+# or pivot to a different framing (Index=100 normalisation,
+# correlation_matrix, aggregate stat_grid). The cap covers both wide-
+# form (``mapping.y`` as list) and long-form (``mapping.y`` scalar +
+# ``mapping.color`` column with N distinct values). Wide-form fires
+# from ``validate_manifest`` (mapping-only); long-form fires from
+# ``chart_data_diagnostics`` once the DataFrame is materialised.
+_LINE_SHAPED_CHART_TYPES: frozenset = frozenset({"line", "multi_line", "area"})
+_MAX_LINE_SERIES: int = 4
 
 # Mapping keys whose values are dataset column references (string or
 # list of strings). Anything not in this set is treated as a config
@@ -5564,6 +5705,60 @@ def _check_chart_widget(w: Dict[str, Any], path: str,
                                f"Coerce '{col}' to numeric upstream "
                                f"(replace sentinels like {samples} with "
                                f"NaN, or remap to a numeric column).")}))
+
+    # Line-shaped y-series cardinality cap (long-form: mapping.y is a
+    # scalar, mapping.color is a column with N distinct values). The
+    # wide-form variant (mapping.y is a list) fires earlier in
+    # validate_manifest. Cap is _MAX_LINE_SERIES; firing the same code
+    # in both paths gives PRISM one signal to recognise.
+    if chart_type in _LINE_SHAPED_CHART_TYPES:
+        color_col = mapping.get("color")
+        y_field = mapping.get("y")
+        is_wide = isinstance(y_field, list)
+        if (isinstance(color_col, str) and color_col in df.columns
+                and not is_wide):
+            try:
+                n_series = int(df[color_col].nunique(dropna=True))
+            except Exception:
+                n_series = 0
+            if n_series > _MAX_LINE_SERIES:
+                sample_values = sorted(
+                    set(str(v) for v in df[color_col].dropna()
+                          .astype(str).head(64))
+                )[:8]
+                out.append(Diagnostic(
+                    severity="error", code="chart_too_many_series",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.color",
+                    message=(
+                        f"chart_type '{chart_type}' grouped by "
+                        f"'{color_col}' produces {n_series} "
+                        f"distinct series; cap is "
+                        f"{_MAX_LINE_SERIES}. Too many overlaid "
+                        f"lines crowd the legend, break color "
+                        f"discrimination, and make any single "
+                        f"series untraceable across the canvas."
+                    ),
+                    context={
+                        "chart_type": chart_type,
+                        "color_column": color_col,
+                        "series_count": n_series,
+                        "max_allowed": _MAX_LINE_SERIES,
+                        "sample_values": sample_values,
+                        "fix_hint": (
+                            f"Filter the dataset to top "
+                            f"{_MAX_LINE_SERIES} by some criterion "
+                            f"(largest end-of-period magnitude, "
+                            f"alphabetical first N, peer-group "
+                            f"membership), bucket the rest into "
+                            f"'Other', split into small multiples "
+                            f"(one widget per category, paired "
+                            f"into 2-up rows), or pivot to a "
+                            f"different framing (Index=100 "
+                            f"normalisation, correlation_matrix, "
+                            f"aggregate stat_grid)."
+                        ),
+                    }))
 
     # Single-row warning (most chart types degenerate at n=1) ----------
     if len(df) == 1 and chart_type in _SERIES_CHART_TYPES:
@@ -7143,11 +7338,20 @@ def render_dashboard(manifest: Dict[str, Any],
     _augment_manifest(manifest)
     ok, errs = validate_manifest(manifest)
     if not ok:
+        # Carry the full diagnostic body in error_message so the
+        # PRISM-side ``raise ValueError(f"compile failed: {r.error_message}")``
+        # pattern surfaces every bug in one round-trip. See
+        # ``compile_dashboard`` for the same construction.
+        agg_warnings = list(errs) + [str(d) for d in shape_diags]
+        body_parts = [f"manifest validation failed ({len(agg_warnings)} error(s))"]
+        if agg_warnings:
+            body_parts.append("")
+            body_parts.extend(f"  - {w}" for w in agg_warnings)
         return DashboardResult(
             manifest=manifest, manifest_path=None,
             html_path=None, html=None, success=False,
-            error_message="manifest validation failed",
-            warnings=list(errs) + [str(d) for d in shape_diags],
+            error_message="\n".join(body_parts),
+            warnings=agg_warnings,
             diagnostics=list(shape_diags),
         )
     diags: List[Diagnostic] = (list(shape_diags)
@@ -7381,13 +7585,26 @@ def compile_dashboard(
                          + [str(d) for d in shape_diags]
                          + [str(d) for d in cdd_diags_pre])
         agg_diags = list(shape_diags) + list(cdd_diags_pre)
+        # Construct a verbose ``error_message`` carrying every diagnostic
+        # body so the canonical PRISM-side raise pattern --
+        # ``raise ValueError(f"compile failed: {r.error_message}")`` --
+        # surfaces the FULL list of bugs to the caller in one round-trip.
+        # The short legacy tagline ("manifest validation failed") still
+        # appears as the first line so log-grep / observability tooling
+        # that pattern-matches against it keeps working.
+        legacy_tagline = (
+            "manifest validation failed" if not ok
+            else "compute block evaluation failed"
+        )
+        body_parts = [f"{legacy_tagline} ({len(agg_warnings)} error(s))"]
+        if agg_warnings:
+            body_parts.append("")
+            body_parts.extend(f"  - {w}" for w in agg_warnings)
+        verbose_error_message = "\n".join(body_parts)
         return DashboardResult(
             manifest=manifest_dict, manifest_path=None,
             html_path=None, html=None, success=False,
-            error_message=(
-                "manifest validation failed" if not ok
-                else "compute block evaluation failed"
-            ),
+            error_message=verbose_error_message,
             warnings=agg_warnings,
             diagnostics=agg_diags,
         )

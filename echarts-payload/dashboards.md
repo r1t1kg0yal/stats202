@@ -19,6 +19,25 @@ This hub covers the always-needed contract, schema, persistence flow, anti-patte
 
 ---
 
+## The dashboard folder is your workspace
+
+Every iteration on a dashboard happens at `users/{kerberos}/dashboards/{name}/`. Treat the folder as PRISM's session workspace for that dashboard — read everything in it, write the canonical artefacts there, do all scratch work inside it (never under `{SESSION_PATH}/` or anywhere else). The §2.5 audit (canonical-layout whitelist) is what keeps the workspace clean: anything that doesn't belong on the canonical path goes to `archive/<UTC>/`, never deleted, never sitting alongside the live files.
+
+| Need | Where it lives inside the workspace |
+|------|--------------------------------------|
+| Canonical artefacts (the seven §2.2 paths) | top level of the folder |
+| Scratch / intermediate files | `archive/<UTC>/` (audit ignores; runner ignores) |
+| Pre-edit snapshots (manifest_template / scripts before re-author) | `archive/<UTC>/` (rollback path per `dashboards/recipes.md` §5) |
+| Optional history snapshots (when `keep_history=true`) | `history/` (runner-managed) |
+| Generated data | `data/<stem>.csv` only; no per-source subfolders (Rule 5) |
+
+Two side-effects of treating the folder as workspace:
+
+1. **Read first, then act.** When PRISM picks up a dashboard, the first action is `s3_manager.list({DASHBOARD_PATH})` + `_audit_dashboard_layout` (§2.5.3). Whatever's there is the current state; the planned change merges into it (see `dashboards/pipelines.md` §2 cataloging + `dashboards/recipes.md` §3 READ→MERGE→WRITE).
+2. **Quarantine, never delete.** Before re-authoring `pull_data.py` / `build.py` / `manifest_template.json`, copy the about-to-be-overwritten file to `archive/<UTC>/` so the prior version stays recoverable. The runner ignores `archive/` entirely (§5.2 of `dashboard-refresh.md`); cleanup is purely about audit hygiene.
+
+---
+
 ## The dashboard is two scripts
 
 A persistent dashboard's true artifact is `scripts/pull_data.py` (the data pipelines) and `scripts/build.py` (the manifest assembler). The other files in the folder (`data/<stem>.csv`, `manifest_template.json`, `manifest.json`, `dashboard.html`) are REGENERATED from those two scripts on every refresh by the cron runner. What this means for PRISM:
@@ -26,7 +45,7 @@ A persistent dashboard's true artifact is `scripts/pull_data.py` (the data pipel
 | Implication | Practical rule |
 |-------------|----------------|
 | Editing a dashboard means editing the two scripts | Don't mutate derived files directly; tomorrow's refresh re-runs the unmodified script and the change vanishes |
-| The build flow (§6.1 Tools 1+2+3) IS the refresh smoke test | When the in-session build succeeds end-to-end, the persisted scripts are proven against today's data; no separate verification step exists |
+| The build flow (§6.1 Tools 1+2+3+4) IS the refresh smoke test | When all four tools succeed end-to-end (Tool 4 spawns the subprocess refresh and exits 0), the persisted scripts are proven against today's data; the user's first view at the portal URL is byte-identical to what tomorrow's cron will produce |
 | Editing an existing dashboard requires reading the existing scripts FIRST | Build the pipeline → CSV → dataset_key → widget graph (`dashboards/pipelines.md` §2), then plan the edit against that graph — not against a clean-room rebuild |
 
 `dashboards/pipelines.md` is the SSOT for pipeline cataloging, the reuse decision ladder, active-pipeline integrity rules, end-to-end re-authoring, and the post-edit session-folder health check.
@@ -62,12 +81,15 @@ Catalog only — pick what you need from this table, then fetch the relevant spo
 
 All eight absolute. A dashboard violating any of them is broken even if `dashboard.html` renders.
 
-### Rule 1 — real data only
+### Rule 1 — real data only, every number refreshes
 
 - Auto-saving primitives: `pull_market_data`, `pull_haver_data`, `pull_plottool_data`, `pull_fred_data`.
 - Everything else (FDIC, SEC EDGAR, BIS, Treasury, Treasury Direct, NY Fed, prediction markets, OpenFIGI, Substack, Wikipedia, Pure / Alloy, Coalition, Inquiry, scraped DataFrames) lands via `save_artifact()` (§6.2).
 - Forbidden: `np.random.*`, `np.linspace` / `np.arange` as data, hand-typed numeric arrays, synthetic fill for missing values, invented dates / labels.
 - If no source exists, do not build the panel — add a data source first.
+- **Every visible number on the dashboard must trace to `pull_data.py` output.** That includes KPI tiles, stat_grid items, table cells, chart datasets, and any other surface the viewer reads. Numbers must come from a `manifest.datasets[<key>]` source PRISM cannot bypass — meaning every KPI / stat_grid item MUST set `source: "<dataset>.<aggregator>.<col>"` (or for KPIs, the equivalent `series_source` / `delta_source` / `sparkline_source`). Hand-typed `value: <num>` (a literal number in the manifest dict) is forbidden — it doesn't refresh, ships stale on day two. The validator hard-rejects any KPI / stat_grid item that sets `value` without `source` (codes `kpi_static_value_forbidden` / `stat_grid_static_value_forbidden`, both in `ALWAYS_BLOCKING_ERROR_CODES`).
+- **Build-time computation is fine** — `build.py` reading a CSV and assigning the result into `manifest.datasets[<key>]["source"]` traces to `pull_data.py` (the CSV refreshes when `pull_data.py` reruns). The forbidden case is hand-typed numbers in the manifest dict that won't refresh on the next runner cycle.
+- Notes / markdown bodies / `metadata.summary` are narrative-only — embed numbers there at your own risk; if you do, link them to a fresh dataset reference (`{rates.latest.us_10y}` substitution if supported by the renderer) so they refresh, otherwise treat as ephemeral commentary that goes stale by tomorrow.
 
 ### Rule 2 — no literal data inside the manifest JSON
 
@@ -109,7 +131,7 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 
 ### Rule 7 — build flow is atomic
 
-- Tools 1, 2, and 3 (§6.1) are **non-divisible**. PRISM does not return to the user between Tool 1 and Tool 3. The dashboard does not exist as a deliverable until every artefact in §2.2 is on S3, the entry sits in `registry["dashboards"][]` (not as a top-level key, §6.1 Tool 3), the user-manifest pointer reflects it, AND both audits pass (`_audit_dashboard_layout` §2.5 + `_audit_registry_state` §6.1 Tool 3).
+- Tools 1, 2, 3, AND 4 (§6.1) are **non-divisible**. PRISM does not return to the user between Tool 1 and Tool 4. The dashboard does not exist as a deliverable until every artefact in §2.2 is on S3, the entry sits in `registry["dashboards"][]` (not as a top-level key, §6.1 Tool 3), the user-manifest pointer reflects it, both audits pass (`_audit_dashboard_layout` §2.5 + `_audit_registry_state` §6.1 Tool 3), AND Tool 4's subprocess refresh exits 0 with `refresh_status.json.status == "success"` (Rule 9 + §6.1 Tool 4).
 - Forbidden language in any user-facing message before Tool 3 has completed cleanly: "next steps", "would you like me to", "I can also create / register / set up", "to make this fully persistent / auto-refreshing". Each phrase implies the build has opt-in phases the user can decline. There are no phases. The post-Tool-3 portal URL (Rule 6) is the ONLY user-facing message; everything before it is internal plumbing the user does not see.
 - The canonical Rule 7 violation: PRISM pulls data + compiles in-session, renders an HTML preview, then asks the user "would you like me to register and set up daily refresh?" — and ships a worthless artefact. The browser [Refresh] button is broken (no scripts/), the hourly cron skips it (no registry entry), tomorrow's data never arrives, and the user sees a rendered HTML plus a permission prompt. There is no "preview" state to ask permission on; the build IS the registration and persistence.
 - Failure handling: if Tool 1 or Tool 2 raises, the response to the user is the failure (with its diagnostic), not a rendered HTML preview gated behind a registration question. Do not paper over a failed build by surfacing partial output and asking permission to "complete" it.
@@ -138,6 +160,25 @@ Required:
 - Each slice's response is short. Lead with the URL (Rule 6); one sentence on what's in this slice; one sentence on the proposed next chunk; stop.
 
 Why: complex dashboard requests are typically 60-80% under-specified by the user (and that's normal — UX shape is hard to articulate verbatim). A small slice surfaces the misalignment cheaply. A fully-built 30-widget dashboard built in one shot is a guaranteed throwaway when the user says "no, I meant a fundamentally different shape entirely". Rule 8 trades a longer total wall-clock against dramatically less wasted work.
+
+### Rule 9 — final dashboard state comes from a subprocess refresh
+
+After Tools 1+2+3 finish, PRISM's LAST sandbox action MUST spawn a **subprocess** that runs the canonical refresh path (`refresh_runner.py` — the same script the browser `[Refresh]` button + the hourly cron spawn). That subprocess re-executes both `pull_data.py` and `build.py` end-to-end inside a fresh Python interpreter, overwriting `manifest.json` + `dashboard.html` on S3 with the result. ONLY AFTER the subprocess exits 0 does PRISM surface the portal URL.
+
+| Why | What it guarantees |
+|-----|--------------------|
+| The browser-served dashboard at the portal URL is byte-identical to what tomorrow's cron will produce — same Python interpreter, same `_build_exec_namespace`, same scripts, same S3 writes | Zero in-session contamination: the user never sees a dashboard whose data shape only worked because PRISM happened to have stale globals or sandbox-only injections in scope |
+| The refresh path itself is the smoke test | If the subprocess exit is non-zero, the dashboard is not deliverable; surface the failure instead of the URL |
+| Tool 1's in-session exec catches shape bugs early (still required), but the user's first view of the dashboard is the subprocess output | A passed Tool 1 + Tool 2 + Tool 3 + failed Tool 4 means PRISM authored something the in-session sandbox accepted but the production refresh path rejects — usually a runner-namespace gap (§6.5) |
+
+The canonical Tool 4 is a single subprocess.run call to `refresh_runner.py`; see §6.1 Tool 4 for the verbatim pattern. The subprocess is blocking — PRISM waits for it to finish before composing the success message.
+
+Forbidden after Tool 3 and before Tool 4 completes:
+- Surfacing the portal URL.
+- Telling the user "the dashboard is ready" or any equivalent.
+- Returning to the user with anything other than a Tool 4 in-flight or completed status.
+
+The end-of-build user-facing message contract from Rule 6 still holds — the portal URL is the first line; the difference is that "build complete" is now defined as "Tool 4's subprocess exited 0", not "Tool 3's registry write succeeded".
 
 ### The build flow IS the refresh path
 
@@ -182,7 +223,7 @@ save_manifest           # manifest -> JSON file
 df_to_source            # DataFrame -> canonical row-of-lists source form
 ```
 
-`compile_dashboard()` raises by default (`strict=True`) on any error-severity diagnostic. `strict=False` is an inner-loop discovery mode — it keeps going so PRISM can see every cosmetic / advisory issue in one round-trip. **`strict=False` is for in-session iteration only; the persisted `scripts/build.py` MUST use `strict=True`.** A short list of load-bearing error codes (`chart_mapping_column_missing`, `chart_dataset_empty`, `kpi_source_*`, `table_column_field_missing`, `filter_field_missing_in_target`, `chart_build_failed`, …) raise regardless of `strict` — these are the errors that would otherwise ship a chart with `(no data)`, a KPI tile with `--`, an empty table cell, or a filter that silently filters nothing. The full list lives in `echart_dashboard.ALWAYS_BLOCKING_ERROR_CODES`. One theme (`gs_clean`); three palettes (`gs_primary`, `gs_blues`, `gs_diverging`).
+`compile_dashboard()` raises by default (`strict=True`) on any error-severity diagnostic. `strict=False` is an inner-loop discovery mode — it keeps going so PRISM can see every cosmetic / advisory issue in one round-trip. **`strict=False` is for in-session iteration only; the persisted `scripts/build.py` MUST use `strict=True`.** A short list of load-bearing error codes (`chart_mapping_column_missing`, `chart_dataset_empty`, `chart_too_many_series`, `kpi_source_*`, `kpi_static_value_forbidden`, `stat_grid_static_value_forbidden`, `table_column_field_missing`, `filter_field_missing_in_target`, `chart_build_failed`, …) raise regardless of `strict` — these are the errors that would otherwise ship a chart with `(no data)`, a KPI tile with `--`, an empty table cell, or a filter that silently filters nothing. The full list lives in `echart_dashboard.ALWAYS_BLOCKING_ERROR_CODES`. One theme (`gs_clean`); three palettes (`gs_primary`, `gs_blues`, `gs_diverging`).
 
 ---
 
@@ -314,6 +355,8 @@ metadata = {
 
 The header's right edge is shell-injected (Methodology / Refresh / Share / Download / theme-toggle / data-as-of pill). PRISM does not author these buttons. The validator hard-rejects any manifest missing the three required metadata fields above (`kerberos` / `dashboard_id` / `methodology`); set them and the chrome is functional. The retired `metadata.refresh_enabled` flag is silently ignored. `header_actions[]` (§5) injects custom buttons to the LEFT of this chrome bar; the validator rejects any custom `id` colliding with a reserved chrome id (full list in §5).
 
+`compile_dashboard()` returns a `DashboardResult` with `success`, `html`, `manifest`, `error_message`, `warnings`, and `diagnostics` populated. PRISM rule: ALWAYS check `r.success` before using `r.html`. **When `r.success=False`, `r.error_message` carries the full diagnostic body** — every validate error, CDD diagnostic, and shape diagnostic, one per line, prefixed with the same `[severity] code [wid] @ path :: message | fix: <hint>` format that the strict-raise path uses. The legacy tagline (`manifest validation failed` / `compute block evaluation failed`) is preserved as the first line so log-grep / observability tooling that pattern-matches against it keeps working. Canonical PRISM-side raise: `raise ValueError(f"compile failed: {r.error_message}")` — that single line surfaces every bug to PRISM's caller in one round-trip; no need to also stringify `r.warnings`.
+
 ### 2.4 `compile_dashboard` parameters
 
 | Parameter | Purpose |
@@ -325,7 +368,6 @@ The header's right edge is shell-injected (Methodology / Refresh / Share / Downl
 | `strict` | `True` raises on any error-severity diagnostic; `False` reports + continues |
 | `make_thumbnails` | `False` default; `True` auto-emits a PNG of the first row for the listing page |
 
-`compile_dashboard()` returns a `DashboardResult` with `success`, `html`, `manifest`, `error_message`, and `diagnostics` populated. PRISM rule: ALWAYS check `r.success` before using `r.html`. The reset hint is in `r.error_message`.
 
 ### 2.5 Folder sanctity audit
 
@@ -477,6 +519,7 @@ This hub covers every primitive's catalog row + the always-needed contract. For 
 | `dashboards/filters.md` | 10 filter types + 11 ops; cascading filters; per-chart `dataZoom`; `click_emit_filter`; compound rule filters; links (sync + brush) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/filters.md"], mode="full")` |
 | `dashboards/recipes.md` | Worked recipes (long-form multi_line, dual axis, RV bullet, thesis+watch); 21 data-shape archetypes → chart types; READ → MERGE → WRITE editing pattern; data-pipeline coupling detection; revert workflow | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
 | `dashboards/pipelines.md` | The 2-script nucleus; pipeline cataloging (build the widget → dataset_key → CSV → pipeline graph); reuse decision ladder (reuse-existing-CSV / extend-existing-pipeline / add-new-pipeline); active-pipeline integrity rules; re-authoring `pull_data.py` end-to-end; session folder health check | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md"], mode="full")` |
+| `dashboards/canonical_showcase.json` | Bare templated manifest of `build_showcase` as a structural reference: 8 MECE tabs, 79 widgets, 39 datasets, 13 filters, 2 links — every primitive in the Catalog index above exercised at least once, data stripped to header rows. ~111 KB. Per-tab primitive coverage: `ts` = line / multi_line / area / bar / bar_horizontal / slope / candlestick / multi-axis (`mapping.axes`); `dist` = scatter / scatter_multi / scatter_studio / histogram / boxplot / bullet / correlation_matrix / heatmap / calendar_heatmap / annotations; `hier` = pie / donut / treemap / sunburst / sankey / graph / funnel / parallel_coords / tree / radar / fan_cone / waterfall / marimekko / gauge; `table` = table (every column format) / pivot / kpi (every aggregator) / stat_grid / sparklines; `prose` = note (every kind) / markdown (every grammar) / divider / image; `filter` = every filter type + op / cascading / `click_emit_filter` / compound rule / sync (axis/tooltip/legend/dataZoom) / brush (rect/polygon/lineX/lineY); `tools` = scalar / sweep / expression / matrix inputs and stat / scalar / param / kpi / series / table / stat_grid / distribution outputs; `dev` = manifest_template + populate_template + diagnostics. **How to use**: fetch this file when in doubt about how to shape a widget / filter / link / metadata block, find the matching block by keyword search (chart_type / widget id / filter type / aggregator), copy the structural fragment verbatim, then rebind dataset names + column references to your own datasets. The data rows are stripped (`source[0]` is the column-header schema only) so the file stays cheap to load mid-session. | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/canonical_showcase.json"], mode="full")` |
 
 **Common combos** (one call, multiple file_paths):
 
@@ -520,22 +563,20 @@ Tabs lazily initialise charts on first activation; last-active tab persisted in 
 | `description` | (1) Italic secondary text below tab bar when active, (2) hover tooltip on the tab button |
 | `rows` | List-of-lists of widgets |
 
-### 4.1 Chart widths — never full-width
+### 4.1 Chart widths — exactly 2-up or 3-up
 
-A chart widget (`widget: "chart"`) must never span the full grid (`w: 12` on a 12-col layout). Full-width charts stretch the plotting area horizontally to a degree no economic series rewards: a 1500px-wide line chart of 6 months of daily data hands the eye a flat ribbon of slope-zero white space rather than a shape. They also crowd out the side-by-side comparison framing the rest of the dashboard depends on, leaving the reader with one panel where there should be two.
+Chart widgets (`widget: "chart"`) must be `w=cols//2` (2-up) or `w=cols//3` (3-up) — i.e. on the default 12-col grid, exactly `w=6` or `w=4`. The validator rejects any other width with `chart widget width must be ... got N`; the rule is non-bypassable from `compile_dashboard`.
 
-The canonical widths are:
+| Layout | Per-chart `w` (cols=12) | Use |
+|--------|-------------------------|-----|
+| 2-up   | `6` | Default for most pairs (price + carry, level + change, primary + benchmark) |
+| 3-up   | `4` | Tile rows of comparable single-metric charts (sectors, regions, tenors) |
 
-| Layout | Per-chart `w` | Use |
-|--------|---------------|-----|
-| 2-up   | `6`           | Default for most pairs (price + carry, level + change, primary + benchmark) |
-| 3-up   | `4`           | Tile rows of comparable single-metric charts (sectors, regions, tenors) |
-| 4-up   | `3`           | Dense small-multiples (every G10 currency, every UST tenor) |
-| 1-up unbalanced | `8` + `4` companion | Headline chart paired with a stat strip / table / note that earns the rest of the row |
+Default heights are layout-aware (no `h_px` needed in normal use): 400px at `w=6`, 360px at `w=4`. Override per-widget with `h_px` only when the chart has unusual aspect needs.
 
-The rule applies to chart widgets only. KPI rows, tables, markdown banners, image headers, `note` widgets, and dividers may span `w: 12` — they are not lossy at full width. The `_audit_dashboard_layout` audit does not enforce this today; it is an aesthetic rule the author owns.
+The rule is chart-only. KPI rows, tables, markdown banners, image headers, `note` widgets, and dividers may span any width including `w=12`.
 
-If the row has only one chart-class widget, pair it with the natural companion: a small `stat_grid`, a `provenance_note`, a `markdown` annotation, a `note` widget, or a `kpi` strip. If you cannot find a companion, the row is signalling that the chart is doing too much by itself — split into two charts (e.g. level + change, nominal + real, US + cross-country) and run them 2-up.
+If a row has only one chart, split it (level + change, nominal + real, US + cross-country) and run 2-up — or pair the chart with a `kpi` strip, `note`, `stat_grid`, `markdown`, or `table` companion.
 
 ---
 
@@ -562,19 +603,21 @@ For browser-side refresh failure modal / runner internals / registry schema see 
 
 The build flow that follows is the only path that produces or updates a persistent dashboard. Each tool persists one of the two nucleus scripts (or the registry entry that makes the dashboard discoverable to the cron runner) and execs it from S3 — so the in-session run uses the same bytes the daily refresh will run tomorrow. Build-time and refresh-time are byte-identical by construction. See `dashboards/pipelines.md` for the pipeline-aware editing model: catalog existing pipelines first (§2), pick a reuse path (§3), preserve active-pipeline integrity (§4), re-author end-to-end (§5), run the post-edit health check (§6).
 
-**Atomicity contract (Rule 7).** Tools 1, 2, and 3 below are non-divisible. PRISM runs them in a single uninterrupted sequence and surfaces nothing to the user until Tool 3 has completed cleanly. There is no in-session "preview" of a half-built dashboard — every artefact below must be on S3 and both audits must pass before any user-facing message:
+**Atomicity contract (Rule 7 + Rule 9).** Tools 1, 2, 3, and 4 below are non-divisible. PRISM runs them in a single uninterrupted sequence and surfaces nothing to the user until Tool 4 has completed cleanly. There is no in-session "preview" of a half-built dashboard — every artefact below must be on S3, both audits must pass, AND the subprocess refresh must exit 0 before any user-facing message:
 
 | Artefact / state                                                          | Created in | Audited by                              |
 |---------------------------------------------------------------------------|------------|-----------------------------------------|
 | `scripts/pull_data.py` persisted                                          | Tool 1     | `_audit_dashboard_layout` (§2.5)        |
 | `data/<key>.csv` (one per `manifest.datasets` key) on S3                  | Tool 1     | `_audit_dashboard_layout` (§2.5)        |
 | `manifest_template.json` persisted                                        | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
-| `manifest.json` + `dashboard.html` on S3                                  | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
+| `manifest.json` + `dashboard.html` on S3 (in-session compile result)      | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
 | `scripts/build.py` persisted                                              | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
 | Entry appended into `registry["dashboards"][]` (NOT a top-level key)      | Tool 3     | `_audit_registry_state` (§6.1 Tool 3)   |
 | `update_user_manifest(kerberos, artifact_type='dashboard')` ran           | Tool 3     | `_audit_registry_state` (§6.1 Tool 3)   |
+| `manifest.json` + `dashboard.html` overwritten by subprocess refresh      | Tool 4     | `subprocess.run(...).returncode == 0`   |
+| `refresh_status.json` written by the runner with `status: "success"`      | Tool 4     | inline check after the subprocess exits |
 
-**User-facing message contract.** The first line PRISM emits to the user after Tool 3 leads with the portal URL (Rule 6). The shape:
+**User-facing message contract.** The first line PRISM emits to the user after Tool 4 leads with the portal URL (Rule 6). The shape:
 
 ```
 <dashboard_id> live at http://reports.prism-ai.url.gs.com:8501/profile/dashboards/<dashboard_id>/
@@ -593,7 +636,7 @@ If Tool 1 or Tool 2 raises, surface the failure verbatim — not a rendered prev
 
 **Pacing across slices (Rule 8).** The atomicity contract above governs ONE slice. Complex requests turn into multiple slices, each its own complete pass through Tools 1 → 2 → 3. After surfacing the URL for slice N, PRISM stops and asks "want me to add [specific next chunk]?" — that question is REQUIRED post-Tool-3, not forbidden. The forbidden phrases above are specifically about "would you like me to register" mid-build (papering over a failure), not "want me to add the next tab now" between completed slices.
 
-### 6.1 Three-tool-call build model
+### 6.1 Four-tool-call build model
 
 ```
 Tool 1: pull_data.py   Author pull_data.py as a string, persist to
@@ -611,8 +654,15 @@ Tool 3: register       Load dashboards_registry.json (seed if missing),
                        append/replace entry by id in registry['dashboards']
                        (NOT as a top-level key — runner only iterates the
                        list), save, verify by re-load, then call
-                       update_user_manifest(kerberos, artifact_type='dashboard')
-                       and print portal URL.
+                       update_user_manifest(kerberos, artifact_type='dashboard').
+Tool 4: subprocess     Spawn refresh_runner.py as a SUBPROCESS (the same
+                       script the [Refresh] button + hourly cron spawn).
+                       The subprocess re-execs both pull_data.py and
+                       build.py inside a fresh Python interpreter,
+                       overwriting manifest.json + dashboard.html on S3.
+                       Block until exit; check returncode == 0 AND
+                       refresh_status.json status == "success" before
+                       surfacing the portal URL (Rule 9).
 ```
 
 **The persisted script is the source of truth — write it first, then run it from S3.** PRISM authors each script as a Python string, `s3_manager.put`s it to `{DASHBOARD_PATH}/scripts/<name>.py`, then `s3_manager.get`s it back and runs it via `exec(compile(src, ...), ns)` with the same namespace shape the refresh runner uses. The pull happens once (inside Tool 1's exec); the compile happens once (inside Tool 2's exec); build-time and refresh-time are byte-identical.
@@ -845,15 +895,11 @@ def _audit_registry_state(kerberos, dashboard_id):
 
 _audit_registry_state(KERBEROS, DASHBOARD_NAME)
 
-# User-facing success message (§6 contract). Lead with the portal URL on line 1;
-# refresh frequency + datasets on the next two lines. Do NOT add "next steps",
-# "would you like me to...", or any opt-in language (Rule 7).
-DATASETS = ', '.join(json.loads(
-    s3_manager.get(f'{DASHBOARD_PATH}/manifest.json').decode('utf-8')
-).get('datasets', {}).keys())
-print(f'{DASHBOARD_NAME} live at {PORTAL_URL}')
-print(f'- Refresh: daily (next cron tick picks it up; on-demand via [Refresh] button)')
-print(f'- Datasets: {DATASETS}')
+# DO NOT surface the portal URL here. The user does not see this dashboard
+# until Tool 4's subprocess refresh exits 0 (Rule 9). Tool 3 ends with the
+# registry write + manifest pointer update; Tool 4 owns the user-facing
+# success message.
+print(f'[Tool 3] complete; ready for Tool 4 (subprocess refresh)')
 ```
 
 Path conventions (verified against live registries): paths have **no leading slash** (`users/...`, not `/users/...`); `folder` has **no trailing slash**; `data_path` is the **`data/` directory**, not `manifest.json`. `data_path` is optional but the portal uses it to surface the dashboard's data folder, so set it.
@@ -869,6 +915,88 @@ s3_manager.put(json.dumps(registry).encode(), REGISTRY_PATH)
 The resulting registry looks structurally fine (`{"dashboards": [], "last_updated": "...", "<id>": {...}}`) but the dashboard is invisible to `jobs/hourly/refresh_dashboards.py`, which iterates `registry["dashboards"]` only. Two real dashboards (`rates_fx_corr`, `bond_carry_roll`) hit this on 2026-04-27 and required hand-repair. The verify-by-re-load step in the canonical Tool 3 above catches this immediately.
 
 **`update_user_manifest` is NOT a registry-write step.** It only updates `users/{kerberos}/manifest.json`'s `pointers.dashboards` block (count, active_count, last_refreshed, registry_path). It reads the registry to compute those numbers but never writes the registry. The registry must already be saved on S3 with the new entry appended into `dashboards[]` before this call — which is why the canonical Tool 3 runs the put → verify → `update_user_manifest` sequence in that order.
+
+#### Tool 4 — subprocess refresh
+
+The build's final action runs the canonical refresh path (`refresh_runner.py`) as a SUBPROCESS — the same script the browser `[Refresh]` button + the hourly cron spawn. The user's first view of the dashboard at the portal URL is byte-identical to what tomorrow's cron will produce. See Rule 9 for the contract.
+
+```python
+import os, subprocess, sys, json, time
+
+# Derive REFRESH_RUNNER_PATH from ai_development.* — the sandbox has
+# this on sys.path; this works whether the runner lives in PRISM
+# production or a future relocation. Fall back to repo-root + canonical
+# subpath if the runner module is not directly importable.
+try:
+    import ai_development.jobs.refresh_runner as _rr
+    REFRESH_RUNNER_PATH = _rr.__file__
+except Exception:
+    repo_root = os.environ.get(
+        'AI_DEVELOPMENT_ROOT',
+        os.path.dirname(os.path.dirname(os.path.abspath(
+            sys.modules['ai_development'].__file__
+        ))),
+    )
+    REFRESH_RUNNER_PATH = os.path.join(
+        repo_root, 'ai_development', 'jobs', 'refresh_runner.py'
+    )
+if not os.path.isfile(REFRESH_RUNNER_PATH):
+    raise FileNotFoundError(
+        f"[Tool 4] refresh_runner.py not found at {REFRESH_RUNNER_PATH}; "
+        f"cannot run subprocess refresh"
+    )
+
+print(f'[Tool 4] spawning refresh_runner.py subprocess for '
+       f'{KERBEROS}/{DASHBOARD_NAME}...')
+proc = subprocess.run(
+    [sys.executable, REFRESH_RUNNER_PATH,
+     '--kerberos',         KERBEROS,
+     '--dashboard-id',     DASHBOARD_NAME,
+     '--dashboard-folder', DASHBOARD_PATH],
+    capture_output=True, text=True, timeout=600,
+)
+if proc.returncode != 0:
+    raise RuntimeError(
+        f"[Tool 4] refresh_runner subprocess exited "
+        f"rc={proc.returncode}:\n"
+        f"--- stdout ---\n{proc.stdout}\n"
+        f"--- stderr ---\n{proc.stderr}"
+    )
+
+# Verify the runner wrote refresh_status.json with status=success.
+# The runner's contract (prism/dashboard-refresh.md \u00a72.5) is to
+# always update this file at end-of-run -- a green returncode without
+# a green status.json is a runner contract violation.
+status = json.loads(
+    s3_manager.get(f'{DASHBOARD_PATH}/refresh_status.json')
+    .rstrip(b'\x00').decode('utf-8')
+)
+if status.get('status') != 'success':
+    raise RuntimeError(
+        f"[Tool 4] subprocess returned 0 but refresh_status.json "
+        f"status='{status.get('status')}'; "
+        f"errors={status.get('errors')}"
+    )
+print(f'[Tool 4] subprocess refresh complete '
+       f'(rc=0, status=success, '
+       f'elapsed={status.get(\"elapsed_seconds\")}s)')
+
+# Now the user-facing success message (Rule 6 + Rule 9).
+# This is the FIRST output the user sees; everything above is
+# internal plumbing.
+DATASETS = ', '.join(json.loads(
+    s3_manager.get(f'{DASHBOARD_PATH}/manifest.json').decode('utf-8')
+).get('datasets', {}).keys())
+print(f'\n{DASHBOARD_NAME} live at {PORTAL_URL}')
+print(f'- Refresh: daily (next cron tick picks it up; on-demand via [Refresh] button)')
+print(f'- Datasets: {DATASETS}')
+```
+
+**Why subprocess and not in-line exec.** The runner subprocess builds its own `_build_exec_namespace` (`prism/dashboard-refresh.md` §5.5) inside a fresh Python interpreter. That namespace is leaner than `execute_analysis_script`'s sandbox (no `save_artifact`, no alt-data clients as of 2026-04-27 — see §6.5 below). A `pull_data.py` that runs cleanly in Tool 1's in-session exec but uses a name the runner doesn't inject will pass Tools 1+2+3 silently and fail at Tool 4 — which is exactly what we want, because that same failure would otherwise surface as a broken `[Refresh]` click tomorrow. Tool 4 catches it now.
+
+**Failure handling.** A non-zero subprocess return OR a non-success `refresh_status.json` status raises. PRISM does NOT fall back to the in-session compile and surface that to the user — the in-session compile is a different artifact and we don't promote it as the "dashboard". The right surface is the subprocess failure verbatim, including stdout + stderr + the runner's `errors[]`.
+
+**Timeout.** 600s default — the same 10-minute ceiling the API endpoint uses for stale-lock detection (`prism/dashboard-refresh.md` §4 Tier 1). A real refresh that exceeds 10 minutes is its own bug.
 
 ### 6.2 Pull primitives + `save_artifact` cheat sheet
 
@@ -1026,6 +1154,8 @@ Brand hex anchors for `series_colors`: GS Navy `#002F6C`, GS Sky `#7399C6`, GS G
 | `np.random.*` / `np.linspace` / `np.arange` / hand-typed arrays as data; `np.zeros()` fill for missing values | Pull real data first (§6.1). If no source, don't build the panel; render a note or use a small real slice |
 | Authoring `build.py` before `pull_data.py` produced real DataFrames | Run pulls first, print shapes / heads / dtypes, write manifest against verified columns |
 | Literal numbers in manifest JSON | Pass the DataFrame; compiler converts |
+| KPI tile authored as `{"widget": "kpi", "label": "Cut prob", "value": 68, "suffix": "%"}` — hand-typed `value` without `source` | Validator rejects with `kpi_static_value_forbidden` (always-blocking). Wire the value through a dataset: `{"widget": "kpi", "label": "Cut prob", "source": "fed.latest.cut_prob", "suffix": "%"}` so the next refresh re-resolves it from `data/fed.csv`. If the number isn't already in a CSV, add the column to `pull_data.py` first (Rule 1). Build-time computation is fine as long as the result lands in `manifest.datasets[<key>]` and the KPI references it via `source` |
+| `stat_grid` items authored with literal `value: <num>` and no `source` | Same fix: `stat_grid_static_value_forbidden` (always-blocking). Each stat must set `source: "<ds>.<aggregator>.<col>"` (or the equivalent dotted-path source) so it refreshes |
 | PRISM hand-writing HTML / CSS / JS, or `build.py` >50 lines | Emit manifest; `compile_dashboard()` does the rest |
 | Source attribution in title / subtitle | `metadata.sources` for dashboard-level; `field_provenance` per-column (`dashboards/widgets.md` §4) |
 | Dropping provenance because vendor isn't standard | `system: "computed"` + `recipe`, or `system: "csv"` + path. Never drop |
@@ -1036,9 +1166,9 @@ Brand hex anchors for `series_colors`: GS Navy `#002F6C`, GS Sky `#7399C6`, GS G
 
 | Anti-pattern | Do instead |
 |--------------|-----------|
-| Returning to the user with "Next steps: I can now create `pull_data.py` and `build.py`, register the dashboard, set up daily refresh — would you like me to continue?" after `compile_dashboard()` produced an in-session HTML | Rule 7 violation: there are no "next steps" — Tools 1+2+3 are atomic. The dashboard does not exist as a deliverable until scripts are persisted, the registry entry sits in `dashboards[]`, the user-manifest pointer reflects it, and both audits pass (§6 atomicity table). Run all three tools without returning to the user; only the post-Tool-3 portal URL is user-facing |
+| Returning to the user with "Next steps: I can now create `pull_data.py` and `build.py`, register the dashboard, set up daily refresh — would you like me to continue?" after `compile_dashboard()` produced an in-session HTML | Rule 7 violation: there are no "next steps" — Tools 1+2+3+4 are atomic. The dashboard does not exist as a deliverable until scripts are persisted, the registry entry sits in `dashboards[]`, the user-manifest pointer reflects it, both audits pass, and the Tool 4 subprocess refresh exits 0 with `refresh_status.json.status == "success"` (§6 atomicity table). Run all four tools without returning to the user; only the post-Tool-4 portal URL is user-facing |
 | Compiling in-session, surfacing the rendered HTML to the user, then deferring `scripts/pull_data.py` / `scripts/build.py` / registry write to a follow-up turn | The in-session compile and the on-S3 build are two different code paths. Without scripts on S3, the [Refresh] button raises `FileNotFoundError`, the hourly cron skips the unregistered dashboard, and tomorrow's data never arrives. Author the scripts FIRST (Tool 1 + Tool 2 §6.1), exec from S3, then register (Tool 3) — the in-session render is a side-effect of Tool 2, not the deliverable |
-| Asking the user to choose between a "preview" / "session-only" version and a "persistent" / "production" version of a dashboard | There is no preview state. A dashboard is either fully built (Tools 1+2+3 ran, both audits passed) or it does not exist. Conversational session-only manifests (§2.2 `{SESSION_PATH}/dashboards/{id}.json`) are a separate artefact class; they are not user-visible "preview dashboards" with a registration upgrade path |
+| Asking the user to choose between a "preview" / "session-only" version and a "persistent" / "production" version of a dashboard | There is no preview state. A dashboard is either fully built (Tools 1+2+3+4 ran, both audits passed, Tool 4's subprocess refresh exited 0 with success status) or it does not exist. Conversational session-only manifests (§2.2 `{SESSION_PATH}/dashboards/{id}.json`) are a separate artefact class; they are not user-visible "preview dashboards" with a registration upgrade path |
 | Treating a missing `scripts/`, registry entry, or manifest pointer as a separable concern the user can opt into | All three are part of the build. The audits (`_audit_dashboard_layout` §2.5, `_audit_registry_state` §6.1 Tool 3) are the gate that defines "built"; if either raises, the build is not complete and nothing is surfaced to the user |
 | Phrasing user-facing messages with "to make this fully persistent" / "would you like me to set up auto-refresh" / "I can also build pull_data and build.py" | Forbidden language (§6 user-facing message contract). Each phrase implies the build has opt-in phases. Strip the phrase; the only message after a successful Tool 3 is the portal URL block in §6 |
 
@@ -1071,14 +1201,14 @@ Brand hex anchors for `series_colors`: GS Navy `#002F6C`, GS Sky `#7399C6`, GS G
 | `pull_data.py` uses names the runner doesn't inject (`save_artifact`, alt-data clients) AND the registry entry is left at the default `refresh_frequency` | Restrict to the four pull primitives, OR set the registry entry's `refresh_frequency: "manual"` so the cron skips it until the runner namespace expands (§6.5). The browser's `Refresh` button stays available either way; failed clicks surface in the structured error modal |
 | Setting `metadata.refresh_enabled = False` to hide the browser `Refresh` button | The field is retired — the button is non-suppressible from the manifest. Drop the field; rely on the structured error modal to surface failures |
 
-**Layout aesthetics (§4.1):**
+**Layout (§4.1):**
 
 | Anti-pattern | Do instead |
 |--------------|-----------|
-| `widget: "chart"` with `w: 12` | Chart widgets are never full-width (§4.1). Drop to `w: 6` and pair with a companion chart, or `w: 8` paired with a `w: 4` stat strip / note / table. The horizontal stretch flattens slopes and wastes pixel budget the reader pays for in scroll distance |
-| A single-chart row to "give the headline chart room to breathe" | Split the chart into two complementary views (level + change, nominal + real, US + cross-country, primary + benchmark) and place both `w: 6`. The two-up framing is the dashboard idiom; one-up is the wide-PNG idiom (use Altair's `make_chart` instead) |
-| Three `w: 4` charts in a row where the middle one is conceptually different | Either move the odd-one-out to its own paired row, or pick a third companion that fits the trio. Mixed semantics within a tile row read as accidental rather than deliberate |
-| Padding a row with empty `markdown` widgets to satisfy "at least 2 widgets" mechanically | The rule is about visual density, not widget count. If the only honest layout is one chart, ship a 2-up split of that chart; don't garnish a stretched chart with a placeholder paragraph |
+| `widget: "chart"` with any `w` other than `cols//2` (2-up) or `cols//3` (3-up) | Validator rejects with `chart widget width must be 4 or 6...`. Use `w: 6` paired with another chart, or `w: 4` in a 3-up tile row. KPIs, tables, markdown, notes, and dividers may still span any width |
+| A single-chart row | Split into two complementary views (level + change, nominal + real, US + cross-country) and run 2-up. The 2-up framing is the dashboard idiom; one-up is the wide-PNG idiom (use Altair's `make_chart` instead) |
+| Three `w: 4` charts where the middle one is conceptually different | Pair odd-one-out with two thematically-matched companions, or move it to its own paired row |
+| `line` / `multi_line` / `area` with >4 y-series (wide `y: [list]` of len 5+, OR long-form with a `color` column having 5+ distinct values) | Validator rejects with `chart_too_many_series` (always-blocking). Drop to ≤4 series (filter to top-N), bucket tail into "Other", split into small multiples (one widget per category, paired 2-up), or pivot framing (Index=100 normalisation, `correlation_matrix`, aggregate `stat_grid`). See `dashboards/charts.md` §3.1 |
 
 **Folder sanctity (Rule 4 + §2.5):**
 
@@ -1143,7 +1273,8 @@ The audit covers everything the old hand-rolled `s3_manager.list()` loop did, pl
 
 **Atomicity (Rule 7):**
 
-- Tools 1+2+3 ran in a single uninterrupted sequence; PRISM did NOT return to the user between them
+- Tools 1+2+3+4 ran in a single uninterrupted sequence; PRISM did NOT return to the user between them
+- Tool 4's `subprocess.run(refresh_runner.py, ...)` exited 0 AND `refresh_status.json` shows `status == "success"` (Rule 9)
 - `_audit_dashboard_layout(...)` ran at end of Tool 2 and passed (§2.5)
 - `_audit_registry_state(...)` ran at end of Tool 3 and passed (§6.1 Tool 3)
 - Both audits passing is the gate that defines "built"; if either raises, the dashboard does not exist and nothing is surfaced to the user

@@ -24,14 +24,14 @@ Every `widget: chart` declares one of three variants. Use the lowest ceremony th
 
 | chart_type | Required mapping keys |
 |------------|------------------------|
-| `line` | `x`, `y`, optional `color` |
-| `multi_line` | `x`, `y` (list) OR `x`, `y`, `color` |
+| `line` | `x`, `y`, optional `color`. Y-series cap 4 (§3.1) |
+| `multi_line` | `x`, `y` (list) OR `x`, `y`, `color`. Y-series cap 4 (§3.1) |
 | `bar` | `x` (category), `y`, optional `color`, `stack` (bool) |
 | `bar_horizontal` | `x` (value), `y` (category), optional `color`, `stack` |
 | `scatter` | `x`, `y`, optional `color`, `size`, `trendline` |
 | `scatter_multi` | `x`, `y`, `color`, optional `trendlines` |
 | `scatter_studio` | none required; author-supplied whitelists drive runtime picker (§5) |
-| `area` | `x`, `y` (stacked area) |
+| `area` | `x`, `y` (stacked area). Y-series cap 4 (§3.1) |
 | `heatmap` | `x`, `y`, `value` |
 | `correlation_matrix` | `columns` (≥2 numeric), optional `transform`, `method`, `order_by`, `window`, `window_options`, `transforms` (§6) |
 | `histogram` | `x`, optional `bins` (int or list of edges), `density` |
@@ -88,6 +88,27 @@ Unknown `chart_type` raises `ValueError`. Datetime cols auto-resolve to `xAxis.t
 | `size_min` / `size_max` (scatter) | Pixel range for `size` mapping. Defaults: 6 / 28. |
 | `size_lo` / `size_hi` (scatter) | Data-space pin for the `size` mapping. Defaults to the column's 5th/95th percentile. Use when a fixed reference scale matters (e.g. comparing across reruns where the dataset extent shifts). |
 | `bins` / `density` (histogram) | Int or list of bin edges (default 20); `True` normalises counts to density |
+
+### 3.1 Y-series cap (line / multi_line / area)
+
+Hard cap: **4 y-series**. ≥5 raises `chart_too_many_series` and blocks the build (always-blocking; the cap is non-bypassable from `compile_dashboard`). Applies to wide-form (`y: [list]` of length N) and long-form (`y: scalar` + `color: column` with N distinct values) equally; `mapping.axes` is treated as wide-form via the union of every per-axis `series` list.
+
+| Shape | Triggers |
+|-------|----------|
+| Wide-form list | `mapping.y` is a list with `len(y) > 4` |
+| Long-form color | `mapping.y` is a scalar AND `mapping.color` resolves to a column with `> 4` distinct non-NaN values |
+| Multi-axis | union of `mapping.axes[i].series` lists exceeds 4 |
+
+Why: more than 4 overlaid lines crowd the legend onto multiple rows, push the GS palette past its discriminable categorical width, and stop any single series from being traceable across the canvas. The five-line spaghetti chart is dashboard noise, not signal.
+
+Corrective actions in priority order:
+
+| Action | When |
+|--------|------|
+| Drop to ≤4 series (filter dataset to top-N by some criterion — largest end-of-period magnitude, alphabetical first N, peer-group membership) | Default. Cheapest path; loses no fidelity if the dropped series are tail-of-distribution |
+| Bucket the rest into a synthetic "Other" series | When the count of dropped series matters but their individual identity does not |
+| Split into small multiples (one widget per category, paired into 2-up rows) | When every series is load-bearing and the data deserves dedicated canvases |
+| Pivot framing: `Index=100` normalisation (5 series of normalised %-from-base read more cleanly than 5 raw levels), `correlation_matrix` (replaces a 5+ multi_line of asset returns), aggregate `stat_grid` (when the question is "where do these N values land today?" not "how have they evolved?") | When the question can be answered without the time-series axis |
 
 **Chart-specific shapes:**
 

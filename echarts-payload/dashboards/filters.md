@@ -98,7 +98,7 @@ The injected zoom is **per-chart and local by default** — dragging the slider 
 `spec.chart_zoom` and `mapping.chart_zoom` both work; `spec.chart_zoom` wins when both are set.
 
 ```json
-{"widget": "chart", "id": "tiny_sparkline", "w": 3,
+{"widget": "chart", "id": "tiny_sparkline", "w": 4,
   "spec": {"chart_type": "line", "dataset": "rates",
             "mapping": {"x": "date", "y": "us_2y"}, "chart_zoom": false}}
 
