@@ -1,12 +1,42 @@
 # Mapping reference
 
-Spoke fetched on demand from the chart_context hub. Covers the `mapping={...}` argument to `make_chart()` — the basic patterns (long, wide, profile/curve, scatter+trendlines, dual-axis), the full key reference, and per-series line styling via `strokeDash`.
+Spoke fetched on demand from the chart_context hub. Covers the `mapping={...}` argument to `make_chart()` — the axis-title kwarg discipline, the basic patterns (long, wide, profile/curve, scatter+trendlines, dual-axis), the full key reference, and per-series line styling via `strokeDash`.
 
-For per-chart-type required keys + caveats fetch `chart_types.md`. For dual-axis depth (right-axis title pairing, inverted right axis, name matching) fetch `dual_axis.md`.
+For per-chart-type required keys + caveats fetch `chart_types.md`. For dual-axis depth (right-axis title pairing, inverted right axis, name matching) fetch `dual_axis.md`. For composite layouts (n-pack helpers) fetch `composites.md`.
 
 ---
 
-## 1. Basic patterns
+## 1. Axis-title keys live INSIDE `mapping={}`
+
+`y_title`, `y_title_right`, `x_title` are NEVER top-level kwargs on
+`make_chart()` or `ChartSpec(...)` -- passing them outside `mapping={}`
+raises `TypeError: __init__() got an unexpected keyword argument
+'y_title'`. Composites are the same shape: `make_2pack_horizontal`,
+`make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`,
+`make_6pack_grid` accept composite-level `title=` / `subtitle=`, but
+per-panel axis titles live inside each panel's `ChartSpec.mapping`.
+
+```python
+make_chart(df=df, chart_type='multi_line',
+           mapping={'x': 'date', 'y': 'value', 'y_title': 'Yield (%)'})
+
+ChartSpec(df=df, chart_type='multi_line',
+          mapping={'x': 'date', 'y': 'value', 'y_title': 'Yield (%)'})
+
+# WRONG -- raises TypeError on `y_title=`:
+ChartSpec(df=df, chart_type='multi_line', y_title='Yield (%)',
+          mapping={'x': 'date', 'y': 'value'})
+
+# Composite -- composite-level title=, per-panel y_title in spec.mapping:
+make_2pack_horizontal(
+    spec_left, spec_right,
+    title='Composite title', subtitle='Composite subtitle',
+)
+```
+
+---
+
+## 2. Basic patterns
 
 ```python
 # Basic
@@ -29,7 +59,7 @@ mapping = {
 
 ---
 
-## 2. All mapping keys
+## 3. All mapping keys
 
 | Key | Type | Description |
 |-----|------|-------------|
@@ -49,7 +79,7 @@ mapping = {
 
 ---
 
-## 3. strokeDash: per-series line styles
+## 4. strokeDash: per-series line styles
 
 For `multi_line` only (single y-axis); not supported on dual-axis or
 profile/curve charts. Uses Altair 4.1+ `alt.StrokeDash()`. Use when lines

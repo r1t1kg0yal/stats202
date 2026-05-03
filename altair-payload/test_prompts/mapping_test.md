@@ -23,3 +23,7 @@ Build a scatter of MOVE vs VIX for the last 3 years with a regression trendline 
 ---
 
 Pull a Haver-coded series for US payrolls (`LANAGRA@USECON` or similar) and chart it with `y_title='Payrolls (M)'` to verify the coded column gets renamed in the rendered y-axis label. Let me know if frictions.
+
+---
+
+Build a 2-pack horizontal composite showing US 2y and 10y Treasury yields over the last 5 years. The left panel's y-axis must be labeled '2Y Yield (%)' and the right panel's '10Y Yield (%)' (per-panel labels, not a shared composite-level label). Let me know if frictions.

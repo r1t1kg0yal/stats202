@@ -26,9 +26,15 @@ in a composite. Use individual charts only for unrelated topics.
 
 ```python
 spec = ChartSpec(df=df, chart_type='multi_line',
-    mapping={'x': 'date', 'y': 'value'}, title='Title',
-    subtitle='Subtitle', annotations=[...], layers=[...])
+    mapping={'x': 'date', 'y': 'value', 'y_title': 'Yield (%)'},
+    title='Title', subtitle='Subtitle',
+    annotations=[...], layers=[...])
 ```
+
+Per-panel axis titles (`y_title`, `y_title_right`, `x_title`) live
+INSIDE each `ChartSpec.mapping`, never as top-level `ChartSpec(...)`
+kwargs (raises TypeError). Composite-level `title=` / `subtitle=`
+describe the COMPOSITE; see `mapping.md` §1.
 
 | Function | Layout | Positional Args |
 |----------|--------|-----------------|

@@ -1,15 +1,66 @@
 # U.S. Treasury Fiscal Data
 
-Sandbox-injected modules: `treasury_client` (this guide), `treasury_direct_client` (covers separate auction-results / refunding APIs at TreasuryDirect.gov; both share this L2 module). Anonymous API; no auth required at the target. PRISM routes through the GS proxy via `session_and_auth()`.
+Sandbox-injected modules: `treasury_client` (Fiscal Data API at `api.fiscaldata.treasury.gov`) + `treasury_direct_client` (TreasuryDirect.gov auction-results / refunding APIs). Both modules share this L2 guide. Anonymous APIs; PRISM routes through the GS proxy.
 
-Base URL: `https://api.fiscaldata.treasury.gov/services/api/fiscal_service`
+Base URL (treasury_client): `https://api.fiscaldata.treasury.gov/services/api/fiscal_service`
+Base URL (treasury_direct_client): `https://www.treasurydirect.gov`
 
 
 ## Triggers
 
-Use for: Treasury CUSIPs and auction schedules, debt to the penny, historical debt outstanding, MSPD (marketable securities outstanding detail), MTS (Monthly Treasury Statement) receipts/outlays/deficit, DTS (Daily Treasury Statement) operating cash balance and deposits/withdrawals, average interest rates on Treasury securities, Treasury reporting exchange rates, revenue collections, interest expense on public debt, federal debt schedules, TROR (Treasury Report on Receivables), Treasury Offset Program data, savings bonds, SLGS, gold reserve, financial statements (balance sheets, net cost, net position), long-term fiscal projections, social insurance, FRN daily indexes, Treasury buybacks (Liquidity Support / Cash Management operations).
+Use for: Treasury CUSIPs and auction schedules, debt to the penny, historical debt outstanding, MSPD (marketable securities outstanding detail), MTS (Monthly Treasury Statement) receipts/outlays/deficit, DTS (Daily Treasury Statement) operating cash balance and deposits/withdrawals, average interest rates on Treasury securities, Treasury reporting exchange rates, revenue collections, interest expense on public debt, federal debt schedules, TROR (Treasury Report on Receivables), Treasury Offset Program data, savings bonds, SLGS, gold reserve, financial statements (balance sheets, net cost, net position), long-term fiscal projections, social insurance, FRN daily indexes, Treasury buybacks (Liquidity Support / Cash Management operations), TreasuryDirect auction mechanics (highYield, bid-to-cover, auction tail in bps), CUSIP single-lookup, quarterly refunding artifacts.
 
-Not for: overnight reference rates / SOFR / EFFR (NY Fed), SOMA holdings / QT (NY Fed), auction results with bid-to-cover / tails (TreasuryDirect), yield curve / par yields (TreasuryDirect or FRED), OTC swap volumes (DTCC), futures positioning (CFTC), bank-level financials (FDIC), commercial paper / CD rates (FRED), prediction markets (prediction_markets), primary dealer positioning (NY Fed).
+Not for: overnight reference rates / SOFR / EFFR (NY Fed), SOMA holdings / QT (NY Fed), DAILY yield curve / par yields (FRED — series like DGS10, DGS2, DGS30; NOT in either of these clients), OTC swap volumes (DTCC), futures positioning (CFTC), bank-level financials (FDIC), commercial paper / CD rates (FRED), prediction markets (prediction_markets), primary dealer positioning (NY Fed).
+
+
+## Decision table: treasury_client vs treasury_direct_client
+
+| Question PRISM is asked | Use this client | Why |
+|---|---|---|
+| Latest debt to the penny + clean breakdown | `treasury_client.get_debt_summary()` | Convenience accessor; returns clean keys + coerced floats |
+| Upcoming auctions (next N) | `treasury_direct_client.<scraper>.next_n_announced(n=N, ...)` | Fresher than Fiscal `upcoming_auctions` (which has staleness incidents); auto-widens window until N records |
+| Auction RESULTS (highYield, bid-to-cover, tail bps) | `treasury_direct_client.<scraper>.scrape_auctioned()` or `.scrape_securities_api()` | Fiscal Data auctions_query lacks the auction-mechanics fields |
+| Single-CUSIP lookup with results | `treasury_direct_client.<scraper>.scrape_securities_by_cusip(cusip)` | One call returns auction + result + computed `tailBps` |
+| MTS receipts/outlays/deficit (monthly) | `treasury_client.get_mts_table(N)` or `.get_mts_table_9_line(name)` | The Fiscal MTS surface; tdir doesn't carry this |
+| DTS Operating Cash Balance / TGA | `treasury_client.get_tga_balance()` | Convenience: latest record_date + by-account breakdown + headline |
+| Avg interest rate on Bills/Notes/Bonds (curr + 12mo back) | `treasury_client.get_latest_avg_interest_rates()` + `.get_avg_interest_rates(security_type=X, from_date=...)` | Wrapper handles the security_desc translation; latest accessor returns dict by category |
+| Treasury buybacks | EITHER `treasury_client.get_buybacks()` OR `treasury_direct_client.<scraper>.scrape_buybacks()` | Both work; treasury_client preferred (Bucket A, simpler) unless GS proxy unavailable |
+| Quarterly refunding announcement | `treasury_direct_client.<scraper>.scrape_refunding_latest()` | Tdir-specific |
+| Daily yield curve (DGS10 etc.) | NEITHER — use FRED | Not in this client surface |
+
+The decision table is the routing AUTHORITY. When a user prompt mentions a specific client name (e.g. "via TreasuryDirect" or "via Fiscal Data"), honour the named client. When the user prompt is client-agnostic ("show me the next 10 upcoming TIPS"), use this table to pick.
+
+
+## Format quirks (the wrapper absorbs these — PRISM doesn't have to remember)
+
+These are surface oddities of the upstream APIs. The clients hide them at the boundary; this section exists so PRISM knows NOT to write the workarounds itself.
+
+| Quirk | Where it surfaces | What the wrapper does |
+|---|---|---|
+| Fiscal Data API returns ALL fields as STRINGS (numbers, dates) | Every endpoint | `treasury_client._request` reads the response's `meta.dataTypes` and coerces numerics on the way back. Pass `coerce_types=False` to opt out. |
+| TreasuryDirect returns numeric fields as STRINGS | Every endpoint | `treasury_direct_client._fetch_json(coerce=True)` (default) walks the record through `_NUMERIC_FIELDS` and converts. |
+| TIPS labeled `"TIPS Note"` (not just `"TIPS"`) on `upcoming_auctions` | `treasury_client.get_upcoming_auctions / get_cusips / get_auctions_data` | Pass `security_type="TIPS"` (canonical); wrapper translates to `security_type:in:(TIPS,TIPS Note)` via `_build_security_type_filter`. |
+| `avg_interest_rates` uses `security_desc` field, NOT `security_type` | `treasury_client.get_avg_interest_rates` | Pass `security_type="Bill"/"Note"/"Bond"/"TIPS"/"FRN"` (canonical); wrapper translates to `security_desc:eq:Treasury <X>`. |
+| Bills are quoted in DISCOUNT RATE not yield: `highDiscountRate` / `highInvestmentRate` instead of `highYield` | TreasuryDirect auction records | `treasury_direct_client.get_high_rate(rec)` returns `{"rate": float, "rate_type": "yield"\|"discount"\|"investment", ...}` security-type-aware. |
+| Bills' `tailBps` from yield-basis formula returns None | TreasuryDirect auction records | `treasury_direct_client.compute_tail(rec)` uses `highDiscountRate - averageMedianDiscountRate` for Bills, yield-basis for everything else. Auto-attached to records by `scrape_*` methods. |
+| `upcoming_auctions` endpoint sometimes surfaces stale records (e.g. 2024 dates returned in 2026) | `treasury_client.get_upcoming_auctions` | Default `only_future=True` filters out rows with `auction_date < today`. Pass `only_future=False` to see everything. |
+| TreasuryDirect uses camelCase (`highYield`, `bidToCoverRatio`, `auctionDate`); Fiscal uses snake_case (`tot_pub_debt_out_amt`, `record_date`) | Cross-client work | Casing reflects the upstream APIs; no normalization (would break call-site code). PRISM uses the casing the relevant client returns. |
+| `scrape_*` endpoints are TIME-WINDOWED (`days=N`), not COUNT-bounded | TreasuryDirect | `last_n_auctions(security_type, n)` and `next_n_announced(n)` widen the window until N records arrive. |
+| `securityTerm` is a free-text string ("10-Year", "2-Year 1-Month", "9-Year 10-Month") with no canonical tenor field | TreasuryDirect | Pass `tenor_years=10` (or any float) to `scrape_securities_api / scrape_announced / scrape_auctioned` — wrapper parses the term and matches with ±5% tolerance. |
+
+
+## Domain semantics (what the wrapper can't hide — PRISM needs to know)
+
+| Concept | Why PRISM needs it |
+|---|---|
+| Original vs Reopening auctions | A 10Y Note "issue" appears as 1 quarterly ORIGINAL + ~8 monthly REOPENINGS in a 12-month window. "How many 10Y Note auctions" is ambiguous; the wrapper exposes `originals_only=True` / `reopenings_only=True` on `scrape_securities_api` so PRISM picks. Default returns BOTH. |
+| Bill auction tail = discount-rate basis | Bills are quoted in discount-rate space. The "tail" still measures bid dispersion but in different units than Note/Bond yield-basis tails. `compute_tail` returns the right one per security type — but if PRISM is comparing tails ACROSS Bill and Note auctions it must normalise (or note the units). |
+| Bill rates: discount vs bond-equivalent yield | Bills publish BOTH `highDiscountRate` and `highInvestmentRate`. The "investment rate" is the bond-equivalent yield — that's the apples-to-apples comparison vs Note/Bond `highYield`. `get_high_rate(rec)` returns the investment rate for Bills by default. |
+| TGA = Federal Reserve Account row in DTS Table 1 | DTS Table 1 has multiple `account_type` rows per `record_date`. The Treasury General Account headline number is the "Federal Reserve Account" row's `close_today_bal`. `get_tga_balance()` exposes both the headline (Fed Reserve Account close) and the breakdown. |
+| MTS Table 9 line_code_nbr = federal receipts/outlays hierarchy | MTS-9 publishes a hierarchy keyed by integer `line_code_nbr`. Common ones: 120 = total receipts, 100 = individual income tax, 210 = corporate income tax, 300 = social security tax, 180 = total outlays. `MTS_TABLE_9_LINE_CODES` exposes the canonical ones; `get_mts_table_9_line(name_or_code)` resolves either. |
+| Reopening multiplicity for single-CUSIP lookup | `scrape_securities_by_cusip` returns 1+ records — a CUSIP can appear once (original only) or multiple times (original + reopenings). Each row is a distinct auction event; pick by `auctionDate`. |
+| Daily yield curve is NOT here | DGS10, DGS2, DGS30 etc. live in FRED, not in either treasury_client or treasury_direct_client. The Fiscal Data API has `avg_interest_rates` (weighted-average rate Treasury PAYS on outstanding stock — different concept). |
+| `treasury_client` registers ~80 of the 179 official Fiscal Data endpoints | The registered subset is the macro-relevant curated catalog. For endpoints not in `ENDPOINT_REGISTRY`, call `fetch_official_endpoint_catalog()` to see the gap, then either request a wrapper update or hit the path directly via `_request(endpoint=<path>, ...)`. |
 
 
 ## Data Catalog
@@ -207,7 +258,7 @@ Sandbox-injected as `treasury_direct_client`. Class-based interface (`TreasuryDi
 |---|---|---|
 | Auction results: highYield, lowYield, averageMedianYield, bidToCoverRatio, tailBps | `scrape_auctioned`, `scrape_securities_by_cusip`, `scrape_securities_api` | Fiscal Data API does not expose these auction-mechanics fields |
 | Announced auctions (upcoming, not yet held) | `scrape_announced` | More current than Fiscal Data's `upcoming_auctions` |
-| Single-CUSIP lookup with full auction record | `scrape_securities_by_cusip` | One call returns auction + result + bid-to-cover (and `_compute_tail` adds `tailBps`) |
+| Single-CUSIP lookup with full auction record | `scrape_securities_by_cusip` | One call returns auction + result + bid-to-cover; `tailBps` auto-attached (security-type-aware) |
 | Buyback operations | `scrape_buybacks` | Mirrors Fiscal Data's `buybacks_operations` endpoint; either client works (Bucket A vs Bucket B) |
 | Quarterly refunding announcement metadata | `scrape_refunding_latest` | TreasuryDirect-specific (not in Fiscal Data) |
 | Upcoming auction / buyback schedule XML | `fetch_auction_schedule_xml`, `fetch_buyback_schedule_xml` | TreasuryDirect-specific |
@@ -226,11 +277,12 @@ Use `treasury_client` (Fiscal Data) for everything else: debt-to-penny, MTS, DTS
 
 | Detail | Value |
 |---|---|
-| All `scrape_*` / `fetch_*` methods | return parsed Python (list/dict), no file I/O |
-| `_compute_tail` | static helper, mutates record in place; `tailBps = highYield - averageMedianYield` (bp) |
-| Bill auction history | chunked into 2-year windows |
-| Note/Bond/TIPS/FRN history | chunked into 5-year windows |
-| Dedup key on history pulls | `(cusip, auctionDate)` |
+| All `scrape_*` / `fetch_*` methods | return parsed Python (list/dict), no file I/O. Numeric fields auto-coerced to float / int per `_NUMERIC_FIELDS`. |
+| `tailBps` on auction records | Auto-attached by every `scrape_*` method that returns auction records. Security-type-aware per Format quirks above (yield-basis for Notes/Bonds/TIPS/FRN; discount-rate-basis for Bills). For records built outside the `scrape_*` paths, call `treasury_direct_client.compute_tail(rec)` to compute it. |
+| `get_high_rate(rec)` accessor | Module-level helper that returns `{"rate", "rate_type", "field_name", "security_type"}` — picks the canonical "high rate" per security type so PRISM never branches on `securityType`. Format quirks above documents the per-type field mapping. |
+| Bill auction history | chunked into 2-year windows internally |
+| Note/Bond/TIPS/FRN history | chunked into 5-year windows internally |
+| Dedup key on history pulls | `(cusip, auctionDate)` — relevant when reasoning about reopenings; for averages within a window, dedup is already applied |
 | Default `full_history` start | 2000-01-01 (debt API) / 1997-01-01 (securities API) |
 
 ---
@@ -450,8 +502,21 @@ records = treasury_client.get_record_setting_auctions(filter_expr="security_type
 # `treasury_client` module; call them as `treasury_client.<fn>(...)`.
 # (No import line needed inside execute_analysis_script.)
 
-# Debt to the Penny
-# Returns: list of dicts with record_date, tot_pub_debt_out_amt, intragov_hold_amt, etc.
+# === RECOMMENDED: convenience accessor for the headline debt question ===
+# Returns: {"as_of": "YYYY-MM-DD", "total_debt": float,
+#           "public_held": float, "intragov_held": float}
+# Hides: opaque API field names, sort/latest mechanics, type coercion.
+summary = treasury_client.get_debt_summary()
+# {"as_of": "2026-05-01", "total_debt": 36421517325847.32,
+#  "public_held": 28912304019221.45, "intragov_held": 7509213306625.87}
+
+# As-of a specific date
+summary = treasury_client.get_debt_summary(as_of="2024-12-31")
+
+# === Raw endpoint when you need the full record / multiple days ===
+# Returns: list of dicts with record_date, tot_pub_debt_out_amt,
+# debt_held_public_amt, intragov_hold_amt, etc.  All numerics already
+# coerced to float per the wrapper's boundary-coercion convention.
 rows = treasury_client.get_debt_to_penny()
 rows = treasury_client.get_debt_to_penny(from_date="2024-01-01", to_date="2025-12-31")
 rows = treasury_client.get_debt_to_penny(fields=["record_date", "tot_pub_debt_out_amt"])
@@ -488,8 +553,27 @@ rows = treasury_client.get_endpoint("top_federal", use_date_filters=False, max_p
 # `treasury_client` module; call them as `treasury_client.<fn>(...)`.
 # (No import line needed inside execute_analysis_script.)
 
+# === RECOMMENDED for MTS-9 single-line series (e.g. total receipts) ===
+# Accepts either canonical name or raw line_code_nbr.
+# MTS_TABLE_9_LINE_CODES exposes: total_receipts (120), individual_income (100),
+# corporate_income (210), social_security (300), estate_gift (400),
+# excise (500), customs (700), miscellaneous (800), total_outlays (180).
+rows = treasury_client.get_mts_table_9_line("total_receipts", from_date="2025-01-01")
+rows = treasury_client.get_mts_table_9_line(120, from_date="2025-01-01")  # equivalent
+
+# === RECOMMENDED for the TGA balance question ===
+# Returns: {"as_of": "YYYY-MM-DD", "total": float,
+#           "by_account_type": {acct: balance, ...}, "headline": float}
+# headline = the "Federal Reserve Account" close-of-day balance
+# (the canonical "TGA balance" cited in macro reports).
+tga = treasury_client.get_tga_balance()
+
+# As-of a specific date
+tga = treasury_client.get_tga_balance(as_of="2024-12-31")
+
+# === Raw MTS / DTS access when you need the full table ===
 # MTS tables: table param is "1"-"9", "6a", "6b", "6c", "6d", "6e"
-# Returns: list of dicts
+# Returns: list of dicts (numerics already coerced to float)
 
 # Receipts, Outlays, Deficit/Surplus
 rows = treasury_client.get_mts_table("1", from_date="2024-01-01")
@@ -539,16 +623,33 @@ rows = treasury_client.get_dts_table("6", from_date="2025-01-01", to_date="2025-
 # `treasury_client` module; call them as `treasury_client.<fn>(...)`.
 # (No import line needed inside execute_analysis_script.)
 
-# Average interest rates on Treasury securities
-# Returns: list of dicts with record_date, security_type_desc (Marketable/Non-marketable),
-# security_desc (Treasury Bills/Notes/Bonds/TIPS/FRN/...), avg_interest_rate_amt
-# NOTE: this endpoint does NOT have a `security_type` field. The wrapper accepts
-# the canonical alias (Bill / Note / Bond / TIPS / FRN) and translates to the
-# correct `security_desc:eq:Treasury <X>` filter internally.
+# === RECOMMENDED for "what's the latest avg rate on each security type?" ===
+# Returns: {"Bill": float, "Note": float, "Bond": float, "TIPS": float,
+#           "FRN": float, "as_of": "YYYY-MM-DD"}
+# Hides: security_type -> security_desc translation, multi-call orchestration,
+# string-vs-float coercion.
+latest = treasury_client.get_latest_avg_interest_rates()
+
+# === Raw avg_interest_rates endpoint for full series + cross-period work ===
+# Returns: list of dicts (numerics coerced to float).
+# `security_type` accepts the canonical alias (Bill / Note / Bond / TIPS / FRN);
+# wrapper translates to the API's `security_desc:eq:Treasury <X>` internally.
 rows = treasury_client.get_avg_interest_rates()
 rows = treasury_client.get_avg_interest_rates(security_type="Bill")
 rows = treasury_client.get_avg_interest_rates(security_type="Note", from_date="2024-01-01")
 rows = treasury_client.get_avg_interest_rates(filter_expr="avg_interest_rate_amt:gte:4.0", from_date="2024-01-01")
+
+# Compare current vs 12 months ago (canonical "rates moved by X bp" pattern):
+from datetime import date, timedelta
+y_ago = (date.today() - timedelta(days=365)).isoformat()
+out = {}
+for sec in ("Bill", "Note", "Bond"):
+    cur = treasury_client.get_avg_interest_rates(security_type=sec, page_size=1, max_pages=1)
+    bk  = treasury_client.get_avg_interest_rates(security_type=sec, from_date=y_ago, to_date=y_ago)
+    out[sec] = {
+        "current": cur[0]["avg_interest_rate_amt"] if cur else None,
+        "year_ago": bk[0]["avg_interest_rate_amt"] if bk else None,
+    }
 
 # Exchange rates
 # Returns: list of dicts with country_currency_desc, exchange_rate, record_date, etc.
@@ -650,55 +751,149 @@ except treasury_client.FiscalDataError as e:
 
 ```python
 # Class-based interface — instantiate the scraper once and reuse.
+# All numeric fields (yields, bid-to-cover, debt amounts, par amounts)
+# come back as floats / ints — the wrapper coerces at the boundary
+# via the _NUMERIC_FIELDS set. PRISM never has to float() these.
 scraper = treasury_direct_client.TreasuryDirectScraper()
 
-# Announced (upcoming, not yet held) auctions
-upcoming = scraper.scrape_announced(security_type="Bill", days=30)
-# Returns list[dict] with cusip, securityTerm, auctionDate, issueDate,
-# offeringAmt, etc. — fields available BEFORE the auction is held.
+# === RECOMMENDED for "next N upcoming auctions" ===
+# Wrapper auto-widens the search horizon until N records arrive.
+# Sorted ascending by auctionDate (nearest first).
+next_tips = scraper.next_n_announced(n=10, security_type="TIPS")
+# tenor_years filters by canonical maturity (10 = 10Y, 30 = 30Y, etc.)
+next_10y_notes = scraper.next_n_announced(n=10, security_type="Note", tenor_years=10)
 
-# Recently auctioned (results published) — adds yield + bid-to-cover
-recent = scraper.scrape_auctioned(security_type="Note", days=14)
-# Same shape as scrape_announced + highYield, lowYield,
-# averageMedianYield, bidToCoverRatio, tailBps (auction-tail bp).
+# === RECOMMENDED for "last N completed auctions" ===
+# Wrapper auto-widens window until N arrive (no need to guess `days=`).
+last_5_bills = scraper.last_n_auctions(security_type="Bill", n=5)
+last_5_10y_notes = scraper.last_n_auctions(
+    security_type="Note", n=5, tenor_years=10, originals_only=True
+)
 
-# Single-CUSIP lookup
+# === Single-CUSIP lookup ===
 records = scraper.scrape_securities_by_cusip("912797TD9")
-# Returns list[dict]; usually 1 entry, may be more for reopenings.
+# Returns list[dict]; 1 entry for original-only CUSIPs, more for reopenings.
+# tailBps is populated security-type-aware (yield-basis for Notes/Bonds/TIPS,
+# discount-rate-basis for Bills).
 
-# Auction-history sweep with date-range chunking
-history = scraper.scrape_securities_api(security_type="Bond",
-                                         days=730)
-# Auto-chunks to avoid the search endpoint's ~2000-record cap.
-# Records are sorted by auctionDate desc; tailBps populated.
+# === Auction-history sweep with new filters ===
+history = scraper.scrape_securities_api(
+    security_type="Note",
+    days=365,
+    tenor_years=10,           # filter to 10-Year Notes only
+    originals_only=True,      # exclude monthly reopenings
+)
+# tenor_years parses securityTerm strings ("10-Year", "9-Year 10-Month",
+# "1-Month", etc.) into canonical years with ±5% tolerance.
+# originals_only / reopenings_only address the original-vs-reopening
+# multiplicity (a 10Y Note appears as 1 quarterly original + monthly
+# reopenings).
 
 # Full history (1997-present, all types)
 all_history = scraper.scrape_securities_api(full_history=True)
 
-# Debt-to-the-penny — current snapshot
+# === Announced (upcoming) auctions — raw access ===
+upcoming = scraper.scrape_announced(security_type="Bill", days=30)
+upcoming_30y = scraper.scrape_announced(security_type="Bond", days=120, tenor_years=30)
+
+# === Recently auctioned (results published) — raw access ===
+recent = scraper.scrape_auctioned(security_type="Note", days=14)
+# All scrape_auctioned records have tailBps computed (security-type-aware).
+
+# === Security-type-aware accessors (use these, not raw highYield) ===
+# get_high_rate returns the right rate field for any security type:
+#   Notes/Bonds/TIPS/FRN  -> highYield
+#   Bills                 -> highInvestmentRate (bond-equivalent yield)
+#                            with highDiscountRate as fallback
+for rec in recent:
+    info = treasury_direct_client.get_high_rate(rec)
+    print(rec["cusip"], info["rate"], info["rate_type"])
+
+# compute_tail handles Bill (discount-rate basis) vs others (yield basis).
+# Already attached as tailBps on records returned by scrape_*; this is for
+# computing the tail on a record built by some other path.
+tail_bp = treasury_direct_client.compute_tail(rec)
+
+# === Debt-to-the-penny via TreasuryDirect ===
+# Current snapshot (clean dict with camelCase keys).
 current_debt = scraper.scrape_debt_api(current_only=True)
-# Returns dict with effectiveDate, totalDebt, publicDebt,
-# governmentHoldings.
+# {"effectiveDate": "2026-05-01", "totalDebt": 36421517325847.32,
+#  "publicDebt": 28912304019221.45, "governmentHoldings": 7509213306625.87}
+# (vs treasury_client.get_debt_summary() which uses snake_case keys but
+# is otherwise equivalent — pick by which client your prompt is in.)
 
-# Debt-to-the-penny — historical range
-hist = scraper.scrape_debt_api(start_date="2024-01-01",
-                                end_date="2024-12-31")
-# Returns list[dict] of daily records (chunked into 12-month windows
-# internally).
+# Historical range
+hist = scraper.scrape_debt_api(start_date="2024-01-01", end_date="2024-12-31")
 
-# Buybacks (mirrors treasury_client.get_buybacks; either works)
+# === Buybacks ===
 buybacks = scraper.scrape_buybacks(with_results_only=True)
-# Returns list[dict] with operation_date, operation_type
-# ("Liquidity Support" / "Cash Management"), security_type,
-# total_par_amt_offered, total_par_amt_accepted, settlement_date.
+# Either client works for buybacks; treasury_client.get_buybacks() is
+# simpler (Bucket A, no manual_https_request hop) when GS proxy is up.
 
-# Quarterly refunding artifact scrapers
+# === Quarterly refunding artifacts ===
 refunding = scraper.scrape_refunding_latest()
-# Returns dict with title, announcements (list of {date, links}), url.
-
 auction_schedule = scraper.fetch_auction_schedule_xml()
 buyback_schedule = scraper.fetch_buyback_schedule_xml()
-# Both return list[dict] (one record per scheduled operation).
+
+# === Comparative two-window auction-demand pattern ===
+# "Compare last N auctions to prior M-month baseline" — common analytical
+# shape for auction-demand questions. The wrapper exposes the pieces;
+# PRISM composes them.
+from datetime import datetime, timedelta
+
+scraper = treasury_direct_client.TreasuryDirectScraper()
+
+# Step 1: Recent N auctions (sorted auctionDate desc).
+recent = scraper.last_n_auctions(security_type="Bill", n=5)
+
+# Step 2: Prior baseline window (e.g. 6 months) excluding the recent N.
+recent_dates = {r.get("auctionDate") for r in recent}
+baseline_window_days = 180
+prior_pool = scraper.scrape_securities_api(
+    security_type="Bill",
+    days=baseline_window_days + 30,  # buffer past the recent set
+)
+prior = [r for r in prior_pool if r.get("auctionDate") not in recent_dates][:30]
+# (prior list is sorted auctionDate desc; take the first ~30 to get the
+# 6-month baseline excluding the recent cluster. Adjust slice if your
+# definition of "prior 6 months" needs sharper bounds.)
+
+# Step 3: Average bid-to-cover and tailBps across each window.
+def _avg(records, key):
+    vals = [r[key] for r in records if r.get(key) is not None]
+    return sum(vals) / len(vals) if vals else None
+
+recent_btc  = _avg(recent, "bidToCoverRatio")
+prior_btc   = _avg(prior, "bidToCoverRatio")
+recent_tail = _avg(recent, "tailBps")
+prior_tail  = _avg(prior, "tailBps")
+
+# Step 4: Verdict ("stronger / weaker / in line").
+# Higher btc + lower tail = stronger demand.
+btc_delta  = (recent_btc - prior_btc) if (recent_btc and prior_btc) else None
+tail_delta = (recent_tail - prior_tail) if (recent_tail and prior_tail) else None
 ```
+
+
+## Coverage gap (per D14 Completeness invariant)
+
+The `treasury_client.ENDPOINT_REGISTRY` curates the macro-relevant subset of the official Fiscal Data API surface. As of 2026-05-02 the registry has ~80 endpoints; the official API has **179 endpoints** total per <https://fiscaldata.treasury.gov/api-documentation/>. The ~100 unregistered ones are mostly newer programs (ARP / IIJA / IRA spending sub-tables, smaller dataset variants).
+
+If PRISM is asked about a Treasury concept that isn't covered by the registered endpoints:
+
+```python
+# Check what's missing.
+catalog = treasury_client.fetch_official_endpoint_catalog()
+# Returns: {"registered_locally": 80, "official_total": 179,
+#           "official_url": "https://fiscaldata.treasury.gov/api-documentation/",
+#           "datasets_url": "https://fiscaldata.treasury.gov/datasets/", ...}
+
+# Hit a known endpoint path directly via _request even if it's not registered.
+# (Path lives on the dataset's API Quick Guide page on fiscaldata.treasury.gov.)
+resp = treasury_client._request("v2/accounting/od/<some_unregistered_path>", page_size=10)
+rows = resp["data"]
+```
+
+PRISM should also surface this gap to the user when relevant ("the Treasury Fiscal Data API has 179 endpoints and we currently expose ~80; the dataset you're asking about may need a wrapper update — see fiscaldata.treasury.gov/datasets/").
 
 

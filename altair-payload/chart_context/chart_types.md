@@ -85,7 +85,29 @@ encoding.
 
 ---
 
-## 3. Bullet chart
+## 3. Heatmap
+
+`value` column is rendered as cell color. `MAX_COLOR_CARDINALITY=12`
+applies -- continuous numeric values MUST be binned to <=12 categories
+BEFORE `make_chart()`, else `check_charts_quality` rejects and the
+chart is dropped. Bin via `pd.cut()` (equal-width) or `np.digitize()`
+(custom edges); set `mapping['color_scheme']` to a sequential scheme
+(`'blues'`, `'viridis'`, etc.) keyed to the binned values.
+
+```python
+df['prob_bucket'] = pd.cut(
+    df['Probability'], bins=10,
+    labels=[f'{i*10}-{(i+1)*10}%' for i in range(10)],
+)
+mapping = {
+    'x': 'meeting_date', 'y': 'fed_funds_rate', 'value': 'prob_bucket',
+    'color_scheme': 'blues',
+}
+```
+
+---
+
+## 4. Bullet chart
 
 Current values within historical ranges. Marker color encodes severity via
 z-score or percentile.
@@ -105,7 +127,7 @@ mapping = {
 
 ---
 
-## 4. Waterfall chart
+## 5. Waterfall chart
 
 Additive decomposition / attribution -- bars float, each starts where the
 previous ended. Use for CPI / GDP decomposition, P&L attribution, FCI
@@ -125,7 +147,7 @@ mapping = {'x': 'component', 'y': 'contribution', 'type': 'type', 'y_title': 'CP
 
 ---
 
-## 5. Haver frequency & mixed-frequency DataFrames
+## 6. Haver frequency & mixed-frequency DataFrames
 
 Haver stores many monthly/quarterly series at business-daily granularity
 (same value repeated ~22 days, then jumps). Symptom: stair-step lines.

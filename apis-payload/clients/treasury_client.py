@@ -68,6 +68,7 @@ def _get_session():
 
 __all__ = [
     "BASE_URL", "CATEGORIES", "ENDPOINT_REGISTRY", "FILTER_OPERATORS",
+    "MTS_TABLE_9_LINE_CODES", "OFFICIAL_API_DOCS_URL",
     "filter_eq", "filter_in", "filter_gte", "filter_gt", "filter_lte", "filter_lt",
     "build_filter", "filter_date_range",
     "get_registry", "list_keys", "get_manifest", "search_endpoints",
@@ -78,6 +79,11 @@ __all__ = [
     "get_revenue_collections", "get_mts_table", "get_dts_table",
     "get_buybacks", "get_auctions_data",
     "get_examples", "FiscalDataError",
+    # Convenience accessors absorbing wrapper-fixable [W] frictions per D15
+    "get_debt_summary", "get_tga_balance", "get_latest_avg_interest_rates",
+    "get_mts_table_9_line",
+    # Discovery helpers per D14 Completeness invariant
+    "fetch_official_endpoint_catalog",
 ]
 
 # API filter operators: eq, in, gte, gt, lte, lt. Format: field:op:value, multi: field:op:val,field2:op:val
@@ -271,7 +277,7 @@ def _build_url(endpoint: str, *, fields: Optional[list[str]] = None, filter_expr
     return f"{BASE_URL}/{endpoint.lstrip('/')}?{urllib.parse.urlencode(params)}"
 
 
-def _request(endpoint: str, *, fields: Optional[list[str]] = None, filter_expr: Optional[str] = None, sort: Optional[str] = None, page_number: int = 1, page_size: int = 100, timeout: float = 30.0) -> dict[str, Any]:
+def _request(endpoint: str, *, fields: Optional[list[str]] = None, filter_expr: Optional[str] = None, sort: Optional[str] = None, page_number: int = 1, page_size: int = 100, timeout: float = 30.0, coerce_types: bool = True) -> dict[str, Any]:
     url = _build_url(endpoint, fields=fields, filter_expr=filter_expr, sort=sort, page_number=page_number, page_size=page_size)
     session, auth = _get_session()
     try:
@@ -295,6 +301,9 @@ def _request(endpoint: str, *, fields: Optional[list[str]] = None, filter_expr: 
             api_error=str(out.get("error", "")),
             api_message=str(out.get("message", "")),
         )
+    if coerce_types:
+        data_types = (out.get("meta", {}) or {}).get("dataTypes", {}) or {}
+        out["data"] = _coerce_rows(out.get("data", []) or [], data_types)
     return out
 
 
@@ -547,22 +556,31 @@ def get_cusips(
     page_size: int = 1000,
     max_pages: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    """CUSIPs from upcoming auctions. Pass filter_expr for arbitrary API filters."""
+    """CUSIPs from upcoming auctions.
+
+    `security_type` accepts the canonical short alias (Bill / Note / Bond /
+    TIPS / FRN / CMB). Internally translates to `security_type:in:(...)` —
+    notably handling the API's "TIPS Note" labelling per friction class B
+    in `prism/api-clients.md` §11.
+
+    Date filter applies to `auction_date` (when the auction is held), not
+    `record_date` (when Treasury inserted the record).
+    """
     endpoint = _get_endpoint_path("upcoming_auctions")
     if not endpoint:
         raise ValueError("upcoming_auctions endpoint not in registry")
     filters = []
     if security_type:
-        filters.append(f"security_type:eq:{security_type}")
+        filters.append(_build_security_type_filter(security_type))
     if from_date:
-        filters.append(f"record_date:gte:{from_date}")
+        filters.append(f"auction_date:gte:{from_date}")
     if to_date:
-        filters.append(f"record_date:lte:{to_date}")
+        filters.append(f"auction_date:lte:{to_date}")
     if filter_expr:
         filters.append(filter_expr)
     fe = ",".join(filters) if filters else None
     flds = fields or ["cusip", "security_type", "security_term", "auction_date", "issue_date", "offering_amt", "reopening"]
-    return _fetch_all_pages(endpoint, fields=flds, filter_expr=fe, sort=sort, page_size=page_size, max_pages=max_pages)
+    return _fetch_all_pages(endpoint, fields=flds, filter_expr=fe, sort=sort or "auction_date", page_size=page_size, max_pages=max_pages)
 
 
 def get_unique_cusips(*, security_type: Optional[str] = None, from_date: Optional[str] = None, to_date: Optional[str] = None) -> list[str]:
@@ -612,27 +630,43 @@ def get_upcoming_auctions(
     security_type: Optional[str] = None,
     from_date: Optional[str] = None,
     to_date: Optional[str] = None,
+    only_future: bool = True,
     filter_expr: Optional[str] = None,
     fields: Optional[list[str]] = None,
     sort: Optional[str] = None,
     page_size: int = 100,
     max_pages: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    """Upcoming auctions. Pass filter_expr for arbitrary filters (e.g. auction_date:gte:2024-01-01)."""
+    """Upcoming auctions.
+
+    `security_type` accepts canonical aliases (Bill / Note / Bond / TIPS /
+    FRN / CMB) and the wrapper translates "TIPS" -> security_type:in:(TIPS,
+    TIPS Note) to handle the API's labelling quirk (per friction class B in
+    prism/api-clients.md §11).
+
+    `only_future=True` (default) filters out stale records the endpoint
+    sometimes surfaces — addresses friction class D (upcoming_auctions
+    returning 2024 dates as "upcoming" in 2026). Pass `only_future=False`
+    to see all rows in the table.
+    """
     endpoint = _get_endpoint_path("upcoming_auctions")
     if not endpoint:
         raise ValueError("upcoming_auctions endpoint not in registry")
     filters = []
     if security_type:
-        filters.append(f"security_type:eq:{security_type}")
-    if from_date:
+        filters.append(_build_security_type_filter(security_type))
+    if only_future and not from_date:
+        from datetime import date
+        today = date.today().isoformat()
+        filters.append(f"auction_date:gte:{today}")
+    elif from_date:
         filters.append(f"auction_date:gte:{from_date}")
     if to_date:
         filters.append(f"auction_date:lte:{to_date}")
     if filter_expr:
         filters.append(filter_expr)
     fe = ",".join(filters) if filters else None
-    return _fetch_all_pages(endpoint, fields=fields, filter_expr=fe, sort=sort, page_size=page_size, max_pages=max_pages)
+    return _fetch_all_pages(endpoint, fields=fields, filter_expr=fe, sort=sort or "auction_date", page_size=page_size, max_pages=max_pages)
 
 
 def get_record_setting_auctions(
@@ -693,6 +727,104 @@ _AVG_RATES_SECURITY_DESC = {
     "TIPS":  "Treasury Inflation-Protected Securities (TIPS)",
     "FRN":   "Treasury Floating Rate Notes (FRN)",
 }
+
+# `upcoming_auctions` and other auction endpoints use `security_type` field
+# but TIPS are labeled "TIPS Note" (not just "TIPS"). The canonical alias map
+# below translates user-facing canonical names to the API's actual values.
+# When PRISM passes security_type="TIPS" to get_upcoming_auctions/get_cusips/
+# get_auctions_data the wrapper applies an `:in:(...)` filter that catches
+# both labels for safety.
+_AUCTION_SECURITY_TYPE_ALIASES = {
+    "TIPS":     ["TIPS", "TIPS Note"],
+    "Bill":     ["Bill"],
+    "Note":     ["Note"],
+    "Bond":     ["Bond"],
+    "FRN":      ["FRN"],
+    "CMB":      ["CMB"],
+}
+
+
+def _build_security_type_filter(security_type: str) -> str:
+    """Translate canonical security_type to API filter clause.
+
+    Per the doctrine (.cursor/rules/api-clients.mdc Step 4 Ergonomics):
+    PRISM passes a canonical short name; the wrapper handles upstream
+    label inconsistencies (notably: TIPS labeled "TIPS Note" in
+    upcoming_auctions per friction class B).
+    """
+    aliases = _AUCTION_SECURITY_TYPE_ALIASES.get(security_type, [security_type])
+    if len(aliases) == 1:
+        return f"security_type:eq:{aliases[0]}"
+    return f"security_type:in:({','.join(aliases)})"
+
+
+# Fiscal Data API quirk per https://fiscaldata.treasury.gov/api-documentation/
+# "All fields in a response will be treated as strings and enclosed in
+# quotation marks (e.g., 'field_name')." The wrapper coerces using the
+# dataTypes metadata block returned with each response so PRISM never has to
+# remember to float() or pd.to_datetime().
+_NUMERIC_TYPES = {"NUMBER", "CURRENCY", "PERCENTAGE", "INTEGER"}
+_DATE_TYPES = {"DATE"}
+
+
+def _coerce_value(val: Any, dtype: str) -> Any:
+    """Coerce a string field value per its declared dataType.
+
+    Returns the original value untouched on parse failure (preserves
+    sentinel values like 'null' or '-' that the API uses).
+    """
+    if val is None:
+        return None
+    if not isinstance(val, str):
+        return val
+    s = val.strip()
+    if s == "" or s.lower() == "null":
+        return None
+    if dtype in _NUMERIC_TYPES:
+        try:
+            return float(s) if "." in s or "e" in s.lower() else int(s)
+        except ValueError:
+            return val
+    return val
+
+
+def _coerce_rows(rows: list[dict[str, Any]], data_types: dict[str, str]) -> list[dict[str, Any]]:
+    """Apply boundary type coercion to every row using the API's dataTypes
+    metadata. PRISM gets clean Python types back without per-call branching.
+    """
+    if not data_types or not rows:
+        return rows
+    for r in rows:
+        for k, dtype in data_types.items():
+            if k in r:
+                r[k] = _coerce_value(r[k], dtype)
+    return rows
+
+
+# Common MTS Table 9 line_code_nbr values for macro-relevant aggregates.
+# PRISM uses these to skip the "guess the magic integer" step. Source:
+# https://fiscaldata.treasury.gov/datasets/monthly-treasury-statement/
+# (MTS-9 publishes a hierarchy of receipt sources and outlay functions).
+MTS_TABLE_9_LINE_CODES = {
+    "total_receipts":      "120",
+    "individual_income":   "100",
+    "corporate_income":    "210",
+    "social_security":     "300",
+    "estate_gift":         "400",
+    "excise":              "500",
+    "customs":             "700",
+    "miscellaneous":       "800",
+    "total_outlays":       "180",
+}
+
+
+# DTS Table 1 account_type values for the Treasury General Account (TGA)
+# breakdown. As of 2026 Treasury reports the TGA balance under a single
+# row labeled "Federal Reserve Account" (Fed-side TGA) plus secondary
+# TT&L accounts. The full enumeration of account_type values evolves with
+# Treasury's reporting; PRISM should call get_tga_balance() rather than
+# remembering specific labels.
+_TGA_ACCOUNT_TYPES_HEADLINE = ("Federal Reserve Account", "Treasury General Account (TGA) Closing Balance")
 
 
 def get_avg_interest_rates(
@@ -868,13 +1000,17 @@ def get_auctions_data(
     page_size: int = 1000,
     max_pages: Optional[int] = None,
 ) -> list[dict[str, Any]]:
-    """Treasury securities auction data (bills, notes, bonds, TIPS, FRN). Includes pricing, rates, bid-to-cover."""
+    """Treasury securities auction data (bills, notes, bonds, TIPS, FRN). Includes pricing, rates, bid-to-cover.
+
+    `security_type` accepts canonical aliases (Bill / Note / Bond / TIPS /
+    FRN / CMB) per the global aliasing convention.
+    """
     endpoint = _get_endpoint_path("auctions_query")
     if not endpoint:
         raise ValueError("auctions_query endpoint not in registry")
     filters = []
     if security_type:
-        filters.append(f"security_type:eq:{security_type}")
+        filters.append(_build_security_type_filter(security_type))
     if from_date:
         filters.append(f"record_date:gte:{from_date}")
     if to_date:
@@ -885,4 +1021,208 @@ def get_auctions_data(
         filters.append(filter_expr)
     fe = ",".join(filters) if filters else None
     return _fetch_all_pages(endpoint, fields=fields, filter_expr=fe, sort=sort or "-record_date", page_size=page_size, max_pages=max_pages)
+
+
+# ── Convenience accessors (per D14 Completeness + D15 Ergonomics) ─────────
+#
+# These hide the "PRISM has to remember opaque field names + which row is the
+# latest + how to slice the breakdown" cycle the subagent RBR pass surfaced
+# (frictions: debt field semantics, latest-row sort defaults opaque, TGA
+# mapping). Each returns a clean dict / list with self-describing keys.
+
+
+def get_debt_summary(*, as_of: Optional[str] = None) -> dict[str, Any]:
+    """Latest debt-to-the-penny snapshot in clean form.
+
+    Returns:
+        {
+            "as_of":              "YYYY-MM-DD",   # record_date of the row
+            "total_debt":         float,           # tot_pub_debt_out_amt
+            "public_held":        float,           # debt_held_public_amt
+            "intragov_held":      float,           # intragov_hold_amt
+        }
+
+    `as_of` (optional): YYYY-MM-DD; returns the snapshot for that date if
+    present, else the latest available. Default: latest.
+
+    Hides:
+      - opaque API field names (`tot_pub_debt_out_amt` etc.)
+      - sort/latest-row mechanics
+      - string-vs-float type coercion
+    """
+    if as_of:
+        rows = get_debt_to_penny(from_date=as_of, to_date=as_of, max_pages=1)
+    else:
+        rows = get_debt_to_penny(sort="-record_date", page_size=1, max_pages=1)
+    if not rows:
+        raise FiscalDataError(f"No debt-to-penny data available{' for ' + as_of if as_of else ''}")
+    r = rows[0]
+    return {
+        "as_of":         r.get("record_date"),
+        "total_debt":    r.get("tot_pub_debt_out_amt"),
+        "public_held":   r.get("debt_held_public_amt"),
+        "intragov_held": r.get("intragov_hold_amt"),
+    }
+
+
+def get_tga_balance(*, as_of: Optional[str] = None) -> dict[str, Any]:
+    """Latest Treasury General Account (TGA) cash balance from DTS Table 1.
+
+    Returns:
+        {
+            "as_of":              "YYYY-MM-DD",
+            "total":              float,    # sum of close_today_bal across
+                                              # all account_type rows
+            "by_account_type":    {account_type: close_today_bal, ...},
+                                              # full breakdown
+            "headline":           float,     # the Federal Reserve Account /
+                                              # closing-balance line if present,
+                                              # else None (treat as the
+                                              # canonical "TGA balance")
+        }
+
+    Hides:
+      - DTS Table 1 having multiple rows per record_date (one per
+        account_type) — PRISM doesn't have to groupby
+      - close_today_bal vs open_today_bal choice (close is canonical for
+        end-of-day; matches Treasury's official daily TGA report)
+      - which account_type label represents the headline TGA
+    """
+    if as_of:
+        rows = get_dts_table("1", from_date=as_of, to_date=as_of)
+    else:
+        rows = get_dts_table("1", page_size=100, max_pages=1)
+    if not rows:
+        raise FiscalDataError(f"No DTS Table 1 data available{' for ' + as_of if as_of else ''}")
+    latest_date = max((r.get("record_date") for r in rows if r.get("record_date")), default=None)
+    if latest_date is None:
+        raise FiscalDataError("DTS Table 1 rows lack record_date")
+    same_day = [r for r in rows if r.get("record_date") == latest_date]
+    by_acct: dict[str, Any] = {}
+    total = 0.0
+    headline = None
+    for r in same_day:
+        acct = r.get("account_type")
+        bal = r.get("close_today_bal")
+        if acct is None or bal is None:
+            continue
+        try:
+            bal_f = float(bal) if not isinstance(bal, (int, float)) else float(bal)
+        except (TypeError, ValueError):
+            continue
+        by_acct[acct] = bal_f
+        total += bal_f
+        if acct in _TGA_ACCOUNT_TYPES_HEADLINE:
+            headline = bal_f
+    return {
+        "as_of":           latest_date,
+        "total":           total,
+        "by_account_type": by_acct,
+        "headline":        headline,
+    }
+
+
+def get_latest_avg_interest_rates() -> dict[str, Optional[float]]:
+    """Latest weighted-average interest rate by security category.
+
+    Returns: {"Bill": rate, "Note": rate, "Bond": rate, "TIPS": rate,
+              "FRN": rate, "as_of": "YYYY-MM-DD"}
+
+    Hides:
+      - the security_type -> security_desc translation
+      - fetching one record per category and aligning by record_date
+      - string-vs-float coercion
+    """
+    out: dict[str, Optional[float]] = {}
+    latest_date: Optional[str] = None
+    for canonical in ("Bill", "Note", "Bond", "TIPS", "FRN"):
+        try:
+            rows = get_avg_interest_rates(security_type=canonical, sort="-record_date", page_size=1, max_pages=1)
+        except FiscalDataError:
+            rows = []
+        if rows:
+            r = rows[0]
+            rate = r.get("avg_interest_rate_amt")
+            try:
+                out[canonical] = float(rate) if rate is not None else None
+            except (TypeError, ValueError):
+                out[canonical] = rate
+            if r.get("record_date") and (latest_date is None or r["record_date"] > latest_date):
+                latest_date = r["record_date"]
+        else:
+            out[canonical] = None
+    out["as_of"] = latest_date
+    return out
+
+
+def get_mts_table_9_line(line_code: str | int, *, from_date: Optional[str] = None, to_date: Optional[str] = None, max_pages: Optional[int] = None) -> list[dict[str, Any]]:
+    """Convenience: MTS Table 9 single-line series (e.g. total receipts).
+
+    `line_code` accepts either:
+      - a canonical name from MTS_TABLE_9_LINE_CODES (e.g. "total_receipts")
+      - a string/int line_code_nbr (e.g. "120" or 120)
+
+    Returns list of dicts with the standard MTS-9 fields + computed series
+    suitable for MoM/YoY calculations.
+    """
+    if isinstance(line_code, str) and line_code in MTS_TABLE_9_LINE_CODES:
+        code = MTS_TABLE_9_LINE_CODES[line_code]
+    else:
+        code = str(line_code)
+    return get_mts_table(
+        "9",
+        filter_expr=f"line_code_nbr:eq:{code}",
+        fields=["record_date", "classification_desc", "current_month_rcpt_outly_amt", "fytd_rcpt_outly_amt", "prior_year_month_rcpt_outly_amt"],
+        from_date=from_date,
+        to_date=to_date,
+        max_pages=max_pages,
+    )
+
+
+# ── Endpoint catalog discovery (per D14 Completeness; the gap finding) ────
+
+
+OFFICIAL_API_DOCS_URL = "https://fiscaldata.treasury.gov/api-documentation/"
+
+
+def fetch_official_endpoint_catalog() -> dict[str, Any]:
+    """Return the official endpoint catalog metadata.
+
+    The Fiscal Data API has 179 endpoints as of 2026-05-02 per the
+    official documentation; the static `ENDPOINT_REGISTRY` catalogues
+    a curated subset of macro-relevant ones (~80). This helper points
+    PRISM at the official catalog when it suspects an endpoint exists
+    that isn't registered locally.
+
+    Returns a dict with:
+        {
+            "registered_locally":  int,    # len(ENDPOINT_REGISTRY)
+            "official_total":      int,    # 179 as of 2026-05-02
+            "official_url":        str,    # api-documentation page URL
+            "datasets_url":        str,    # dataset-search page URL
+            "discovery_pattern":   str,    # how to ad-hoc query a key
+                                            # not in the registry
+            "categories":          dict,   # local CATEGORIES dict
+        }
+
+    Use this when:
+      - PRISM is asked about an endpoint name not in
+        treasury_client.list_keys()
+      - PRISM wants to surface a "this is one of N official endpoints,
+        here are some you might want to add to the registry" message
+      - A user asks "what other Treasury data is available?"
+    """
+    return {
+        "registered_locally":  len(ENDPOINT_REGISTRY),
+        "official_total":      179,
+        "official_url":        OFFICIAL_API_DOCS_URL,
+        "datasets_url":        "https://fiscaldata.treasury.gov/datasets/",
+        "discovery_pattern":   (
+            "If the desired endpoint isn't in ENDPOINT_REGISTRY, you can hit "
+            "any path under {BASE_URL}/<endpoint_path> directly using "
+            "_request(endpoint=<path>, ...). The endpoint path lives in the "
+            "URL on the dataset's API Quick Guide page."
+        ),
+        "categories":          dict(CATEGORIES),
+    }
 

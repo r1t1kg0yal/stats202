@@ -23,3 +23,7 @@ Pull the latest US Treasury debt-to-penny record and produce a donut chart of th
 ---
 
 Build a bullet chart for current US headline CPI YoY against the Fed's 2% target with a tolerance band of plus or minus 50bp. Let me know if frictions.
+
+---
+
+Build a heatmap of FOMC implied probability distributions across the next 6 meetings: x=meeting_date, y=fed_funds_rate target, value=probability. Probabilities are continuous floats over 40+ unique values — make sure the rendered heatmap has at most 12 distinct color buckets and uses a sequential color scheme. Let me know if frictions.
