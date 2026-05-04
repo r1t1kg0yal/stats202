@@ -25,42 +25,58 @@ Every iteration on a dashboard happens at `users/{kerberos}/dashboards/{name}/`.
 
 | Need | Where it lives inside the workspace |
 |------|--------------------------------------|
-| Canonical artefacts (the seven §2.2 paths) | top level of the folder |
+| Canonical artefacts (the §2.2 required paths) | top level of the folder |
+| Versioned script history (`pull_data.py` + `build.py`, every edit) | `scripts/versions/<pull_data\|build>_v<N>.py` (§2.6) |
+| Pre-edit snapshots of `manifest_template.json` (`template_crud.md` § 1 WRITE step) | `archive/<UTC>/` (rollback path per `dashboards/recipes.md` § 5) |
 | Scratch / intermediate files | `archive/<UTC>/` (audit ignores; runner ignores) |
-| Pre-edit snapshots (manifest_template / scripts before re-author) | `archive/<UTC>/` (rollback path per `dashboards/recipes.md` §5) |
 | Optional history snapshots (when `keep_history=true`) | `history/` (runner-managed) |
 | Generated data | `data/<stem>.csv` only; no per-source subfolders (Rule 5) |
 
-Two side-effects of treating the folder as workspace:
+Three side-effects of treating the folder as workspace:
 
-1. **Read first, then act.** When PRISM picks up a dashboard, the first action is `s3_manager.list({DASHBOARD_PATH})` + `_audit_dashboard_layout` (§2.5.3). Whatever's there is the current state; the planned change merges into it (see `dashboards/pipelines.md` §2 cataloging + `dashboards/recipes.md` §3 READ→MERGE→WRITE).
-2. **Quarantine, never delete.** Before re-authoring `pull_data.py` / `build.py` / `manifest_template.json`, copy the about-to-be-overwritten file to `archive/<UTC>/` so the prior version stays recoverable. The runner ignores `archive/` entirely (§5.2 of `dashboard-refresh.md`); cleanup is purely about audit hygiene.
-
----
-
-## The dashboard is two scripts
-
-A persistent dashboard's true artifact is `scripts/pull_data.py` (the data pipelines) and `scripts/build.py` (the manifest assembler). The other files in the folder (`data/<stem>.csv`, `manifest_template.json`, `manifest.json`, `dashboard.html`) are REGENERATED from those two scripts on every refresh by the cron runner. What this means for PRISM:
-
-| Implication | Practical rule |
-|-------------|----------------|
-| Editing a dashboard means editing the two scripts | Don't mutate derived files directly; tomorrow's refresh re-runs the unmodified script and the change vanishes |
-| The build flow (§6.1 Tools 1+2+3+4) IS the refresh smoke test | When all four tools succeed end-to-end (Tool 4 spawns the subprocess refresh and exits 0), the persisted scripts are proven against today's data; the user's first view at the portal URL is byte-identical to what tomorrow's cron will produce |
-| Editing an existing dashboard requires reading the existing scripts FIRST | Build the pipeline → CSV → dataset_key → widget graph (`dashboards/pipelines.md` §2), then plan the edit against that graph — not against a clean-room rebuild |
-
-`dashboards/pipelines.md` is the SSOT for pipeline cataloging, the reuse decision ladder, active-pipeline integrity rules, end-to-end re-authoring, and the post-edit session-folder health check.
+1. **Read first, then act.** When PRISM picks up a dashboard, the first action is `s3_manager.list({DASHBOARD_PATH})` + `_audit_dashboard_layout` (§ 2.5.3). Whatever's there is the current state; the planned change merges into it (see `dashboards/pipelines.md` § 2 cataloging + `dashboards/template_crud.md` § 1 READ → MUTATE → VALIDATE → WRITE for spec edits, `dashboards/recipes.md` § 6 for script edits).
+2. **Version, then write — for the two scripts.** `scripts/pull_data.py` + `scripts/build.py` carry a first-class versioned history under `scripts/versions/<name>_v<N>.py` (§2.6). Every Tools 1+2 cycle bumps both scripts to the next integer version and writes a snapshot alongside the live overwrite. The chain is monotonic; the highest-numbered version is byte-identical to the live `scripts/<name>.py`. The runner reads only the live path; the `scripts/versions/` subfolder is invisible to it (§5.2 of `dashboard-refresh.md`). Revert is `dashboards/recipes.md` §5 path 1: copy `scripts/versions/<name>_vK.py` over the live path, bump to v(N+1), re-run Tools 1+2+3+4.
+3. **Quarantine, never delete — for everything else.** Before re-authoring `manifest_template.json` directly (the `template_crud.md` raw JSON CRUD path that bypasses Tools 1+2), copy the about-to-be-overwritten file to `archive/<UTC>/` so the prior version stays recoverable. The runner ignores `archive/` entirely; cleanup is purely about audit hygiene. (Scripts skip `archive/` because § 2.6 versioning supersedes it for that surface.)
 
 ---
 
-## PRISM edits only the two scripts
+## The dashboard has three edit surfaces
 
-The only files PRISM authors directly are `scripts/pull_data.py` and `scripts/build.py` (plus the registry entry — a separate seam, §6.1 Tool 3). Everything else in the folder — `manifest.json`, `manifest_template.json`, `dashboard.html`, every CSV under `data/` — is **derived**. PRISM never edits them in place; they regenerate by re-running the two scripts. Three consequences:
+A persistent dashboard's true artifact is the trio:
 
-- **PRISM never directly touches `dashboard.html`** (or the other derived artefacts). Hand-editing them produces drift that vanishes on the next refresh — and worse, masks bugs in the scripts that should have been caught at build time. If a render looks wrong, the fix lives in `build.py` (or `pull_data.py` if the data is wrong); never in the rendered HTML.
-- **Re-runs are how PRISM marks state to market.** When PRISM picks up an existing dashboard mid-session and needs to know what shape `data/<key>.csv` has on disk today, what `manifest.json` actually contains, or whether a render is broken, the answer is to re-run `pull_data.py` then `build.py` (or invoke the canonical refresh subprocess, §6.1 Tool 4). The fresh output IS the current truth. Reasoning from prior in-session memory or a stale `manifest.json` read is unreliable — those drift the moment a script changes underneath them.
+| Surface | Role | Edit churn | How PRISM edits |
+|---------|------|------------|-----------------|
+| `scripts/pull_data.py` | Raw data pipelines (every CSV + JSON under `data/` is the output of this script) | **High** — changes whenever a new data source / column / window / lag is needed | Surgical READ → MUTATE → WRITE on the persisted bytes; `dashboards/recipes.md` §6 |
+| `manifest_template.json` | The dashboard SPEC — layout, widgets, charts, filters, metadata, palettes, header_actions, links. Carries empty dataset slots; data lands at compile time. | **High** — every UX iteration touches it (add chart, edit filter, rename tab, swap chart_type, tweak metadata) | Ephemeral session-folder code that does raw JSON CRUD; `dashboards/template_crud.md` |
+| `scripts/build.py` | The recompile recipe — load template, load `data/*.csv`, apply cross-dataset transforms (joins, derived ratios, YoY), `populate_template`, `compile_dashboard`, save outputs | **Low** — changes only when the analytical SHAPE changes (new derived dataset, new join, new ratio). Never changes for a UX-only edit | Surgical READ → MUTATE → WRITE on the persisted bytes; `dashboards/recipes.md` §6 |
+
+The other files in the folder (`data/<stem>.csv`, `manifest.json`, `dashboard.html`, `refresh_status.json`) are **derived** — regenerated from those three surfaces on every refresh by the cron runner. PRISM never edits derived artefacts in place.
+
+What this means for PRISM, by user-ask shape:
+
+| Ask | Touches | Path |
+|-----|---------|------|
+| "Build me a dashboard for X" (first-time) | All three surfaces | `§6.1` Tools 1+2+3+4 atomic build flow |
+| "Add a chart / KPI / tab / row" | `manifest_template.json` only | `dashboards/template_crud.md` (§4–§5) → `§6.6` in-session recompile |
+| "Edit a filter / title / metadata" | `manifest_template.json` only | `dashboards/template_crud.md` (§6, §8) → `§6.6` |
+| "Change a chart's chart_type / mapping" | `manifest_template.json` only | `dashboards/template_crud.md` (§4.4) → `§6.6` |
+| "Add a column / new pull source" | `pull_data.py` (and `build.py` if data shape changes) | `§2.5.5` script preservation → `§6.1` Tool 4 verify |
+| "Add a derived ratio / YoY column / cross-dataset join" | `build.py` only | `§2.5.5` script preservation + `recipes.md` §7 derived datasets |
+| "Add a new dataset slot" | `manifest_template.json` + `build.py` (and `pull_data.py` if the source is new) | `dashboards/template_crud.md` §7 + `§2.5.5` |
+
+`dashboards/pipelines.md` is the SSOT for pipeline cataloging, the reuse decision ladder, active-pipeline integrity rules, end-to-end re-authoring, and the post-edit session-folder health check. `dashboards/template_crud.md` is the SSOT for the JSON CRUD patterns that operate on the spec surface.
+
+---
+
+## PRISM never edits derived artefacts
+
+The three edit surfaces above are the ONLY files PRISM authors directly (plus the registry entry — a separate seam, §6.1 Tool 3). Everything else in the folder — `manifest.json`, `dashboard.html`, every CSV under `data/`, `refresh_status.json` — is **derived**. PRISM never edits them in place; they regenerate by re-running the persisted scripts. Three consequences:
+
+- **PRISM never directly touches `dashboard.html`** (or the other derived artefacts). Hand-editing them produces drift that vanishes on the next refresh — and worse, masks bugs in the source surfaces that should have been caught at build time. If a render looks wrong, the fix lives in the spec (`manifest_template.json` for layout / widget shape) or in `build.py` (for derived datasets) or in `pull_data.py` (for raw data); never in the rendered HTML or the populated `manifest.json`.
+- **Re-runs are how PRISM marks state to market.** When PRISM picks up an existing dashboard mid-session and needs to know what shape `data/<key>.csv` has on disk today, what `manifest.json` actually contains, or whether a render is broken, the answer is to either re-exec `build.py` from S3 (in-session quick recompile, `§6.6`) or invoke the canonical refresh subprocess (`§6.1` Tool 4). The fresh output IS the current truth. Reasoning from prior in-session memory or a stale `manifest.json` read is unreliable — those drift the moment a script or template changes underneath them.
 - **Re-runs overwrite, never create.** Running `pull_data.py` + `build.py` against an existing folder MUST NOT produce any new top-level paths — the §2.2 canonical artefacts are overwritten in place, and nothing else. No timestamped CSVs (`rates_eod.20260503.csv`), no `manifest_v2.json`, no debug `.json` siblings, no per-source subfolders (Rule 5 enforces this for the pull side). If a re-run leaves new files behind, the script is buggy, not the folder. Fix the script; quarantine the strays to `archive/<UTC>/` (§2.5.2); re-audit.
 
-This is what keeps the §2.5 canonical layout stable session over session. A PRISM session may iterate on a dashboard many times — rebuild, refresh, edit a tab, adjust a filter — and the canonical-layout invariant (Rule 4) only stays true because the scripts themselves are filesystem-idempotent. Each re-run lands the folder back on the §2.2 whitelist by construction. Session hygiene at the dashboard-folder level mirrors session hygiene at the conversation-folder level (`prism/session-hygiene.md`): deterministic names, overwrite-not-append, no version sprawl.
+This is what keeps the §2.5 canonical layout stable session over session. A PRISM session may iterate on a dashboard many times — rebuild, refresh, edit a tab, adjust a filter — and the canonical-layout invariant (Rule 4) only stays true because the persisted surfaces themselves are filesystem-idempotent. Each re-run lands the folder back on the §2.2 whitelist by construction. Session hygiene at the dashboard-folder level mirrors session hygiene at the conversation-folder level (`prism/session-hygiene.md`): deterministic names, overwrite-not-append, no version sprawl.
 
 ---
 
@@ -141,9 +157,10 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 
 ### Rule 4 — canonical layout, exclusive whitelist
 
-- The dashboard folder at `users/{kerberos}/dashboards/{name}/` follows an **exclusive** layout: the artefact set in §2.2 is both the floor (every `[REQUIRED · 1]` row must exist) AND the ceiling (no other paths permitted). Cardinality is exact: one `pull_data.py`, one `build.py`, one `manifest.json`, one `manifest_template.json`, one `dashboard.html`. No second copies, no `_v2` / `_old` / `_backup` siblings, no timestamped scripts, no per-source data subfolders, no scratch `.md` / `.json` siblings.
-- The two `.py` files under `scripts/` are exactly what the refresh runner re-executes on schedule. Missing scripts → the [Refresh] button fails immediately with `FileNotFoundError`. Stale duplicates next to them → the runner picks up whichever bytes the lexicographic scan lands on, silently.
-- §2.5 codifies the audit (`_audit_dashboard_layout`) PRISM runs at Tool 2's verify step and again whenever it inherits an existing dashboard folder. Audit failures block registration; rogue files are quarantined to `archive/<UTC>/`, never silently deleted.
+- The dashboard folder at `users/{kerberos}/dashboards/{name}/` follows an **exclusive** layout: the artefact set in §2.2 is both the floor (every `[REQUIRED · 1]` row must exist) AND the ceiling (no other paths permitted). Cardinality is exact: one live `scripts/pull_data.py`, one live `scripts/build.py`, one `manifest.json`, one `manifest_template.json`, one `dashboard.html`. No second copies of any live file, no `_v2` / `_old` / `_backup` siblings sitting beside them, no timestamped scripts at the top of `scripts/`, no per-source data subfolders, no scratch `.md` / `.json` siblings.
+- `scripts/versions/<pull_data|build>_v<N>.py` is the ONE permitted subfolder under `scripts/`, and the only place where multiple versions of either script may coexist. §2.6 codifies the versioning contract (every Tools 1+2 cycle bumps both scripts to v(N+1) and writes a snapshot there). The `scripts/versions/` siblings are NOT the same class as the forbidden top-of-`scripts/` siblings: they're under an audited subpath, lexicographically out-of-band of the runner's exact-name lookup, and required for traceability — `scripts/build_v2.py` (forbidden) and `scripts/versions/build_v2.py` (required) are distinct paths.
+- The two LIVE `.py` files under `scripts/` (`scripts/pull_data.py` + `scripts/build.py`) are exactly what the refresh runner re-executes on schedule. Missing live scripts → the [Refresh] button fails immediately with `FileNotFoundError`. Stale duplicates next to them at the top of `scripts/` → the runner picks up whichever bytes the lexicographic scan lands on, silently. The `scripts/versions/` subfolder is invisible to the runner (it reads `scripts/pull_data.py` and `scripts/build.py` by exact path, never by listing).
+- §2.5 codifies the audit (`_audit_dashboard_layout`) PRISM runs at Tool 2's verify step and again whenever it inherits an existing dashboard folder. The audit allow-lists the §2.6 versioning convention exactly; everything else under `scripts/` is rogue. Audit failures block registration; rogue files are quarantined to `archive/<UTC>/`, never silently deleted.
 
 ### Rule 5 — every CSV at `{DASHBOARD_PATH}/data/<dataset>.csv`
 
@@ -307,9 +324,15 @@ users/{kerberos}/dashboards/{dashboard_name}/
   dashboard.html            [REQUIRED · 1] compile_dashboard output
   refresh_status.json       [optional · ≤1] runner-owned runtime state (never author-written)
   thumbnail.png             [optional · ≤1] author-owned preview image
-  scripts/                  [REQUIRED · exactly these two files, no others]
-    pull_data.py            [REQUIRED · 1] data acquisition (~50-150 lines)
-    build.py                [REQUIRED · 1] ~12 lines: load + populate + compile
+  scripts/                  [REQUIRED · exactly two live files + scripts/versions/ subfolder]
+    pull_data.py            [REQUIRED · 1] live data acquisition (~50-150 lines); runner re-execs by exact name
+    build.py                [REQUIRED · 1] live recompile recipe (load template + load CSVs + cross-dataset transforms + populate + compile); runner re-execs by exact name
+    versions/               [REQUIRED · §2.6 versioned snapshot history]
+      pull_data_v1.py       [REQUIRED · ≥1] snapshot at v1 = first build's pull_data.py
+      build_v1.py           [REQUIRED · ≥1] snapshot at v1 = first build's build.py
+      pull_data_v2.py       [optional · per-version pair] every Tools 1+2 cycle bumps one v(N+1) pair
+      build_v2.py
+      ...
   data/                     [REQUIRED · CSVs/JSONs whose stems match manifest.datasets keys]
     rates_eod.csv           one CSV per dataset; stem matches manifest key byte-for-byte
     rates_intraday.csv      pull_market_data appends _eod / _intraday
@@ -322,14 +345,14 @@ users/{kerberos}/dashboards/{dashboard_name}/
   archive/<UTC>/            [optional] §2.5 quarantine for non-canonical files; ignored by runner + audit
 ```
 
-**Why exclusivity matters.** The refresh runner has no PRISM state and no conversation memory — it re-executes the persisted scripts on a schedule. Missing `scripts/*.py` → runner has nothing to call. Missing `manifest_template.json` → `build.py` can't load the template. Missing `data/*.csv` → `build.py` can't read what `pull_data.py` was supposed to write. **Extra files are equally load-bearing**: a `scripts/build_v2.py` next to `scripts/build.py`, a `manifest_old.json` next to `manifest.json`, or a `data/haver/cpi.csv` next to `data/cpi.csv` all create ambiguity that the runner resolves silently — usually wrong.
+**Why exclusivity matters.** The refresh runner has no PRISM state and no conversation memory — it re-executes the persisted scripts on a schedule. Missing live `scripts/*.py` → runner has nothing to call. Missing `manifest_template.json` → `build.py` can't load the template. Missing `data/*.csv` → `build.py` can't read what `pull_data.py` was supposed to write. **Extra files at the top of `scripts/` are equally load-bearing**: a `scripts/build_v2.py` next to `scripts/build.py`, a `manifest_old.json` next to `manifest.json`, or a `data/haver/cpi.csv` next to `data/cpi.csv` all create ambiguity that the runner resolves silently — usually wrong. The `scripts/versions/` subfolder is the explicit escape hatch for keeping multiple versions of either script in the workspace; see §2.6.
 
 **Forbidden (audited at §2.5):**
 
 | Class | Examples | Why |
 |-------|----------|-----|
-| Cardinality violations | `scripts/build_v2.py`, `manifest_old.json`, `pull_data.bak`, `dashboard.prev.html` | Two candidates for "the" file; the runner picks one without telling you which |
-| Timestamped historicals at top level | `20260424_pull_data.py`, `manifest.20260424.json` | Use `archive/<UTC>/` (§2.5) — never sit alongside live artefacts |
+| Cardinality violations at top of `scripts/` | `scripts/build.bak`, `scripts/build_old.py`, `scripts/pull_data.prev.py`, `manifest_old.json`, `dashboard.prev.html` | Two candidates for "the" live file; the runner picks one without telling you which. (Versioned siblings under `scripts/versions/<name>_v<N>.py` are REQUIRED, not forbidden — see §2.6) |
+| Timestamped historicals at top level | `20260424_pull_data.py`, `manifest.20260424.json` | Scripts use §2.6 versioning (v1/v2/v3 under `scripts/versions/`); manifest_template snapshots use `archive/<UTC>/` — never sit alongside live artefacts |
 | Per-source data subfolders | `data/haver/`, `data/market_data/`, `data/plottool_data/` | Everything goes flat into `data/` (Rule 5) |
 | Self-suffix CSVs | `data/rates_eod_eod.csv` | The `pull_market_data` `name=` footgun (§6.2 rule 1); rename to bare `name='rates'` |
 | Manifest-orphan CSVs | `data/old_dataset.csv` (no matching `manifest.datasets["old_dataset"]`) | Refresh path is "scripts write CSV → build reads CSV by manifest key"; orphan CSVs never get read and shouldn't sit there |
@@ -338,8 +361,10 @@ users/{kerberos}/dashboards/{dashboard_name}/
 | Multiple data JSONs at top | `data.json`, `metrics.json` next to `manifest.json` | Only `manifest.json` is canonical; embed everything else inside it |
 | Inline `<script>const DATA = {}` in HTML | hand-edited `dashboard.html` | Let `compile_dashboard` emit; never post-edit |
 | Legacy helpers | `sanitize_html_booleans()` references | Removed; any caller is a stale code path |
-| Empty `scripts/` on a persistent dashboard | `scripts/` directory with no `.py` files | The "persistent" promise is "refresh runner re-execs these"; nothing to re-exec → not persistent |
+| Empty `scripts/` on a persistent dashboard | `scripts/` directory with no live `.py` files | The "persistent" promise is "refresh runner re-execs these"; nothing to re-exec → not persistent |
 | Renamed canonical files | `scripts/build_dashboard.py`, `scripts/refresh.py`, `scripts/main.py` | Names are load-bearing — the runner reads `scripts/pull_data.py` and `scripts/build.py` exactly |
+| `scripts/versions/` polluted with off-pattern files | `scripts/versions/notes.md`, `scripts/versions/refresh_v2.py`, `scripts/versions/old/`, `scripts/versions/pull_data_v.py` | The §2.6 audit allow-lists exactly `scripts/versions/<pull_data\|build>_v<N>.py` (N a positive integer, no nested folders, no other names) |
+| Live script bytes drifting from highest version snapshot | `scripts/pull_data.py` not byte-identical to `scripts/versions/pull_data_v<max(N)>.py` | The §2.6 invariant is "live = highest version"; drift means a Tools 1+2 cycle wrote one but not the other (or a manual hand-edit bypassed §6.1). Re-bump to v(N+1) via Tools 1+2 to restore the invariant |
 
 ### 2.3 Metadata block
 
@@ -410,16 +435,23 @@ Before the §6.1 build flow can register a dashboard, the folder MUST satisfy th
 #### 2.5.1 The audit function
 
 ```python
+import re
+
+_VERSIONED_SCRIPT_RE = re.compile(r'^(pull_data|build)_v(\d+)\.py$')
+
 def _audit_dashboard_layout(folder_path: str, manifest: dict) -> None:
     """
-    Audit the dashboard folder against the §2.2 exclusive whitelist.
-    Raises ValueError listing every cardinality / forbidden-path violation.
+    Audit the dashboard folder against the §2.2 exclusive whitelist
+    + the §2.6 script-versioning contract.
+    Raises ValueError listing every cardinality / forbidden-path /
+    version-chain violation.
     """
     REQUIRED_TOP = {'manifest_template.json', 'manifest.json', 'dashboard.html'}
     OPTIONAL_TOP = {'refresh_status.json', 'thumbnail.png'}
     REQUIRED_SCRIPTS = {'pull_data.py', 'build.py'}
 
     found_top, found_scripts, data_files = set(), set(), set()
+    versioned = {'pull_data': set(), 'build': set()}   # §2.6: per-script {N: bytes_size}
     rogue = []
 
     listing = s3_manager.list(folder_path)
@@ -436,12 +468,25 @@ def _audit_dashboard_layout(folder_path: str, manifest: dict) -> None:
                 rogue.append(rel)
             continue
 
-        # scripts/ -- exactly two .py files allowed, no others
+        # scripts/ -- exactly the two live files + scripts/versions/<name>_v<N>.py
         if rel.startswith('scripts/'):
             sub = rel[len('scripts/'):]
+            # scripts/versions/<name>_v<N>.py is the ONLY permitted subpath
+            if sub.startswith('versions/'):
+                inner = sub[len('versions/'):]
+                if '/' in inner:
+                    rogue.append(rel)   # no nested dirs under scripts/versions/
+                    continue
+                m = _VERSIONED_SCRIPT_RE.match(inner)
+                if not m:
+                    rogue.append(rel)   # only pull_data_v<N>.py / build_v<N>.py
+                    continue
+                versioned[m.group(1)].add(int(m.group(2)))
+                continue
             if '/' in sub:
-                rogue.append(rel)
-            elif sub in REQUIRED_SCRIPTS:
+                rogue.append(rel)   # any other subfolder under scripts/ is rogue
+                continue
+            if sub in REQUIRED_SCRIPTS:
                 found_scripts.add(sub)
             else:
                 rogue.append(rel)
@@ -469,10 +514,64 @@ def _audit_dashboard_layout(folder_path: str, manifest: dict) -> None:
         if required not in found_top:
             errors.append(f'missing required: {required}')
 
-    # Required scripts
+    # Required live scripts
     for required in REQUIRED_SCRIPTS:
         if required not in found_scripts:
             errors.append(f'missing required: scripts/{required}')
+
+    # §2.6 versioning: at least v1 must exist for each script (the first build's snapshot)
+    for stem in ('pull_data', 'build'):
+        if not versioned[stem]:
+            errors.append(
+                f'missing required: scripts/versions/{stem}_v1.py '
+                f'(every persistent dashboard MUST have at least the v1 snapshot per §2.6)')
+
+    # §2.6 versioning: chain must be coupled (same N exists for both scripts)
+    pd_versions = versioned['pull_data']
+    bd_versions = versioned['build']
+    pd_only = pd_versions - bd_versions
+    bd_only = bd_versions - pd_versions
+    if pd_only:
+        errors.append(
+            f'§2.6 coupling violation: pull_data has v{sorted(pd_only)} '
+            f'with no matching build_v<N>.py snapshot')
+    if bd_only:
+        errors.append(
+            f'§2.6 coupling violation: build has v{sorted(bd_only)} '
+            f'with no matching pull_data_v<N>.py snapshot')
+
+    # §2.6 versioning: live bytes must be byte-identical to highest-N snapshot
+    if pd_versions and 'pull_data.py' in found_scripts:
+        max_pd = max(pd_versions)
+        live = s3_manager.get(f'{folder_path}/scripts/pull_data.py')
+        snap = s3_manager.get(f'{folder_path}/scripts/versions/pull_data_v{max_pd}.py')
+        if live != snap:
+            errors.append(
+                f'§2.6 live-vs-version drift: scripts/pull_data.py != '
+                f'scripts/versions/pull_data_v{max_pd}.py; '
+                f'a Tools 1+2 cycle bumped one without the other (or a hand-edit '
+                f'bypassed §6.1). Re-bump to v{max_pd + 1} via Tools 1+2 to restore')
+    if bd_versions and 'build.py' in found_scripts:
+        max_bd = max(bd_versions)
+        live = s3_manager.get(f'{folder_path}/scripts/build.py')
+        snap = s3_manager.get(f'{folder_path}/scripts/versions/build_v{max_bd}.py')
+        if live != snap:
+            errors.append(
+                f'§2.6 live-vs-version drift: scripts/build.py != '
+                f'scripts/versions/build_v{max_bd}.py; '
+                f'a Tools 1+2 cycle bumped one without the other (or a hand-edit '
+                f'bypassed §6.1). Re-bump to v{max_bd + 1} via Tools 1+2 to restore')
+
+    # §2.6 versioning: manifest.metadata.script_version (if set) must match max
+    meta_version = (manifest.get('metadata') or {}).get('script_version')
+    if meta_version is not None and pd_versions:
+        max_v = max(pd_versions | bd_versions)
+        if int(meta_version) != max_v:
+            errors.append(
+                f'§2.6 metadata drift: manifest.metadata.script_version='
+                f'{meta_version} but max snapshot on disk is v{max_v}; '
+                f'build.py should stamp the highest version into the manifest '
+                f'on every populate_template call')
 
     # Data exclusivity: every CSV/JSON stem must match a manifest dataset key
     # (or the metadata sidecar pattern: <bare>_metadata.json where <bare>
@@ -494,12 +593,13 @@ def _audit_dashboard_layout(folder_path: str, manifest: dict) -> None:
 
     if errors:
         raise ValueError(
-            f'_audit_dashboard_layout: {folder_path} violates §2.5 whitelist:\n  '
+            f'_audit_dashboard_layout: {folder_path} violates §2.5 whitelist '
+            f'or §2.6 versioning contract:\n  '
             + '\n  '.join(errors)
         )
 ```
 
-The audit covers everything that would otherwise be a silent footgun. It raises on a single concatenated message listing every violation so you fix them all in one pass, not one per re-run.
+The audit covers everything that would otherwise be a silent footgun. It raises on a single concatenated message listing every violation so you fix them all in one pass, not one per re-run. The §2.6 checks (coupling, live-vs-version drift, metadata drift) catch a malformed Tools 1+2 cycle that would otherwise leave the version chain in a recoverable-but-confusing state.
 
 #### 2.5.2 Quarantine, never delete
 
@@ -511,7 +611,7 @@ Run `_audit_dashboard_layout(folder_path, manifest)` FIRST when inheriting an ex
 
 #### 2.5.4 Editing an existing dashboard — manifest preservation
 
-After §2.5.3's folder audit passes, surface changes to an EXISTING dashboard (add a widget, append a tab, add a dataset key, edit a filter range) follow READ → MERGE → WRITE on `manifest_template.json` — never REBUILD-FROM-SCRATCH. Rebuilding the manifest as a fresh dict and writing it to S3 silently destroys any widgets / tabs / filters / datasets PRISM didn't include in this script's dict. The same applies to `manifest_template.json`: regenerating it via `manifest_template(manifest)` from a freshly-built `manifest` overwrites the prior template (which may have carried widgets / tool definitions PRISM no longer remembers).
+After §2.5.3's folder audit passes, surface changes to an EXISTING dashboard's spec (add a widget, append a tab, add a dataset slot, edit a filter range, change a chart_type, rename a tab, edit metadata) follow **raw JSON CRUD on `manifest_template.json`** via ephemeral session-folder code — never REBUILD-FROM-SCRATCH. Rebuilding the manifest as a fresh dict and writing it to S3 silently destroys any widgets / tabs / filters / datasets PRISM didn't include in this script's dict. The same applies to `manifest_template.json` itself: regenerating it via `manifest_template(manifest)` from a freshly-built `manifest` overwrites the prior template (which may have carried widgets / tool definitions PRISM no longer remembers).
 
 ```python
 # WRONG — wipes everything not in this script's manifest dict
@@ -520,19 +620,149 @@ s3_manager.put(json.dumps(manifest, ...), f"{DASHBOARD_PATH}/manifest.json")
 template = manifest_template(manifest)                                            # fresh template
 s3_manager.put(json.dumps(template, ...), f"{DASHBOARD_PATH}/manifest_template.json")  # OVERWRITES
 
-# RIGHT — preserves everything, surgically merges only the requested change
-tpl = json.loads(s3_manager.get(f"{DASHBOARD_PATH}/manifest_template.json").decode("utf-8"))
-# ... mutate tpl in place: append a widget to a tab.rows[j], add a dataset key, edit a filter range ...
+# RIGHT — load existing template, mutate in place, validate, write back
+import copy
+tpl = copy.deepcopy(json.loads(
+    s3_manager.get(f"{DASHBOARD_PATH}/manifest_template.json").decode("utf-8")))
+# ... mutate tpl in place per dashboards/template_crud.md patterns ...
 validate_manifest(tpl)
 s3_manager.put(json.dumps(tpl, indent=2).encode("utf-8"),
                f"{DASHBOARD_PATH}/manifest_template.json")
 ```
 
-`scripts/build.py` is RE-AUTHORED only when the dataset shape it builds against has changed (new dataset key, removed dataset key, column rename). Widget / filter / layout edits live entirely in `manifest_template.json` and the existing `build.py` keeps populating from the same `data/*.csv` keys — leave it alone.
+`scripts/build.py` is touched only when the dataset shape it builds against has changed (new dataset key, removed dataset key, column rename, new derived dataset, new pull source). Widget / filter / layout edits live entirely in `manifest_template.json` and the existing `build.py` keeps populating from the same `data/*.csv` keys — leave it alone. When `build.py` (or `pull_data.py`) DOES need to change, the rule is §2.5.5 below — surgical mutation, never wholesale re-emission.
 
-Trigger semantics. Any of these user-asks fall under READ→MERGE→WRITE on `manifest_template.json`, NOT a fresh-build: "add a chart / widget / KPI / tab / row", "edit / update / change a filter / dataset / title / metadata", "extend / append to" an existing dashboard. The fresh-build path is reserved for first-time creation (`§6.1` Tool 1+2+3) and for total demolition (rare; surface to the user before doing).
+Trigger semantics. Any of these user-asks fall under raw JSON CRUD on `manifest_template.json`, NOT a fresh-build: "add a chart / widget / KPI / tab / row", "edit / update / change a filter / dataset / title / metadata", "change a chart_type", "rename a tab", "extend / append to" an existing dashboard. The fresh-build path is reserved for first-time creation (`§6.1` Tools 1+2+3+4) and for total demolition (rare; surface to the user before doing).
 
-See `dashboards/recipes.md` for the full worked READ → MERGE → WRITE recipe with surgical mutation helpers.
+**`dashboards/template_crud.md` is the SSOT** for the JSON CRUD patterns — read patterns, layout-aware traversal, widget / tab / filter / dataset / metadata CRUD, the in-session quick recompile (which is § 6.6 of this hub), the contract (§ 10), and the anti-patterns (§ 11). Fetch it on demand whenever the user-ask routes through this section. `dashboards/recipes.md` carries the long-form worked recipes that compose CRUD primitives into end-to-end edits.
+
+#### 2.5.5 Editing `scripts/build.py` or `scripts/pull_data.py` — script preservation
+
+When the dataset shape changes (new column, new dataset key, column rename, new pull source, new derived dataset), READ → MUTATE → WRITE applies to `scripts/<stem>.py` the same way §2.5.4 applies to `manifest_template.json`. Fetch the live bytes from S3, apply the smallest mutation that satisfies the ask, write back via `_persist_versioned_script` (which handles the live path + versioned snapshot in lockstep). NEVER re-emit the whole script body from a fresh string when the user's ask is "add" / "edit" / "extend" — every re-emission risks dropping in-flight content PRISM partly remembers, re-introducing previously-fixed bugs, and (for any compute_js or other JS body that survives in the file) re-triggering Python-into-JS interpolation footguns.
+
+```python
+# WRONG — re-emits the whole script as a fresh string; the ask was
+# "add an FFR series to fed_rates" but PRISM rewrites all 200 lines
+build_py = '''import io, json, pandas as pd ...
+... 200 lines PRISM partly remembers from earlier ...
+'''
+_persist_versioned_script(DASHBOARD_PATH, 'build', build_py, SCRIPT_VERSION)
+
+# RIGHT — surgically mutate the live bytes
+src = s3_manager.get(f'{DASHBOARD_PATH}/scripts/build.py').decode('utf-8')
+new_src = src.replace(
+    "rates_map = {\n    'FFED@DAILY': 'effr_pct',\n    'SOFR@DAILY': 'sofr_pct',\n}",
+    "rates_map = {\n    'FFED@DAILY': 'effr_pct',\n    'SOFR@DAILY': 'sofr_pct',\n    'FRBM3@DAILY': 'tbill_3m_pct',\n}",
+)
+assert new_src != src, "search-replace anchor not found in live script"
+_persist_versioned_script(DASHBOARD_PATH, 'build', new_src, SCRIPT_VERSION)
+```
+
+The `assert new_src != src` line is non-optional. If the search-replace finds no match (anchor drifted, file reformatted, prior cycle changed the surrounding context), `str.replace` returns the original silently — the script ships unchanged and the next refresh has no idea anything was supposed to happen. The assert turns that silent miss into a loud error so PRISM iterates on the anchor instead of shipping a no-op edit.
+
+Trigger semantics. These user-asks fall under script READ → MUTATE → WRITE: "add / remove a column", "rename column Y", "add a derived ratio", "compute YoY changes for ...", "add a new pipeline pulling Z", "swap pull_market_data for pull_haver_data on column ...". The fresh-script-rebuild path is reserved for first-time creation (§6.1 Tools 1+2+3+4) and total demolition (rare; surface to the user first).
+
+After the mutation lands, run the script via `exec(compile(src, ...), ns)` from the live S3 path AND let Tool 4's subprocess refresh re-exec it (Rule 9). The exec is the verification — if the surgical edit broke something, the in-session run fails before the user-facing URL is surfaced.
+
+`scripts/build.py` NEVER concatenates / f-strings / `.format()`s into a `widget: tool`'s `compute.source`. The `compute_js` body lives in `manifest_template.json` (set ONCE at first build, surgically edited via §2.5.4 thereafter), and `build.py`'s only job vis-à-vis tools is to call `populate_template` so PRISM-supplied `inputs[].default` values flow into the rendered tool. Inlining Python values into a JS source string is how `None` / `True` / `nan` / `Timestamp(...)` reach the runtime as ReferenceErrors; the engine validator hard-blocks the leak class at validate time, but the authoring rule prevents it from being written in the first place.
+
+### 2.6 Script versioning
+
+`scripts/pull_data.py` and `scripts/build.py` are version-controlled in-folder under `scripts/versions/<name>_v<N>.py`. Every Tools 1+2 cycle (§6.1) bumps the integer version by one and writes a snapshot pair (`pull_data_v<N+1>.py` + `build_v<N+1>.py`) alongside overwriting the live `scripts/<name>.py`. The two scripts version in **lockstep** (same N for both, even if only one's bytes changed); first build = v1.
+
+| Invariant | Meaning |
+|-----------|---------|
+| Every persistent dashboard MUST have at least `scripts/versions/pull_data_v1.py` and `scripts/versions/build_v1.py` | First build (Tools 1+2) lands them as part of the atomic build sequence |
+| For every N that exists for one script, the matching N MUST exist for the other | Coupled pairing — `pull_data_v3.py` without `build_v3.py` is a §2.5 audit failure |
+| The live `scripts/pull_data.py` (resp. `scripts/build.py`) is byte-identical to `scripts/versions/pull_data_v<max(N)>.py` (resp. `build_v<max(N)>.py`) | "Live = highest version"; drift = a Tools 1+2 cycle wrote one without the other or a hand-edit bypassed §6.1. Re-bump to v(N+1) via Tools 1+2 to restore |
+| `manifest.metadata.script_version` (set by `build.py` on every populate) equals `max(N)` on disk | Denormalized pointer for in-dashboard visibility; the on-disk filesystem is authoritative |
+| The cron / [Refresh] runner reads `scripts/pull_data.py` and `scripts/build.py` by exact name | `scripts/versions/` is invisible to the runner; bumping a version never disturbs the live refresh path |
+
+**Why coupled bump (vs. per-script independent bumps).** Reverting "to v3" should mean one unambiguous combined state of (`pull_data.py`, `build.py`). Independent versions force the user to know which `(pull_data_v3, build_v5)` combination ran together; coupled versions make "v3" a single coordinate. The cost is a duplicated snapshot when only one script changed, which is trivial. For the same reason, every Tools 1+2 cycle bumps once even if both scripts re-author with byte-identical content (no-op edit) — the bump is the edit-event counter, not a delta detector.
+
+**Why bump on every authoring event (vs. only on green Tools 1+2+3+4).** "Full traceability if things go wrong" means the most diagnostically valuable versions are exactly the ones that broke. Restricting bumps to green builds throws away the version that introduced the failure. Failed versions stay in the chain; the §2.5 audit + §6.1 atomicity contract still gates user-facing surfacing of broken bytes.
+
+#### 2.6.1 Computing the next version
+
+```python
+import re
+
+_VERSIONED_SCRIPT_RE = re.compile(r'^(pull_data|build)_v(\d+)\.py$')
+
+def _next_script_version(folder_path: str) -> int:
+    """
+    Inspect {folder_path}/scripts/versions/ and return the next version
+    integer. Returns 1 if no versions exist yet (= first build).
+    Coupled-bump rule: returns max(N across both scripts) + 1, so that a
+    half-completed prior cycle (pull_data_v<N+1>.py written, build_v<N+1>.py
+    missing) is not re-used; the next Tools 1+2 cycle gets a fresh v<N+2>
+    pair and the orphan v<N+1> stays as evidence of the failed prior attempt.
+    """
+    versions = set()
+    try:
+        listing = s3_manager.list(f'{folder_path}/scripts/versions/')
+    except Exception:
+        return 1
+    for entry in listing:
+        name = entry['Key'].rsplit('/', 1)[-1]
+        m = _VERSIONED_SCRIPT_RE.match(name)
+        if m:
+            versions.add(int(m.group(2)))
+    return max(versions) + 1 if versions else 1
+```
+
+PRISM calls `_next_script_version(DASHBOARD_PATH)` ONCE at the start of Tool 1 and pins the result into a `SCRIPT_VERSION` Python variable that stays in scope across Tool 1 → Tool 2 → Tool 3 → Tool 4. Both `_persist_versioned_script()` calls (§6.1) reference the same `SCRIPT_VERSION` so the coupling invariant holds even across Tool 2 retries within a single PRISM session.
+
+#### 2.6.2 Persisting a versioned script
+
+```python
+def _persist_versioned_script(folder_path: str, stem: str, src: str,
+                              version: int) -> None:
+    """
+    Persist `src` to BOTH the live path AND the versioned snapshot:
+      - {folder_path}/scripts/{stem}.py        (live; runner reads this)
+      - {folder_path}/scripts/versions/{stem}_v{version}.py  (snapshot)
+    The two writes are sequenced live-then-snapshot so that, if the
+    snapshot write fails, the live path is the same bytes as the
+    intended snapshot — the next §2.5 audit will surface the missing
+    snapshot, not a divergence between live and the prior snapshot.
+    """
+    if stem not in ('pull_data', 'build'):
+        raise ValueError(f'_persist_versioned_script: stem must be '
+                         f'"pull_data" or "build", got {stem!r}')
+    if not isinstance(version, int) or version < 1:
+        raise ValueError(f'_persist_versioned_script: version must be a '
+                         f'positive int, got {version!r}')
+    encoded = src.encode('utf-8') if isinstance(src, str) else src
+    s3_manager.put(encoded, f'{folder_path}/scripts/{stem}.py')
+    s3_manager.put(encoded, f'{folder_path}/scripts/versions/{stem}_v{version}.py')
+```
+
+PRISM authors `_next_script_version()` and `_persist_versioned_script()` inline in Tool 1's namespace block (alongside `_audit_dashboard_layout()`); they are not sandbox-injected. The two-write semantics replace the old "copy live to `archive/<UTC>/` before overwriting" pattern that the workspace section §2 used to advise — `archive/<UTC>/` retains its role for `manifest_template.json` snapshots only.
+
+#### 2.6.3 Manifest stamping
+
+`build.py` reads the highest version on disk and stamps it into `manifest.metadata.script_version` on every populate, so the rendered dashboard carries a self-describing version pointer:
+
+```python
+# In build.py, after populate_template(...):
+import re
+def _max_script_version(folder_path):
+    versions = []
+    for entry in s3_manager.list(f'{folder_path}/scripts/versions/'):
+        m = re.match(r'^(?:pull_data|build)_v(\d+)\.py$',
+                     entry['Key'].rsplit('/', 1)[-1])
+        if m: versions.append(int(m.group(1)))
+    return max(versions) if versions else None
+
+m['metadata']['script_version'] = _max_script_version(SESSION_PATH)
+```
+
+The §2.5 audit cross-checks `manifest.metadata.script_version` against `max(N)` on disk; mismatch raises. This catches the failure mode where a build.py was edited to skip the stamp but the `scripts/versions/` files exist.
+
+#### 2.6.4 Reverting to a prior version
+
+See `dashboards/recipes.md` §5 for the canonical recipe. The summary: read `scripts/versions/<name>_vK.py` for both stems (the chosen rollback target K), call `_persist_versioned_script(..., version=_next_script_version(...))` for each (which writes both the live + a fresh snapshot at v(N+1) carrying the rollback bytes), then run the §6.1 Tools 1+2+3+4 sequence to validate against today's data and refresh. The chain stays monotonically increasing; vK never moves; v(N+1) is the rollback's audit trail.
 
 ---
 
@@ -548,8 +778,9 @@ This hub covers every primitive's catalog row + the always-needed contract. For 
 | `dashboards/widgets.md` | KPI, table (incl. `row_click`), pivot, stat_grid, image, markdown, divider; provenance; `show_when` / `initial_state` / stat strip; markdown grammar | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
 | `dashboards/widget_tool.md` | `widget: tool` (form-driven compute) — pricers, scenarios, calculators; tool def shape; input + output kinds; canonical examples | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widget_tool.md"], mode="full")` |
 | `dashboards/filters.md` | 10 filter types + 11 ops; cascading filters; per-chart `dataZoom`; `click_emit_filter`; compound rule filters; links (sync + brush) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/filters.md"], mode="full")` |
-| `dashboards/recipes.md` | Worked recipes (long-form multi_line, dual axis, RV bullet, thesis+watch); 21 data-shape archetypes → chart types; READ → MERGE → WRITE editing pattern; data-pipeline coupling detection; revert workflow | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
-| `dashboards/pipelines.md` | The 2-script nucleus; pipeline cataloging (build the widget → dataset_key → CSV → pipeline graph); reuse decision ladder (reuse-existing-CSV / extend-existing-pipeline / add-new-pipeline); active-pipeline integrity rules; re-authoring `pull_data.py` end-to-end; session folder health check | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md"], mode="full")` |
+| `dashboards/template_crud.md` | The SSOT for raw JSON CRUD on `manifest_template.json` — read patterns, layout-aware traversal helper, widget / tab / filter / dataset / metadata CRUD, in-session quick recompile, the contract (5 rules), anti-patterns (6 footguns). Fetched whenever the user-ask is "edit / add / remove a chart / KPI / tab / row / filter / dataset / metadata field". | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/template_crud.md"], mode="full")` |
+| `dashboards/recipes.md` | Worked recipes (long-form multi_line, dual axis, RV bullet, thesis+watch); 21 data-shape archetypes → chart types; data-pipeline coupling detection; revert workflow; surgical script-edit pattern; cross-dataset derivation patterns in `build.py` (§ 7) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
+| `dashboards/pipelines.md` | The three-surface model (`pull_data.py` + `manifest_template.json` + `build.py`); pipeline cataloging (build the widget → dataset_key → CSV → pipeline graph); reuse decision ladder (reuse-existing-CSV / extend-existing-pipeline / add-new-pipeline); active-pipeline integrity rules; re-authoring `pull_data.py` end-to-end; session folder health check | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md"], mode="full")` |
 | `dashboards/canonical_showcase.json` | Bare templated manifest of `build_showcase` as a structural reference: 8 MECE tabs, 79 widgets, 39 datasets, 13 filters, 2 links — every primitive in the Catalog index above exercised at least once, data stripped to header rows. ~111 KB. Per-tab primitive coverage: `ts` = line / multi_line / area / bar / bar_horizontal / slope / candlestick / multi-axis (`mapping.axes`); `dist` = scatter / scatter_multi / scatter_studio / histogram / boxplot / bullet / correlation_matrix / heatmap / calendar_heatmap / annotations; `hier` = pie / donut / treemap / sunburst / sankey / graph / funnel / parallel_coords / tree / radar / fan_cone / waterfall / marimekko / gauge; `table` = table (every column format) / pivot / kpi (every aggregator) / stat_grid / sparklines; `prose` = note (every kind) / markdown (every grammar) / divider / image; `filter` = every filter type + op / cascading / `click_emit_filter` / compound rule / sync (axis/tooltip/legend/dataZoom) / brush (rect/polygon/lineX/lineY); `tools` = scalar / sweep / expression / matrix inputs and stat / scalar / param / kpi / series / table / stat_grid / distribution outputs; `dev` = manifest_template + populate_template + diagnostics. **How to use**: fetch this file when in doubt about how to shape a widget / filter / link / metadata block, find the matching block by keyword search (chart_type / widget id / filter type / aggregator), copy the structural fragment verbatim, then rebind dataset names + column references to your own datasets. The data rows are stripped (`source[0]` is the column-header schema only) so the file stays cheap to load mid-session. | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/canonical_showcase.json"], mode="full")` |
 
 **Common combos** (one call, multiple file_paths):
@@ -561,9 +792,11 @@ This hub covers every primitive's catalog row + the always-needed contract. For 
 | Charts + widgets + filters | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/charts.md", "context/modules/static/tools/dashboards/widgets.md", "context/modules/static/tools/dashboards/filters.md"], mode="full")` |
 | Pricer / scenario tool | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widget_tool.md", "context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
 | "Show me a worked pattern" | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
-| Editing / extending an existing dashboard | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md", "context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
+| Editing the spec (add / remove / edit widget, tab, filter, metadata) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/template_crud.md"], mode="full")` |
+| Editing the spec + need primitive specs (e.g. add a new chart_type) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/template_crud.md", "context/modules/static/tools/dashboards/charts.md"], mode="full")` |
+| Editing data shape (new column / pull source / derived dataset) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md", "context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
 
-Each spoke is well under the 20 KB warning threshold (largest is `widgets.md` at ~12 KB). Fetch only the spokes you need; avoid fetching all five preemptively — that defeats the hub-spoke purpose.
+Spoke sizes (2026-05-03): `widgets.md` ~26 KB, `recipes.md` ~22 KB, `template_crud.md` ~20 KB, `pipelines.md` ~20 KB, `charts.md` ~20 KB, `widget_tool.md` ~15 KB, `filters.md` ~12 KB. Fetch only the spokes you need; avoid fetching all seven preemptively — that defeats the hub-spoke purpose. Combined fetches (the table above) are still cheaper than re-fetching one at a time when the build crosses two surfaces.
 
 The Catalog index above is enough to PICK a chart type / widget / filter type. Fetch a spoke when you need the per-primitive mapping rules / required keys / cosmetic knobs.
 
@@ -632,17 +865,55 @@ Optional `manifest.header_actions[]` appends custom buttons / links to the heade
 
 For browser-side refresh failure modal / runner internals / registry schema see `prism/dashboard-refresh.md`. This section is purely about the PRISM-side build flow.
 
-The build flow that follows is the only path that produces or updates a persistent dashboard. Each tool persists one of the two nucleus scripts (or the registry entry that makes the dashboard discoverable to the cron runner) and execs it from S3 — so the in-session run uses the same bytes the daily refresh will run tomorrow. Build-time and refresh-time are byte-identical by construction. See `dashboards/pipelines.md` for the pipeline-aware editing model: catalog existing pipelines first (§2), pick a reuse path (§3), preserve active-pipeline integrity (§4), re-author end-to-end (§5), run the post-edit health check (§6).
+### 6.0 Pick the path before authoring anything
+
+The build flow has four entrypoints; pick by user intent. Most non-first-build asks DO NOT route to Tools 1+2+3+4. Re-authoring scripts wholesale on an "add a column" ask is the script-preservation footgun (§2.5.5); rebuilding the manifest from a fresh dict on an "add a chart" ask is the manifest-wipe footgun (§2.5.4).
+
+| User ask | Path | Where the work happens |
+|---|---|---|
+| First-time creation ("build me a dashboard for X") | Tools 1+2+3+4 (§6.1 below) | `pull_data.py` + `manifest_template.json` + `build.py` authored fresh |
+| Manifest-only edit ("add a chart / KPI / tab / row", "edit a filter / title / metadata", "change a chart_type", "rename a tab") | Ephemeral session-folder code that does raw JSON CRUD on `manifest_template.json` per `dashboards/template_crud.md` § 1–§ 8, then in-session quick recompile per § 6.6 | Template only; scripts untouched; refresh picks up the new template on the next cron tick |
+| Data-shape edit ("add / rename / drop a column", "add a new pull source") | READ → MUTATE → WRITE on `scripts/pull_data.py` (and `scripts/build.py` if dataset shape changes) per § 2.5.5; see `dashboards/recipes.md` § 6 for the worked recipe | Scripts mutated surgically via search-replace; v(N+1) snapshot bumped; refresh-runner re-execs the new bytes |
+| Cross-dataset derivation edit ("add a derived ratio", "add a YoY column", "add a join across two pulls") | READ → MUTATE → WRITE on `scripts/build.py` per § 2.5.5; see `dashboards/recipes.md` § 7 for derived-dataset patterns | `build.py` only — it's the surface that owns post-pull cross-dataset transforms |
+| In-session quick recompile / verify ("test the change without a full refresh") | Exec `build.py` from S3 with the refresh-runner namespace per § 6.6 | No edits — re-runs the persisted recipe against current `data/*.csv` to surface compile errors |
+| Total demolition ("rebuild from scratch", "start over") | Tools 1+2+3+4, surface destructive intent first | Full re-author of every surface |
+
+Two preservation rules govern every non-first-build path:
+
+- **`scripts/build.py` and `scripts/pull_data.py` are NEVER re-emitted from a fresh string** for an "add" / "edit" / "extend" ask — that's § 2.5.5. The only path that re-emits scripts wholesale is first-time creation (Tools 1+2) and total demolition (user explicitly asked, was asked to confirm). Re-emission on an edit ask is how compute_js Python-into-JS leaks recur (`dashboards/widget_tool.md` § 1) and how in-flight script content is silently dropped.
+- **`manifest_template.json` is NEVER rewritten from a fresh dict** for an "add" / "edit" / "extend" ask — that's § 2.5.4. The CRUD patterns in `dashboards/template_crud.md` mutate the loaded template in place; wholesale `tpl = {...}` rewrites drop every widget / tab / filter / dataset PRISM didn't include in the fresh dict.
+
+Edit churn cheat sheet (which surface to expect to touch, by user-ask shape):
+
+```
+                ASK shape                     SURFACE(S)        FREQ
+                ─────────                     ──────────        ────
+  build new dashboard for X             →    all three         (first build)
+  add chart/KPI/tab/row                 →    manifest_template HIGH
+  edit filter/title/metadata            →    manifest_template HIGH
+  change chart_type / mapping           →    manifest_template HIGH
+  add new pull source / column          →    pull_data.py      HIGH
+  add derived ratio / YoY / join        →    build.py          LOW
+  add new dataset slot end-to-end       →    all three         LOW
+```
+
+### 6.1 First-time creation: the four-tool build model
+
+The build flow that follows is the path for FIRST-TIME CREATION (and total demolition). Each tool persists one of the two nucleus scripts (or the registry entry that makes the dashboard discoverable to the cron runner) and execs it from S3 — so the in-session run uses the same bytes the daily refresh will run tomorrow. Build-time and refresh-time are byte-identical by construction. See `dashboards/pipelines.md` for the pipeline-aware editing model: catalog existing pipelines first (§2), pick a reuse path (§3), preserve active-pipeline integrity (§4), re-author end-to-end (§5), run the post-edit health check (§6).
 
 **Atomicity contract (Rule 7 + Rule 9).** Tools 1, 2, 3, and 4 below are non-divisible. PRISM runs them in a single uninterrupted sequence and surfaces nothing to the user until Tool 4 has completed cleanly. There is no in-session "preview" of a half-built dashboard — every artefact below must be on S3, both audits must pass, AND the subprocess refresh must exit 0 before any user-facing message:
 
 | Artefact / state                                                          | Created in | Audited by                              |
 |---------------------------------------------------------------------------|------------|-----------------------------------------|
-| `scripts/pull_data.py` persisted                                          | Tool 1     | `_audit_dashboard_layout` (§2.5)        |
+| `SCRIPT_VERSION` pinned via `_next_script_version(...)` (§2.6.1)          | Tool 1     | inline at start of Tool 1               |
+| `scripts/pull_data.py` (live) persisted                                   | Tool 1     | `_audit_dashboard_layout` (§2.5)        |
+| `scripts/versions/pull_data_v<SCRIPT_VERSION>.py` snapshot persisted      | Tool 1     | `_audit_dashboard_layout` (§2.6 chain checks) |
 | `data/<key>.csv` (one per `manifest.datasets` key) on S3                  | Tool 1     | `_audit_dashboard_layout` (§2.5)        |
 | `manifest_template.json` persisted                                        | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
 | `manifest.json` + `dashboard.html` on S3 (in-session compile result)      | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
-| `scripts/build.py` persisted                                              | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
+| `manifest.metadata.script_version == SCRIPT_VERSION` stamped              | Tool 2     | `_audit_dashboard_layout` (§2.6 metadata check) |
+| `scripts/build.py` (live) persisted                                       | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
+| `scripts/versions/build_v<SCRIPT_VERSION>.py` snapshot persisted          | Tool 2     | `_audit_dashboard_layout` (§2.6 chain checks) |
 | Entry appended into `registry["dashboards"][]` (NOT a top-level key)      | Tool 3     | `_audit_registry_state` (§6.1 Tool 3)   |
 | `update_user_manifest(kerberos, artifact_type='dashboard')` ran           | Tool 3     | `_audit_registry_state` (§6.1 Tool 3)   |
 | `manifest.json` + `dashboard.html` overwritten by subprocess refresh      | Tool 4     | `subprocess.run(...).returncode == 0`   |
@@ -666,8 +937,6 @@ A short narrative sentence about what's in the dashboard is fine after that bloc
 If Tool 1 or Tool 2 raises, surface the failure verbatim — not a rendered preview gated behind a registration question.
 
 **Pacing across slices (Rule 8).** The atomicity contract above governs ONE slice. Complex requests turn into multiple slices, each its own complete pass through Tools 1 → 2 → 3. After surfacing the URL for slice N, PRISM stops and asks "want me to add [specific next chunk]?" — that question is REQUIRED post-Tool-3, not forbidden. The forbidden phrases above are specifically about "would you like me to register" mid-build (papering over a failure), not "want me to add the next tab now" between completed slices.
-
-### 6.1 Four-tool-call build model
 
 ```
 Tool 1: pull_data.py   Author pull_data.py as a string, persist to
@@ -707,6 +976,13 @@ If Tool 1's verify lines print and Tool 2 ends with `[Tool 2] complete`, the ref
 ```python
 DASHBOARD_PATH = f"users/{KERBEROS}/dashboards/{DASHBOARD_NAME}"
 
+# §2.6: pin SCRIPT_VERSION at the start of Tool 1; Tool 2 reuses it.
+# First build returns 1; every later Tools 1+2 cycle bumps by one.
+# Both _next_script_version() and _persist_versioned_script() are
+# authored inline in this Tool 1 namespace block (see §2.6.1 + §2.6.2).
+SCRIPT_VERSION = _next_script_version(DASHBOARD_PATH)
+print(f"[Tool 1] SCRIPT_VERSION={SCRIPT_VERSION}")
+
 # Author pull_data.py as a string. Refresh runner re-execs these exact bytes daily.
 # Every pull function call passes output_path=f'{SESSION_PATH}/data' (Rule 5).
 pull_data_py = '''
@@ -724,7 +1000,9 @@ pull_market_data(
 print("[pull_data.py] done")
 '''.lstrip()
 
-s3_manager.put(pull_data_py.encode(), f'{DASHBOARD_PATH}/scripts/pull_data.py')
+# §2.6: persist to BOTH live and scripts/versions/pull_data_v<SCRIPT_VERSION>.py
+_persist_versioned_script(DASHBOARD_PATH, 'pull_data',
+                          pull_data_py, SCRIPT_VERSION)
 
 # Exec FROM S3 with the refresh-runner namespace
 import io as _io
@@ -749,6 +1027,8 @@ print(f'[verify] rates_eod: shape={df.shape}'); print(df.head()); print(df.dtype
 
 #### Tool 2 — author + persist + exec `build.py` FROM S3
 
+`build.py` is **the recompile recipe** — the script that turns `manifest_template.json` + `data/*.csv` into `manifest.json` + `dashboard.html`. It loads the template, loads each CSV, applies cross-dataset transforms (joins, derived ratios, YoY columns — see `dashboards/recipes.md` § 7), populates the template via `populate_template`, compiles via `compile_dashboard`, and writes the outputs back to S3. **It is low-churn** — once authored at first build, future edits are surgical (§ 2.5.5) and only happen when the analytical SHAPE changes (a new derived dataset, a new join, a new ratio). UX-only edits never touch it; they CRUD `manifest_template.json` (`dashboards/template_crud.md`) and verify via the in-session quick recompile (§ 6.6).
+
 **Five non-negotiables for the persisted `build.py`** — every one of these has been observed as a real PRISM-authored bug that shipped a known-broken dashboard:
 
 1. `compile_dashboard(..., strict=True)` — explicit, no `strict=False`. `strict=False` is a discovery-mode tool for in-session iteration; the refresh runner re-execs `build.py` every day and `strict=False` ships broken artifacts with `(no data)` placeholder cards. The compiler additionally hard-fails a load-bearing allow-list of error codes (missing column, empty dataset, KPI source unresolvable, table column missing, filter field missing, builder exception) regardless of `strict`, so a `strict=False` build script will still raise on the failure modes that matter — but the SSOT is `strict=True`.
@@ -765,6 +1045,7 @@ df.columns = ['us_2y', 'us_10y']      # plain English (Rule 1)
 
 # Compose initial manifest (with embedded data) just to derive the template.
 # Dataset key 'rates_eod' matches the on-disk CSV stem (Rule 5).
+# metadata.script_version is stamped from SCRIPT_VERSION pinned in Tool 1 (§2.6).
 initial_manifest = {
     "schema_version": 1, "id": DASHBOARD_NAME, "title": "Rates Monitor",
     "metadata": {
@@ -780,6 +1061,7 @@ initial_manifest = {
         "sources":           ["GS Market Data"],
         "refresh_frequency": "daily",
         "tags":              ["rates"],
+        "script_version":    SCRIPT_VERSION,
     },
     "datasets": {"rates_eod": df.reset_index()},
     "layout": {"rows": [[
@@ -798,10 +1080,20 @@ tpl = manifest_template(initial_manifest)
 s3_manager.put(json.dumps(tpl, indent=2).encode(),
                 f'{DASHBOARD_PATH}/manifest_template.json')
 
-# Author build.py as a string (~12 lines: load template + load CSVs + populate + compile + upload).
-# Refresh runner re-execs this daily.
-build_py = '''import io, json, pandas as pd
+# Author build.py as a string (~16 lines: load template + load CSVs + populate +
+# stamp script_version + compile + upload). Refresh runner re-execs this daily;
+# script_version is stamped from the live filesystem so the rendered dashboard
+# always reflects the highest snapshot in scripts/versions/ (§2.6.3).
+build_py = '''import io, json, re, pandas as pd
 from datetime import datetime, timezone
+
+def _max_script_version(folder_path):
+    versions = []
+    for entry in s3_manager.list(f"{folder_path}/scripts/versions/"):
+        m = re.match(r"^(?:pull_data|build)_v(\\d+)\\.py$",
+                     entry["Key"].rsplit("/", 1)[-1])
+        if m: versions.append(int(m.group(1)))
+    return max(versions) if versions else None
 
 tpl = json.loads(s3_manager.get(f"{SESSION_PATH}/manifest_template.json"))
 df = pd.read_csv(io.BytesIO(s3_manager.get(f"{SESSION_PATH}/data/rates_eod.csv")),
@@ -809,7 +1101,8 @@ df = pd.read_csv(io.BytesIO(s3_manager.get(f"{SESSION_PATH}/data/rates_eod.csv")
 df.columns = ["us_2y", "us_10y"]
 m = populate_template(tpl, {"rates_eod": df.reset_index()},
                        metadata={"data_as_of": str(df.index.max().date()),
-                                  "generated_at": datetime.now(timezone.utc).isoformat()},
+                                  "generated_at": datetime.now(timezone.utc).isoformat(),
+                                  "script_version": _max_script_version(SESSION_PATH)},
                        require_all_slots=True)
 r = compile_dashboard(m, write_html=False, write_json=False, strict=True)
 if not r.success:
@@ -818,7 +1111,9 @@ s3_manager.put(r.html.encode("utf-8"), f"{SESSION_PATH}/dashboard.html")
 s3_manager.put(json.dumps(m, indent=2).encode("utf-8"), f"{SESSION_PATH}/manifest.json")
 print("[build.py] success")
 '''
-s3_manager.put(build_py.encode(), f'{DASHBOARD_PATH}/scripts/build.py')
+
+# §2.6: persist build.py to BOTH live and scripts/versions/build_v<SCRIPT_VERSION>.py
+_persist_versioned_script(DASHBOARD_PATH, 'build', build_py, SCRIPT_VERSION)
 
 # Exec build.py FROM S3 with refresh-runner namespace
 src = s3_manager.get(f'{DASHBOARD_PATH}/scripts/build.py').decode('utf-8')
@@ -1048,6 +1343,14 @@ Three rules from the table that are easy to get wrong:
 2. **`pull_market_data` metadata sidecar uses the bare `name`,** not the suffixed CSV stem. So `name='rates'` produces `data/rates_metadata.json` (one file even when both eod and intraday CSVs exist).
 3. **`mode='eod'` is the default** but pass it explicitly. The intraday CSV is only written when `mode in ('iday', 'both')`. See §6.4 for the defensive try/except wrap.
 
+#### Pull discipline
+
+| Anti-pattern | Why broken | Fix |
+|---|---|---|
+| Wrapping EVERY pull in `try/except` that prints a warning and continues | Failed pull → no CSV → `build.py` either reads a stale CSV (silent staleness) or raises trying to read a missing file. Either way the refresh-runner records `status: "success"` while shipping broken data | Wrap `try/except` ONLY for legitimately-flaky data (intraday outside market hours, see §6.4). For every other pull, let the exception propagate so failed pulls surface as failed builds |
+| Plain-English column rename happens in BOTH `pull_data.py` and `build.py` | Rename happens twice; second rename targets columns that no longer exist after the first → `KeyError` at refresh time | Pick ONE side. Default is `build.py` (column names from the raw CSV are stable; rename co-located with the manifest it serves). Renames in `pull_data.py` are fine when the rename runs on a stable-named DataFrame returned from the pull function |
+| No verification print after a pipeline finishes | Silent shape change between sessions: a Haver code returns 1 column on Tue and 4 on Wed → `build.py`'s `df.columns = ['a']` raises with `Length mismatch` at refresh time | Every pipeline's last action is `print(f"[Pipeline N] {df.shape} cols={df.columns.tolist()[:5]}")`. Surfaces every pipeline's actual shape in the build log so drift is visible the same day |
+
 #### Reading the CSVs back in `build.py`
 
 ```python
@@ -1143,6 +1446,41 @@ Behaviour when the gap fires:
 - **Multi-source dashboards needing alt-data** are still buildable; the always-on `Refresh` button still renders (there is no manifest opt-out), and the daily/hourly runner attempt produces a `runner_error` with the offending name. The user clicks `Refresh`, the structured error modal pops with the full `NameError`, and the "Copy markdown for PRISM" button hands the failure back for triage. Until the runner namespace expands, set `refresh_frequency: "manual"` on the registry entry to suppress the cron attempt; keep the manifest as-is so the manual refresh remains one click away.
 
 Structural fix is PRISM-side: extend `_build_exec_namespace` to mirror the `execute_analysis_script` sandbox's data-retrieval bundle. Tracked in `prism/_changelog.md`.
+
+### 6.6 In-session quick recompile
+
+After a manifest-only edit (raw JSON CRUD on `manifest_template.json` per `dashboards/template_crud.md`), the FAST way to verify the change compiles cleanly is to exec `build.py` from S3. This is also the right verify step after a surgical edit on `build.py` itself (`§ 2.5.5`). It uses the CURRENT `data/*.csv` on disk (no fresh pull), runs the canonical recompile recipe, and surfaces compile-time / shape-time errors immediately:
+
+```python
+src = s3_manager.get(f"{DASHBOARD_PATH}/scripts/build.py").decode("utf-8")
+
+# Refresh-runner namespace shape (matches dashboard-refresh.md § 5.5)
+ns = {
+    "pd": pd, "np": np, "io": io, "json": json, "os": os,
+    "datetime": datetime, "timezone": timezone,
+    "s3_manager": s3_manager,
+    "SESSION_PATH": DASHBOARD_PATH.rstrip("/"),
+    "compile_dashboard": compile_dashboard,
+    "populate_template": populate_template,
+    "manifest_template": manifest_template,
+    "validate_manifest": validate_manifest,
+}
+exec(compile(src, f"{DASHBOARD_PATH}/scripts/build.py", "exec"), ns)
+print("[recompile] in-session exec succeeded; manifest.json + dashboard.html refreshed on S3")
+```
+
+**This is the in-session iteration loop.** PRISM CRUDs the template → writes → quick-recompiles → reads any compile error → CRUDs again → quick-recompiles. Tool 4's subprocess refresh (§ 6.1) is the canonical end-of-edit verification — it runs the SAME `build.py` plus a fresh `pull_data.py` re-exec in a clean interpreter, and IS load-bearing before surfacing the portal URL to the user.
+
+| Loop | When | What it proves |
+|---|---|---|
+| In-session quick recompile (this section) | After every CRUD mutation, after every surgical script edit | Template / script change is structurally valid + compiles against current data |
+| Tool 4 subprocess refresh (§ 6.1) | Once at end-of-edit, before surfacing the URL | Tomorrow's cron will produce byte-identical output; pull pipeline still works |
+
+Skipping the in-session quick recompile in favour of going straight to Tool 4 trades fast iteration for clean-interpreter assurance — fine for a single small edit, expensive for multi-step builds. The in-session loop pays for itself after two edits.
+
+**Failure handling.** If the quick recompile raises `ValueError("compile failed: ...")` from inside `build.py`'s `if not r.success: raise ...` line, the manifest is structurally invalid against current data — usually a chart mapping referencing a column that doesn't exist (`chart_mapping_column_missing`), an empty dataset (`chart_dataset_empty`), or a KPI source that doesn't resolve. The error message carries the full diagnostic body; pattern-match on the error code, fix forward (re-CRUD the template OR edit `pull_data.py` if the data is wrong), and re-run the recompile.
+
+If the quick recompile raises `NameError` for a name that's not in the namespace dict above (e.g. `save_artifact`, `pull_nyfed_data`), the issue is `build.py` calling something the runner won't have either at refresh time — same gap as § 6.5. Fix is to refactor `build.py` to use only namespace names, or to file the namespace expansion as a structural fix.
 
 ---
 
@@ -1245,8 +1583,11 @@ Brand hex anchors for `series_colors`: GS Navy `#002F6C`, GS Sky `#7399C6`, GS G
 
 | Anti-pattern | Do instead |
 |--------------|-----------|
-| Leaving `scripts/build_v2.py` / `scripts/pull_data.bak` next to the canonical files "for reference" | Either it's the canonical file or it doesn't belong. Move references to `archive/<UTC>/` (§2.5.2). The runner cannot tell which of two `.py` files in `scripts/` is "real" |
-| Renaming the canonical scripts to anything else (`scripts/main.py`, `scripts/refresh.py`, `scripts/build_dashboard.py`) | The runner reads `scripts/pull_data.py` and `scripts/build.py` exactly. No flexibility. Audit raises FileNotFoundError on the canonical name |
+| Leaving `scripts/build.bak` / `scripts/pull_data_old.py` / `scripts/pull_data.prev.py` next to the live files "for reference" | Either it's the live file or it doesn't belong AT THE TOP of `scripts/`. The runner cannot tell which of two `.py` files in `scripts/` is "real". Versioned snapshots belong under `scripts/versions/<pull_data\|build>_v<N>.py` per §2.6 — anything else under `scripts/` other than the two live files + the `versions/` subfolder is rogue |
+| Hand-creating versioned snapshots (`scripts/versions/build_v7.py` written by `s3_manager.put` outside the §6.1 Tools 1+2 cycle) | §2.6 versioning is OWNED by Tools 1+2. Bumping by hand — without going through `_next_script_version()` + `_persist_versioned_script()` — risks gap (`build_v7` exists but `pull_data_v7` doesn't = §2.6 coupling violation), drift (`scripts/build.py` ≠ `scripts/versions/build_v<max>.py` = §2.6 live-vs-version drift), or stale `manifest.metadata.script_version`. Always go through the canonical Tools 1+2 path |
+| Renaming the live scripts to anything else (`scripts/main.py`, `scripts/refresh.py`, `scripts/build_dashboard.py`) | The runner reads `scripts/pull_data.py` and `scripts/build.py` exactly. No flexibility. Audit raises FileNotFoundError on the canonical name |
+| Renaming versioned snapshots (`scripts/versions/build_v7_FINAL.py`, `scripts/versions/build_FINAL.py`, `scripts/versions/build_v7_buggy.py`) | The §2.6 audit allow-lists exactly the regex `^(pull_data\|build)_v\d+\.py$`. Anything else under `scripts/versions/` is rogue. Suffix annotations like "_FINAL" / "_buggy" belong in `dev/notes.md` or PRISM's session log, not in the versioned filename |
+| Manually deleting `scripts/versions/<name>_vK.py` "to clean up" | The version chain is meant to be monotonic and complete. Deleting a snapshot loses the bytes that produced version K — exactly the diagnostic information the §2.6 versioning exists to preserve. If the versioned history grows uncomfortably long, surface it; the answer is folder-level eviction policy (out-of-scope today), never per-version cherry-pick |
 | Multiple manifest copies (`manifest.json` + `manifest_old.json` / `manifest_v2.json` / `manifest.20260424.json`) | Exactly one `manifest.json`. Quarantine the others to `archive/<UTC>/` |
 | Per-source data subfolders (`data/haver/cpi.csv`, `data/market_data/rates_eod.csv`) | Flat `data/cpi.csv`, `data/rates_eod.csv`. Driven by `output_path=f'{SESSION_PATH}/data'` on every pull (Rule 5). Audit flags any `data/<subdir>/` |
 | Self-suffix CSVs from the `pull_market_data` `name=` footgun (`data/rates_eod_eod.csv`) | Pass `name='rates'` (bare); the function appends `_eod`. The audit flags `rates_eod_eod` because no `manifest.datasets["rates_eod_eod"]` key exists to allow it |
@@ -1267,15 +1608,26 @@ m = json.loads(s3_manager.get(f'{DASHBOARD_PATH}/manifest.json').decode('utf-8')
 _audit_dashboard_layout(DASHBOARD_PATH, m)   # §2.5.1
 ```
 
-The audit covers everything the old hand-rolled `s3_manager.list()` loop did, plus exclusivity. Specifically it verifies:
+The audit covers everything the old hand-rolled `s3_manager.list()` loop did, plus exclusivity, plus the §2.6 versioning contract. Specifically it verifies:
 
 - `dashboard.html` / `manifest.json` / `manifest_template.json` exist exactly once
-- `scripts/pull_data.py` and `scripts/build.py` exist exactly once and are the only `.py` files under `scripts/`
+- `scripts/pull_data.py` and `scripts/build.py` exist exactly once at the top of `scripts/` (live runner targets)
+- `scripts/versions/pull_data_v<N>.py` and `scripts/versions/build_v<N>.py` exist for at least N=1 and form a coupled chain (every N for one script has a matching N for the other) — §2.6 contract
+- `scripts/pull_data.py` is byte-identical to `scripts/versions/pull_data_v<max(N)>.py`; same for `build` (live = highest version invariant)
+- `manifest.metadata.script_version` (if set) equals `max(N)` on disk
 - `data/<key>.csv` (or `.json`) exists for every `manifest.datasets` key, byte-for-byte; `pull_market_data` auto-appends `_eod` / `_intraday`
 - `data/<bare>_metadata.json` sidecars allowed (where `bare` strips `_eod` / `_intraday`)
-- No rogue paths anywhere — no `_v2`, no `_old`, no per-source `data/<source>/` subfolders, no scratch `.md` / `.json` siblings, no manifest-orphan CSVs
+- No rogue paths anywhere — no `_v2` siblings AT THE TOP of `scripts/`, no `_old`, no per-source `data/<source>/` subfolders, no scratch `.md` / `.json` siblings, no manifest-orphan CSVs, no off-pattern files inside `scripts/versions/`
 
 `refresh_status.json` is NOT a build-time artefact — the refresh runner writes it on first refresh attempt. The audit allows it as optional; do not pre-create it.
+
+**Script versioning (Rule 4 + §2.6):**
+
+- `SCRIPT_VERSION` was pinned exactly once at the start of Tool 1 via `_next_script_version(DASHBOARD_PATH)` and reused unchanged across Tool 2 (and any in-session retries)
+- Both `_persist_versioned_script(DASHBOARD_PATH, 'pull_data', ..., SCRIPT_VERSION)` and `_persist_versioned_script(DASHBOARD_PATH, 'build', ..., SCRIPT_VERSION)` ran with the same `SCRIPT_VERSION` (coupled bump)
+- After Tools 1+2: `scripts/versions/pull_data_v{SCRIPT_VERSION}.py` AND `scripts/versions/build_v{SCRIPT_VERSION}.py` both exist, byte-identical to the live `scripts/<name>.py`
+- `manifest.metadata.script_version == SCRIPT_VERSION` after Tool 2 (build.py stamps it from the live `_max_script_version()` on every populate)
+- For first builds: `SCRIPT_VERSION == 1` and `scripts/versions/<pull_data|build>_v1.py` lands as part of the same atomic Tools 1+2 cycle that creates the live scripts
 
 **Configuration:**
 

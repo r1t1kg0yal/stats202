@@ -1,40 +1,42 @@
 # Data pipelines + session folder health
 
-Spoke fetched on demand from the dashboards hub. Covers the 2-script nucleus framing, pipeline cataloging, the reuse decision ladder, active-pipeline integrity rules, end-to-end re-authoring of `pull_data.py`, and the post-edit session-folder health check.
+Spoke fetched on demand from the dashboards hub. Covers the three-surface model, pipeline cataloging, the reuse decision ladder, active-pipeline integrity rules, end-to-end re-authoring of `pull_data.py`, and the post-edit session-folder health check.
 
-This spoke is the SSOT for "how PRISM thinks about dashboard scripts and data flow" — fetch when ADDING / EDITING an existing dashboard, before authoring any change. The other dashboards spokes (`charts.md`, `widgets.md`, `widget_tool.md`, `filters.md`, `recipes.md`) are about manifest authoring; this one is about scripts authoring.
+This spoke is the SSOT for "how PRISM thinks about dashboard data flow" — fetch when ADDING / EDITING an existing dashboard's data side, before authoring any change. The other dashboards spokes (`charts.md`, `widgets.md`, `widget_tool.md`, `filters.md`) are about per-primitive widget specs; `template_crud.md` is the SSOT for raw JSON CRUD on `manifest_template.json`; `recipes.md` carries long-form worked recipes including derived-dataset patterns in `build.py`.
 
 ---
 
-## 1. The 2-script nucleus
+## 1. The three persisted surfaces
 
-A persistent dashboard's true artifact is two files: `scripts/pull_data.py` (the data pipelines) and `scripts/build.py` (the manifest assembler). Everything else in the dashboard folder is byproduct that the daily / hourly refresh runner regenerates from those two scripts:
+A persistent dashboard's true artifact is three files: `scripts/pull_data.py` (the data pipelines), `manifest_template.json` (the spec), and `scripts/build.py` (the recompile recipe). Everything else in the dashboard folder is byproduct that the daily / hourly refresh runner regenerates from those three:
 
 ```
-  scripts/pull_data.py        (the data pipelines)
+  scripts/pull_data.py        (raw data pulls)
      │ runner execs daily / hourly
      ▼
   data/<stem>.csv              (one CSV per pipeline)
      │ runner execs build.py
      ▼
-  manifest_template.json       (post-data-strip; build.py reads)
-     │ populate_template + compile_dashboard
+  manifest_template.json       (the spec — PRISM CRUDs via raw JSON code)
+     │ build.py loads + populate_template + compile_dashboard
      ▼
   manifest.json + dashboard.html
 ```
 
-The runner has no PRISM state and no conversation memory. It re-execs `pull_data.py`, then `build.py`, then nothing. If the two scripts produce a dashboard today, they produce the same dashboard tomorrow with fresher data. If a refresh fails, the failure is in one of the two scripts — there is nowhere else for it to live.
+The runner has no PRISM state and no conversation memory. It re-execs `pull_data.py`, then `build.py`, then nothing. If the three surfaces produce a dashboard today, they produce the same dashboard tomorrow with fresher data. If a refresh fails, the failure is in one of the two scripts (the spec is JSON; it can't fail at exec time, only at compile time inside `build.py`).
+
+This spoke is about the data side — `pull_data.py` and the CSVs it produces. For the spec side (`manifest_template.json`) see `template_crud.md`. For cross-dataset derivation in `build.py` see `recipes.md` § 7.
 
 | Question | Answer |
 |---|---|
-| What does "edit my dashboard" mean? | Read the existing `scripts/pull_data.py` and `scripts/build.py`, plan the edit against their current shape, re-author whichever script(s) need to change end-to-end (§5), persist, exec from S3 |
-| What does "save the change" mean? | The S3 `put` of the script. The next refresh runs whatever bytes are at `scripts/<name>.py` |
-| What does "verify the change worked" mean? | The build flow IS the verify (§6.1 of `dashboards.md`). After Tools 1+2+3 land cleanly, the persisted scripts are proven against today's data; the post-edit health check (§6 here) catches the few failure modes the build flow doesn't |
-| What does "the dashboard broke" mean? | One of the two scripts no longer runs cleanly against today's data. Diagnose in that order — pull first, build second |
+| What does "edit my dashboard" mean? | Pick the right surface: spec edit → `template_crud.md` raw JSON CRUD on `manifest_template.json`; data-shape edit → READ → MUTATE → WRITE on `pull_data.py` (and `build.py` if dataset shape changes) per `recipes.md` § 6 |
+| What does "save the change" mean? | The S3 `put` of the script or template. The next refresh runs whatever bytes are at `scripts/<name>.py` and reads whatever JSON is at `manifest_template.json` |
+| What does "verify the change worked" mean? | The in-session quick recompile (`dashboards.md` § 6.6 / `template_crud.md` § 9) runs `build.py` against current data and surfaces compile errors. The build flow's Tool 4 subprocess refresh (`dashboards.md` § 6.1) is the canonical end-of-edit verify |
+| What does "the dashboard broke" mean? | Either one of the two scripts no longer runs cleanly against today's data, OR the manifest_template.json drifted from the data shape `pull_data.py` produces. Diagnose in order: pull first, then template + build together |
 
-**Hand-edited derived files do not survive.** Mutating `manifest.json` or `data/<stem>.csv` or `dashboard.html` directly is a no-op against the next refresh: tomorrow morning the runner re-execs the unmodified scripts and produces the pre-edit state. The only durable edit is to the scripts (and to `manifest_template.json` when the edit is a pure layout / widget / filter change — see `recipes.md` §3 READ → MERGE → WRITE).
+**Hand-edited derived files do not survive.** Mutating `manifest.json` or `data/<stem>.csv` or `dashboard.html` directly is a no-op against the next refresh: tomorrow morning the runner re-execs the unmodified scripts and produces the pre-edit state. The only durable edit is to one of the three persisted surfaces: `pull_data.py`, `manifest_template.json` (raw JSON CRUD per `template_crud.md`), or `build.py`.
 
-**Rule 7 (atomicity, hub §0) restated in nucleus terms.** Tool 1 persists `pull_data.py` and execs it; Tool 2 persists `build.py` and execs it; Tool 3 registers the dashboard with the cron runner. All three together = the dashboard exists. Any subset = it doesn't.
+**Rule 7 (atomicity, hub § 0) restated in three-surface terms.** Tool 1 persists `pull_data.py` and execs it; Tool 2 persists both `manifest_template.json` and `build.py` and execs the latter; Tool 3 registers the dashboard with the cron runner; Tool 4 spawns the canonical subprocess refresh. All four together = the dashboard exists. Any subset = it doesn't.
 
 ---
 
@@ -205,19 +207,42 @@ When `pull_data.py` needs to change (Steps 2 or 3 of the reuse ladder, §3), re-
      pipelines in dependency order, print statements between pipelines so
      refresh-runner logs are readable.
 
-  5. PERSIST + EXEC from S3 (Tool 1, §6.1 of dashboards.md)
-     s3_manager.put + s3_manager.get + exec(compile(...))
+  5. BUMP THE SCRIPT VERSION (dashboards.md §2.6)
+     SCRIPT_VERSION = _next_script_version(DASHBOARD_PATH)
+     Pin once at the start of Tool 1; reuse unchanged through Tool 2.
+     Coupled bump: both pull_data and build version together even if
+     only pull_data changed in this edit.
+
+  6. PERSIST + EXEC from S3 (Tool 1, §6.1 of dashboards.md)
+     _persist_versioned_script(DASHBOARD_PATH, 'pull_data',
+                               new_pull_data_py, SCRIPT_VERSION)
+     -- writes both scripts/pull_data.py (live) AND
+        scripts/versions/pull_data_v{SCRIPT_VERSION}.py (snapshot)
+     Then s3_manager.get + exec(compile(...)) on the live path.
      Verify by reading each new / changed CSV back; print shape / head / dtypes.
 
-  6. RE-AUTHOR build.py only if dataset shape changed
-     Reuse path: build.py unchanged.
-     Extend path: build.py column-rename block needs the new column added
-                  (or stays as-is if positional rename caught it).
+  7. RE-AUTHOR build.py — ALWAYS, even if dataset shape didn't change
+     Coupled bump (§2.6) means every Tools 1+2 cycle writes both
+     scripts/versions/pull_data_v{N}.py AND scripts/versions/build_v{N}.py
+     — the build_v{N} snapshot is required even when build.py's bytes
+     are byte-identical to v{N-1} (no functional delta).
+
+     Reuse path:  re-emit build.py with the same bytes as before; the
+                  bump is bookkeeping, not a logic change. The
+                  _persist_versioned_script call is what makes the
+                  coupling valid.
+     Extend path: column-rename block needs the new column added (or
+                  stays as-is if positional rename caught it).
      Add path:    build.py loads a new CSV + populate_template grows by
-                  one entry. Re-author end-to-end (Tool 2, §6.1).
+                  one entry.
+
+     Either way: _persist_versioned_script(DASHBOARD_PATH, 'build',
+                 build_py, SCRIPT_VERSION) -- writes both scripts/build.py
+                 (live) AND scripts/versions/build_v{SCRIPT_VERSION}.py.
+                 Re-exec end-to-end (Tool 2, §6.1).
 ```
 
-The `re-author end-to-end` rule is the same one that governs `manifest_template.json` (`recipes.md` §3 READ → MERGE → WRITE; never put-overwrite a fresh dict). Both surfaces have the same fragility shape; both follow READ → PLAN → WRITE.
+The `re-author end-to-end` rule is the same one that governs `manifest_template.json` (`template_crud.md` raw JSON CRUD; never put-overwrite a fresh dict). All three surfaces have the same fragility shape; all three follow READ → PLAN → WRITE. The § 2.6 versioning layer adds a third invariant on top of READ → PLAN → WRITE for the two scripts: SNAPSHOT every PLAN → WRITE event, and never bypass `_persist_versioned_script()` once the dashboard has any v1 snapshot on disk.
 
 ---
 
@@ -231,18 +256,19 @@ After any edit to `pull_data.py` or `build.py` (or both), run the health check b
 | 2. Pull data | `pull_data.py` runs end-to-end against today's data | Tool 1 exec finishes without exception |
 | 3. CSVs land | Every pipeline wrote a CSV at `data/<stem>.csv` | Tool 1 verify step (`pd.read_csv(...).head()`) for each new / changed pipeline |
 | 4. Build | `build.py` runs end-to-end, manifest + html on S3 | Tool 2 exec ends with `[build.py] success` |
-| 5. Folder audit | `_audit_dashboard_layout(folder, manifest)` passes | `dashboards.md` §2.5 invocation |
+| 5. Folder audit | `_audit_dashboard_layout(folder, manifest)` passes (covers §2.2 layout + §2.6 versioning chain integrity) | `dashboards.md` §2.5 invocation |
 | 6. Manifest reference integrity | Every `manifest.datasets[key]` resolves to `data/<key>.csv`; every widget's `mapping.<col>` references a column that exists | The compiler's `chart_data_diagnostics` raises `chart_mapping_column_missing` regardless of `strict` (`dashboards.md` §1 ALWAYS_BLOCKING_ERROR_CODES) |
 | 7. Pipeline integrity | No active pipeline silently broken — every CSV that EXISTED before the edit still exists with at least the columns it had before | Manual: list `data/` before vs after; diff column sets per CSV. Engine companion `_audit_pipeline_integrity()` flagged in `dev/notes.md` |
+| 8. Version chain integrity | `scripts/versions/pull_data_v{N}.py` and `scripts/versions/build_v{N}.py` were written for the new `SCRIPT_VERSION = N`; live `scripts/<name>.py` is byte-identical to its `_v{N}.py` snapshot; `manifest.metadata.script_version == N` | Folded into step 5 (`_audit_dashboard_layout` enforces all four §2.6 invariants); also surface explicitly so a failure here flags the §6.1 Tools 1+2 wiring rather than the manifest content |
 
 **Health-check checklist** (run at the bottom of the in-session edit script, after Tool 2's exec):
 
 ```python
-import io, json
+import io, json, re
 
 # 1-4 are folded into the §6.1 Tool 1 + Tool 2 exec sequence.
 
-# 5: explicit folder audit
+# 5: explicit folder audit (covers both §2.5 layout AND §2.6 versioning)
 m = json.loads(s3_manager.get(f'{DASHBOARD_PATH}/manifest.json').decode('utf-8'))
 _audit_dashboard_layout(DASHBOARD_PATH, m)
 
@@ -261,8 +287,26 @@ for key in m['datasets']:
     df = pd.read_csv(io.BytesIO(
         s3_manager.get(f'{DASHBOARD_PATH}/data/{key}.csv')))
     print(f"  {key}: {list(df.columns)}")
+
+# 8: explicit version chain print (so failures at the §2.6 layer
+# are obvious in PRISM's session log, even though step 5 already
+# raises on them).
+versioned = {'pull_data': set(), 'build': set()}
+for entry in s3_manager.list(f'{DASHBOARD_PATH}/scripts/versions/'):
+    name = entry['Key'].rsplit('/', 1)[-1]
+    mm = re.match(r'^(pull_data|build)_v(\d+)\.py$', name)
+    if mm:
+        versioned[mm.group(1)].add(int(mm.group(2)))
+print(f"  pull_data versions: {sorted(versioned['pull_data'])}")
+print(f"  build versions:     {sorted(versioned['build'])}")
+print(f"  manifest.metadata.script_version: "
+      f"{m.get('metadata', {}).get('script_version')}")
+assert versioned['pull_data'] == versioned['build'], (
+    f"§2.6 coupling violation: pull_data versions {sorted(versioned['pull_data'])} "
+    f"!= build versions {sorted(versioned['build'])}"
+)
 ```
 
 If any step fails, the dashboard is not in a healthy state. Fix the script (re-author end-to-end per §5), re-run the health check from step 1.
 
-The check is most discriminating on EDITS to existing dashboards (where active pipelines exist and could be silently broken). On fresh builds, steps 1-6 are all that fire — there are no pre-existing pipelines to protect, so step 7 collapses to "every column is new by definition".
+The check is most discriminating on EDITS to existing dashboards (where active pipelines exist and could be silently broken). On fresh builds, steps 1-7 fire — there are no pre-existing pipelines to protect, so step 7 collapses to "every column is new by definition" and step 8 collapses to "v1 + v1 + script_version=1".

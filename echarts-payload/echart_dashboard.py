@@ -375,6 +375,122 @@ def _err(path: str, msg: str) -> str:
     return f"{path}: {msg}"
 
 
+# -----------------------------------------------------------------------------
+# tool_def `compute.source` static-text scanners
+# -----------------------------------------------------------------------------
+# Python-into-JS interpolation in a `widget: tool`'s compute_js body is a
+# load-bearing failure mode -- `None` / `True` / `False` / `nan` / `inf` /
+# `Timestamp(...)` / `Decimal(...)` reach the runtime as JS ReferenceErrors
+# (the right panel of the tool tile renders blank, the red `.tool-error`
+# strip shows `compute error: <token> is not defined`). Authors typically
+# introduce the leak by f-string-splicing a Python value into compute_js
+# when first composing the manifest dict. The engine catches this at
+# validate time so `compile_dashboard` reports `success=False` with the
+# verbose `tool_compute_python_literal_in_js` body before persistence,
+# never at refresh time.
+#
+# A second class of silent failure: the author declares an output id
+# (e.g. `summary` or `ff_paths`) but the compute function returns an
+# object whose top-level keys don't include it. The runtime's
+# `_toolRenderTable` / `_toolRenderSeries` no-op silently -- no error
+# box, just a blank panel. A heuristic regex check ("does <oid>: appear
+# anywhere in the source after strings/comments are stripped?") catches
+# the common case where PRISM forgot to add the output to the return
+# literal. The check has known false-negatives (dynamic key
+# construction; delegation through helper fns); these return [] (no
+# missing reported) so authors can opt out by structuring the compute
+# differently if needed.
+
+# JS-source patterns that signal Python literals leaked into compute_js.
+# Each pair: (regex, human-readable label). Case-sensitive on the Python
+# tokens because lowercase `none` / `true` / `false` happen frequently
+# inside legitimate identifier names (`maxNone`, `trueValue`).
+_TOOL_COMPUTE_JS_PYTHON_LITERAL_PATTERNS: List[Tuple[str, str]] = [
+    (r"\bNone\b",             "Python None (use null)"),
+    (r"\bTrue\b",             "Python True (use true)"),
+    (r"\bFalse\b",            "Python False (use false)"),
+    (r"\bnan\b",              "Python/numpy nan (use NaN)"),
+    (r"\binf\b",              "Python/numpy inf (use Infinity)"),
+    (r"-inf\b",               "Python -inf (use -Infinity)"),
+    (r"Timestamp\(",          "pandas Timestamp repr (serialize via .isoformat())"),
+    (r"datetime\.date\(",     "Python datetime.date repr (serialize via .isoformat())"),
+    (r"datetime\.datetime\(", "Python datetime.datetime repr (serialize via .isoformat())"),
+    (r"Decimal\(",            "Python Decimal repr (serialize as number)"),
+    (r"np\.float\d+\(",       "numpy scalar repr (cast to native float)"),
+    (r"np\.int\d+\(",         "numpy scalar repr (cast to native int)"),
+]
+
+# JS comment + string stripper. Order matters in the alternation: block
+# comments first so `// ` inside `/* */` doesn't trip the line-comment
+# branch. Single-pass alternation handles each non-code shape and leaves
+# whitespace in place (preserves rough source-line count for downstream
+# error messages; not byte-exact).
+_JS_STRIP_PATTERN = re.compile(
+    r"/\*[\s\S]*?\*/"           # block comment
+    r"|//[^\n]*"                # line comment
+    r"|'(?:\\.|[^'\\])*'"       # single-quoted string
+    r'|"(?:\\.|[^"\\])*"'       # double-quoted string
+    r"|`(?:\\.|[^`\\])*`"       # template literal (naive: ignores ${...})
+)
+
+
+def _strip_js_strings_and_comments(src: str) -> str:
+    """Replace JS strings + comments with spaces so static scans don't
+    false-match inside them. Preserves whitespace structure, not byte
+    offsets -- fine for grep-style regex scans, not fine for AST work.
+    """
+    if not isinstance(src, str):
+        return ""
+    return _JS_STRIP_PATTERN.sub(" ", src)
+
+
+def _scan_compute_js_for_python_literals(src: str) -> List[str]:
+    """Scan a JS source body for Python tokens that would be JS
+    ReferenceErrors at runtime. Strips strings + comments first so
+    legitimate JS strings containing the word "None" don't trip.
+    Returns a list of human-readable findings (one per pattern hit);
+    empty list = clean.
+    """
+    if not isinstance(src, str) or not src:
+        return []
+    stripped = _strip_js_strings_and_comments(src)
+    findings: List[str] = []
+    for pattern, label in _TOOL_COMPUTE_JS_PYTHON_LITERAL_PATTERNS:
+        if re.search(pattern, stripped):
+            findings.append(label)
+    return findings
+
+
+def _check_compute_returns_all_outputs(
+    src: str, declared_output_ids: Sequence[str]
+) -> List[str]:
+    """Heuristic: every declared output id should appear as `<id>:`
+    somewhere in the compute source (after stripping strings + comments).
+    Catches the common case where PRISM omits an output from the return
+    literal.
+
+    Returns a list of declared output ids that did NOT appear; empty list
+    = all accounted for.
+
+    Known false-negatives (return []): dynamic key construction
+    (`out[outputId] = ...`), delegation to a helper that returns the
+    object (`return computeImpl(i)`). Authors using these patterns get
+    no warning here; the check is optimised against the canonical
+    `return {<id>: ..., <id>: ...}` shape.
+    """
+    if not isinstance(src, str) or not src or not declared_output_ids:
+        return []
+    stripped = _strip_js_strings_and_comments(src)
+    missing: List[str] = []
+    for oid in declared_output_ids:
+        if not isinstance(oid, str) or not oid:
+            continue
+        # Match `<oid>:` at a token boundary; case-sensitive.
+        if not re.search(r"\b" + re.escape(oid) + r"\s*:", stripped):
+            missing.append(oid)
+    return missing
+
+
 # DOM ids reserved by the rendering shell for the always-on header chrome
 # (Methodology / Refresh / Share / Download dropdown / theme toggle / data-as-of
 # pill / refresh-error pill). A manifest's ``header_actions[].id`` cannot
@@ -418,6 +534,58 @@ def _validate_tool_widget(w: Dict[str, Any], wbase: str,
     if not src or not isinstance(src, str):
         errs.append(_err(f"{wbase}.tool_def.compute.source",
                             "tool def compute.source is empty or missing"))
+    else:
+        # Compile-time scan #1: Python literals leaked into compute_js.
+        # ALWAYS_BLOCKING because the runtime will hit a JS ReferenceError
+        # on every input change (right panel renders blank, red error
+        # strip in the tile shows `compute error: <token> is not defined`).
+        # Strips strings + comments first so legitimate JS strings
+        # containing the word "None" don't false-trip.
+        leaked = _scan_compute_js_for_python_literals(src)
+        if leaked:
+            errs.append(_err(
+                f"{wbase}.tool_def.compute.source",
+                f"tool_compute_python_literal_in_js: compute_js contains "
+                f"Python literal(s) that JavaScript will hit as a "
+                f"ReferenceError at runtime: {leaked!r}. Likely cause: "
+                f"f-string interpolation of a Python value into the "
+                f"compute_js source when first composing the manifest "
+                f"dict. Fix: drive Python values through `inputs[].default` "
+                f"(the engine JSON-serialises defaults on render: "
+                f"None->null, True->true, Timestamp->ISO string), or "
+                f"`json.dumps()` before splicing if interpolation is "
+                f"unavoidable. compute_js itself should contain only JS "
+                f"literals. Skill rule: `dashboards/widget_tool.md` \u00a71."
+            ))
+
+        # Compile-time scan #2: declared output ids that don't appear as
+        # `<id>:` keys in the compute source. ALWAYS_BLOCKING because a
+        # missing output id silently no-ops the runtime renderer (table
+        # innerHTML cleared; series chart returns silently) -- the right
+        # panel renders blank with no error box. Heuristic-based; misses
+        # dynamic key construction + helper-fn delegation. Those patterns
+        # return [] (no missing reported), which is the safer side of
+        # false-negative.
+        declared_oids: List[str] = []
+        for o in tdef.get("outputs", []) or []:
+            if isinstance(o, dict) and isinstance(o.get("id"), str):
+                declared_oids.append(o["id"])
+        missing = _check_compute_returns_all_outputs(src, declared_oids)
+        if missing:
+            errs.append(_err(
+                f"{wbase}.tool_def.compute.source",
+                f"tool_compute_missing_output_key: declared output id(s) "
+                f"{missing!r} do not appear as `<id>:` keys in the "
+                f"compute source. The runtime expects compute() to "
+                f"return an object whose top-level keys match every "
+                f"declared output id; missing keys silently render the "
+                f"right panel of the tool tile as empty. Add `{{<id>: "
+                f"<value>, ...}}` to the return literal for each missing "
+                f"id. (Heuristic: if compute uses dynamic key "
+                f"construction or delegates to a helper fn, this check "
+                f"may false-positive -- restructure to a literal return "
+                f"shape.)"
+            ))
 
     seen_ids: set = set()
     for ii, inp in enumerate(tdef.get("inputs", []) or []):
@@ -4823,6 +4991,30 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     "table_column_field_missing",
     # Filter failures: filter is a no-op (silently filters nothing).
     "filter_field_missing_in_target",
+    # Empty-data widget renders: persisted dashboard would visibly
+    # render an empty visual (header-only table or empty pivot grid).
+    # Per V08 (2026-05-03), every visible-empty case blocks at compile
+    # so PRISM never ships a known-broken artifact. The empty-dataset
+    # case for KPI / stat_grid is already covered indirectly via
+    # `kpi_source_no_numeric_values` / `stat_grid_source_unresolvable`;
+    # chart_dataset_empty is above.
+    "table_dataset_empty",
+    "pivot_dataset_empty",
+    "pivot_column_missing",
+    # Tool widget compute_js leaks: Python literal interpolated into JS
+    # source. Runtime hits `compute error: <token> is not defined` on
+    # every input change; right panel of tool tile renders blank.
+    # Validator-stage codes (string-error path); kept here for documentary
+    # completeness so any future CDD-stage emission of the same code is
+    # also always-blocking. See `_validate_tool_widget` for the scan +
+    # `dashboards/widget_tool.md` \u00a71 for the authoring rule.
+    "tool_compute_python_literal_in_js",
+    # Tool widget output id missing from compute return literal: declared
+    # output id has no `<id>:` key in compute source. Runtime renders the
+    # right panel of the tool tile as empty silently (no error box), so
+    # the failure mode is invisible until inspection. Heuristic-based;
+    # see `_check_compute_returns_all_outputs` for limits.
+    "tool_compute_missing_output_key",
 })
 
 # -----------------------------------------------------------------------------
@@ -6015,15 +6207,20 @@ def _check_table_widget(w: Dict[str, Any], path: str,
     df = dfs[ds_name]
     if df is None or len(df) == 0:
         out.append(Diagnostic(
-            severity="warning", code="table_dataset_empty",
+            severity="error", code="table_dataset_empty",
             widget_id=wid, path=f"{path}.dataset_ref",
             message=(f"table '{wid}' references dataset '{ds_name}' "
-                     f"which has 0 rows; table will render empty."),
+                     f"which has 0 rows; table would render empty "
+                     f"(header row only). Persisting an empty table is "
+                     f"a known-broken artifact -- ALWAYS_BLOCKING."),
             context={"dataset": ds_name,
                        "fix_hint": (
-                           "Repopulate the dataset upstream, or filter "
-                           "less aggressively before passing it to the "
-                           "manifest.")}))
+                           "Repopulate the dataset upstream "
+                           "(`scripts/pull_data.py` may need to widen "
+                           "its date range / unblock a failing pull / "
+                           "extend a derived dataset), or remove the "
+                           "table widget if the data is genuinely "
+                           "empty for this dashboard's scope.")}))
         return out
 
     cols = w.get("columns") or []
@@ -6153,6 +6350,70 @@ def _resolve_kpi_value(
     if agg == "prev":
         return float(vals[-2] if len(vals) >= 2 else vals[-1]), None
     return None, f"aggregator '{agg}' has no implementation"
+
+
+def _check_pivot_widget(w: Dict[str, Any], path: str,
+                          dfs: Dict[str, Any]) -> List[Diagnostic]:
+    """Pivot widget data-binding diagnostics. A pivot binding to a 0-row
+    dataset renders an empty grid (no row dims, no col dims, no value
+    cells) -- visually indistinguishable from a broken render. The
+    structural validator (`_validate_pivot_widget`) catches
+    `dataset_ref` missing + the three required column-list fields; this
+    runs after dataset materialisation to catch the empty-data case.
+    """
+    out: List[Diagnostic] = []
+    wid = w.get("id")
+    ds_name = w.get("dataset_ref")
+    if not ds_name or ds_name not in dfs:
+        return out
+    df = dfs[ds_name]
+    if df is None or len(df) == 0:
+        out.append(Diagnostic(
+            severity="error", code="pivot_dataset_empty",
+            widget_id=wid, path=f"{path}.dataset_ref",
+            message=(f"pivot '{wid}' references dataset '{ds_name}' "
+                     f"which has 0 rows; pivot would render an empty "
+                     f"grid (no row dims, no col dims, no value cells). "
+                     f"Persisting an empty pivot is a known-broken "
+                     f"artifact -- ALWAYS_BLOCKING."),
+            context={"dataset": ds_name,
+                       "fix_hint": (
+                           "Repopulate the dataset upstream "
+                           "(`scripts/pull_data.py` may need to widen "
+                           "its date range / unblock a failing pull / "
+                           "extend a derived dataset), or remove the "
+                           "pivot widget if the data is genuinely "
+                           "empty for this dashboard's scope.")}))
+        return out
+
+    # Column-existence checks for the three pivot column lists. Pivot's
+    # row_dim_columns / col_dim_columns / value_columns each must
+    # reference real columns in the dataset; missing references render
+    # an empty-or-broken pivot at runtime.
+    available = set(df.columns)
+    for field in ("row_dim_columns", "col_dim_columns", "value_columns"):
+        cols = w.get(field) or []
+        if not isinstance(cols, list):
+            continue
+        missing = [c for c in cols
+                    if isinstance(c, str) and c not in available]
+        if missing:
+            out.append(Diagnostic(
+                severity="error", code="pivot_column_missing",
+                widget_id=wid, path=f"{path}.{field}",
+                message=(f"pivot '{wid}' field {field}={cols!r} "
+                         f"references column(s) {missing!r} not in "
+                         f"dataset '{ds_name}' "
+                         f"(available: {sorted(available)})."),
+                context={"dataset": ds_name, "field": field,
+                          "missing_columns": missing,
+                          "available_columns": sorted(available),
+                          "fix_hint": (
+                              "Either rename the column references "
+                              "in the manifest to match the dataset, "
+                              "or add the column upstream in "
+                              "build.py / pull_data.py.")}))
+    return out
 
 
 def _check_kpi_widget(w: Dict[str, Any], path: str,
@@ -7286,6 +7547,8 @@ def chart_data_diagnostics(
                     diags.extend(_check_chart_widget(w, wpath, dfs))
                 elif wt == "table":
                     diags.extend(_check_table_widget(w, wpath, dfs))
+                elif wt == "pivot":
+                    diags.extend(_check_pivot_widget(w, wpath, dfs))
                 elif wt == "kpi":
                     diags.extend(_check_kpi_widget(w, wpath, dfs))
                 elif wt == "stat_grid":

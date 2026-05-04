@@ -6,7 +6,7 @@ Build a rates_monitor dashboard with a market_data pipeline (us_2y, us_10y, us_3
 
 ---
 
-Build an NFP-style dashboard with a Wages & Inflation chart showing AHE by sector. Then redesign the chart with multi-lag PCE-comparison lines (3 / 6 / 9 / 12 month toggle) — this requires editing pull_data.py to add multi-lag columns. Finally, undo that redesign and revert the dashboard to its pre-redesign state. Let me know if frictions.
+Build an NFP-style dashboard with a Wages & Inflation chart showing AHE by sector. Then redesign the chart with multi-lag PCE-comparison lines (3 / 6 / 9 / 12 month toggle) — this requires editing pull_data.py to add multi-lag columns. Finally, undo that redesign and revert the dashboard to its pre-redesign state using the §2.6 versioning chain (Path 1 of recipes.md §5): list scripts/versions/, identify the pre-redesign K, copy pull_data_vK.py + build_vK.py over the live paths, persist as v(N+1), re-run Tools 1+2+3+4. The chain should stay monotonic and the audit clean. Let me know if frictions.
 
 ---
 
