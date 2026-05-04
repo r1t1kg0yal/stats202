@@ -236,7 +236,7 @@ Detection cue: every Tool 1 verify prints `df.columns`. Reference any `mapping.<
 
 Wait for confirmation. After confirming, mutate `pull_data.py` surgically per §6 below (READ → MUTATE → WRITE; the `_persist_versioned_script` write bumps v(N+1)), exec from S3 to verify the new CSV, then surgically mutate `build.py` only if dataset shape changed (column rename, drop, key add). The "re-author end-to-end" framing in `dashboards/pipelines.md` §5 applies only to first-time creation; for edits, §6 below is the path.
 
-**Refresh-runner namespace audit.** Before re-authoring `pull_data.py`, confirm every helper used is in the runner namespace (`dashboards.md` §6.5). Runner injects `pd` / `np` / `io` / `json` / `os` / `datetime` / `s3_manager` / `SESSION_PATH` plus the four pull primitives plus compile / populate / template / validate helpers. NOT `save_artifact`, NOT alt-data clients (`fdic_client`, `sec_edgar_client`, `bis_client`, …). Using a not-injected name lets the in-session build pass and breaks the daily refresh — set the registry entry's `refresh_frequency: "manual"` if you can't avoid them; the browser `Refresh` button stays available.
+**Refresh-runner namespace audit.** Before re-authoring `pull_data.py`, confirm every helper used is in the runner namespace (`dashboards.md` §6.5). Runner injects `pd` / `np` / `io` / `json` / `os` / `datetime` / `s3_manager` plus the four pull primitives plus compile / populate / template / validate helpers. NOT `SESSION_PATH` (the script self-defines it on its first line per `dashboards.md` Rule 5), NOT `save_artifact`, NOT alt-data clients (`fdic_client`, `sec_edgar_client`, `bis_client`, …). Using a not-injected name lets the in-session build pass and breaks the daily refresh — set the registry entry's `refresh_frequency: "manual"` if you can't avoid them; the browser `Refresh` button stays available.
 
 ---
 
@@ -349,11 +349,12 @@ new_src = src.replace(
 assert new_src != src, "anchor not found in live pull_data.py"
 _persist_versioned_script(DASHBOARD_PATH, 'pull_data', new_src, SCRIPT_VERSION)
 
-# Exec from S3 to verify (refresh-runner namespace; same as Tool 1)
+# Exec from S3 to verify (refresh-runner namespace; same as Tool 1).
+# SESSION_PATH is NOT in ns: pull_data.py self-defines it on its first
+# line (dashboards.md Rule 5).
 src = s3_manager.get(f"{DASHBOARD_PATH}/scripts/pull_data.py").decode("utf-8")
 ns = {'pd': pd, 'np': np, 'io': io, 'json': json, 'os': os,
       'datetime': datetime, 's3_manager': s3_manager,
-      'SESSION_PATH': DASHBOARD_PATH.rstrip('/'),
       'pull_haver_data': pull_haver_data, 'pull_market_data': pull_market_data,
       'pull_plottool_data': pull_plottool_data, 'pull_fred_data': pull_fred_data,
       'save_artifact': save_artifact}

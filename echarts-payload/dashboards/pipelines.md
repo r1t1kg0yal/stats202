@@ -202,10 +202,13 @@ When `pull_data.py` needs to change (Steps 2 or 3 of the reuse ladder, §3), re-
      Reuse / extend / add — pick one path
 
   4. RE-AUTHOR pull_data.py as a fresh string
-     Preserve every existing pipeline; modify the one (or add the new one)
-     the plan calls for. Keep the script readable: imports at top,
-     pipelines in dependency order, print statements between pipelines so
-     refresh-runner logs are readable.
+     Open with the explicit SESSION_PATH = "<dashboard-path-literal>"
+     line (dashboards.md Rule 5) — neither the in-session sandbox nor
+     the refresh runner injects it. Then preserve every existing
+     pipeline; modify the one (or add the new one) the plan calls for.
+     Keep the script readable: imports at top, pipelines in dependency
+     order, print statements between pipelines so refresh-runner logs
+     are readable.
 
   5. BUMP THE SCRIPT VERSION (dashboards.md §2.6)
      SCRIPT_VERSION = _next_script_version(DASHBOARD_PATH)

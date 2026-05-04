@@ -607,7 +607,7 @@ def list_dimensions() -> List[Dict[str, Any]]:
 # ``rendering.py`` is generated from this value at compile time so the two
 # halves can never drift.
 
-MAX_DASHBOARD_DECIMALS: int = 2
+MAX_DASHBOARD_DECIMALS: int = 5
 
 
 def clamp_decimals(value: Any, default: int = 2) -> int:

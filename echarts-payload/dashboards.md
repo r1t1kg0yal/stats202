@@ -165,7 +165,7 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 ### Rule 5 — every CSV at `{DASHBOARD_PATH}/data/<dataset>.csv`
 
 - Inside `pull_data.py`, every pull-function call AND every `save_artifact(...)` MUST pass `output_path=f'{SESSION_PATH}/data'`.
-- The refresh runner injects `SESSION_PATH = {DASHBOARD_PATH}` so the same string resolves identically at build time and refresh time.
+- **`pull_data.py` and `build.py` MUST each open with an explicit `SESSION_PATH = "<dashboard-path-literal>"` line.** Neither the in-session sandbox nor the refresh runner injects `SESSION_PATH` for you — the persisted scripts self-contain the literal. PRISM substitutes the dashboard path at author time so build-time and refresh-time both resolve to the same `{DASHBOARD_PATH}/data` folder. See §6.1 Tool 1 / Tool 2 for the canonical authoring pattern.
 - Without `output_path`, CSVs land in per-source subfolders (`market_data/`, `haver/`, `plottool_data/`) — `build.py` does not look there → refresh fails.
 - `pull_market_data` ALWAYS appends `_eod` / `_intraday` to the filename. Pass `name='rates'` → `data/rates_eod.csv`. Use `'rates_eod'` as the manifest dataset key. Pass `name='rates_eod'` → broken `data/rates_eod_eod.csv`.
 - The dataset key in `manifest.datasets` matches the on-disk CSV stem byte-for-byte. §6.2 has the per-source pattern.
@@ -215,7 +215,7 @@ After Tools 1+2+3 finish, PRISM's LAST sandbox action MUST spawn a **subprocess*
 
 | Why | What it guarantees |
 |-----|--------------------|
-| The browser-served dashboard at the portal URL is byte-identical to what tomorrow's cron will produce — same Python interpreter, same `_build_exec_namespace`, same scripts, same S3 writes | Zero in-session contamination: the user never sees a dashboard whose data shape only worked because PRISM happened to have stale globals or sandbox-only injections in scope |
+| The browser-served dashboard at the portal URL is byte-identical to what tomorrow's cron will produce — same Python interpreter, same `_build_exec_namespace`, same scripts, same S3 writes | Zero in-session contamination: the user never sees a dashboard whose data shape only worked because PRISM happened to have stale globals in scope. (`SESSION_PATH` is self-defined at the top of every persisted script per Rule 5, so both halves resolve it the same way without depending on the executing environment.) |
 | The refresh path itself is the smoke test | If the subprocess exit is non-zero, the dashboard is not deliverable; surface the failure instead of the URL |
 | Tool 1's in-session exec catches shape bugs early (still required), but the user's first view of the dashboard is the subprocess output | A passed Tool 1 + Tool 2 + Tool 3 + failed Tool 4 means PRISM authored something the in-session sandbox accepted but the production refresh path rejects — usually a runner-namespace gap (§6.5) |
 
@@ -233,6 +233,11 @@ The end-of-build user-facing message contract from Rule 6 still holds — the po
 PRISM authors each script as a Python string, persists to S3, then execs from S3 with the refresh-runner namespace. Build-time and refresh-time run the same bytes from the same path. No drift, no double work, no separate verification step.
 
 ```python
+KERBEROS       = "goyalri"
+DASHBOARD_NAME = "rates"
+DASHBOARD_PATH = f"users/{KERBEROS}/dashboards/{DASHBOARD_NAME}"
+SESSION_PATH   = DASHBOARD_PATH    # Rule 5: PRISM defines explicitly; nothing injects it
+
 df_rates_eod, _ = pull_market_data(
     coordinates=['IR_USD_Swap_2Y_Rate', 'IR_USD_Swap_10Y_Rate'],
     start='2020-01-01', name='rates', mode='eod')
@@ -294,6 +299,7 @@ manifest = {
                                    "rows": [ [ widget, widget, ... ], ... ]}]},
     "links":           [ ... ],               # see dashboards/filters.md §6
 }
+# SESSION_PATH must already be defined explicitly above this call (Rule 5).
 compile_dashboard(manifest, session_path=SESSION_PATH)
 ```
 
@@ -418,7 +424,7 @@ The header's right edge is shell-injected (Methodology / Refresh / Share / Downl
 | Parameter | Purpose |
 |-----------|---------|
 | `manifest` | Required dict |
-| `session_path` | Where compiled HTML / JSON land. Default cwd; sandbox passes `SESSION_PATH` |
+| `session_path` | Where compiled HTML / JSON land. Default cwd. PRISM passes the `SESSION_PATH` it defined explicitly per Rule 5 (no auto-injection — the variable doesn't exist in the namespace until PRISM creates it). |
 | `output_path` | Override single-file location (advanced) |
 | `write_html` / `write_json` | Both default `True`; suppress for OOP-style use |
 | `strict` | `True` raises on any error-severity diagnostic; `False` reports + continues |
@@ -770,7 +776,7 @@ See `dashboards/recipes.md` §5 for the canonical recipe. The summary: read `scr
 
 This hub covers every primitive's catalog row + the always-needed contract. For per-primitive depth (chart-type mapping rules, widget specs, filter mechanics, recipes), fetch the relevant spoke.
 
-**Do NOT call `get_context()` again — it is one-shot per user message.** Mid-session reads use `list_ai_repo` with `mode="full"`. Each spoke is independent; mix and match.
+**Do NOT call `get_context()` again — it is one-shot per user message.** Mid-session reads use `list_ai_repo` with `mode="full"`. **Pass ONLY `file_paths` and `mode` — actively omit every other parameter (`extensions`, `max_depth`, `exclude_dirs`, and any other kwargs); the verbatim calls below are exhaustive.** Each spoke is independent; mix and match.
 
 | Spoke | Contents | Verbatim tool call (copy-paste) |
 |-------|----------|--------------------------------|
@@ -975,6 +981,7 @@ If Tool 1's verify lines print and Tool 2 ends with `[Tool 2] complete`, the ref
 
 ```python
 DASHBOARD_PATH = f"users/{KERBEROS}/dashboards/{DASHBOARD_NAME}"
+SESSION_PATH   = DASHBOARD_PATH    # Rule 5: explicit; no implicit injection
 
 # §2.6: pin SCRIPT_VERSION at the start of Tool 1; Tool 2 reuses it.
 # First build returns 1; every later Tools 1+2 cycle bumps by one.
@@ -984,9 +991,13 @@ SCRIPT_VERSION = _next_script_version(DASHBOARD_PATH)
 print(f"[Tool 1] SCRIPT_VERSION={SCRIPT_VERSION}")
 
 # Author pull_data.py as a string. Refresh runner re-execs these exact bytes daily.
-# Every pull function call passes output_path=f'{SESSION_PATH}/data' (Rule 5).
+# Rule 5: the script self-defines SESSION_PATH at the top so neither the
+# in-session exec nor the daily refresh runner needs to inject it. PRISM
+# substitutes the dashboard-path literal at author time via .replace().
 pull_data_py = '''
 """pull_data.py -- daily refresh of rates monitor data."""
+SESSION_PATH = "{{DASHBOARD_PATH_LITERAL}}"   # Rule 5: explicit, baked at author time
+
 from datetime import datetime
 print(f"[pull_data.py] starting at {datetime.now().isoformat()}")
 
@@ -998,19 +1009,21 @@ pull_market_data(
     output_path=f'{SESSION_PATH}/data',
 )
 print("[pull_data.py] done")
-'''.lstrip()
+'''.lstrip().replace("{{DASHBOARD_PATH_LITERAL}}", DASHBOARD_PATH)
 
 # §2.6: persist to BOTH live and scripts/versions/pull_data_v<SCRIPT_VERSION>.py
 _persist_versioned_script(DASHBOARD_PATH, 'pull_data',
                           pull_data_py, SCRIPT_VERSION)
 
-# Exec FROM S3 with the refresh-runner namespace
+# Exec FROM S3 with the refresh-runner namespace.
+# NOTE: ns intentionally does NOT include SESSION_PATH — the script
+# self-defines it on its first line per Rule 5. Mirrors what the runner
+# does on the daily refresh.
 import io as _io
 src = s3_manager.get(f'{DASHBOARD_PATH}/scripts/pull_data.py').decode('utf-8')
 ns = {
     'pd': pd, 'np': np, 'io': _io, 'json': json, 'os': os, 'datetime': datetime,
     's3_manager': s3_manager,
-    'SESSION_PATH': DASHBOARD_PATH.rstrip('/'),
     'pull_haver_data':   pull_haver_data,
     'pull_market_data':  pull_market_data,
     'pull_plottool_data': pull_plottool_data,
@@ -1084,7 +1097,10 @@ s3_manager.put(json.dumps(tpl, indent=2).encode(),
 # stamp script_version + compile + upload). Refresh runner re-execs this daily;
 # script_version is stamped from the live filesystem so the rendered dashboard
 # always reflects the highest snapshot in scripts/versions/ (§2.6.3).
-build_py = '''import io, json, re, pandas as pd
+# Rule 5: build.py also self-defines SESSION_PATH on its first line.
+build_py = '''SESSION_PATH = "{{DASHBOARD_PATH_LITERAL}}"   # Rule 5: explicit, baked at author time
+
+import io, json, re, pandas as pd
 from datetime import datetime, timezone
 
 def _max_script_version(folder_path):
@@ -1110,17 +1126,19 @@ if not r.success:
 s3_manager.put(r.html.encode("utf-8"), f"{SESSION_PATH}/dashboard.html")
 s3_manager.put(json.dumps(m, indent=2).encode("utf-8"), f"{SESSION_PATH}/manifest.json")
 print("[build.py] success")
-'''
+'''.replace("{{DASHBOARD_PATH_LITERAL}}", DASHBOARD_PATH)
 
 # §2.6: persist build.py to BOTH live and scripts/versions/build_v<SCRIPT_VERSION>.py
 _persist_versioned_script(DASHBOARD_PATH, 'build', build_py, SCRIPT_VERSION)
 
-# Exec build.py FROM S3 with refresh-runner namespace
+# Exec build.py FROM S3 with refresh-runner namespace.
+# NOTE: ns intentionally does NOT include SESSION_PATH — the script
+# self-defines it on its first line per Rule 5.
 src = s3_manager.get(f'{DASHBOARD_PATH}/scripts/build.py').decode('utf-8')
 ns = {
     'pd': pd, 'np': np, 'io': io, 'json': json, 'os': os,
     'datetime': datetime, 'timezone': timezone,
-    's3_manager': s3_manager, 'SESSION_PATH': DASHBOARD_PATH.rstrip('/'),
+    's3_manager': s3_manager,
     'compile_dashboard': compile_dashboard,
     'populate_template': populate_template,
     'manifest_template': manifest_template,
@@ -1326,7 +1344,7 @@ print(f'- Datasets: {DATASETS}')
 
 ### 6.2 Pull primitives + `save_artifact` cheat sheet
 
-Inside `pull_data.py` they all land their CSVs in the same flat folder by passing `output_path=f'{SESSION_PATH}/data'`. At refresh time the runner injects `SESSION_PATH = {DASHBOARD_PATH}` so the same string resolves to the same S3 folder both at build time and refresh time. There is no separate `DASHBOARD_PATH` reference inside `pull_data.py`.
+Inside `pull_data.py` they all land their CSVs in the same flat folder by passing `output_path=f'{SESSION_PATH}/data'`. Per Rule 5, `SESSION_PATH` is a literal `pull_data.py` self-defines on its first line (PRISM substitutes the dashboard-path literal at author time per §6.1 Tool 1) — neither the in-session sandbox nor the daily refresh runner injects it. Both halves resolve `f'{SESSION_PATH}/data'` to the same S3 folder because the literal is baked into the persisted script. There is no separate `DASHBOARD_PATH` reference inside `pull_data.py`.
 
 | Function | Call | On-disk CSV | Metadata sidecar | Manifest key |
 |---|---|---|---|---|
@@ -1360,7 +1378,7 @@ df = pd.read_csv(io.BytesIO(s3_manager.get(f'{SESSION_PATH}/data/rates_eod.csv')
 df.columns = ['us_2y', 'us_10y']        # rename to plain English (Rule 1)
 ```
 
-The path `{SESSION_PATH}/data/rates_eod.csv` is byte-identical to what `pull_data.py` wrote because both scripts reference `SESSION_PATH`, which the refresh runner pins to `{DASHBOARD_PATH}` for both execs. The dataset key (`rates_eod`) matches the CSV stem; `populate_template` maps the cleaned DataFrame back into the template by that key.
+The path `{SESSION_PATH}/data/rates_eod.csv` is byte-identical to what `pull_data.py` wrote because both scripts open with the same `SESSION_PATH = "<DASHBOARD_PATH literal>"` line per Rule 5 — PRISM bakes the literal in at author time so build-time and refresh-time both resolve to the same S3 folder without depending on any executing-environment injection. The dataset key (`rates_eod`) matches the CSV stem; `populate_template` maps the cleaned DataFrame back into the template by that key.
 
 #### `save_artifact()` for alternative data sources
 
@@ -1436,9 +1454,9 @@ The same `multi_line` chart spec works for daily EOD and intraday minute-bar dat
 
 ### 6.5 Refresh-runner namespace gap
 
-The refresh runner's `_build_exec_namespace` injects `pd`, `np`, `io`, `json`, `os`, `datetime`, `s3_manager`, `SESSION_PATH`, the four pull primitives, `compile_dashboard`, `populate_template`, `manifest_template`, `validate_manifest`. As of 2026-04-27, it does NOT inject `save_artifact`, `pull_nyfed_data`, `pull_pure_data`, `pull_stacked_data`, or any of the alt-data clients (`fdic_client`, `sec_edgar_client`, `bis_client`, `treasury_client`, `treasury_direct_client`, `nyfed_client`, `prediction_markets_client`, `openfigi_client`, `substack_client`, `wikipedia_client`, Coalition / Inquiry helpers).
+The refresh runner's `_build_exec_namespace` injects `pd`, `np`, `io`, `json`, `os`, `datetime`, `s3_manager`, the four pull primitives, `compile_dashboard`, `populate_template`, `manifest_template`, `validate_manifest`. **It does NOT inject `SESSION_PATH`** — that is the script's own responsibility per Rule 5 (`pull_data.py` and `build.py` both open with an explicit `SESSION_PATH = "<dashboard-path-literal>"` line; see §6.1 Tool 1 / Tool 2 for the authoring pattern). As of 2026-04-27, the runner namespace also does NOT inject `save_artifact`, `pull_nyfed_data`, `pull_pure_data`, `pull_stacked_data`, or any of the alt-data clients (`fdic_client`, `sec_edgar_client`, `bis_client`, `treasury_client`, `treasury_direct_client`, `nyfed_client`, `prediction_markets_client`, `openfigi_client`, `substack_client`, `wikipedia_client`, Coalition / Inquiry helpers).
 
-Consequence: a `pull_data.py` using any of those builds cleanly during the in-session Tool 1 exec (the build-time exec runs in the sandbox, where they ARE injected) but the daily refresh raises `NameError`.
+Consequence: a `pull_data.py` using any of those builds cleanly during the in-session Tool 1 exec (the build-time exec runs in the sandbox, where they ARE injected) but the daily refresh raises `NameError`. A script that forgets the `SESSION_PATH = "..."` first line raises `NameError` even sooner — the in-session Tool 1 exec mirrors the runner's namespace shape (Rule 5), so the gap is symmetric.
 
 Behaviour when the gap fires:
 
@@ -1454,12 +1472,13 @@ After a manifest-only edit (raw JSON CRUD on `manifest_template.json` per `dashb
 ```python
 src = s3_manager.get(f"{DASHBOARD_PATH}/scripts/build.py").decode("utf-8")
 
-# Refresh-runner namespace shape (matches dashboard-refresh.md § 5.5)
+# Refresh-runner namespace shape (matches dashboard-refresh.md § 5.5).
+# SESSION_PATH is intentionally NOT in ns: build.py self-defines it on
+# its first line per Rule 5; the runner does the same on the daily refresh.
 ns = {
     "pd": pd, "np": np, "io": io, "json": json, "os": os,
     "datetime": datetime, "timezone": timezone,
     "s3_manager": s3_manager,
-    "SESSION_PATH": DASHBOARD_PATH.rstrip("/"),
     "compile_dashboard": compile_dashboard,
     "populate_template": populate_template,
     "manifest_template": manifest_template,
@@ -1480,7 +1499,7 @@ Skipping the in-session quick recompile in favour of going straight to Tool 4 tr
 
 **Failure handling.** If the quick recompile raises `ValueError("compile failed: ...")` from inside `build.py`'s `if not r.success: raise ...` line, the manifest is structurally invalid against current data — usually a chart mapping referencing a column that doesn't exist (`chart_mapping_column_missing`), an empty dataset (`chart_dataset_empty`), or a KPI source that doesn't resolve. The error message carries the full diagnostic body; pattern-match on the error code, fix forward (re-CRUD the template OR edit `pull_data.py` if the data is wrong), and re-run the recompile.
 
-If the quick recompile raises `NameError` for a name that's not in the namespace dict above (e.g. `save_artifact`, `pull_nyfed_data`), the issue is `build.py` calling something the runner won't have either at refresh time — same gap as § 6.5. Fix is to refactor `build.py` to use only namespace names, or to file the namespace expansion as a structural fix.
+If the quick recompile raises `NameError` for a name that's not in the namespace dict above (e.g. `save_artifact`, `pull_nyfed_data`), the issue is `build.py` calling something the runner won't have either at refresh time — same gap as § 6.5. Fix is to refactor `build.py` to use only namespace names, or to file the namespace expansion as a structural fix. A `NameError: 'SESSION_PATH'` specifically means the script forgot Rule 5's required first line — re-author `build.py` with the literal at the top.
 
 ---
 

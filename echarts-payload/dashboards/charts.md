@@ -166,7 +166,7 @@ The compiler truncates long category labels to `category_label_max_px`, sizes `n
 
 **Per-spec overrides.** `palette`, `theme`, `annotations` may live on `spec` to override manifest defaults. Required keys: `chart_type`, `dataset`, `mapping`. Titles / subtitles live at the widget level only — `spec.title` / `spec.subtitle` are rejected by the validator.
 
-**Global decimal cap.** Numeric values rendered anywhere are hard-capped at 2 decimal places (`config.MAX_DASHBOARD_DECIMALS`); author-supplied precision options are clamped end-to-end. Author-supplied raw JS formatters (`value_formatter`, `tooltip.formatter`, `axisLabel.formatter`) are not inspected — if you pass raw JS, you own its precision.
+**Global decimal cap.** Numeric values rendered anywhere are hard-capped at 5 decimal places (`config.MAX_DASHBOARD_DECIMALS`); author-supplied precision options are clamped end-to-end. Author-supplied raw JS formatters (`value_formatter`, `tooltip.formatter`, `axisLabel.formatter`) are not inspected — if you pass raw JS, you own its precision.
 
 ---
 

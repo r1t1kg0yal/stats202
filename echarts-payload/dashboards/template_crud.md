@@ -493,12 +493,15 @@ After step 5 of the skeleton (template written to S3), the FAST way to verify th
 ```python
 src = s3_manager.get(f"{DASHBOARD_PATH}/scripts/build.py").decode("utf-8")
 
-# Refresh-runner namespace shape (matches dashboard-refresh.md §5.5)
+# Refresh-runner namespace shape (matches dashboard-refresh.md §5.5).
+# SESSION_PATH is intentionally NOT in ns: build.py self-defines it on
+# its first line per dashboards.md Rule 5 (the literal is baked into
+# the persisted bytes at author time). The runner does the same on
+# the daily refresh.
 ns = {
     "pd": pd, "np": np, "io": io, "json": json, "os": os,
     "datetime": datetime, "timezone": timezone,
     "s3_manager": s3_manager,
-    "SESSION_PATH": DASHBOARD_PATH.rstrip("/"),
     "compile_dashboard": compile_dashboard,
     "populate_template": populate_template,
     "manifest_template": manifest_template,
