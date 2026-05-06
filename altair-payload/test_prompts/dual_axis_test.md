@@ -22,4 +22,4 @@ Try to build a dual-axis chart with FOUR series total (two left, two right). If 
 
 ---
 
-Build a dual-axis chart of Brent crude (left) and the trade-weighted USD index (right, inverted). Confirm the inverted-right-axis flag works AND that LastValueLabel annotations land on the correct axis for each series. Let me know if frictions.
+Build a dual-axis chart of Brent crude (left) and the trade-weighted USD index (right, inverted). Confirm the inverted-right-axis flag works and that the normal color legend renders cleanly (LastValueLabel is prohibited on dual-axis -- the engine strips it and falls back to the legend). Let me know if frictions.

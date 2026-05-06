@@ -631,7 +631,7 @@ WATERFALL_KNOBS: List[Dict[str, Any]] = BAR_KNOBS + [
      "default": "#666666",
      "path": "config.rule.stroke", "group": "Waterfall"},
     {"name": "positiveColor", "label": "Positive bar color", "type": "color",
-     "default": "#729FCF",
+     "default": "#5C92CB",
      "apply": "setWaterfallPositive", "group": "Waterfall"},
     {"name": "negativeColor", "label": "Negative bar color", "type": "color",
      "default": "#C00000",
@@ -889,12 +889,12 @@ def list_themes() -> List[Dict[str, Any]]:
 
 GS_PRIMARY: Dict[str, Any] = {
     "name": "gs_primary", "label": "GS Primary (PRISM default)", "kind": "categorical",
-    "colors": ["#003359", "#B9D9EB", "#729FCF", "#A6A6A6", "#C00000",
+    "colors": ["#003359", "#94C7DD", "#5C92CB", "#A6A6A6", "#C00000",
                "#4F81BD", "#9BBB59", "#8064A2", "#F79646", "#4BACC6"],
 }
 GS_DIVERGING: Dict[str, Any] = {
     "name": "gs_diverging", "label": "GS Diverging", "kind": "diverging",
-    "colors": ["#C00000", "#F79646", "#FFFFFF", "#729FCF", "#003359"],
+    "colors": ["#C00000", "#F79646", "#FFFFFF", "#5C92CB", "#003359"],
 }
 BRIDGEWATER_PALETTE: Dict[str, Any] = {
     "name": "bridgewater", "label": "Bridgewater", "kind": "categorical",

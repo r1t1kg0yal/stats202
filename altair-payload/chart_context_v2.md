@@ -394,7 +394,7 @@ annotations = [
 | `PointLabel` | `x`, `y`, `label`, `dx`, `dy` |
 | `PointHighlight` | `x`, `y`, `color`, `size`, `shape`, `axis` |
 | `Callout` | `x`, `y`, `label`, `background` (`'halo'` / `'box'` / `'none'`) |
-| `LastValueLabel` | `show_value`, `value_format`, `include_right_axis` |
+| `LastValueLabel` | `show_value`, `value_format` (auto magnitude-aware) |
 | `Trendline` | `method` (`'linear'` / `'exp'` / `'log'` / `'pow'` / `'poly'` / `'quad'`) |
 | `PlotText` | `text`, `position` (`'auto'` or 9-corner anchor) |
 
@@ -481,23 +481,25 @@ values in right-axis units. `Trendline` does NOT apply on dual-axis;
 for trendline-on-dual-axis stories, build single-axis charts and
 combine via `render_grid([..], layout='2x1')`.
 
-**Engine y-scale flatness gate.** The engine REJECTS multi-series
-single-y-axis `multi_line` / `timeseries` charts where any series
-would compress below 10% of the visible y-axis span (would read as a
-flat horizontal rail). Canonical triggers: gold + WTI on one axis
-($2000 vs $70 → WTI ~2% of span), FCI components clustered at
-disparate levels (e.g. 30 / 60 / 10 with small per-series variation),
-equity index + 2Y yield. When `result.success=False` mentions
-`Y-AXIS SCALE MISMATCH`, three reshape options -- pick by series
-count and intent:
+**Engine y-scale gate (two complementary checks).** Multi-series
+single-y-axis `multi_line` / `timeseries` charts get REJECTED when
+either check fires:
+
+| Failure | Trigger | Error prefix | Canonical example |
+|---|---|---|---|
+| **Flatness** | any single series's data span is < 10% of the visible y-axis | `Y-AXIS SCALE MISMATCH` | gold ($2000) + WTI ($70) — WTI ~2% of span; equity index + 2Y yield |
+| **Level disparity** | every series has visible variation, but the gap between two series's means is > 3× the largest individual series span | `Y-AXIS LEVEL DISPARITY` | corporate saving (~2.5%) vs investment (~9.9%) of GDP — each spans ~0.8 pp, gap ~7.4 |
+
+Both failure modes route to the same three reshape options -- pick by
+series count and intent:
 
 | Fix | Best when |
 |---|---|
-| **2-panel composite** (`render_grid([c1, c2], layout='1x2')` or `'2x1'`) | 2 series with disparate magnitudes; each panel gets its own y-axis. Canonical fix for gold + WTI. |
-| **Dual-axis** -- route the smallest-scale series to a right axis via `dual_axis_series=['<name>']` + `y_title_right='...'` | 2-3 series where the argument is co-movement of differently-scaled shapes |
+| **2-panel composite** (`render_grid([c1, c2], layout='1x2')` or `'2x1'`) | 2 series with disparate magnitudes or levels; each panel gets its own y-axis. Canonical fix for gold + WTI and saving + investment. |
+| **Dual-axis** -- route the smallest-scale / lowest-level series to a right axis via `dual_axis_series=['<name>']` + `y_title_right='...'` | 2-3 series where the argument is co-movement of differently-scaled or differently-levelled shapes |
 | **Normalize** -- z-score, rebase-to-100, or pct-change every series before plotting | 3+ series; loses absolute level but preserves co-movement on one comparable scale |
 
-The error message names the smallest-scale series and provides the
+The error message names the offending series and provides the
 exact `dual_axis_series=[...]` payload to drop in.
 
 When NOT to use dual-axis:

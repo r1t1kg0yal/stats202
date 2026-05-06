@@ -8004,6 +8004,225 @@ def compile_dashboard(
     )
 
 
+# =============================================================================
+# DASHBOARD OPERATIONS (folder-as-workspace helpers)
+# =============================================================================
+#
+# These three helpers carry every dashboard operation. They operate on a
+# dashboard FOLDER (an S3 path) -- load the persisted scripts/template/CSVs,
+# run them, write outputs back. PRISM calls these from ephemeral session code.
+# The refresh runner calls them too.
+#
+#     run_pull(folder, pull_name)     run ONE function from PULLS (in-process)
+#     build_dashboard(folder)         load template + CSVs + transforms +
+#                                     populate + compile + write (in-process)
+#     refresh_dashboard(folder)       all PULLS + build_dashboard
+#                                     (also in-process; the runner spawns
+#                                      this in a subprocess for cron / Refresh)
+#
+# The dashboard folder layout these expect:
+#
+#     <folder>/
+#       manifest_template.json    LLM-editable spec, no data
+#       manifest.json             populated; written by build
+#       dashboard.html            compiled; written by build
+#       scripts/
+#         pull_data.py            module-level PULLS = {<name>: <fn>, ...}
+#         build.py                module-level TRANSFORMS = [<fn>, ...]
+#       data/
+#         <stem>.csv              one CSV per dataset; stem matches
+#                                 manifest.datasets key byte-for-byte
+#
+# pull_data.py shape:
+#     from ai_development.mcp.utils.data_functions import (
+#         pull_market_data, pull_haver_data, save_artifact)
+#     from ai_development.core.s3_bucket_manager import s3_manager
+#     SESSION_PATH = "users/<k>/dashboards/<id>"
+#     def pull_rates():
+#         pull_market_data(coordinates=[...], name='rates', mode='eod',
+#                          output_path=f'{SESSION_PATH}/data',
+#                          s3_manager=s3_manager)
+#     def pull_cpi():
+#         pull_haver_data(codes=[...], name='cpi',
+#                         output_path=f'{SESSION_PATH}/data',
+#                         s3_manager=s3_manager)
+#     PULLS = {'rates': pull_rates, 'cpi': pull_cpi}
+#
+# build.py shape:
+#     import pandas as pd
+#     SESSION_PATH = "users/<k>/dashboards/<id>"
+#     def derive_spread(datasets):
+#         df = datasets['rates']
+#         datasets['spread'] = pd.DataFrame({
+#             'date': df['date'], 'spread': df['us_10y'] - df['us_2y']})
+#         return datasets
+#     TRANSFORMS = [derive_spread]
+#
+# Both scripts use real Python imports for their helpers. No namespace
+# injection at exec time -- the engine just runs the bytes against
+# __builtins__ and reads the module-level data structures back out.
+# =============================================================================
+
+
+def _resolve_s3_manager(s3_manager):
+    """Return s3_manager unchanged if given; else import the canonical PRISM
+    one. Single canonical resolution path -- if the canonical import fails,
+    the caller learns immediately."""
+    if s3_manager is not None:
+        return s3_manager
+    from ai_development.core.s3_bucket_manager import s3_manager as canonical
+    return canonical
+
+
+def _exec_dashboard_script(folder: str, stem: str, *, s3_manager) -> Dict[str, Any]:
+    """Fetch <folder>/scripts/<stem>.py from S3, exec it, return the namespace.
+
+    The script is responsible for importing its own dependencies
+    (data_functions, s3_manager, pandas, ...). The exec namespace gets
+    only ``__builtins__`` plus the canonical ``__name__`` / ``__file__``;
+    nothing else is injected. Callers read PULLS / TRANSFORMS / SESSION_PATH
+    out of the returned namespace.
+    """
+    path = f"{folder}/scripts/{stem}.py".replace("//", "/")
+    src = s3_manager.get(path).decode("utf-8")
+    ns: Dict[str, Any] = {
+        "__name__": f"_dashboard_{stem}",
+        "__file__": path,
+        "__builtins__": __builtins__,
+    }
+    exec(compile(src, path, "exec"), ns)
+    return ns
+
+
+def run_pull(folder: str, pull_name: str, *, s3_manager=None) -> None:
+    """Execute a single named pull from ``<folder>/scripts/pull_data.py``.
+
+    Loads the script, reads ``PULLS``, calls ``PULLS[pull_name]()``.
+    Raises ``KeyError`` if ``pull_name`` is not in ``PULLS``. The pull
+    function writes its CSV to ``<folder>/data/`` as a side effect
+    (every pull-function call passes ``output_path=f'{SESSION_PATH}/data'``).
+
+    Use from PRISM ephemeral code to refresh ONE pipeline during dev
+    iteration without spawning a subprocess. Use ``refresh_dashboard()``
+    for the full pull+build path.
+    """
+    s3 = _resolve_s3_manager(s3_manager)
+    ns = _exec_dashboard_script(folder, "pull_data", s3_manager=s3)
+    pulls = ns.get("PULLS")
+    if not isinstance(pulls, dict):
+        raise RuntimeError(
+            f"run_pull: {folder}/scripts/pull_data.py must define a "
+            f"module-level PULLS dict (got {type(pulls).__name__})"
+        )
+    if pull_name not in pulls:
+        raise KeyError(
+            f"run_pull: {pull_name!r} not in PULLS; "
+            f"available: {sorted(pulls)}"
+        )
+    print(f"[run_pull] {folder} :: {pull_name}")
+    pulls[pull_name]()
+
+
+def build_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
+    """Recompile the dashboard at ``<folder>``.
+
+    Steps:
+      1. Read ``manifest_template.json`` from ``<folder>``
+      2. Read every ``<folder>/data/<stem>.csv`` into a ``datasets`` dict
+      3. Read ``TRANSFORMS`` from ``<folder>/scripts/build.py`` and chain
+         them (each receives + returns the datasets dict)
+      4. ``populate_template(template, datasets)`` -> manifest
+      5. ``compile_dashboard(manifest, strict=True)`` -> html + manifest
+         (in memory; no filesystem writes)
+      6. Write ``<folder>/manifest.json`` and ``<folder>/dashboard.html``
+         back to S3
+
+    Returns the populated manifest dict.
+
+    Use from PRISM ephemeral code to recompile after a
+    ``manifest_template.json`` edit, a ``build.py`` transforms edit, or
+    a manual ``data/<stem>.csv`` edit. Fast -- no fresh pulls. For
+    pull+build, use ``refresh_dashboard()``.
+    """
+    import io
+    import pandas as pd
+
+    s3 = _resolve_s3_manager(s3_manager)
+
+    tpl_path = f"{folder}/manifest_template.json".replace("//", "/")
+    template = json.loads(s3.get(tpl_path).rstrip(b"\x00").decode("utf-8"))
+
+    data_prefix = f"{folder}/data/".replace("//", "/")
+    datasets: Dict[str, Any] = {}
+    for entry in s3.list(data_prefix):
+        key = entry.get("Key") if isinstance(entry, dict) else entry
+        if not key or not key.endswith(".csv"):
+            continue
+        stem = key.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        datasets[stem] = pd.read_csv(io.BytesIO(s3.get(key)))
+
+    bld_ns = _exec_dashboard_script(folder, "build", s3_manager=s3)
+    transforms = bld_ns.get("TRANSFORMS", [])
+    if transforms and not isinstance(transforms, list):
+        raise RuntimeError(
+            f"build_dashboard: {folder}/scripts/build.py TRANSFORMS must "
+            f"be a list (got {type(transforms).__name__})"
+        )
+    for fn in transforms:
+        result = fn(datasets)
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"build_dashboard: transform {fn.__name__!r} must return "
+                f"the datasets dict (got {type(result).__name__})"
+            )
+        datasets = result
+
+    manifest = populate_template(template, datasets)
+
+    r = compile_dashboard(
+        manifest, write_html=False, write_json=False, strict=True,
+    )
+    if not r.success:
+        raise ValueError(f"build_dashboard: compile failed: {r.error_message}")
+
+    s3.put(
+        json.dumps(r.manifest, indent=2).encode("utf-8"),
+        f"{folder}/manifest.json".replace("//", "/"),
+    )
+    s3.put(
+        r.html.encode("utf-8"),
+        f"{folder}/dashboard.html".replace("//", "/"),
+    )
+    print(
+        f"[build_dashboard] {folder} :: compile OK "
+        f"({len(datasets)} dataset(s), {len(transforms)} transform(s))"
+    )
+    return r.manifest
+
+
+def refresh_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
+    """Full refresh: every ``PULLS`` entry, then ``build_dashboard``.
+
+    Used by ``refresh_runner.py`` when invoked by the cron / browser
+    ``[Refresh]`` button. PRISM can also call this directly from
+    in-session when it wants a clean-slate refresh (slow -- every pull
+    runs).
+    """
+    s3 = _resolve_s3_manager(s3_manager)
+    ns = _exec_dashboard_script(folder, "pull_data", s3_manager=s3)
+    pulls = ns.get("PULLS")
+    if not isinstance(pulls, dict):
+        raise RuntimeError(
+            f"refresh_dashboard: {folder}/scripts/pull_data.py must define "
+            f"a module-level PULLS dict (got {type(pulls).__name__})"
+        )
+    print(f"[refresh_dashboard] {folder} :: running {len(pulls)} pull(s)")
+    for name, fn in pulls.items():
+        print(f"[refresh_dashboard] {folder} :: pull {name}")
+        fn()
+    return build_dashboard(folder, s3_manager=s3)
+
+
 __all__ = [
     "Dashboard", "DashboardResult", "Tab",
     "ChartRef", "KPIRef", "TableRef", "MarkdownRef", "NoteRef", "DividerRef",
@@ -8014,6 +8233,7 @@ __all__ = [
     "load_tool_def", "normalize_tool_def",
     "df_to_source", "manifest_template", "populate_template",
     "Diagnostic", "chart_data_diagnostics",
+    "run_pull", "build_dashboard", "refresh_dashboard",
     "SCHEMA_VERSION", "VALID_WIDGETS", "VALID_FILTERS",
     "VALID_CHART_TYPES", "VALID_FILTER_OPS", "VALID_SYNC",
     "VALID_BRUSH_TYPES", "VALID_TABLE_FORMATS",

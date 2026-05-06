@@ -610,7 +610,7 @@ they would not otherwise see", omit it.
 | `PointLabel` | `x`, `y`, `label`, `dx`, `dy` (pixel offsets), `font_size`, `align`, `axis` (`'left'`/`'right'`), `label_color`. Plain floating text. Use sparingly. |
 | `PointHighlight` | `x`, `y`, `label`, `color` (default `"#C00000"`), `size` (default `100`), `opacity`, `shape` (`'circle'`/`'square'`/`'diamond'`/`'triangle'`/`'cross'`/`'stroke'`), `filled`, `stroke_color`, `stroke_width`, `axis` (`'left'`/`'right'`), `label_color`. Filled marker at a specific point. Often combined with `Callout` or `PointLabel` for a "labeled marker" effect. |
 | `Callout` | `x`, `y`, `label`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`box_padding_y`, `box_opacity`, `box_corner_radius`, `color`, `dx`, `dy`, `font_size`, `font_weight`, `align`, `axis` (`'left'`/`'right'`), `label_color`. Text annotation with halo (text-stroke trick) or box background. Solves the "PointLabel fights gridlines" readability problem. Default `'halo'` is best for most charts. Keep `dx` in 0-60 (typical); `abs(dx) > 80` risks off-canvas labels and the engine emits a warning. |
-| `LastValueLabel` | `show_value` (default `False`), `value_format` (default `None` -- auto-pick magnitude-aware decimals; or pass a Python format like `"{:+.2f}"`/`"{:.0%}"`), `show_dot` (default `True`), `dot_size`, `dot_color`, `dx`, `font_size`, `font_weight`, `include_right_axis` (default `False`), `label_color`. Direct end-of-line labels for `multi_line` charts (FT/Bloomberg style; replaces the legend). Auto-derives labels from the color column. `label` is ignored on multi-series charts; for single-series it overrides the y-field name. |
+| `LastValueLabel` | `show_value` (default `False`), `value_format` (default `None` -- auto-pick magnitude-aware decimals; or pass a Python format like `"{:+.2f}"`/`"{:.0%}"`), `show_dot` (default `True`), `dot_size`, `dot_color`, `dx`, `font_size`, `font_weight`, `label_color`. Direct end-of-line labels for `multi_line` charts (FT/Bloomberg style; replaces the legend). Auto-derives labels from the color column. `label` is ignored on multi-series charts; for single-series it overrides the y-field name. Suppressed on dual-axis (see §9.4). |
 | `Trendline` | `method` (`'linear'`/`'exp'`/`'log'`/`'pow'`/`'poly'`/`'quad'`), `label`, `color`, `stroke_width`, `stroke_dash`, `label_color`. Regression overlay on scatter charts. |
 | `PlotText` | `text`, `position` (default `'auto'`; or any of 9 corner / edge anchors), `padding_x`, `padding_y`, `font_size`, `color`, `italic`, `align`, `max_width_pct`. In-plot narrative anchored to a corner. `position='auto'` picks the corner that collides least with the data (scores TL / TR / BL / BR by how far the data extends into each); bar / waterfall disqualify bottom corners. `middle-*` anchors (`middle-left`/`middle-center`/`middle-right`) sit INSIDE the plot region with no auto-collision detection vs data / axes / legend; the engine warns when they're used. Prefer `'auto'` or a corner anchor. |
 
@@ -667,15 +667,22 @@ result = make_chart(
 )
 ```
 
-**Engine y-scale flatness gate.** The engine REJECTS multi-series single-y-axis `multi_line` / `timeseries` charts where any series would compress below 10% of the visible y-axis span (would read as a flat horizontal rail). Canonical triggers: gold + WTI on one axis ($2000 vs $70 → WTI ~2% of span), FCI components clustered at disparate levels (e.g. 30 / 60 / 10 with small per-series variation), equity index + 2Y yield. When `make_chart()` returns `success=False` with `error_message` starting `Y-AXIS SCALE MISMATCH`, three reshape options — pick by series count and intent:
+**Engine y-scale gate (two complementary checks).** Multi-series single-y-axis `multi_line` / `timeseries` charts get REJECTED when either check fires:
+
+| Failure | Trigger | Error prefix | Canonical example |
+|---|---|---|---|
+| **Flatness** | any single series's data span is < 10% of the visible y-axis | `Y-AXIS SCALE MISMATCH` | gold ($2000) + WTI ($70) — WTI ~2% of span; equity index + 2Y yield |
+| **Level disparity** | every series has visible variation, but the gap between two series's means is > 3× the largest individual series span | `Y-AXIS LEVEL DISPARITY` | corporate saving (~2.5%) vs investment (~9.9%) of GDP — each spans ~0.8 pp, gap ~7.4 |
+
+Both failure modes route to the same three reshape options — pick by series count and intent:
 
 | Fix | Best when |
 |---|---|
-| **2-panel composite** (`make_2pack_horizontal` / `_vertical`) | 2 series with disparate magnitudes; each panel gets its own y-axis. Canonical fix for gold + WTI. |
-| **Dual-axis** — route the smallest-scale series to a right axis via `mapping['dual_axis_series']=['<name>']` + `mapping['y_title_right']='...'` | 2-3 series where the argument is co-movement of differently-scaled shapes |
+| **2-panel composite** (`make_2pack_horizontal` / `_vertical`) | 2 series with disparate magnitudes or levels; each panel gets its own y-axis. Canonical fix for gold + WTI and saving + investment. |
+| **Dual-axis** — route the smallest-scale / lowest-level series to a right axis via `mapping['dual_axis_series']=['<name>']` + `mapping['y_title_right']='...'` | 2-3 series where the argument is co-movement of differently-scaled or differently-levelled shapes |
 | **Normalize** — z-score, rebase-to-100, or pct-change every series before plotting | 3+ series; loses absolute level but preserves co-movement on one comparable scale |
 
-The error message names the smallest-scale series and provides the exact `dual_axis_series=[...]` payload to drop in.
+The error message names the offending series and provides the exact `dual_axis_series=[...]` payload to drop in.
 
 ### 9.2 Series-name discipline
 
@@ -729,8 +736,7 @@ form), and `PointLabel` accept an `axis` parameter (`'left'` / `'right'`,
 default `'left'`). On a dual-axis chart, `axis='right'` interprets the
 annotation's y values in right-axis units. `VLine` is axis-agnostic
 (spans both vertically) — its label position auto-anchors to the left
-range. `LastValueLabel` uses `include_right_axis=True` to opt right-axis
-series into labelling.
+range.
 
 ```python
 annotations = [
@@ -752,9 +758,11 @@ silently dropped (the same out-of-range protection that applies to
 single-axis charts) — pass values in the units of the side you're
 targeting.
 
-`Trendline` does not currently apply on dual-axis `multi_line` — for a
-trendline-on-dual-axis story, build a single-axis chart per series and
-combine via `make_2pack_vertical()`.
+`LastValueLabel` and `Trendline` do not apply on dual-axis `multi_line` —
+the engine strips both with a non-fatal warning and the normal color
+legend renders for the dual-axis chart. For end-of-line labels or a
+trendline alongside two y-scales, build a single-axis chart per series
+and combine via `make_2pack_vertical()`.
 
 ### 9.5 When to switch off dual axis
 

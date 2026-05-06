@@ -5,97 +5,73 @@
 - **Tier:** 2 (on-demand)
 - **Scope:** ALL dashboard construction in PRISM. (One-off PNG charts in chat / email / report use Altair `make_chart()`, a separate module.)
 
-A dashboard is a JSON manifest. PRISM never writes HTML, CSS, or JS. PRISM emits structured JSON; the compiler does the rest.
+A dashboard is a JSON manifest plus two small Python files. PRISM emits Python that produces structured JSON; the engine does the rest. **PRISM never writes HTML, CSS, or JavaScript** — every byte the browser sees is emitted by the rendering engine. The one exception is `tool_def.compute_js` (a JS string LITERAL embedded inside a Python dict that authors the manifest) — see §A's carve-out.
 
 One visual style only — Goldman Sachs brand: GS Navy `#002F6C`, PMS 652 Sky Blue `#7399C6`, Goldman Sans, thin grey grid on paper-white. No theme switcher.
 
-`compile_dashboard(manifest)` is the only PRISM-facing entry point. It validates a manifest, lowers each `widget: chart` through internal builders, and emits an interactive dashboard HTML + manifest JSON.
+The engine surfaces three folder-operation entry points (`run_pull`, `build_dashboard`, `refresh_dashboard`) plus the compile primitives (`compile_dashboard`, `populate_template`, `manifest_template`, `validate_manifest`). Together they carry every dashboard operation. PRISM uses real Python imports — no namespace-injection gymnastics.
 
-Every primitive in this skill's Catalog index is rendered, in MECE-grouped tabs with explanatory headers, by the staging-side `build_showcase` demo (`projects/echarts/dev/demos.py`). That dashboard is the canonical proof-of-coverage artifact: if a primitive doesn't render there, the engine has a regression. Production-flavored demos in the same gallery (`rates_monitor`, `markets_wrap`, `screener_studio`, ...) sit beneath the showcase as safety / redundancy.
+For refresh-pipeline operations / failure modal / runner internals see `prism/dashboard-refresh.md`. This file is purely about authoring + the in-folder edit lifecycle.
 
-For refresh-pipeline operations / failure modal / runner internals see `prism/dashboard-refresh.md`. This file is purely about authoring.
-
-This hub covers the always-needed contract, schema, persistence flow, anti-patterns, pre-flight. Per-primitive depth (chart specs, widget specs, filter mechanics, recipes) lives in spoke files fetched on demand — see §3.
+This hub covers the always-needed contract, schema, recipes, and pre-flight. Per-primitive depth (chart specs, widget specs, filter mechanics, archetypes) lives in spoke files fetched on demand — see §3.
 
 ---
 
 ## The dashboard folder is your workspace
 
-Every iteration on a dashboard happens at `users/{kerberos}/dashboards/{name}/`. Treat the folder as PRISM's session workspace for that dashboard — read everything in it, write the canonical artefacts there, do all scratch work inside it (never under `{SESSION_PATH}/` or anywhere else). The §2.5 audit (canonical-layout whitelist) is what keeps the workspace clean: anything that doesn't belong on the canonical path goes to `archive/<UTC>/`, never deleted, never sitting alongside the live files.
+Every iteration on a dashboard happens at `users/{kerberos}/dashboards/{name}/`. Treat the folder as PRISM's workspace for that dashboard — read everything in it, write the canonical artefacts there, do all scratch work inside it (never under `{SESSION_PATH}/` or anywhere else). The §2.5 audit is the simple "are the canonical files there?" check that keeps the workspace from drifting; anything else in the folder is fine as long as the canonical 5 are present and uncorrupted.
 
 | Need | Where it lives inside the workspace |
 |------|--------------------------------------|
 | Canonical artefacts (the §2.2 required paths) | top level of the folder |
-| Versioned script history (`pull_data.py` + `build.py`, every edit) | `scripts/versions/<pull_data\|build>_v<N>.py` (§2.6) |
-| Pre-edit snapshots of `manifest_template.json` (`template_crud.md` § 1 WRITE step) | `archive/<UTC>/` (rollback path per `dashboards/recipes.md` § 5) |
-| Scratch / intermediate files | `archive/<UTC>/` (audit ignores; runner ignores) |
-| Optional history snapshots (when `keep_history=true`) | `history/` (runner-managed) |
+| Optional history snapshots (when `keep_history=true`) | `history/<UTC>/` (runner-managed) |
+| Scratch / archived versions (manual) | `archive/<UTC>/` (audit ignores; runner ignores) |
 | Generated data | `data/<stem>.csv` only; no per-source subfolders (Rule 5) |
 
-Three side-effects of treating the folder as workspace:
+Two side-effects of treating the folder as workspace:
 
-1. **Read first, then act.** When PRISM picks up a dashboard, the first action is `s3_manager.list({DASHBOARD_PATH})` + `_audit_dashboard_layout` (§ 2.5.3). Whatever's there is the current state; the planned change merges into it (see `dashboards/pipelines.md` § 2 cataloging + `dashboards/template_crud.md` § 1 READ → MUTATE → VALIDATE → WRITE for spec edits, `dashboards/recipes.md` § 6 for script edits).
-2. **Version, then write — for the two scripts.** `scripts/pull_data.py` + `scripts/build.py` carry a first-class versioned history under `scripts/versions/<name>_v<N>.py` (§2.6). Every Tools 1+2 cycle bumps both scripts to the next integer version and writes a snapshot alongside the live overwrite. The chain is monotonic; the highest-numbered version is byte-identical to the live `scripts/<name>.py`. The runner reads only the live path; the `scripts/versions/` subfolder is invisible to it (§5.2 of `dashboard-refresh.md`). Revert is `dashboards/recipes.md` §5 path 1: copy `scripts/versions/<name>_vK.py` over the live path, bump to v(N+1), re-run Tools 1+2+3+4.
-3. **Quarantine, never delete — for everything else.** Before re-authoring `manifest_template.json` directly (the `template_crud.md` raw JSON CRUD path that bypasses Tools 1+2), copy the about-to-be-overwritten file to `archive/<UTC>/` so the prior version stays recoverable. The runner ignores `archive/` entirely; cleanup is purely about audit hygiene. (Scripts skip `archive/` because § 2.6 versioning supersedes it for that surface.)
+1. **Read first, then act.** When PRISM picks up a dashboard, the first action is `s3_manager.list({DASHBOARD_PATH})` + `_audit_dashboard_layout` (§2.5). Whatever's there is the current state; the planned change merges into it (see §C for spec edits, §D for script edits, `dashboards/pipelines.md` for the pipeline-aware mental model).
+2. **Re-runs overwrite, never create.** Running `pull_data.py` or `build.py` against an existing folder MUST NOT produce any new top-level paths — the §2.2 canonical artefacts are overwritten in place, and nothing else. No timestamped CSVs (`rates_eod.20260503.csv`), no `manifest_v2.json`, no debug `.json` siblings.
 
 ---
 
-## The dashboard has three edit surfaces
+## §A. The three surfaces cheat sheet + path decision
 
-A persistent dashboard's true artifact is the trio:
+A persistent dashboard is the trio of edit surfaces below plus the registry entry. Everything else in the folder is **derived** — regenerated from those three by the cron runner. PRISM never edits derived artefacts in place.
 
 | Surface | Role | Edit churn | How PRISM edits |
 |---------|------|------------|-----------------|
-| `scripts/pull_data.py` | Raw data pipelines (every CSV + JSON under `data/` is the output of this script) | **High** — changes whenever a new data source / column / window / lag is needed | Surgical READ → MUTATE → WRITE on the persisted bytes; `dashboards/recipes.md` §6 |
-| `manifest_template.json` | The dashboard SPEC — layout, widgets, charts, filters, metadata, palettes, header_actions, links. Carries empty dataset slots; data lands at compile time. | **High** — every UX iteration touches it (add chart, edit filter, rename tab, swap chart_type, tweak metadata) | Ephemeral session-folder code that does raw JSON CRUD; `dashboards/template_crud.md` |
-| `scripts/build.py` | The recompile recipe — load template, load `data/*.csv`, apply cross-dataset transforms (joins, derived ratios, YoY), `populate_template`, `compile_dashboard`, save outputs | **Low** — changes only when the analytical SHAPE changes (new derived dataset, new join, new ratio). Never changes for a UX-only edit | Surgical READ → MUTATE → WRITE on the persisted bytes; `dashboards/recipes.md` §6 |
+| `scripts/pull_data.py` | List of named pull functions (`PULLS = {<name>: <fn>, ...}`) — every CSV under `data/` is the output of one pull | **High** — changes whenever a new data source / column / window / lag is needed | Surgical READ → MUTATE → WRITE on the persisted bytes; §D |
+| `manifest_template.json` | The dashboard SPEC — layout, widgets, charts, filters, metadata, palettes, header_actions, links. Carries empty dataset slots; data lands at compile time. | **High** — every UX iteration touches it (add chart, edit filter, rename tab, swap chart_type, tweak metadata) | Ephemeral session-folder code that does raw JSON CRUD; §C |
+| `scripts/build.py` | Transforms hook — defines `TRANSFORMS = [<fn>, ...]` (cross-dataset joins, derived ratios, YoY, subset projections). Optional — many dashboards have `TRANSFORMS = []` | **Low** — changes only when the analytical SHAPE changes (new derived dataset, new join, new ratio). Never changes for a UX-only edit | Surgical READ → MUTATE → WRITE on the persisted bytes; §D |
 
-The other files in the folder (`data/<stem>.csv`, `manifest.json`, `dashboard.html`, `refresh_status.json`) are **derived** — regenerated from those three surfaces on every refresh by the cron runner. PRISM never edits derived artefacts in place.
+The other files in the folder (`data/<stem>.csv`, `manifest.json`, `dashboard.html`, `refresh_status.json`) are **derived** — regenerated on every refresh by the cron runner. PRISM never edits derived artefacts in place.
 
-What this means for PRISM, by user-ask shape:
+### A.1 PRISM only writes Python
 
-| Ask | Touches | Path |
-|-----|---------|------|
-| "Build me a dashboard for X" (first-time) | All three surfaces | `§6.1` Tools 1+2+3+4 atomic build flow |
-| "Add a chart / KPI / tab / row" | `manifest_template.json` only | `dashboards/template_crud.md` (§4–§5) → `§6.6` in-session recompile |
-| "Edit a filter / title / metadata" | `manifest_template.json` only | `dashboards/template_crud.md` (§6, §8) → `§6.6` |
-| "Change a chart's chart_type / mapping" | `manifest_template.json` only | `dashboards/template_crud.md` (§4.4) → `§6.6` |
-| "Add a column / new pull source" | `pull_data.py` (and `build.py` if data shape changes) | `§2.5.5` script preservation → `§6.1` Tool 4 verify |
-| "Add a derived ratio / YoY column / cross-dataset join" | `build.py` only | `§2.5.5` script preservation + `recipes.md` §7 derived datasets |
-| "Add a new dataset slot" | `manifest_template.json` + `build.py` (and `pull_data.py` if the source is new) | `dashboards/template_crud.md` §7 + `§2.5.5` |
+The hard rule: **PRISM authors `.py` files and `.json` dicts. PRISM does NOT author `.html`, `.css`, or `.js` files.** The rendering engine owns every byte the browser sees. If a render looks wrong, the fix lives in the spec (`manifest_template.json` for layout / widget shape) or in `build.py` (for derived datasets) or in `pull_data.py` (for raw data); never in the rendered HTML.
 
-`dashboards/pipelines.md` is the SSOT for pipeline cataloging, the reuse decision ladder, active-pipeline integrity rules, end-to-end re-authoring, and the post-edit session-folder health check. `dashboards/template_crud.md` is the SSOT for the JSON CRUD patterns that operate on the spec surface.
+#### A.1.1 The `tool_def.compute_js` carve-out
 
----
+`tool_def.compute_js` is a JS string LITERAL embedded inside the Python dict that authors the manifest — the same surface area as authoring SQL strings or JSON literals inside Python. That IS Python code (the file is `.py`, the string is data); it is NOT PRISM authoring a `.js` file. The validator codes `tool_compute_python_literal_in_js` + `tool_compute_missing_output_key` block the leak class at validate time (see `dashboards/widget_tool.md` §1). All other widget surfaces are pure JSON dicts authored from Python — already conformant.
 
-## PRISM never edits derived artefacts
+### A.2 Path decision by user-ask shape
 
-The three edit surfaces above are the ONLY files PRISM authors directly (plus the registry entry — a separate seam, §6.1 Tool 3). Everything else in the folder — `manifest.json`, `dashboard.html`, every CSV under `data/`, `refresh_status.json` — is **derived**. PRISM never edits them in place; they regenerate by re-running the persisted scripts. Three consequences:
+| User ask | Path | Where the work happens |
+|---|---|---|
+| First-time creation ("build me a dashboard for X") | Recipe 1 (§B) | All three surfaces authored fresh; registry entry created; subprocess refresh seals it |
+| Manifest-only edit ("add a chart / KPI / tab / row", "edit a filter / title / metadata", "change a chart_type", "rename a tab") | Recipe 2 (§C) | `manifest_template.json` only (raw JSON CRUD); scripts untouched; verify via `build_dashboard(folder)` |
+| Data-shape edit ("add / rename / drop a column", "add a new pull source") | Recipe 3 (§D) | `pull_data.py` (and `build.py` if dataset shape changes); verify via `run_pull(folder, '<name>')` then `build_dashboard(folder)` |
+| Cross-dataset derivation edit ("add a derived ratio / YoY column / cross-dataset join") | Recipe 3 (§D) | `build.py` `TRANSFORMS` only; verify via `build_dashboard(folder)` |
+| In-session quick recompile ("rebuild without a fresh pull") | Recipe 4 (§E) | Just call `build_dashboard(folder)` — no edits, surfaces compile errors |
+| Inspecting an existing dashboard | Recipe 5 (§F) | HIGH-LEVEL GLANCE then DEEP GLANCE patterns |
+| Reverting a recent edit | Recipe 6 (§G) | Re-edit from chat history (or `history/<UTC>/` if `keep_history=true`) |
+| Total demolition ("rebuild from scratch", "start over") | Recipe 1 (§B), surface destructive intent first | Full re-author of every surface |
 
-- **PRISM never directly touches `dashboard.html`** (or the other derived artefacts). Hand-editing them produces drift that vanishes on the next refresh — and worse, masks bugs in the source surfaces that should have been caught at build time. If a render looks wrong, the fix lives in the spec (`manifest_template.json` for layout / widget shape) or in `build.py` (for derived datasets) or in `pull_data.py` (for raw data); never in the rendered HTML or the populated `manifest.json`.
-- **Re-runs are how PRISM marks state to market.** When PRISM picks up an existing dashboard mid-session and needs to know what shape `data/<key>.csv` has on disk today, what `manifest.json` actually contains, or whether a render is broken, the answer is to either re-exec `build.py` from S3 (in-session quick recompile, `§6.6`) or invoke the canonical refresh subprocess (`§6.1` Tool 4). The fresh output IS the current truth. Reasoning from prior in-session memory or a stale `manifest.json` read is unreliable — those drift the moment a script or template changes underneath them.
-- **Re-runs overwrite, never create.** Running `pull_data.py` + `build.py` against an existing folder MUST NOT produce any new top-level paths — the §2.2 canonical artefacts are overwritten in place, and nothing else. No timestamped CSVs (`rates_eod.20260503.csv`), no `manifest_v2.json`, no debug `.json` siblings, no per-source subfolders (Rule 5 enforces this for the pull side). If a re-run leaves new files behind, the script is buggy, not the folder. Fix the script; quarantine the strays to `archive/<UTC>/` (§2.5.2); re-audit.
+Two preservation rules govern every non-first-build path:
 
-This is what keeps the §2.5 canonical layout stable session over session. A PRISM session may iterate on a dashboard many times — rebuild, refresh, edit a tab, adjust a filter — and the canonical-layout invariant (Rule 4) only stays true because the persisted surfaces themselves are filesystem-idempotent. Each re-run lands the folder back on the §2.2 whitelist by construction. Session hygiene at the dashboard-folder level mirrors session hygiene at the conversation-folder level (`prism/session-hygiene.md`): deterministic names, overwrite-not-append, no version sprawl.
-
----
-
-## Compliance comes before the surface change
-
-When PRISM picks up an existing dashboard — to add a tab, change a filter, debug a render, anything — the FIRST question is: is this folder/system compliant with the canonical expected structure? Before any surface change PRISM was asked to make. Compliance has two concrete checks:
-
-| Audit | Verifies | Defined in |
-|-------|----------|------------|
-| `_audit_dashboard_layout(folder_path, manifest)` | Folder matches the §2.2 exclusive whitelist — every `[REQUIRED · 1]` row present, no rogue paths, no version sprawl, scripts filesystem-idempotent (above) | §2.5 |
-| `_audit_registry_state(kerberos, dashboard_id)` | Registry entry sits in `registry["dashboards"][]` (not as a top-level key), user-manifest pointer reflects it, both reachable by the runner | §6.1 Tool 3 |
-
-If either raises, PRISM realigns first:
-
-- **Realignment takes priority over the requested change.** Cleanup, re-audit, THEN make the requested change. Do NOT bolt a new tab onto a folder that already has `manifest_v2.json` next to `manifest.json`, or `scripts/build_old.py` next to `scripts/build.py`, or a registry entry stuck under a top-level key. A new feature on a broken foundation compounds the problem and pushes the eventual fix downstream into a much harder cleanup.
-- **Surface the trade transparently.** Tell the user: "this folder has [N] non-canonical drift items that block [original request]; realigning takes priority; here's what I'm cleaning up". Don't silently fix in the background — the user should know the original ask is paused until compliance is restored.
-- **Quarantine, never delete.** Rogue files move to `archive/<UTC>/` (§2.5.2). The prior version stays recoverable; the runner ignores it; the audit ignores it. Cleanup is reversible.
-
-Why: a non-compliant folder is silently broken. The runner picks up whichever bytes the lexicographic scan lands on (Rule 4), the registry entry may not be discoverable, the user's portal URL may serve stale content, tomorrow's refresh is unpredictable. Compliance is the gate to any change — every time. Rule 3's third bullet (non-compliant via bypassed compiler / hand-written HTML) and §2.5.3's cleanup-first protocol are specific instances of this principle; the principle is the general statement that governs them.
+- **`scripts/build.py` and `scripts/pull_data.py` are NEVER re-emitted from a fresh string** for an "add" / "edit" / "extend" ask — that's §D. The only path that re-emits scripts wholesale is first-time creation (Recipe 1) and total demolition (user explicitly asked, was asked to confirm).
+- **`manifest_template.json` is NEVER rewritten from a fresh dict** for an "add" / "edit" / "extend" ask — that's §C. The CRUD patterns mutate the loaded template in place; wholesale `tpl = {...}` rewrites drop every widget / tab / filter / dataset PRISM didn't include in the fresh dict.
 
 ---
 
@@ -131,12 +107,11 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 ### Rule 1 — real data only, every number refreshes
 
 - Auto-saving primitives: `pull_market_data`, `pull_haver_data`, `pull_plottool_data`, `pull_fred_data`.
-- Everything else (FDIC, SEC EDGAR, BIS, Treasury, Treasury Direct, NY Fed, prediction markets, OpenFIGI, Substack, Wikipedia, Pure / Alloy, Coalition, Inquiry, scraped DataFrames) lands via `save_artifact()` (§6.2).
+- Everything else (FDIC, SEC EDGAR, BIS, Treasury, Treasury Direct, NY Fed, prediction markets, OpenFIGI, Substack, Wikipedia, Pure / Alloy, Coalition, Inquiry, scraped DataFrames) lands via `save_artifact()`.
 - Forbidden: `np.random.*`, `np.linspace` / `np.arange` as data, hand-typed numeric arrays, synthetic fill for missing values, invented dates / labels.
 - If no source exists, do not build the panel — add a data source first.
-- **Every visible number on the dashboard must trace to `pull_data.py` output.** That includes KPI tiles, stat_grid items, table cells, chart datasets, and any other surface the viewer reads. Numbers must come from a `manifest.datasets[<key>]` source PRISM cannot bypass — meaning every KPI / stat_grid item MUST set `source: "<dataset>.<aggregator>.<col>"` (or for KPIs, the equivalent `series_source` / `delta_source` / `sparkline_source`). Hand-typed `value: <num>` (a literal number in the manifest dict) is forbidden — it doesn't refresh, ships stale on day two. The validator hard-rejects any KPI / stat_grid item that sets `value` without `source` (codes `kpi_static_value_forbidden` / `stat_grid_static_value_forbidden`, both in `ALWAYS_BLOCKING_ERROR_CODES`).
-- **Build-time computation is fine** — `build.py` reading a CSV and assigning the result into `manifest.datasets[<key>]["source"]` traces to `pull_data.py` (the CSV refreshes when `pull_data.py` reruns). The forbidden case is hand-typed numbers in the manifest dict that won't refresh on the next runner cycle.
-- Notes / markdown bodies / `metadata.summary` are narrative-only — embed numbers there at your own risk; if you do, link them to a fresh dataset reference (`{rates.latest.us_10y}` substitution if supported by the renderer) so they refresh, otherwise treat as ephemeral commentary that goes stale by tomorrow.
+- **Every visible number on the dashboard must trace to `pull_data.py` output.** Hand-typed `value: <num>` in a KPI / stat_grid item is forbidden — it doesn't refresh, ships stale on day two. The validator hard-rejects (`kpi_static_value_forbidden` / `stat_grid_static_value_forbidden`, both in `ALWAYS_BLOCKING_ERROR_CODES`). Wire every visible number through `source: "<dataset>.<aggregator>.<col>"`.
+- **Build-time computation is fine** — a `TRANSFORMS` function in `build.py` can derive a new dataset (YoY, ratios, joins) from the raw CSVs. The KPI / chart references the derived dataset by key; the next refresh re-derives from current pulls.
 
 ### Rule 2 — no literal data inside the manifest JSON
 
@@ -151,22 +126,22 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 
 ### Rule 3 — order is non-negotiable
 
-- `pull_data.py` must complete with real DataFrames (printed `df.shape` / `df.head()` / `df.dtypes`) before `build.py` is authored.
+- `pull_data.py` must run end-to-end and produce real CSVs (printed `df.shape` / `df.head()` / `df.dtypes` for verification) before `build.py` is authored.
 - Write the manifest against verified shapes, not imagined columns.
-- Non-compliant inheritance — the manifest bypasses `compile_dashboard()`, hand-writes HTML/CSS/JS, types numbers into `datasets[*].source`, or skips persistence — falls under the compliance-first principle ("Compliance comes before the surface change", top of file): realignment takes priority over the requested surface change. Surface the trade transparently.
+- A render bug never gets fixed by editing `dashboard.html` or `manifest.json` directly. Fix the spec (`manifest_template.json`), the transforms (`build.py`), or the data (`pull_data.py`); the next `build_dashboard(folder)` call regenerates the derived files.
 
 ### Rule 4 — canonical layout, exclusive whitelist
 
-- The dashboard folder at `users/{kerberos}/dashboards/{name}/` follows an **exclusive** layout: the artefact set in §2.2 is both the floor (every `[REQUIRED · 1]` row must exist) AND the ceiling (no other paths permitted). Cardinality is exact: one live `scripts/pull_data.py`, one live `scripts/build.py`, one `manifest.json`, one `manifest_template.json`, one `dashboard.html`. No second copies of any live file, no `_v2` / `_old` / `_backup` siblings sitting beside them, no timestamped scripts at the top of `scripts/`, no per-source data subfolders, no scratch `.md` / `.json` siblings.
-- `scripts/versions/<pull_data|build>_v<N>.py` is the ONE permitted subfolder under `scripts/`, and the only place where multiple versions of either script may coexist. §2.6 codifies the versioning contract (every Tools 1+2 cycle bumps both scripts to v(N+1) and writes a snapshot there). The `scripts/versions/` siblings are NOT the same class as the forbidden top-of-`scripts/` siblings: they're under an audited subpath, lexicographically out-of-band of the runner's exact-name lookup, and required for traceability — `scripts/build_v2.py` (forbidden) and `scripts/versions/build_v2.py` (required) are distinct paths.
-- The two LIVE `.py` files under `scripts/` (`scripts/pull_data.py` + `scripts/build.py`) are exactly what the refresh runner re-executes on schedule. Missing live scripts → the [Refresh] button fails immediately with `FileNotFoundError`. Stale duplicates next to them at the top of `scripts/` → the runner picks up whichever bytes the lexicographic scan lands on, silently. The `scripts/versions/` subfolder is invisible to the runner (it reads `scripts/pull_data.py` and `scripts/build.py` by exact path, never by listing).
-- §2.5 codifies the audit (`_audit_dashboard_layout`) PRISM runs at Tool 2's verify step and again whenever it inherits an existing dashboard folder. The audit allow-lists the §2.6 versioning convention exactly; everything else under `scripts/` is rogue. Audit failures block registration; rogue files are quarantined to `archive/<UTC>/`, never silently deleted.
+- The dashboard folder at `users/{kerberos}/dashboards/{name}/` follows a small canonical layout: 5 required files (3 top-level + 2 scripts) plus a `data/` directory. The §2.5 audit confirms every required file exists.
+- Cardinality is exact: one `manifest_template.json`, one `manifest.json`, one `dashboard.html`, one `scripts/pull_data.py`, one `scripts/build.py`. No second copies, no `_v2` / `_old` / `_backup` siblings.
+- The two LIVE `.py` files under `scripts/` are exactly what the refresh runner re-executes on schedule. Missing live scripts → the [Refresh] button fails immediately with `FileNotFoundError`.
+- `history/<UTC>/` and `archive/<UTC>/` are permitted; both are ignored by the runner and the audit. Use `archive/` to quarantine old artefacts you want to keep around for reference.
 
-### Rule 5 — every CSV at `{DASHBOARD_PATH}/data/<dataset>.csv`
+### Rule 5 — every CSV at `{folder}/data/<dataset>.csv`
 
 - Inside `pull_data.py`, every pull-function call AND every `save_artifact(...)` MUST pass `output_path=f'{SESSION_PATH}/data'`.
-- **`pull_data.py` and `build.py` MUST each open with an explicit `SESSION_PATH = "<dashboard-path-literal>"` line.** Neither the in-session sandbox nor the refresh runner injects `SESSION_PATH` for you — the persisted scripts self-contain the literal. PRISM substitutes the dashboard path at author time so build-time and refresh-time both resolve to the same `{DASHBOARD_PATH}/data` folder. See §6.1 Tool 1 / Tool 2 for the canonical authoring pattern.
-- Without `output_path`, CSVs land in per-source subfolders (`market_data/`, `haver/`, `plottool_data/`) — `build.py` does not look there → refresh fails.
+- **`pull_data.py` and `build.py` MUST each open with an explicit `SESSION_PATH = "<dashboard-path-literal>"` line.** PRISM substitutes the dashboard path at author time so build-time and refresh-time both resolve to the same `{folder}/data` folder. The engine's `run_pull` / `build_dashboard` / `refresh_dashboard` execute the script bytes verbatim — they don't inject `SESSION_PATH` for you.
+- Without `output_path`, CSVs land in per-source subfolders (`market_data/`, `haver/`, `plottool_data/`) — `build_dashboard()` does not look there → refresh fails.
 - `pull_market_data` ALWAYS appends `_eod` / `_intraday` to the filename. Pass `name='rates'` → `data/rates_eod.csv`. Use `'rates_eod'` as the manifest dataset key. Pass `name='rates_eod'` → broken `data/rates_eod_eod.csv`.
 - The dataset key in `manifest.datasets` matches the on-disk CSV stem byte-for-byte. §6.2 has the per-source pattern.
 
@@ -179,21 +154,18 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 
 ### Rule 7 — build flow is atomic
 
-- Tools 1, 2, 3, AND 4 (§6.1) are **non-divisible**. PRISM does not return to the user between Tool 1 and Tool 4. The dashboard does not exist as a deliverable until every artefact in §2.2 is on S3, the entry sits in `registry["dashboards"][]` (not as a top-level key, §6.1 Tool 3), the user-manifest pointer reflects it, both audits pass (`_audit_dashboard_layout` §2.5 + `_audit_registry_state` §6.1 Tool 3), AND Tool 4's subprocess refresh exits 0 with `refresh_status.json.status == "success"` (Rule 9 + §6.1 Tool 4).
-- Forbidden language in any user-facing message before Tool 3 has completed cleanly: "next steps", "would you like me to", "I can also create / register / set up", "to make this fully persistent / auto-refreshing". Each phrase implies the build has opt-in phases the user can decline. There are no phases. The post-Tool-3 portal URL (Rule 6) is the ONLY user-facing message; everything before it is internal plumbing the user does not see.
-- The canonical Rule 7 violation: PRISM pulls data + compiles in-session, renders an HTML preview, then asks the user "would you like me to register and set up daily refresh?" — and ships a worthless artefact. The browser [Refresh] button is broken (no scripts/), the hourly cron skips it (no registry entry), tomorrow's data never arrives, and the user sees a rendered HTML plus a permission prompt. There is no "preview" state to ask permission on; the build IS the registration and persistence.
-- Failure handling: if Tool 1 or Tool 2 raises, the response to the user is the failure (with its diagnostic), not a rendered HTML preview gated behind a registration question. Do not paper over a failed build by surfacing partial output and asking permission to "complete" it.
+- The four steps of Recipe 1 (Tools 1, 2, 3, 4 in §B) are **non-divisible**. PRISM does not return to the user between Tool 1 and Tool 4. The dashboard does not exist as a deliverable until every artefact in §2.2 is on S3, the entry sits in `registry["dashboards"][]` (not as a top-level key), the user-manifest pointer reflects it, the §2.5 audit passes, AND Tool 4's subprocess refresh exits 0 with `refresh_status.json.status == "success"`.
+- Forbidden language in any user-facing message before Tool 4 has completed cleanly: "next steps", "would you like me to", "I can also create / register / set up", "to make this fully persistent / auto-refreshing". Each phrase implies the build has opt-in phases the user can decline. There are no phases. The post-Tool-4 portal URL (Rule 6) is the ONLY user-facing message; everything before it is internal plumbing the user does not see.
+- Failure handling: if any tool raises, the response to the user is the failure (with its diagnostic), not a rendered HTML preview gated behind a registration question. Do not paper over a failed build by surfacing partial output and asking permission to "complete" it.
 
 ### Rule 8 — slice complex requests, check in between slices
 
 A "build me a dashboard" prompt rarely lands as a single buildable specification. PRISM does NOT attempt to fulfil the entire ask in one build flow. The discipline:
 
 - **Slice the request** into the smallest meaningful deliverable that produces a self-contained, registered, renderable dashboard. Natural slices: one tab; one tool widget; one chart-pair + headline KPI; data pull + headline table, defer charts. Pick the slice whose feedback most disambiguates the rest of the request.
-- **Build the slice atomically** (Rule 7 governs WITHIN: Tools 1, 2, 3 non-divisible; the slice must end with a registered dashboard at a portal URL).
+- **Build the slice atomically** (Rule 7 governs WITHIN: Tools 1-4 non-divisible; the slice must end with a registered dashboard at a portal URL).
 - **Hand off the URL and ASK** "first slice live at <URL>. Structure look right? Want me to add [next chunk]?"
 - **Wait for confirmation** before the next slice. Iterate.
-
-Rule 8 is NOT in tension with Rule 7. Rule 7 governs atomicity WITHIN a build; Rule 8 governs PACING across builds. Once Rule 7 is satisfied (slice registered + URL surfaced), Rule 8 says: stop, ask, wait. Don't immediately start the next build.
 
 Forbidden after a complex prompt:
 
@@ -202,81 +174,71 @@ Forbidden after a complex prompt:
 - Surfacing one slice and immediately stacking "let me also add X, Y, Z" without waiting for the user.
 - Pre-announcing the slice plan ("I'll do tabs 1-3 first then 4-8") and proceeding through it autonomously — the plan changes after every slice based on feedback.
 
-Required:
-
-- First slice → portal URL → "this is slice N of M; want me to continue with [specific next chunk]?" → wait.
-- Each slice's response is short. Lead with the URL (Rule 6); one sentence on what's in this slice; one sentence on the proposed next chunk; stop.
-
-Why: complex dashboard requests are typically 60-80% under-specified by the user (and that's normal — UX shape is hard to articulate verbatim). A small slice surfaces the misalignment cheaply. A fully-built 30-widget dashboard built in one shot is a guaranteed throwaway when the user says "no, I meant a fundamentally different shape entirely". Rule 8 trades a longer total wall-clock against dramatically less wasted work.
-
-### Rule 9 — final dashboard state comes from a subprocess refresh
-
-After Tools 1+2+3 finish, PRISM's LAST sandbox action MUST spawn a **subprocess** that runs the canonical refresh path (`refresh_runner.py` — the same script the browser `[Refresh]` button + the hourly cron spawn). That subprocess re-executes both `pull_data.py` and `build.py` end-to-end inside a fresh Python interpreter, overwriting `manifest.json` + `dashboard.html` on S3 with the result. ONLY AFTER the subprocess exits 0 does PRISM surface the portal URL.
-
-| Why | What it guarantees |
-|-----|--------------------|
-| The browser-served dashboard at the portal URL is byte-identical to what tomorrow's cron will produce — same Python interpreter, same `_build_exec_namespace`, same scripts, same S3 writes | Zero in-session contamination: the user never sees a dashboard whose data shape only worked because PRISM happened to have stale globals in scope. (`SESSION_PATH` is self-defined at the top of every persisted script per Rule 5, so both halves resolve it the same way without depending on the executing environment.) |
-| The refresh path itself is the smoke test | If the subprocess exit is non-zero, the dashboard is not deliverable; surface the failure instead of the URL |
-| Tool 1's in-session exec catches shape bugs early (still required), but the user's first view of the dashboard is the subprocess output | A passed Tool 1 + Tool 2 + Tool 3 + failed Tool 4 means PRISM authored something the in-session sandbox accepted but the production refresh path rejects — usually a runner-namespace gap (§6.5) |
-
-The canonical Tool 4 is a single subprocess.run call to `refresh_runner.py`; see §6.1 Tool 4 for the verbatim pattern. The subprocess is blocking — PRISM waits for it to finish before composing the success message.
-
-Forbidden after Tool 3 and before Tool 4 completes:
-- Surfacing the portal URL.
-- Telling the user "the dashboard is ready" or any equivalent.
-- Returning to the user with anything other than a Tool 4 in-flight or completed status.
-
-The end-of-build user-facing message contract from Rule 6 still holds — the portal URL is the first line; the difference is that "build complete" is now defined as "Tool 4's subprocess exited 0", not "Tool 3's registry write succeeded".
-
-### The build flow IS the refresh path
-
-PRISM authors each script as a Python string, persists to S3, then execs from S3 with the refresh-runner namespace. Build-time and refresh-time run the same bytes from the same path. No drift, no double work, no separate verification step.
-
-```python
-KERBEROS       = "goyalri"
-DASHBOARD_NAME = "rates"
-DASHBOARD_PATH = f"users/{KERBEROS}/dashboards/{DASHBOARD_NAME}"
-SESSION_PATH   = DASHBOARD_PATH    # Rule 5: PRISM defines explicitly; nothing injects it
-
-df_rates_eod, _ = pull_market_data(
-    coordinates=['IR_USD_Swap_2Y_Rate', 'IR_USD_Swap_10Y_Rate'],
-    start='2020-01-01', name='rates', mode='eod')
-df_rates_eod.columns = ['us_2y', 'us_10y']            # plain English (Rule 1)
-manifest = {
-    "schema_version": 1, "id": "rates", "title": "US Rates",
-    "datasets": {"rates_eod": df_rates_eod.reset_index()},
-    "layout": {"rows": [[
-        {"widget": "chart", "id": "curve_lvl", "w": 6,
-          "spec": {"chart_type": "multi_line", "dataset": "rates_eod",
-                    "mapping": {"x": "date", "y": ["us_2y", "us_10y"],
-                                "y_title": "Yield (%)"}}},
-        {"widget": "chart", "id": "curve_2s10s", "w": 6,
-          "spec": {"chart_type": "line", "dataset": "rates_eod_diff",
-                    "mapping": {"x": "date", "y": "spread",
-                                "y_title": "2s10s (bp)"}}},
-    ]]}
-}
-compile_dashboard(manifest, session_path=SESSION_PATH)
-```
-
 ---
 
-## 1. Injected namespace
+## 1. Engine entry points
 
-Inside `execute_analysis_script`:
+Auto-imported into both the `execute_analysis_script` sandbox and the refresh runner. PRISM uses real Python imports — the in-session ephemeral script reads from these names directly, no namespace gymnastics.
 
 ```python
-compile_dashboard       # manifest -> interactive HTML + manifest JSON (+ optional PNGs)
-manifest_template       # strip data from a manifest -> reusable template
-populate_template       # template + fresh DataFrames -> ready-to-compile manifest
-validate_manifest       # dry-run validation without rendering
-chart_data_diagnostics  # check data wires up (missing columns, size limits, etc.)
-load_manifest           # path -> manifest dict (used by refresh)
-save_manifest           # manifest -> JSON file
-df_to_source            # DataFrame -> canonical row-of-lists source form
+from ai_development.dashboards import (
+    # Folder operations -- carry every dashboard op
+    run_pull,             # run_pull(folder, pull_name)        -- in-process
+    build_dashboard,      # build_dashboard(folder)            -- in-process
+    refresh_dashboard,    # refresh_dashboard(folder)          -- in-process; runner spawns subprocess
+
+    # Compile primitives (used internally by build_dashboard; PRISM
+    # rarely calls these directly under the new model)
+    compile_dashboard,    # JSON manifest -> dashboard HTML + JSON
+    validate_manifest,    # dry-run structural validator
+    manifest_template,    # strip data -> reusable template
+    populate_template,    # template + fresh DataFrames -> manifest
+    df_to_source,         # DataFrame -> canonical list-of-lists
+    chart_data_diagnostics,  # post-compile linting
+    load_manifest, save_manifest,
+)
 ```
 
-`compile_dashboard()` raises by default (`strict=True`) on any error-severity diagnostic. `strict=False` is an inner-loop discovery mode — it keeps going so PRISM can see every cosmetic / advisory issue in one round-trip. **`strict=False` is for in-session iteration only; the persisted `scripts/build.py` MUST use `strict=True`.** A short list of load-bearing error codes (`chart_mapping_column_missing`, `chart_dataset_empty`, `chart_too_many_series`, `kpi_source_*`, `kpi_static_value_forbidden`, `stat_grid_static_value_forbidden`, `table_column_field_missing`, `filter_field_missing_in_target`, `chart_build_failed`, …) raise regardless of `strict` — these are the errors that would otherwise ship a chart with `(no data)`, a KPI tile with `--`, an empty table cell, or a filter that silently filters nothing. The full list lives in `echart_dashboard.ALWAYS_BLOCKING_ERROR_CODES`. One theme (`gs_clean`); three palettes (`gs_primary`, `gs_blues`, `gs_diverging`).
+`compile_dashboard()` raises by default (`strict=True`) on any error-severity diagnostic. `strict=False` is an inner-loop discovery mode — it keeps going so PRISM can see every cosmetic / advisory issue in one round-trip. **`strict=False` is for one-shot in-session calls only; the standard `build_dashboard(folder)` always uses `strict=True`.** A short list of load-bearing error codes (`chart_mapping_column_missing`, `chart_dataset_empty`, `chart_too_many_series`, `kpi_source_*`, `kpi_static_value_forbidden`, `stat_grid_static_value_forbidden`, `table_column_field_missing`, `filter_field_missing_in_target`, `chart_build_failed`, …) raise regardless of `strict`. The full list lives in `echart_dashboard.ALWAYS_BLOCKING_ERROR_CODES`. One theme (`gs_clean`); three palettes (`gs_primary`, `gs_blues`, `gs_diverging`).
+
+### 1.1 What `build_dashboard(folder)` does
+
+```python
+def build_dashboard(folder, *, s3_manager=None) -> dict:
+    """
+    1. Read manifest_template.json from <folder>
+    2. Read every <folder>/data/<stem>.csv into a datasets dict
+    3. Read TRANSFORMS from <folder>/scripts/build.py and chain them
+       (each receives + returns the datasets dict)
+    4. populate_template(template, datasets) -> manifest
+    5. compile_dashboard(manifest, strict=True) -> html + manifest
+    6. Write <folder>/manifest.json + <folder>/dashboard.html to S3
+    """
+```
+
+The same `build_dashboard()` is called by PRISM in-session (after a manifest or transforms edit), by `refresh_dashboard()` (after a fresh pull), and by `refresh_runner.py` (when invoked by the cron / [Refresh] button). One canonical path; no namespace injection; no script-by-script orchestration.
+
+### 1.2 What `run_pull(folder, name)` does
+
+```python
+def run_pull(folder, pull_name, *, s3_manager=None) -> None:
+    """Execute PULLS[pull_name]() from <folder>/scripts/pull_data.py.
+
+    The pull function writes its CSV to <folder>/data/ as a side effect."""
+```
+
+Use from PRISM ephemeral code to refresh ONE pipeline during dev iteration. Fast, in-process — no subprocess, no timeout. For pull+build, use `refresh_dashboard()`.
+
+### 1.3 What `refresh_dashboard(folder)` does
+
+```python
+def refresh_dashboard(folder, *, s3_manager=None) -> dict:
+    """All PULLS, then build_dashboard.
+
+    Used by refresh_runner.py when the cron / browser [Refresh] fires.
+    PRISM may also call this directly when it wants a clean-slate
+    refresh from in-session (slow -- every pull runs)."""
+```
 
 ---
 
@@ -321,24 +283,18 @@ For **conversational (session-only)** dashboards:
 {SESSION_PATH}/dashboards/{id}.html     compiled dashboard
 ```
 
-For **persistent user dashboards** (Rule 4) — the layout below is **exclusive**. Every `[REQUIRED · 1]` path must exist exactly once; nothing else is permitted at any depth except the explicitly-allowed `data/` / `history/` / `archive/` prefixes. The audit in §2.5 enforces this both ways (presence and exclusivity).
+For **persistent user dashboards** (Rule 4):
 
 ```
 users/{kerberos}/dashboards/{dashboard_name}/
   manifest_template.json    [REQUIRED · 1] LLM-editable spec, NO data
   manifest.json             [REQUIRED · 1] template + fresh data, embedded
   dashboard.html            [REQUIRED · 1] compile_dashboard output
-  refresh_status.json       [optional · ≤1] runner-owned runtime state (never author-written)
+  refresh_status.json       [optional · ≤1] runner-owned runtime state
   thumbnail.png             [optional · ≤1] author-owned preview image
-  scripts/                  [REQUIRED · exactly two live files + scripts/versions/ subfolder]
-    pull_data.py            [REQUIRED · 1] live data acquisition (~50-150 lines); runner re-execs by exact name
-    build.py                [REQUIRED · 1] live recompile recipe (load template + load CSVs + cross-dataset transforms + populate + compile); runner re-execs by exact name
-    versions/               [REQUIRED · §2.6 versioned snapshot history]
-      pull_data_v1.py       [REQUIRED · ≥1] snapshot at v1 = first build's pull_data.py
-      build_v1.py           [REQUIRED · ≥1] snapshot at v1 = first build's build.py
-      pull_data_v2.py       [optional · per-version pair] every Tools 1+2 cycle bumps one v(N+1) pair
-      build_v2.py
-      ...
+  scripts/
+    pull_data.py            [REQUIRED · 1] PULLS = {<name>: <fn>, ...}
+    build.py                [REQUIRED · 1] TRANSFORMS = [<fn>, ...]
   data/                     [REQUIRED · CSVs/JSONs whose stems match manifest.datasets keys]
     rates_eod.csv           one CSV per dataset; stem matches manifest key byte-for-byte
     rates_intraday.csv      pull_market_data appends _eod / _intraday
@@ -348,35 +304,16 @@ users/{kerberos}/dashboards/{dashboard_name}/
     swap_curve.csv          pull_plottool_data: no suffix
     fdic_gs_bank.csv        save_artifact: no suffix
   history/                  [optional] snapshots when keep_history=true; runner-managed
-  archive/<UTC>/            [optional] §2.5 quarantine for non-canonical files; ignored by runner + audit
+  archive/<UTC>/            [optional] manual quarantine; ignored by runner + audit
 ```
 
-**Why exclusivity matters.** The refresh runner has no PRISM state and no conversation memory — it re-executes the persisted scripts on a schedule. Missing live `scripts/*.py` → runner has nothing to call. Missing `manifest_template.json` → `build.py` can't load the template. Missing `data/*.csv` → `build.py` can't read what `pull_data.py` was supposed to write. **Extra files at the top of `scripts/` are equally load-bearing**: a `scripts/build_v2.py` next to `scripts/build.py`, a `manifest_old.json` next to `manifest.json`, or a `data/haver/cpi.csv` next to `data/cpi.csv` all create ambiguity that the runner resolves silently — usually wrong. The `scripts/versions/` subfolder is the explicit escape hatch for keeping multiple versions of either script in the workspace; see §2.6.
-
-**Forbidden (audited at §2.5):**
-
-| Class | Examples | Why |
-|-------|----------|-----|
-| Cardinality violations at top of `scripts/` | `scripts/build.bak`, `scripts/build_old.py`, `scripts/pull_data.prev.py`, `manifest_old.json`, `dashboard.prev.html` | Two candidates for "the" live file; the runner picks one without telling you which. (Versioned siblings under `scripts/versions/<name>_v<N>.py` are REQUIRED, not forbidden — see §2.6) |
-| Timestamped historicals at top level | `20260424_pull_data.py`, `manifest.20260424.json` | Scripts use §2.6 versioning (v1/v2/v3 under `scripts/versions/`); manifest_template snapshots use `archive/<UTC>/` — never sit alongside live artefacts |
-| Per-source data subfolders | `data/haver/`, `data/market_data/`, `data/plottool_data/` | Everything goes flat into `data/` (Rule 5) |
-| Self-suffix CSVs | `data/rates_eod_eod.csv` | The `pull_market_data` `name=` footgun (§6.2 rule 1); rename to bare `name='rates'` |
-| Manifest-orphan CSVs | `data/old_dataset.csv` (no matching `manifest.datasets["old_dataset"]`) | Refresh path is "scripts write CSV → build reads CSV by manifest key"; orphan CSVs never get read and shouldn't sit there |
-| Scratch siblings | `*_results.md`, `*_artifacts.json`, `notes.txt`, `README.md` | Session-scope artefacts belong under `{SESSION_PATH}/`, not at dashboard scope |
-| HTML / CSS / JS in any `.py` file | inlining markup into `pull_data.py` or `build.py` | `rendering.py` owns all markup |
-| Multiple data JSONs at top | `data.json`, `metrics.json` next to `manifest.json` | Only `manifest.json` is canonical; embed everything else inside it |
-| Inline `<script>const DATA = {}` in HTML | hand-edited `dashboard.html` | Let `compile_dashboard` emit; never post-edit |
-| Legacy helpers | `sanitize_html_booleans()` references | Removed; any caller is a stale code path |
-| Empty `scripts/` on a persistent dashboard | `scripts/` directory with no live `.py` files | The "persistent" promise is "refresh runner re-execs these"; nothing to re-exec → not persistent |
-| Renamed canonical files | `scripts/build_dashboard.py`, `scripts/refresh.py`, `scripts/main.py` | Names are load-bearing — the runner reads `scripts/pull_data.py` and `scripts/build.py` exactly |
-| `scripts/versions/` polluted with off-pattern files | `scripts/versions/notes.md`, `scripts/versions/refresh_v2.py`, `scripts/versions/old/`, `scripts/versions/pull_data_v.py` | The §2.6 audit allow-lists exactly `scripts/versions/<pull_data\|build>_v<N>.py` (N a positive integer, no nested folders, no other names) |
-| Live script bytes drifting from highest version snapshot | `scripts/pull_data.py` not byte-identical to `scripts/versions/pull_data_v<max(N)>.py` | The §2.6 invariant is "live = highest version"; drift means a Tools 1+2 cycle wrote one but not the other (or a manual hand-edit bypassed §6.1). Re-bump to v(N+1) via Tools 1+2 to restore the invariant |
+The 5 required paths above are what `_audit_dashboard_layout(folder)` checks for. Anything else in the folder is fine — the runner only reads the 5 (and walks `data/` for CSVs). No `scripts/versions/` machinery; reverts use chat history or `history/<UTC>/` snapshots (§G).
 
 ### 2.3 Metadata block
 
 Drives the data-freshness badge, methodology popup, summary banner, refresh button, and share button.
 
-Three fields are **required** for every dashboard `compile_dashboard` produces — they gate the always-on header chrome (§2.3.1) and the validator rejects manifests missing them:
+Three fields are **required** for every dashboard `compile_dashboard` produces:
 
 | Required field | Type | Purpose |
 |----------------|------|---------|
@@ -394,7 +331,7 @@ The remaining fields are optional but every persistent dashboard should at least
 | `refresh_frequency` | str | `hourly` / `daily` / `weekly` / `manual`; controls the hourly runner — manual means `Refresh` is button-driven only |
 | `tags` / `version` | list[str] / str | Echoed into the registry; manifest version string |
 | `api_url` / `status_url` | str | Refresh / status endpoint overrides |
-| `shared` / `shared_at` | bool / str | Compile-time snapshot of community-share state. `shared: True` means this dashboard is published to the `/dashboards/` Community section. `shared_at` is the ISO timestamp it was first shared. The runtime button reads live state from `window.PRISM_DASHBOARD_SHARED` if injected by the serving view; falls back to this snapshot otherwise. Defaults: `shared: False`, `shared_at: null` |
+| `shared` / `shared_at` | bool / str | Compile-time snapshot of community-share state |
 | `share_api_url` | str | Optional override of the share toggle endpoint (default `/api/dashboard/share/`) |
 
 `summary` and `methodology` accept the shared markdown grammar (`dashboards/widgets.md` §9). `summary` is always-visible above row 1 (today's read); `methodology` is click-to-open via the always-on header button (how the data is constructed).
@@ -415,368 +352,59 @@ metadata = {
 
 #### 2.3.1 Always-on header chrome
 
-The header's right edge is shell-injected (Methodology / Refresh / Share / Download / theme-toggle / data-as-of pill). PRISM does not author these buttons. The validator hard-rejects any manifest missing the three required metadata fields above (`kerberos` / `dashboard_id` / `methodology`); set them and the chrome is functional. The retired `metadata.refresh_enabled` flag is silently ignored. `header_actions[]` (§5) injects custom buttons to the LEFT of this chrome bar; the validator rejects any custom `id` colliding with a reserved chrome id (full list in §5).
+The header's right edge is shell-injected (Methodology / Refresh / Share / Download / theme-toggle / data-as-of pill). PRISM does not author these buttons. The validator hard-rejects any manifest missing the three required metadata fields above (`kerberos` / `dashboard_id` / `methodology`); set them and the chrome is functional. `header_actions[]` (§5) injects custom buttons to the LEFT of this chrome bar; the validator rejects any custom `id` colliding with a reserved chrome id (full list in §5).
 
-`compile_dashboard()` returns a `DashboardResult` with `success`, `html`, `manifest`, `error_message`, `warnings`, and `diagnostics` populated. PRISM rule: ALWAYS check `r.success` before using `r.html`. **When `r.success=False`, `r.error_message` carries the full diagnostic body** — every validate error, CDD diagnostic, and shape diagnostic, one per line, prefixed with the same `[severity] code [wid] @ path :: message | fix: <hint>` format that the strict-raise path uses. The legacy tagline (`manifest validation failed` / `compute block evaluation failed`) is preserved as the first line so log-grep / observability tooling that pattern-matches against it keeps working. Canonical PRISM-side raise: `raise ValueError(f"compile failed: {r.error_message}")` — that single line surfaces every bug to PRISM's caller in one round-trip; no need to also stringify `r.warnings`.
+`compile_dashboard()` returns a `DashboardResult` with `success`, `html`, `manifest`, `error_message`, `warnings`, and `diagnostics` populated. PRISM rule: ALWAYS check `r.success` before using `r.html`. **When `r.success=False`, `r.error_message` carries the full diagnostic body** — every validate error, CDD diagnostic, and shape diagnostic, one per line, prefixed with the same `[severity] code [wid] @ path :: message | fix: <hint>` format that the strict-raise path uses. Canonical PRISM-side raise (used internally by `build_dashboard()`): `raise ValueError(f"compile failed: {r.error_message}")` — that single line surfaces every bug to PRISM's caller in one round-trip.
 
 ### 2.4 `compile_dashboard` parameters
 
 | Parameter | Purpose |
 |-----------|---------|
 | `manifest` | Required dict |
-| `session_path` | Where compiled HTML / JSON land. Default cwd. PRISM passes the `SESSION_PATH` it defined explicitly per Rule 5 (no auto-injection — the variable doesn't exist in the namespace until PRISM creates it). |
+| `session_path` | Where compiled HTML / JSON land. Default cwd. PRISM passes the `SESSION_PATH` it defined explicitly per Rule 5. |
 | `output_path` | Override single-file location (advanced) |
-| `write_html` / `write_json` | Both default `True`; suppress for OOP-style use |
+| `write_html` / `write_json` | Both default `True`; suppress for OOP-style use (`build_dashboard()` uses `False` and writes via `s3_manager.put`) |
 | `strict` | `True` raises on any error-severity diagnostic; `False` reports + continues |
 | `make_thumbnails` | `False` default; `True` auto-emits a PNG of the first row for the listing page |
 
-
 ### 2.5 Folder sanctity audit
 
-Before the §6.1 build flow can register a dashboard, the folder MUST satisfy the §2.2 exclusive whitelist. The `_audit_dashboard_layout()` helper is what enforces it. The audit runs at two points:
-
-1. **End of Tool 2** (build flow) — confirms the build PRISM just ran produced a §2.2-compliant folder and nothing rogue snuck in.
-2. **Start of any inheritance** — when PRISM picks up an existing dashboard folder to modify, the audit runs FIRST. Audit failures block the surface change PRISM was asked to make; cleanup (or quarantine to `archive/<UTC>/`) takes priority.
-
-#### 2.5.1 The audit function
+Before any edit (or any new build), confirm the canonical 5 are present:
 
 ```python
-import re
+import json
 
-_VERSIONED_SCRIPT_RE = re.compile(r'^(pull_data|build)_v(\d+)\.py$')
+REQUIRED = [
+    "manifest_template.json", "manifest.json", "dashboard.html",
+    "scripts/pull_data.py", "scripts/build.py",
+]
 
-def _audit_dashboard_layout(folder_path: str, manifest: dict) -> None:
+def _audit_dashboard_layout(folder, manifest=None):
+    """Confirm the canonical 5 paths exist under <folder>. Raises if any
+    is missing. Anything else under the folder is fine -- this audit
+    intentionally does NOT enforce exclusivity. Use archive/<UTC>/ for
+    rogue files you want to keep around for reference.
     """
-    Audit the dashboard folder against the §2.2 exclusive whitelist
-    + the §2.6 script-versioning contract.
-    Raises ValueError listing every cardinality / forbidden-path /
-    version-chain violation.
-    """
-    REQUIRED_TOP = {'manifest_template.json', 'manifest.json', 'dashboard.html'}
-    OPTIONAL_TOP = {'refresh_status.json', 'thumbnail.png'}
-    REQUIRED_SCRIPTS = {'pull_data.py', 'build.py'}
-
-    found_top, found_scripts, data_files = set(), set(), set()
-    versioned = {'pull_data': set(), 'build': set()}   # §2.6: per-script {N: bytes_size}
-    rogue = []
-
-    listing = s3_manager.list(folder_path)
-    for entry in listing:
-        rel = entry['Key'].replace(f'{folder_path}/', '', 1).lstrip('/')
-        if not rel:
-            continue
-
-        # Top-level files
-        if '/' not in rel:
-            if rel in REQUIRED_TOP or rel in OPTIONAL_TOP:
-                found_top.add(rel)
-            else:
-                rogue.append(rel)
-            continue
-
-        # scripts/ -- exactly the two live files + scripts/versions/<name>_v<N>.py
-        if rel.startswith('scripts/'):
-            sub = rel[len('scripts/'):]
-            # scripts/versions/<name>_v<N>.py is the ONLY permitted subpath
-            if sub.startswith('versions/'):
-                inner = sub[len('versions/'):]
-                if '/' in inner:
-                    rogue.append(rel)   # no nested dirs under scripts/versions/
-                    continue
-                m = _VERSIONED_SCRIPT_RE.match(inner)
-                if not m:
-                    rogue.append(rel)   # only pull_data_v<N>.py / build_v<N>.py
-                    continue
-                versioned[m.group(1)].add(int(m.group(2)))
-                continue
-            if '/' in sub:
-                rogue.append(rel)   # any other subfolder under scripts/ is rogue
-                continue
-            if sub in REQUIRED_SCRIPTS:
-                found_scripts.add(sub)
-            else:
-                rogue.append(rel)
-            continue
-
-        # data/ -- flat .csv / .json only; stem must match a manifest dataset key
-        if rel.startswith('data/'):
-            sub = rel[len('data/'):]
-            if '/' in sub:
-                rogue.append(rel)
-                continue
-            data_files.add(sub)
-            continue
-
-        # history/ and archive/ are permitted; runner ignores them
-        if rel.startswith('history/') or rel.startswith('archive/'):
-            continue
-
-        rogue.append(rel)
-
-    errors = []
-
-    # Required top-level files
-    for required in REQUIRED_TOP:
-        if required not in found_top:
-            errors.append(f'missing required: {required}')
-
-    # Required live scripts
-    for required in REQUIRED_SCRIPTS:
-        if required not in found_scripts:
-            errors.append(f'missing required: scripts/{required}')
-
-    # §2.6 versioning: at least v1 must exist for each script (the first build's snapshot)
-    for stem in ('pull_data', 'build'):
-        if not versioned[stem]:
-            errors.append(
-                f'missing required: scripts/versions/{stem}_v1.py '
-                f'(every persistent dashboard MUST have at least the v1 snapshot per §2.6)')
-
-    # §2.6 versioning: chain must be coupled (same N exists for both scripts)
-    pd_versions = versioned['pull_data']
-    bd_versions = versioned['build']
-    pd_only = pd_versions - bd_versions
-    bd_only = bd_versions - pd_versions
-    if pd_only:
-        errors.append(
-            f'§2.6 coupling violation: pull_data has v{sorted(pd_only)} '
-            f'with no matching build_v<N>.py snapshot')
-    if bd_only:
-        errors.append(
-            f'§2.6 coupling violation: build has v{sorted(bd_only)} '
-            f'with no matching pull_data_v<N>.py snapshot')
-
-    # §2.6 versioning: live bytes must be byte-identical to highest-N snapshot
-    if pd_versions and 'pull_data.py' in found_scripts:
-        max_pd = max(pd_versions)
-        live = s3_manager.get(f'{folder_path}/scripts/pull_data.py')
-        snap = s3_manager.get(f'{folder_path}/scripts/versions/pull_data_v{max_pd}.py')
-        if live != snap:
-            errors.append(
-                f'§2.6 live-vs-version drift: scripts/pull_data.py != '
-                f'scripts/versions/pull_data_v{max_pd}.py; '
-                f'a Tools 1+2 cycle bumped one without the other (or a hand-edit '
-                f'bypassed §6.1). Re-bump to v{max_pd + 1} via Tools 1+2 to restore')
-    if bd_versions and 'build.py' in found_scripts:
-        max_bd = max(bd_versions)
-        live = s3_manager.get(f'{folder_path}/scripts/build.py')
-        snap = s3_manager.get(f'{folder_path}/scripts/versions/build_v{max_bd}.py')
-        if live != snap:
-            errors.append(
-                f'§2.6 live-vs-version drift: scripts/build.py != '
-                f'scripts/versions/build_v{max_bd}.py; '
-                f'a Tools 1+2 cycle bumped one without the other (or a hand-edit '
-                f'bypassed §6.1). Re-bump to v{max_bd + 1} via Tools 1+2 to restore')
-
-    # §2.6 versioning: manifest.metadata.script_version (if set) must match max
-    meta_version = (manifest.get('metadata') or {}).get('script_version')
-    if meta_version is not None and pd_versions:
-        max_v = max(pd_versions | bd_versions)
-        if int(meta_version) != max_v:
-            errors.append(
-                f'§2.6 metadata drift: manifest.metadata.script_version='
-                f'{meta_version} but max snapshot on disk is v{max_v}; '
-                f'build.py should stamp the highest version into the manifest '
-                f'on every populate_template call')
-
-    # Data exclusivity: every CSV/JSON stem must match a manifest dataset key
-    # (or the metadata sidecar pattern: <bare>_metadata.json where <bare>
-    # strips _eod/_intraday). Orphans are forbidden.
-    dataset_keys = set(manifest.get('datasets', {}).keys())
-    allowed_data = set()
-    for key in dataset_keys:
-        allowed_data.add(f'{key}.csv')
-        allowed_data.add(f'{key}.json')
-        bare = key.replace('_eod', '').replace('_intraday', '')
-        allowed_data.add(f'{bare}_metadata.json')
-
-    for f in data_files:
-        if f not in allowed_data:
-            errors.append(f'manifest-orphan in data/: {f}')
-
-    if rogue:
-        errors.append(f'rogue paths (must move to archive/<UTC>/ or remove): {sorted(rogue)}')
-
-    if errors:
+    folder = folder.rstrip("/")
+    listing = {entry["Key"].replace(f"{folder}/", "", 1).lstrip("/")
+                for entry in s3_manager.list(folder)}
+    missing = [r for r in REQUIRED if r not in listing]
+    if missing:
         raise ValueError(
-            f'_audit_dashboard_layout: {folder_path} violates §2.5 whitelist '
-            f'or §2.6 versioning contract:\n  '
-            + '\n  '.join(errors)
+            f"_audit_dashboard_layout: {folder} missing required path(s): "
+            f"{missing}"
         )
 ```
 
-The audit covers everything that would otherwise be a silent footgun. It raises on a single concatenated message listing every violation so you fix them all in one pass, not one per re-run. The §2.6 checks (coupling, live-vs-version drift, metadata drift) catch a malformed Tools 1+2 cycle that would otherwise leave the version chain in a recoverable-but-confusing state.
-
-#### 2.5.2 Quarantine, never delete
-
-Rogue files are moved to `archive/<UTC>/`, never deleted. `s3_manager.move(...)` to `{folder_path}/archive/{datetime.utcnow().isoformat()}/{relpath}`. The runner ignores `archive/` and `history/`; both stay invisible to the §2.2 audit.
-
-#### 2.5.3 Inheritance: audit BEFORE you change anything
-
-Run `_audit_dashboard_layout(folder_path, manifest)` FIRST when inheriting an existing dashboard folder. If it raises, surface the failure to the user as the cleanup-first protocol — the requested change does not proceed until the folder is back to spec. Cleanup, re-audit, then proceed.
-
-#### 2.5.4 Editing an existing dashboard — manifest preservation
-
-After §2.5.3's folder audit passes, surface changes to an EXISTING dashboard's spec (add a widget, append a tab, add a dataset slot, edit a filter range, change a chart_type, rename a tab, edit metadata) follow **raw JSON CRUD on `manifest_template.json`** via ephemeral session-folder code — never REBUILD-FROM-SCRATCH. Rebuilding the manifest as a fresh dict and writing it to S3 silently destroys any widgets / tabs / filters / datasets PRISM didn't include in this script's dict. The same applies to `manifest_template.json` itself: regenerating it via `manifest_template(manifest)` from a freshly-built `manifest` overwrites the prior template (which may have carried widgets / tool definitions PRISM no longer remembers).
-
-```python
-# WRONG — wipes everything not in this script's manifest dict
-manifest = {"schema_version": 1, "id": ..., "datasets": {...}, "layout": {...}}
-s3_manager.put(json.dumps(manifest, ...), f"{DASHBOARD_PATH}/manifest.json")
-template = manifest_template(manifest)                                            # fresh template
-s3_manager.put(json.dumps(template, ...), f"{DASHBOARD_PATH}/manifest_template.json")  # OVERWRITES
-
-# RIGHT — load existing template, mutate in place, validate, write back
-import copy
-tpl = copy.deepcopy(json.loads(
-    s3_manager.get(f"{DASHBOARD_PATH}/manifest_template.json").decode("utf-8")))
-# ... mutate tpl in place per dashboards/template_crud.md patterns ...
-validate_manifest(tpl)
-s3_manager.put(json.dumps(tpl, indent=2).encode("utf-8"),
-               f"{DASHBOARD_PATH}/manifest_template.json")
-```
-
-`scripts/build.py` is touched only when the dataset shape it builds against has changed (new dataset key, removed dataset key, column rename, new derived dataset, new pull source). Widget / filter / layout edits live entirely in `manifest_template.json` and the existing `build.py` keeps populating from the same `data/*.csv` keys — leave it alone. When `build.py` (or `pull_data.py`) DOES need to change, the rule is §2.5.5 below — surgical mutation, never wholesale re-emission.
-
-Trigger semantics. Any of these user-asks fall under raw JSON CRUD on `manifest_template.json`, NOT a fresh-build: "add a chart / widget / KPI / tab / row", "edit / update / change a filter / dataset / title / metadata", "change a chart_type", "rename a tab", "extend / append to" an existing dashboard. The fresh-build path is reserved for first-time creation (`§6.1` Tools 1+2+3+4) and for total demolition (rare; surface to the user before doing).
-
-**`dashboards/template_crud.md` is the SSOT** for the JSON CRUD patterns — read patterns, layout-aware traversal, widget / tab / filter / dataset / metadata CRUD, the in-session quick recompile (which is § 6.6 of this hub), the contract (§ 10), and the anti-patterns (§ 11). Fetch it on demand whenever the user-ask routes through this section. `dashboards/recipes.md` carries the long-form worked recipes that compose CRUD primitives into end-to-end edits.
-
-#### 2.5.5 Editing `scripts/build.py` or `scripts/pull_data.py` — script preservation
-
-When the dataset shape changes (new column, new dataset key, column rename, new pull source, new derived dataset), READ → MUTATE → WRITE applies to `scripts/<stem>.py` the same way §2.5.4 applies to `manifest_template.json`. Fetch the live bytes from S3, apply the smallest mutation that satisfies the ask, write back via `_persist_versioned_script` (which handles the live path + versioned snapshot in lockstep). NEVER re-emit the whole script body from a fresh string when the user's ask is "add" / "edit" / "extend" — every re-emission risks dropping in-flight content PRISM partly remembers, re-introducing previously-fixed bugs, and (for any compute_js or other JS body that survives in the file) re-triggering Python-into-JS interpolation footguns.
-
-```python
-# WRONG — re-emits the whole script as a fresh string; the ask was
-# "add an FFR series to fed_rates" but PRISM rewrites all 200 lines
-build_py = '''import io, json, pandas as pd ...
-... 200 lines PRISM partly remembers from earlier ...
-'''
-_persist_versioned_script(DASHBOARD_PATH, 'build', build_py, SCRIPT_VERSION)
-
-# RIGHT — surgically mutate the live bytes
-src = s3_manager.get(f'{DASHBOARD_PATH}/scripts/build.py').decode('utf-8')
-new_src = src.replace(
-    "rates_map = {\n    'FFED@DAILY': 'effr_pct',\n    'SOFR@DAILY': 'sofr_pct',\n}",
-    "rates_map = {\n    'FFED@DAILY': 'effr_pct',\n    'SOFR@DAILY': 'sofr_pct',\n    'FRBM3@DAILY': 'tbill_3m_pct',\n}",
-)
-assert new_src != src, "search-replace anchor not found in live script"
-_persist_versioned_script(DASHBOARD_PATH, 'build', new_src, SCRIPT_VERSION)
-```
-
-The `assert new_src != src` line is non-optional. If the search-replace finds no match (anchor drifted, file reformatted, prior cycle changed the surrounding context), `str.replace` returns the original silently — the script ships unchanged and the next refresh has no idea anything was supposed to happen. The assert turns that silent miss into a loud error so PRISM iterates on the anchor instead of shipping a no-op edit.
-
-Trigger semantics. These user-asks fall under script READ → MUTATE → WRITE: "add / remove a column", "rename column Y", "add a derived ratio", "compute YoY changes for ...", "add a new pipeline pulling Z", "swap pull_market_data for pull_haver_data on column ...". The fresh-script-rebuild path is reserved for first-time creation (§6.1 Tools 1+2+3+4) and total demolition (rare; surface to the user first).
-
-After the mutation lands, run the script via `exec(compile(src, ...), ns)` from the live S3 path AND let Tool 4's subprocess refresh re-exec it (Rule 9). The exec is the verification — if the surgical edit broke something, the in-session run fails before the user-facing URL is surfaced.
-
-`scripts/build.py` NEVER concatenates / f-strings / `.format()`s into a `widget: tool`'s `compute.source`. The `compute_js` body lives in `manifest_template.json` (set ONCE at first build, surgically edited via §2.5.4 thereafter), and `build.py`'s only job vis-à-vis tools is to call `populate_template` so PRISM-supplied `inputs[].default` values flow into the rendered tool. Inlining Python values into a JS source string is how `None` / `True` / `nan` / `Timestamp(...)` reach the runtime as ReferenceErrors; the engine validator hard-blocks the leak class at validate time, but the authoring rule prevents it from being written in the first place.
-
-### 2.6 Script versioning
-
-`scripts/pull_data.py` and `scripts/build.py` are version-controlled in-folder under `scripts/versions/<name>_v<N>.py`. Every Tools 1+2 cycle (§6.1) bumps the integer version by one and writes a snapshot pair (`pull_data_v<N+1>.py` + `build_v<N+1>.py`) alongside overwriting the live `scripts/<name>.py`. The two scripts version in **lockstep** (same N for both, even if only one's bytes changed); first build = v1.
-
-| Invariant | Meaning |
-|-----------|---------|
-| Every persistent dashboard MUST have at least `scripts/versions/pull_data_v1.py` and `scripts/versions/build_v1.py` | First build (Tools 1+2) lands them as part of the atomic build sequence |
-| For every N that exists for one script, the matching N MUST exist for the other | Coupled pairing — `pull_data_v3.py` without `build_v3.py` is a §2.5 audit failure |
-| The live `scripts/pull_data.py` (resp. `scripts/build.py`) is byte-identical to `scripts/versions/pull_data_v<max(N)>.py` (resp. `build_v<max(N)>.py`) | "Live = highest version"; drift = a Tools 1+2 cycle wrote one without the other or a hand-edit bypassed §6.1. Re-bump to v(N+1) via Tools 1+2 to restore |
-| `manifest.metadata.script_version` (set by `build.py` on every populate) equals `max(N)` on disk | Denormalized pointer for in-dashboard visibility; the on-disk filesystem is authoritative |
-| The cron / [Refresh] runner reads `scripts/pull_data.py` and `scripts/build.py` by exact name | `scripts/versions/` is invisible to the runner; bumping a version never disturbs the live refresh path |
-
-**Why coupled bump (vs. per-script independent bumps).** Reverting "to v3" should mean one unambiguous combined state of (`pull_data.py`, `build.py`). Independent versions force the user to know which `(pull_data_v3, build_v5)` combination ran together; coupled versions make "v3" a single coordinate. The cost is a duplicated snapshot when only one script changed, which is trivial. For the same reason, every Tools 1+2 cycle bumps once even if both scripts re-author with byte-identical content (no-op edit) — the bump is the edit-event counter, not a delta detector.
-
-**Why bump on every authoring event (vs. only on green Tools 1+2+3+4).** "Full traceability if things go wrong" means the most diagnostically valuable versions are exactly the ones that broke. Restricting bumps to green builds throws away the version that introduced the failure. Failed versions stay in the chain; the §2.5 audit + §6.1 atomicity contract still gates user-facing surfacing of broken bytes.
-
-#### 2.6.1 Computing the next version
-
-```python
-import re
-
-_VERSIONED_SCRIPT_RE = re.compile(r'^(pull_data|build)_v(\d+)\.py$')
-
-def _next_script_version(folder_path: str) -> int:
-    """
-    Inspect {folder_path}/scripts/versions/ and return the next version
-    integer. Returns 1 if no versions exist yet (= first build).
-    Coupled-bump rule: returns max(N across both scripts) + 1, so that a
-    half-completed prior cycle (pull_data_v<N+1>.py written, build_v<N+1>.py
-    missing) is not re-used; the next Tools 1+2 cycle gets a fresh v<N+2>
-    pair and the orphan v<N+1> stays as evidence of the failed prior attempt.
-    """
-    versions = set()
-    try:
-        listing = s3_manager.list(f'{folder_path}/scripts/versions/')
-    except Exception:
-        return 1
-    for entry in listing:
-        name = entry['Key'].rsplit('/', 1)[-1]
-        m = _VERSIONED_SCRIPT_RE.match(name)
-        if m:
-            versions.add(int(m.group(2)))
-    return max(versions) + 1 if versions else 1
-```
-
-PRISM calls `_next_script_version(DASHBOARD_PATH)` ONCE at the start of Tool 1 and pins the result into a `SCRIPT_VERSION` Python variable that stays in scope across Tool 1 → Tool 2 → Tool 3 → Tool 4. Both `_persist_versioned_script()` calls (§6.1) reference the same `SCRIPT_VERSION` so the coupling invariant holds even across Tool 2 retries within a single PRISM session.
-
-#### 2.6.2 Persisting a versioned script
-
-```python
-def _persist_versioned_script(folder_path: str, stem: str, src: str,
-                              version: int) -> None:
-    """
-    Persist `src` to BOTH the live path AND the versioned snapshot:
-      - {folder_path}/scripts/{stem}.py        (live; runner reads this)
-      - {folder_path}/scripts/versions/{stem}_v{version}.py  (snapshot)
-    The two writes are sequenced live-then-snapshot so that, if the
-    snapshot write fails, the live path is the same bytes as the
-    intended snapshot — the next §2.5 audit will surface the missing
-    snapshot, not a divergence between live and the prior snapshot.
-    """
-    if stem not in ('pull_data', 'build'):
-        raise ValueError(f'_persist_versioned_script: stem must be '
-                         f'"pull_data" or "build", got {stem!r}')
-    if not isinstance(version, int) or version < 1:
-        raise ValueError(f'_persist_versioned_script: version must be a '
-                         f'positive int, got {version!r}')
-    encoded = src.encode('utf-8') if isinstance(src, str) else src
-    s3_manager.put(encoded, f'{folder_path}/scripts/{stem}.py')
-    s3_manager.put(encoded, f'{folder_path}/scripts/versions/{stem}_v{version}.py')
-```
-
-PRISM authors `_next_script_version()` and `_persist_versioned_script()` inline in Tool 1's namespace block (alongside `_audit_dashboard_layout()`); they are not sandbox-injected. The two-write semantics replace the old "copy live to `archive/<UTC>/` before overwriting" pattern that the workspace section §2 used to advise — `archive/<UTC>/` retains its role for `manifest_template.json` snapshots only.
-
-#### 2.6.3 Manifest stamping
-
-`build.py` reads the highest version on disk and stamps it into `manifest.metadata.script_version` on every populate, so the rendered dashboard carries a self-describing version pointer:
-
-```python
-# In build.py, after populate_template(...):
-import re
-def _max_script_version(folder_path):
-    versions = []
-    for entry in s3_manager.list(f'{folder_path}/scripts/versions/'):
-        m = re.match(r'^(?:pull_data|build)_v(\d+)\.py$',
-                     entry['Key'].rsplit('/', 1)[-1])
-        if m: versions.append(int(m.group(1)))
-    return max(versions) if versions else None
-
-m['metadata']['script_version'] = _max_script_version(SESSION_PATH)
-```
-
-The §2.5 audit cross-checks `manifest.metadata.script_version` against `max(N)` on disk; mismatch raises. This catches the failure mode where a build.py was edited to skip the stamp but the `scripts/versions/` files exist.
-
-#### 2.6.4 Reverting to a prior version
-
-See `dashboards/recipes.md` §5 for the canonical recipe. The summary: read `scripts/versions/<name>_vK.py` for both stems (the chosen rollback target K), call `_persist_versioned_script(..., version=_next_script_version(...))` for each (which writes both the live + a fresh snapshot at v(N+1) carrying the rollback bytes), then run the §6.1 Tools 1+2+3+4 sequence to validate against today's data and refresh. The chain stays monotonically increasing; vK never moves; v(N+1) is the rollback's audit trail.
+Run the audit at the START of any inheritance (PRISM picking up an existing dashboard to modify) and at the END of every Recipe 1 build. If it raises, surface the missing paths to the user — re-author whatever's missing before proceeding with the requested edit.
 
 ---
 
 ## 3. On-demand spec fetching
 
-This hub covers every primitive's catalog row + the always-needed contract. For per-primitive depth (chart-type mapping rules, widget specs, filter mechanics, recipes), fetch the relevant spoke.
+This hub covers every primitive's catalog row + the always-needed contract + the six recipes. For per-primitive depth (chart-type mapping rules, widget specs, filter mechanics, archetypes), fetch the relevant spoke.
 
-**Do NOT call `get_context()` again — it is one-shot per user message.** Mid-session reads use `list_ai_repo` with `mode="full"`. **Pass ONLY `file_paths` and `mode` — actively omit every other parameter (`extensions`, `max_depth`, `exclude_dirs`, and any other kwargs); the verbatim calls below are exhaustive.** Each spoke is independent; mix and match.
+**Do NOT call `get_context()` again — it is one-shot per user message.** Mid-session reads use `list_ai_repo` with `mode="full"`. **Pass ONLY `file_paths` and `mode` — actively omit every other parameter.** Each spoke is independent; mix and match.
 
 | Spoke | Contents | Verbatim tool call (copy-paste) |
 |-------|----------|--------------------------------|
@@ -784,10 +412,10 @@ This hub covers every primitive's catalog row + the always-needed contract. For 
 | `dashboards/widgets.md` | KPI, table (incl. `row_click`), pivot, stat_grid, image, markdown, divider; provenance; `show_when` / `initial_state` / stat strip; markdown grammar | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
 | `dashboards/widget_tool.md` | `widget: tool` (form-driven compute) — pricers, scenarios, calculators; tool def shape; input + output kinds; canonical examples | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widget_tool.md"], mode="full")` |
 | `dashboards/filters.md` | 10 filter types + 11 ops; cascading filters; per-chart `dataZoom`; `click_emit_filter`; compound rule filters; links (sync + brush) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/filters.md"], mode="full")` |
-| `dashboards/template_crud.md` | The SSOT for raw JSON CRUD on `manifest_template.json` — read patterns, layout-aware traversal helper, widget / tab / filter / dataset / metadata CRUD, in-session quick recompile, the contract (5 rules), anti-patterns (6 footguns). Fetched whenever the user-ask is "edit / add / remove a chart / KPI / tab / row / filter / dataset / metadata field". | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/template_crud.md"], mode="full")` |
-| `dashboards/recipes.md` | Worked recipes (long-form multi_line, dual axis, RV bullet, thesis+watch); 21 data-shape archetypes → chart types; data-pipeline coupling detection; revert workflow; surgical script-edit pattern; cross-dataset derivation patterns in `build.py` (§ 7) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
-| `dashboards/pipelines.md` | The three-surface model (`pull_data.py` + `manifest_template.json` + `build.py`); pipeline cataloging (build the widget → dataset_key → CSV → pipeline graph); reuse decision ladder (reuse-existing-CSV / extend-existing-pipeline / add-new-pipeline); active-pipeline integrity rules; re-authoring `pull_data.py` end-to-end; session folder health check | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md"], mode="full")` |
-| `dashboards/canonical_showcase.json` | Bare templated manifest of `build_showcase` as a structural reference: 8 MECE tabs, 79 widgets, 39 datasets, 13 filters, 2 links — every primitive in the Catalog index above exercised at least once, data stripped to header rows. ~111 KB. Per-tab primitive coverage: `ts` = line / multi_line / area / bar / bar_horizontal / slope / candlestick / multi-axis (`mapping.axes`); `dist` = scatter / scatter_multi / scatter_studio / histogram / boxplot / bullet / correlation_matrix / heatmap / calendar_heatmap / annotations; `hier` = pie / donut / treemap / sunburst / sankey / graph / funnel / parallel_coords / tree / radar / fan_cone / waterfall / marimekko / gauge; `table` = table (every column format) / pivot / kpi (every aggregator) / stat_grid / sparklines; `prose` = note (every kind) / markdown (every grammar) / divider / image; `filter` = every filter type + op / cascading / `click_emit_filter` / compound rule / sync (axis/tooltip/legend/dataZoom) / brush (rect/polygon/lineX/lineY); `tools` = scalar / sweep / expression / matrix inputs and stat / scalar / param / kpi / series / table / stat_grid / distribution outputs; `dev` = manifest_template + populate_template + diagnostics. **How to use**: fetch this file when in doubt about how to shape a widget / filter / link / metadata block, find the matching block by keyword search (chart_type / widget id / filter type / aggregator), copy the structural fragment verbatim, then rebind dataset names + column references to your own datasets. The data rows are stripped (`source[0]` is the column-header schema only) so the file stays cheap to load mid-session. | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/canonical_showcase.json"], mode="full")` |
+| `dashboards/template_crud.md` | THIN reference — points back at hub §C for the canonical CRUD skeleton; covers per-CRUD-pattern niche cases (multi-target filter rebinding, `show_when` reference cleanup, etc.). Most edits don't need this; §C carries the daily patterns. | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/template_crud.md"], mode="full")` |
+| `dashboards/recipes.md` | 21 data-shape archetypes → chart types (the cookbook) + transforms hook patterns (YoY / composition / cross-dataset join / subset projection) for `build.py` | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
+| `dashboards/pipelines.md` | The pipeline cataloging mental model + reuse decision ladder (reuse-existing-CSV / extend-existing-pipeline / add-new-pipeline) + active-pipeline integrity rules | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md"], mode="full")` |
+| `dashboards/canonical_showcase.json` | Bare templated manifest of `build_showcase` as a structural reference: 8 MECE tabs, 79 widgets, 39 datasets, 13 filters, 2 links — every primitive in the Catalog index above exercised at least once, data stripped to header rows. ~111 KB. **How to use**: fetch when in doubt about how to shape a widget / filter / link / metadata block, find the matching block by keyword search (chart_type / widget id / filter type / aggregator), copy the structural fragment verbatim, then rebind dataset names + column references to your own datasets. | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/canonical_showcase.json"], mode="full")` |
 
 **Common combos** (one call, multiple file_paths):
 
@@ -797,12 +425,8 @@ This hub covers every primitive's catalog row + the always-needed contract. For 
 | Charts + KPI / table strip | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/charts.md", "context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
 | Charts + widgets + filters | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/charts.md", "context/modules/static/tools/dashboards/widgets.md", "context/modules/static/tools/dashboards/filters.md"], mode="full")` |
 | Pricer / scenario tool | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widget_tool.md", "context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
-| "Show me a worked pattern" | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
-| Editing the spec (add / remove / edit widget, tab, filter, metadata) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/template_crud.md"], mode="full")` |
-| Editing the spec + need primitive specs (e.g. add a new chart_type) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/template_crud.md", "context/modules/static/tools/dashboards/charts.md"], mode="full")` |
+| "Show me a worked archetype" | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
 | Editing data shape (new column / pull source / derived dataset) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md", "context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
-
-Spoke sizes (2026-05-03): `widgets.md` ~26 KB, `recipes.md` ~22 KB, `template_crud.md` ~20 KB, `pipelines.md` ~20 KB, `charts.md` ~20 KB, `widget_tool.md` ~15 KB, `filters.md` ~12 KB. Fetch only the spokes you need; avoid fetching all seven preemptively — that defeats the hub-spoke purpose. Combined fetches (the table above) are still cheaper than re-fetching one at a time when the build crosses two surfaces.
 
 The Catalog index above is enough to PICK a chart type / widget / filter type. Fetch a spoke when you need the per-primitive mapping rules / required keys / cosmetic knobs.
 
@@ -852,7 +476,7 @@ If a row has only one chart, split it (level + change, nominal + real, US + cros
 
 ## 5. Header actions
 
-Optional `manifest.header_actions[]` appends custom buttons / links to the header (left of the always-on chrome — Methodology / Refresh / Share / Download — described in §2.3.1). Use for dashboard-specific escape hatches.
+Optional `manifest.header_actions[]` appends custom buttons / links to the header (left of the always-on chrome — Methodology / Refresh / Share / Download — described in §2.3.1).
 
 | Key | Purpose |
 |-----|---------|
@@ -867,198 +491,114 @@ Optional `manifest.header_actions[]` appends custom buttons / links to the heade
 
 ---
 
-## 6. Persistence + refresh (the build flow)
+## §B. Recipe 1 — Build a new dashboard
 
-For browser-side refresh failure modal / runner internals / registry schema see `prism/dashboard-refresh.md`. This section is purely about the PRISM-side build flow.
-
-### 6.0 Pick the path before authoring anything
-
-The build flow has four entrypoints; pick by user intent. Most non-first-build asks DO NOT route to Tools 1+2+3+4. Re-authoring scripts wholesale on an "add a column" ask is the script-preservation footgun (§2.5.5); rebuilding the manifest from a fresh dict on an "add a chart" ask is the manifest-wipe footgun (§2.5.4).
-
-| User ask | Path | Where the work happens |
-|---|---|---|
-| First-time creation ("build me a dashboard for X") | Tools 1+2+3+4 (§6.1 below) | `pull_data.py` + `manifest_template.json` + `build.py` authored fresh |
-| Manifest-only edit ("add a chart / KPI / tab / row", "edit a filter / title / metadata", "change a chart_type", "rename a tab") | Ephemeral session-folder code that does raw JSON CRUD on `manifest_template.json` per `dashboards/template_crud.md` § 1–§ 8, then in-session quick recompile per § 6.6 | Template only; scripts untouched; refresh picks up the new template on the next cron tick |
-| Data-shape edit ("add / rename / drop a column", "add a new pull source") | READ → MUTATE → WRITE on `scripts/pull_data.py` (and `scripts/build.py` if dataset shape changes) per § 2.5.5; see `dashboards/recipes.md` § 6 for the worked recipe | Scripts mutated surgically via search-replace; v(N+1) snapshot bumped; refresh-runner re-execs the new bytes |
-| Cross-dataset derivation edit ("add a derived ratio", "add a YoY column", "add a join across two pulls") | READ → MUTATE → WRITE on `scripts/build.py` per § 2.5.5; see `dashboards/recipes.md` § 7 for derived-dataset patterns | `build.py` only — it's the surface that owns post-pull cross-dataset transforms |
-| In-session quick recompile / verify ("test the change without a full refresh") | Exec `build.py` from S3 with the refresh-runner namespace per § 6.6 | No edits — re-runs the persisted recipe against current `data/*.csv` to surface compile errors |
-| Total demolition ("rebuild from scratch", "start over") | Tools 1+2+3+4, surface destructive intent first | Full re-author of every surface |
-
-Two preservation rules govern every non-first-build path:
-
-- **`scripts/build.py` and `scripts/pull_data.py` are NEVER re-emitted from a fresh string** for an "add" / "edit" / "extend" ask — that's § 2.5.5. The only path that re-emits scripts wholesale is first-time creation (Tools 1+2) and total demolition (user explicitly asked, was asked to confirm). Re-emission on an edit ask is how compute_js Python-into-JS leaks recur (`dashboards/widget_tool.md` § 1) and how in-flight script content is silently dropped.
-- **`manifest_template.json` is NEVER rewritten from a fresh dict** for an "add" / "edit" / "extend" ask — that's § 2.5.4. The CRUD patterns in `dashboards/template_crud.md` mutate the loaded template in place; wholesale `tpl = {...}` rewrites drop every widget / tab / filter / dataset PRISM didn't include in the fresh dict.
-
-Edit churn cheat sheet (which surface to expect to touch, by user-ask shape):
+The path for FIRST-TIME CREATION (and total demolition). Four tools in a single uninterrupted sequence (Rule 7); the user sees nothing until Tool 4 exits 0.
 
 ```
-                ASK shape                     SURFACE(S)        FREQ
-                ─────────                     ──────────        ────
-  build new dashboard for X             →    all three         (first build)
-  add chart/KPI/tab/row                 →    manifest_template HIGH
-  edit filter/title/metadata            →    manifest_template HIGH
-  change chart_type / mapping           →    manifest_template HIGH
-  add new pull source / column          →    pull_data.py      HIGH
-  add derived ratio / YoY / join        →    build.py          LOW
-  add new dataset slot end-to-end       →    all three         LOW
+Tool 1: pull_data.py  Author pull_data.py as a string (PULLS dict + per-pull
+                      functions). Persist to {DASHBOARD_PATH}/scripts/pull_data.py.
+                      For each pull: run_pull(DASHBOARD_PATH, '<name>') from
+                      ephemeral session code; verify the CSV shape.
+
+Tool 2: build.py      Author build.py as a string (TRANSFORMS list + helpers).
+                      Compose the initial manifest dict (with embedded data),
+                      derive manifest_template.json via manifest_template().
+                      Persist BOTH:
+                        {DASHBOARD_PATH}/manifest_template.json
+                        {DASHBOARD_PATH}/scripts/build.py
+                      Then call build_dashboard(DASHBOARD_PATH) to compile +
+                      write manifest.json + dashboard.html.
+
+Tool 3: register      Load dashboards_registry.json (seed if missing), append/
+                      replace entry by id in registry['dashboards'] (NOT as a
+                      top-level key -- runner only iterates the list), save,
+                      verify by re-load, then call update_user_manifest(
+                      kerberos, artifact_type='dashboard').
+
+Tool 4: subprocess    Spawn refresh_runner.py as a SUBPROCESS (the same script
+                      the [Refresh] button + the hourly cron spawn). It calls
+                      refresh_dashboard(folder) end-to-end inside a fresh
+                      Python interpreter, overwriting manifest.json +
+                      dashboard.html on S3. Block until exit; check
+                      returncode == 0 AND refresh_status.json status ==
+                      "success" before surfacing the portal URL.
 ```
 
-### 6.1 First-time creation: the four-tool build model
-
-The build flow that follows is the path for FIRST-TIME CREATION (and total demolition). Each tool persists one of the two nucleus scripts (or the registry entry that makes the dashboard discoverable to the cron runner) and execs it from S3 — so the in-session run uses the same bytes the daily refresh will run tomorrow. Build-time and refresh-time are byte-identical by construction. See `dashboards/pipelines.md` for the pipeline-aware editing model: catalog existing pipelines first (§2), pick a reuse path (§3), preserve active-pipeline integrity (§4), re-author end-to-end (§5), run the post-edit health check (§6).
-
-**Atomicity contract (Rule 7 + Rule 9).** Tools 1, 2, 3, and 4 below are non-divisible. PRISM runs them in a single uninterrupted sequence and surfaces nothing to the user until Tool 4 has completed cleanly. There is no in-session "preview" of a half-built dashboard — every artefact below must be on S3, both audits must pass, AND the subprocess refresh must exit 0 before any user-facing message:
-
-| Artefact / state                                                          | Created in | Audited by                              |
-|---------------------------------------------------------------------------|------------|-----------------------------------------|
-| `SCRIPT_VERSION` pinned via `_next_script_version(...)` (§2.6.1)          | Tool 1     | inline at start of Tool 1               |
-| `scripts/pull_data.py` (live) persisted                                   | Tool 1     | `_audit_dashboard_layout` (§2.5)        |
-| `scripts/versions/pull_data_v<SCRIPT_VERSION>.py` snapshot persisted      | Tool 1     | `_audit_dashboard_layout` (§2.6 chain checks) |
-| `data/<key>.csv` (one per `manifest.datasets` key) on S3                  | Tool 1     | `_audit_dashboard_layout` (§2.5)        |
-| `manifest_template.json` persisted                                        | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
-| `manifest.json` + `dashboard.html` on S3 (in-session compile result)      | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
-| `manifest.metadata.script_version == SCRIPT_VERSION` stamped              | Tool 2     | `_audit_dashboard_layout` (§2.6 metadata check) |
-| `scripts/build.py` (live) persisted                                       | Tool 2     | `_audit_dashboard_layout` (§2.5)        |
-| `scripts/versions/build_v<SCRIPT_VERSION>.py` snapshot persisted          | Tool 2     | `_audit_dashboard_layout` (§2.6 chain checks) |
-| Entry appended into `registry["dashboards"][]` (NOT a top-level key)      | Tool 3     | `_audit_registry_state` (§6.1 Tool 3)   |
-| `update_user_manifest(kerberos, artifact_type='dashboard')` ran           | Tool 3     | `_audit_registry_state` (§6.1 Tool 3)   |
-| `manifest.json` + `dashboard.html` overwritten by subprocess refresh      | Tool 4     | `subprocess.run(...).returncode == 0`   |
-| `refresh_status.json` written by the runner with `status: "success"`      | Tool 4     | inline check after the subprocess exits |
-
-**User-facing message contract.** The first line PRISM emits to the user after Tool 4 leads with the portal URL (Rule 6). The shape:
-
-```
-<dashboard_id> live at http://reports.prism-ai.url.gs.com:8501/profile/dashboards/<dashboard_id>/
-- Refresh: <frequency>; first refresh: <ISO timestamp the cron will pick it up>
-- Datasets: <comma-separated manifest.datasets keys>
-```
-
-A short narrative sentence about what's in the dashboard is fine after that block. **Forbidden phrases** (each implies the build has opt-in phases — there are none):
-
-- "Next steps:" / "To make this fully persistent…" / "to auto-refresh this dashboard…"
-- "Would you like me to register / set up refresh / persist the scripts?"
-- "I can also create `pull_data.py` and `build.py`…"
-- Any prompt that asks the user to choose between "preview" and "production" for a dashboard. The dashboard is production by Tool 3; there is no other state.
-
-If Tool 1 or Tool 2 raises, surface the failure verbatim — not a rendered preview gated behind a registration question.
-
-**Pacing across slices (Rule 8).** The atomicity contract above governs ONE slice. Complex requests turn into multiple slices, each its own complete pass through Tools 1 → 2 → 3. After surfacing the URL for slice N, PRISM stops and asks "want me to add [specific next chunk]?" — that question is REQUIRED post-Tool-3, not forbidden. The forbidden phrases above are specifically about "would you like me to register" mid-build (papering over a failure), not "want me to add the next tab now" between completed slices.
-
-```
-Tool 1: pull_data.py   Author pull_data.py as a string, persist to
-                       {DASHBOARD_PATH}/scripts/pull_data.py, then exec FROM S3
-                       with the refresh-runner namespace. The exec writes
-                       raw CSVs to {DASHBOARD_PATH}/data/. Read CSVs back
-                       to verify shapes/heads/dtypes for Tool 2.
-Tool 2: build.py       Compose the initial manifest (with embedded data, just
-                       to derive the template), persist
-                       {DASHBOARD_PATH}/manifest_template.json, author
-                       build.py as a string, persist to
-                       {DASHBOARD_PATH}/scripts/build.py, then exec build.py
-                       FROM S3. The exec writes manifest.json + dashboard.html.
-Tool 3: register       Load dashboards_registry.json (seed if missing),
-                       append/replace entry by id in registry['dashboards']
-                       (NOT as a top-level key — runner only iterates the
-                       list), save, verify by re-load, then call
-                       update_user_manifest(kerberos, artifact_type='dashboard').
-Tool 4: subprocess     Spawn refresh_runner.py as a SUBPROCESS (the same
-                       script the [Refresh] button + hourly cron spawn).
-                       The subprocess re-execs both pull_data.py and
-                       build.py inside a fresh Python interpreter,
-                       overwriting manifest.json + dashboard.html on S3.
-                       Block until exit; check returncode == 0 AND
-                       refresh_status.json status == "success" before
-                       surfacing the portal URL (Rule 9).
-```
-
-**The persisted script is the source of truth — write it first, then run it from S3.** PRISM authors each script as a Python string, `s3_manager.put`s it to `{DASHBOARD_PATH}/scripts/<name>.py`, then `s3_manager.get`s it back and runs it via `exec(compile(src, ...), ns)` with the same namespace shape the refresh runner uses. The pull happens once (inside Tool 1's exec); the compile happens once (inside Tool 2's exec); build-time and refresh-time are byte-identical.
-
-If Tool 1's verify lines print and Tool 2 ends with `[Tool 2] complete`, the refresh pipeline is provably stable: build-time and refresh-time run the same bytes from the same S3 path with the same helpers. There is no separate verification step. Iterate on the script string + re-run until both succeed end-to-end.
-
-**Anti-pattern:** PRISM pulls data in-session via `pull_market_data(...)`, composes a manifest, calls `compile_dashboard(...)` in-session, *then* writes `pull_data.py` / `build.py` strings as an afterthought. The in-session execution and the on-S3 scripts are two different things; only the in-session one has been exercised. Fix: write the script first, exec it from S3.
-
-#### Tool 1 — author + persist + exec `pull_data.py` FROM S3
+### Tool 1 — author + persist + run pulls
 
 ```python
+KERBEROS       = "goyalri"
+DASHBOARD_NAME = "rates_monitor"
 DASHBOARD_PATH = f"users/{KERBEROS}/dashboards/{DASHBOARD_NAME}"
-SESSION_PATH   = DASHBOARD_PATH    # Rule 5: explicit; no implicit injection
 
-# §2.6: pin SCRIPT_VERSION at the start of Tool 1; Tool 2 reuses it.
-# First build returns 1; every later Tools 1+2 cycle bumps by one.
-# Both _next_script_version() and _persist_versioned_script() are
-# authored inline in this Tool 1 namespace block (see §2.6.1 + §2.6.2).
-SCRIPT_VERSION = _next_script_version(DASHBOARD_PATH)
-print(f"[Tool 1] SCRIPT_VERSION={SCRIPT_VERSION}")
-
-# Author pull_data.py as a string. Refresh runner re-execs these exact bytes daily.
-# Rule 5: the script self-defines SESSION_PATH at the top so neither the
-# in-session exec nor the daily refresh runner needs to inject it. PRISM
-# substitutes the dashboard-path literal at author time via .replace().
-pull_data_py = '''
-"""pull_data.py -- daily refresh of rates monitor data."""
-SESSION_PATH = "{{DASHBOARD_PATH_LITERAL}}"   # Rule 5: explicit, baked at author time
-
-from datetime import datetime
-print(f"[pull_data.py] starting at {datetime.now().isoformat()}")
-
-# name='rates' (no _eod suffix); pull_market_data appends it.
-# On-disk: {SESSION_PATH}/data/rates_eod.csv + {SESSION_PATH}/data/rates_metadata.json
-pull_market_data(
-    coordinates=['IR_USD_Swap_2Y_Rate', 'IR_USD_Swap_10Y_Rate'],
-    start='2020-01-01', name='rates', mode='eod',
-    output_path=f'{SESSION_PATH}/data',
+# Author pull_data.py as a string. Refresh runner re-execs these exact
+# bytes daily. Rule 5: the script self-defines SESSION_PATH at the top.
+# Real Python imports for every helper -- no namespace injection at exec time.
+pull_data_py = '''"""pull_data.py for rates_monitor."""
+from ai_development.mcp.utils.data_functions import (
+    pull_market_data, save_artifact,
 )
-print("[pull_data.py] done")
-'''.lstrip().replace("{{DASHBOARD_PATH_LITERAL}}", DASHBOARD_PATH)
+from ai_development.core.s3_bucket_manager import s3_manager
 
-# §2.6: persist to BOTH live and scripts/versions/pull_data_v<SCRIPT_VERSION>.py
-_persist_versioned_script(DASHBOARD_PATH, 'pull_data',
-                          pull_data_py, SCRIPT_VERSION)
+SESSION_PATH = "{{DASHBOARD_PATH_LITERAL}}"   # Rule 5
 
-# Exec FROM S3 with the refresh-runner namespace.
-# NOTE: ns intentionally does NOT include SESSION_PATH — the script
-# self-defines it on its first line per Rule 5. Mirrors what the runner
-# does on the daily refresh.
-import io as _io
-src = s3_manager.get(f'{DASHBOARD_PATH}/scripts/pull_data.py').decode('utf-8')
-ns = {
-    'pd': pd, 'np': np, 'io': _io, 'json': json, 'os': os, 'datetime': datetime,
-    's3_manager': s3_manager,
-    'pull_haver_data':   pull_haver_data,
-    'pull_market_data':  pull_market_data,
-    'pull_plottool_data': pull_plottool_data,
-    'pull_fred_data':    pull_fred_data,
-    'save_artifact':     save_artifact,
+def pull_rates():
+    pull_market_data(
+        coordinates=['IR_USD_Swap_2Y_Rate', 'IR_USD_Swap_10Y_Rate'],
+        start='2020-01-01', name='rates', mode='eod',
+        output_path=f'{SESSION_PATH}/data',
+        s3_manager=s3_manager,
+    )
+
+PULLS = {
+    'rates': pull_rates,
 }
-exec(compile(src, f'{DASHBOARD_PATH}/scripts/pull_data.py', 'exec'), ns)
 
-# Verify by reading the CSVs back from S3 -- same path build.py will read tomorrow
-df = pd.read_csv(_io.BytesIO(s3_manager.get(f'{DASHBOARD_PATH}/data/rates_eod.csv')),
-                  index_col=0, parse_dates=True)
-print(f'[verify] rates_eod: shape={df.shape}'); print(df.head()); print(df.dtypes)
+if __name__ == '__main__':
+    import sys
+    if len(sys.argv) > 1:
+        PULLS[sys.argv[1]]()
+    else:
+        for name, fn in PULLS.items():
+            print(f"[pull_data] {name}")
+            fn()
+'''.replace("{{DASHBOARD_PATH_LITERAL}}", DASHBOARD_PATH)
+
+s3_manager.put(pull_data_py.encode("utf-8"),
+                f"{DASHBOARD_PATH}/scripts/pull_data.py")
+
+# Run each pull in-process; verify the CSV lands.
+for name in ('rates',):
+    run_pull(DASHBOARD_PATH, name)
+    df = pd.read_csv(io.BytesIO(s3_manager.get(
+        f"{DASHBOARD_PATH}/data/rates_eod.csv")),
+        index_col=0, parse_dates=True)
+    print(f"[verify] rates_eod: shape={df.shape}")
+    print(df.head())
+    print(df.dtypes)
 ```
 
-#### Tool 2 — author + persist + exec `build.py` FROM S3
+### Tool 2 — author + persist + compile
 
-`build.py` is **the recompile recipe** — the script that turns `manifest_template.json` + `data/*.csv` into `manifest.json` + `dashboard.html`. It loads the template, loads each CSV, applies cross-dataset transforms (joins, derived ratios, YoY columns — see `dashboards/recipes.md` § 7), populates the template via `populate_template`, compiles via `compile_dashboard`, and writes the outputs back to S3. **It is low-churn** — once authored at first build, future edits are surgical (§ 2.5.5) and only happen when the analytical SHAPE changes (a new derived dataset, a new join, a new ratio). UX-only edits never touch it; they CRUD `manifest_template.json` (`dashboards/template_crud.md`) and verify via the in-session quick recompile (§ 6.6).
+`build.py` is **the transforms hook** — defines `TRANSFORMS = [<fn>, ...]` for any cross-dataset derivations (joins, derived ratios, YoY, subset projections). For dashboards with no derivations, `TRANSFORMS = []`. The engine helper `build_dashboard(folder)` does the rest — load template, load CSVs, run TRANSFORMS in order, populate, compile, write.
 
-**Five non-negotiables for the persisted `build.py`** — every one of these has been observed as a real PRISM-authored bug that shipped a known-broken dashboard:
+**Five non-negotiables** for the persisted `build.py`:
 
-1. `compile_dashboard(..., strict=True)` — explicit, no `strict=False`. `strict=False` is a discovery-mode tool for in-session iteration; the refresh runner re-execs `build.py` every day and `strict=False` ships broken artifacts with `(no data)` placeholder cards. The compiler additionally hard-fails a load-bearing allow-list of error codes (missing column, empty dataset, KPI source unresolvable, table column missing, filter field missing, builder exception) regardless of `strict`, so a `strict=False` build script will still raise on the failure modes that matter — but the SSOT is `strict=True`.
-2. **No `try/except` around `compile_dashboard()`.** A swallowed `ValueError` silently re-uploads stale HTML or, worse, no HTML at all while the refresh runner records `status="success"`. Let exceptions propagate.
-3. `if not r.success: raise ValueError(...)` — never `print()` and continue, never write `r.html` past the failure check.
-4. **Every CSV gets renamed to plain English (Rule 1) BEFORE handing it to `populate_template`.** Loading `next_meeting_probs.csv` whose columns are Haver codes (`PFNP@DAILY`, ...) and feeding it straight into a manifest whose chart spec maps `mapping.x="outcome"` is the canonical failure mode. The rename step is non-optional even when there are 5+ datasets in the dashboard.
-5. **Use `compile_dashboard()` directly (the dict-based API), NOT `Dashboard(...)` + `.build()`.** The OOP class-builder bypasses `chart_data_diagnostics` entirely; column-mapping mistakes silently fall through to `(no data)` placeholders.
+1. Define `TRANSFORMS` as a module-level list (even if empty: `TRANSFORMS = []`). The engine reads it via the script's namespace; no re-exec.
+2. Each transform is `def derive_<name>(datasets) -> dict` — receives the loaded datasets dict, returns it (mutated or replaced).
+3. Transforms NEVER call `compile_dashboard` / `populate_template` / `s3_manager.put` directly. The engine owns the lifecycle; transforms only mutate the datasets dict.
+4. **Every CSV load happens INSIDE the engine**, not in `build.py`. Transforms receive datasets already loaded as DataFrames keyed by CSV stem.
+5. `build.py` does NOT concatenate / f-string / `.format()` Python values into a `widget: tool`'s `compute_js`. The compute body lives in `manifest_template.json` (set ONCE at first build, edited via §C surgical CRUD thereafter). See `dashboards/widget_tool.md` §1.
 
 ```python
+# Compose the initial manifest (with embedded data) just to derive the template.
 import io
-df = pd.read_csv(io.BytesIO(s3_manager.get(f'{DASHBOARD_PATH}/data/rates_eod.csv')),
-                  index_col=0, parse_dates=True)
-df.columns = ['us_2y', 'us_10y']      # plain English (Rule 1)
+df_rates = pd.read_csv(io.BytesIO(s3_manager.get(
+    f"{DASHBOARD_PATH}/data/rates_eod.csv")),
+    index_col=0, parse_dates=True)
+df_rates.columns = ['us_2y', 'us_10y']    # plain English (Rule 1)
 
-# Compose initial manifest (with embedded data) just to derive the template.
-# Dataset key 'rates_eod' matches the on-disk CSV stem (Rule 5).
-# metadata.script_version is stamped from SCRIPT_VERSION pinned in Tool 1 (§2.6).
 initial_manifest = {
     "schema_version": 1, "id": DASHBOARD_NAME, "title": "Rates Monitor",
     "metadata": {
@@ -1069,457 +609,762 @@ initial_manifest = {
             "## Construction\n* Daily close pulled via pull_market_data; "
             "no transforms before charting"
         ),
-        "data_as_of":        str(df.index.max().date()),
+        "data_as_of":        str(df_rates.index.max().date()),
         "generated_at":      datetime.now(timezone.utc).isoformat(),
         "sources":           ["GS Market Data"],
         "refresh_frequency": "daily",
         "tags":              ["rates"],
-        "script_version":    SCRIPT_VERSION,
     },
-    "datasets": {"rates_eod": df.reset_index()},
-    "layout": {"rows": [[
-        {"widget": "chart", "id": "curve_lvl", "w": 6, "title": "UST Curve — level",
-          "spec": {"chart_type": "multi_line", "dataset": "rates_eod",
-                    "mapping": {"x": "date", "y": ["us_2y", "us_10y"],
-                                "y_title": "Yield (%)"}}},
-        {"widget": "chart", "id": "curve_2s10s", "w": 6, "title": "2s10s spread",
-          "spec": {"chart_type": "line", "dataset": "rates_eod_diff",
-                    "mapping": {"x": "date", "y": "spread",
-                                "y_title": "2s10s (bp)"}}},
-    ]]}
+    "datasets": {"rates_eod": df_rates.reset_index()},
+    # Default to kind: "tabs" even on a single-tab build so future
+    # "add a tab" asks are pure §C.5 surgical inserts, not a grid->tabs
+    # restructure first. Cost is one wrapper level; benefit is uniform CRUD.
+    "layout": {"kind": "tabs", "cols": 12, "tabs": [{
+        "id": "rates", "label": "Rates",
+        "description": "UST curve + 2s10s headline charts",
+        "rows": [[
+            {"widget": "chart", "id": "curve_lvl", "w": 6, "title": "UST Curve",
+              "spec": {"chart_type": "multi_line", "dataset": "rates_eod",
+                        "mapping": {"x": "date", "y": ["us_2y", "us_10y"],
+                                    "y_title": "Yield (%)"}}},
+            {"widget": "chart", "id": "spread", "w": 6, "title": "2s10s Spread",
+              "spec": {"chart_type": "line", "dataset": "spread",
+                        "mapping": {"x": "date", "y": "spread",
+                                    "y_title": "2s10s (bp)"}}},
+        ]],
+    }]}
 }
 
+# Derive the template (data stripped, slots preserved).
 tpl = manifest_template(initial_manifest)
-s3_manager.put(json.dumps(tpl, indent=2).encode(),
-                f'{DASHBOARD_PATH}/manifest_template.json')
+s3_manager.put(json.dumps(tpl, indent=2).encode("utf-8"),
+                f"{DASHBOARD_PATH}/manifest_template.json")
 
-# Author build.py as a string (~16 lines: load template + load CSVs + populate +
-# stamp script_version + compile + upload). Refresh runner re-execs this daily;
-# script_version is stamped from the live filesystem so the rendered dashboard
-# always reflects the highest snapshot in scripts/versions/ (§2.6.3).
-# Rule 5: build.py also self-defines SESSION_PATH on its first line.
-build_py = '''SESSION_PATH = "{{DASHBOARD_PATH_LITERAL}}"   # Rule 5: explicit, baked at author time
+# Author build.py as a string. The TRANSFORMS list is the only PRISM-customised
+# part. The engine calls each transform with the datasets dict (CSVs already
+# loaded as DataFrames keyed by stem), then populates + compiles + writes.
+build_py = '''"""build.py for rates_monitor."""
+import pandas as pd
 
-import io, json, re, pandas as pd
-from datetime import datetime, timezone
+SESSION_PATH = "{{DASHBOARD_PATH_LITERAL}}"   # Rule 5
 
-def _max_script_version(folder_path):
-    versions = []
-    for entry in s3_manager.list(f"{folder_path}/scripts/versions/"):
-        m = re.match(r"^(?:pull_data|build)_v(\\d+)\\.py$",
-                     entry["Key"].rsplit("/", 1)[-1])
-        if m: versions.append(int(m.group(1)))
-    return max(versions) if versions else None
+def derive_spread(datasets):
+    """2s10s spread (10Y - 2Y) in bp, keyed by date."""
+    df = datasets['rates_eod']
+    spread = pd.DataFrame({
+        'date': df['date'],
+        'spread': (df['us_10y'] - df['us_2y']) * 100,   # bp
+    })
+    datasets['spread'] = spread
+    return datasets
 
-tpl = json.loads(s3_manager.get(f"{SESSION_PATH}/manifest_template.json"))
-df = pd.read_csv(io.BytesIO(s3_manager.get(f"{SESSION_PATH}/data/rates_eod.csv")),
-                  index_col=0, parse_dates=True)
-df.columns = ["us_2y", "us_10y"]
-m = populate_template(tpl, {"rates_eod": df.reset_index()},
-                       metadata={"data_as_of": str(df.index.max().date()),
-                                  "generated_at": datetime.now(timezone.utc).isoformat(),
-                                  "script_version": _max_script_version(SESSION_PATH)},
-                       require_all_slots=True)
-r = compile_dashboard(m, write_html=False, write_json=False, strict=True)
-if not r.success:
-    raise ValueError(f"compile failed: {r.error_message}")
-s3_manager.put(r.html.encode("utf-8"), f"{SESSION_PATH}/dashboard.html")
-s3_manager.put(json.dumps(m, indent=2).encode("utf-8"), f"{SESSION_PATH}/manifest.json")
-print("[build.py] success")
+TRANSFORMS = [derive_spread]
 '''.replace("{{DASHBOARD_PATH_LITERAL}}", DASHBOARD_PATH)
 
-# §2.6: persist build.py to BOTH live and scripts/versions/build_v<SCRIPT_VERSION>.py
-_persist_versioned_script(DASHBOARD_PATH, 'build', build_py, SCRIPT_VERSION)
+s3_manager.put(build_py.encode("utf-8"),
+                f"{DASHBOARD_PATH}/scripts/build.py")
 
-# Exec build.py FROM S3 with refresh-runner namespace.
-# NOTE: ns intentionally does NOT include SESSION_PATH — the script
-# self-defines it on its first line per Rule 5.
-src = s3_manager.get(f'{DASHBOARD_PATH}/scripts/build.py').decode('utf-8')
-ns = {
-    'pd': pd, 'np': np, 'io': io, 'json': json, 'os': os,
-    'datetime': datetime, 'timezone': timezone,
-    's3_manager': s3_manager,
-    'compile_dashboard': compile_dashboard,
-    'populate_template': populate_template,
-    'manifest_template': manifest_template,
-    'validate_manifest': validate_manifest,
-}
-exec(compile(src, f'{DASHBOARD_PATH}/scripts/build.py', 'exec'), ns)
+# Compile: load template, load CSVs, run TRANSFORMS, populate, compile, write.
+build_dashboard(DASHBOARD_PATH)
 
-# Folder sanctity audit (§2.5): raises on missing required OR rogue paths.
-# Author _audit_dashboard_layout() inline as shown in §2.5.1.
-m = json.loads(s3_manager.get(f'{DASHBOARD_PATH}/manifest.json').decode('utf-8'))
+# Folder sanctity audit.
+m = json.loads(s3_manager.get(f"{DASHBOARD_PATH}/manifest.json").decode("utf-8"))
 _audit_dashboard_layout(DASHBOARD_PATH, m)
-print('[Tool 2] complete; ready for Tool 3 (register)')
+print("[Tool 2] complete; ready for Tool 3 (register)")
 ```
 
-#### Tool 3 — register
+### Tool 3 — register
 
-**There is no `register_dashboard()` helper.** Neither the sandbox nor the refresh runner injects a registry-writing function — Tool 3 hand-rolls a load → list-append → save → pointer-update from scratch. The hourly refresh runner iterates `registry["dashboards"]`; a top-level-keyed entry (`registry[DASHBOARD_NAME] = {...}`) is invisible to it, returns 404 on every refresh, and never produces a `refresh_status.json`. Schema reference for the field shapes lives in `prism/dashboard-refresh.md` §6; the only fields a builder owns are below — `last_refreshed` and `last_refresh_status` are runner-owned and stay `null` until the first real refresh.
+There is no `register_dashboard()` helper. The hourly refresh runner iterates `registry["dashboards"]`; a top-level-keyed entry (`registry[DASHBOARD_NAME] = {...}`) is invisible to it, returns 404 on every refresh, and never produces a `refresh_status.json`. The shape is verbatim PRISM-authored:
 
 ```python
-import json
-from datetime import datetime, timezone
-
-REGISTRY_PATH = f'users/{KERBEROS}/dashboards/dashboards_registry.json'
-PORTAL_URL    = f'http://reports.prism-ai.url.gs.com:8501/profile/dashboards/{DASHBOARD_NAME}/'
+REGISTRY_PATH = f"users/{KERBEROS}/dashboards/dashboards_registry.json"
+PORTAL_URL    = f"http://reports.prism-ai.url.gs.com:8501/profile/dashboards/{DASHBOARD_NAME}/"
 
 now_iso = datetime.now(timezone.utc).isoformat()
 
 try:
-    registry = json.loads(s3_manager.get(REGISTRY_PATH).rstrip(b'\x00').decode('utf-8'))
+    registry = json.loads(s3_manager.get(REGISTRY_PATH).rstrip(b"\x00").decode("utf-8"))
 except Exception:
-    registry = {'dashboards': [], 'last_updated': now_iso}
+    registry = {"dashboards": [], "last_updated": now_iso}
 
-if 'dashboards' not in registry or not isinstance(registry['dashboards'], list):
-    registry['dashboards'] = []
+if "dashboards" not in registry or not isinstance(registry["dashboards"], list):
+    registry["dashboards"] = []
 
 new_entry = {
-    'id':                  DASHBOARD_NAME,
-    'name':                'Rates Monitor',
-    'description':         'Daily monitor of the US rates curve.',
-    'created_at':          now_iso,
-    'last_refreshed':      None,
-    'last_refresh_status': None,
-    'refresh_enabled':     True,
-    'refresh_frequency':   'daily',
-    'folder':              DASHBOARD_PATH,
-    'html_path':           f'{DASHBOARD_PATH}/dashboard.html',
-    'data_path':           f'{DASHBOARD_PATH}/data',
-    'tags':                ['rates'],
-    'keep_history':        False,
+    "id":                  DASHBOARD_NAME,
+    "name":                "Rates Monitor",
+    "description":         "Daily monitor of the US rates curve.",
+    "created_at":          now_iso,
+    "last_refreshed":      None,
+    "last_refresh_status": None,
+    "refresh_enabled":     True,
+    "refresh_frequency":   "daily",
+    "folder":              DASHBOARD_PATH,
+    "html_path":           f"{DASHBOARD_PATH}/dashboard.html",
+    "data_path":           f"{DASHBOARD_PATH}/data",
+    "tags":                ["rates"],
+    "keep_history":        False,
 }
 
-existing_ids = [d.get('id') for d in registry['dashboards']]
+existing_ids = [d.get("id") for d in registry["dashboards"]]
 if DASHBOARD_NAME in existing_ids:
     idx = existing_ids.index(DASHBOARD_NAME)
-    new_entry['created_at'] = registry['dashboards'][idx].get('created_at', now_iso)
-    registry['dashboards'][idx] = new_entry
+    new_entry["created_at"] = registry["dashboards"][idx].get("created_at", now_iso)
+    registry["dashboards"][idx] = new_entry
 else:
-    registry['dashboards'].append(new_entry)
+    registry["dashboards"].append(new_entry)
 
-registry['last_updated'] = now_iso
-s3_manager.put(json.dumps(registry, indent=2).encode('utf-8'), REGISTRY_PATH)
+registry["last_updated"] = now_iso
+s3_manager.put(json.dumps(registry, indent=2).encode("utf-8"), REGISTRY_PATH)
 
-verify = json.loads(s3_manager.get(REGISTRY_PATH).rstrip(b'\x00').decode('utf-8'))
-if DASHBOARD_NAME not in [d.get('id') for d in verify.get('dashboards', [])]:
-    raise RuntimeError(f'[Tool 3] {DASHBOARD_NAME} not in registry["dashboards"] after write')
+# Verify by re-loading; raises if the entry isn't in dashboards[].
+verify = json.loads(s3_manager.get(REGISTRY_PATH).rstrip(b"\x00").decode("utf-8"))
+if DASHBOARD_NAME not in [d.get("id") for d in verify.get("dashboards", [])]:
+    raise RuntimeError(f"[Tool 3] {DASHBOARD_NAME} not in registry['dashboards'] after write")
 
-update_user_manifest(KERBEROS, artifact_type='dashboard')
-
-# Rule 7 audit: registry state is consistent and discoverable.
-# Author inline; no helper is injected. Pairs with _audit_dashboard_layout (§2.5)
-# from Tool 2 — together they verify every artefact in the §6 atomicity table.
-def _audit_registry_state(kerberos, dashboard_id):
-    """Confirm the dashboard is registered AND visible to the runner. Raises if not."""
-    reg = json.loads(s3_manager.get(
-        f'users/{kerberos}/dashboards/dashboards_registry.json'
-    ).rstrip(b'\x00').decode('utf-8'))
-    ids_in_list = [d.get('id') for d in reg.get('dashboards', [])]
-    if dashboard_id not in ids_in_list:
-        raise RuntimeError(
-            f'[registry] {dashboard_id} not in registry["dashboards"][]; '
-            f'hourly runner cannot see it')
-    if dashboard_id in reg and isinstance(reg.get(dashboard_id), dict):
-        raise RuntimeError(
-            f'[registry] {dashboard_id} written BOTH as top-level key AND in dashboards[]; '
-            f'remove the top-level key (top-level-key footgun, §6.3 of dashboard-refresh.md)')
-    man = json.loads(s3_manager.get(
-        f'users/{kerberos}/manifest.json'
-    ).rstrip(b'\x00').decode('utf-8'))
-    pointer = man.get('pointers', {}).get('dashboards', {})
-    if pointer.get('count', 0) < 1:
-        raise RuntimeError(
-            f'[manifest] users/{kerberos}/manifest.json pointers.dashboards.count=0; '
-            f'update_user_manifest(...) was skipped or failed')
-    if not pointer.get('registry_path', '').startswith(f'users/{kerberos}/'):
-        raise RuntimeError(
-            f'[manifest] pointers.dashboards.registry_path mis-points; '
-            f'expected users/{kerberos}/...')
-
-_audit_registry_state(KERBEROS, DASHBOARD_NAME)
-
-# DO NOT surface the portal URL here. The user does not see this dashboard
-# until Tool 4's subprocess refresh exits 0 (Rule 9). Tool 3 ends with the
-# registry write + manifest pointer update; Tool 4 owns the user-facing
-# success message.
-print(f'[Tool 3] complete; ready for Tool 4 (subprocess refresh)')
+update_user_manifest(KERBEROS, artifact_type="dashboard")
+print(f"[Tool 3] complete; ready for Tool 4 (subprocess refresh)")
 ```
 
-Path conventions (verified against live registries): paths have **no leading slash** (`users/...`, not `/users/...`); `folder` has **no trailing slash**; `data_path` is the **`data/` directory**, not `manifest.json`. `data_path` is optional but the portal uses it to surface the dashboard's data folder, so set it.
+`update_user_manifest` only updates `users/{kerberos}/manifest.json`'s `pointers.dashboards` block (count, active_count, last_refreshed, registry_path). It reads the registry to compute those numbers but never writes the registry itself. The registry must already be saved on S3 with the new entry appended into `dashboards[]` BEFORE this call.
 
-**Anti-pattern.** Do NOT write the new entry as a top-level key:
+### Tool 4 — subprocess refresh
 
-```python
-# BROKEN — runner ignores this entry, refresh returns 404 forever
-registry[DASHBOARD_NAME] = new_entry
-s3_manager.put(json.dumps(registry).encode(), REGISTRY_PATH)
-```
-
-The resulting registry looks structurally fine (`{"dashboards": [], "last_updated": "...", "<id>": {...}}`) but the dashboard is invisible to `jobs/hourly/refresh_dashboards.py`, which iterates `registry["dashboards"]` only. Two real dashboards (`rates_fx_corr`, `bond_carry_roll`) hit this on 2026-04-27 and required hand-repair. The verify-by-re-load step in the canonical Tool 3 above catches this immediately.
-
-**`update_user_manifest` is NOT a registry-write step.** It only updates `users/{kerberos}/manifest.json`'s `pointers.dashboards` block (count, active_count, last_refreshed, registry_path). It reads the registry to compute those numbers but never writes the registry. The registry must already be saved on S3 with the new entry appended into `dashboards[]` before this call — which is why the canonical Tool 3 runs the put → verify → `update_user_manifest` sequence in that order.
-
-#### Tool 4 — subprocess refresh
-
-The build's final action runs the canonical refresh path (`refresh_runner.py`) as a SUBPROCESS — the same script the browser `[Refresh]` button + the hourly cron spawn. The user's first view of the dashboard at the portal URL is byte-identical to what tomorrow's cron will produce. See Rule 9 for the contract.
+The build's final action runs the canonical refresh path (`refresh_runner.py`) as a SUBPROCESS — the same script the browser `[Refresh]` button + the hourly cron spawn. The user's first view of the dashboard at the portal URL is byte-identical to what tomorrow's cron will produce.
 
 ```python
 import os, subprocess, sys, json, time
 
-# Derive REFRESH_RUNNER_PATH from ai_development.* — the sandbox has
-# this on sys.path; this works whether the runner lives in PRISM
-# production or a future relocation. Fall back to repo-root + canonical
-# subpath if the runner module is not directly importable.
-try:
-    import ai_development.jobs.refresh_runner as _rr
-    REFRESH_RUNNER_PATH = _rr.__file__
-except Exception:
-    repo_root = os.environ.get(
-        'AI_DEVELOPMENT_ROOT',
-        os.path.dirname(os.path.dirname(os.path.abspath(
-            sys.modules['ai_development'].__file__
-        ))),
-    )
-    REFRESH_RUNNER_PATH = os.path.join(
-        repo_root, 'ai_development', 'jobs', 'refresh_runner.py'
-    )
-if not os.path.isfile(REFRESH_RUNNER_PATH):
-    raise FileNotFoundError(
-        f"[Tool 4] refresh_runner.py not found at {REFRESH_RUNNER_PATH}; "
-        f"cannot run subprocess refresh"
-    )
+import ai_development.dashboards.refresh_runner as _rr
+REFRESH_RUNNER_PATH = _rr.__file__
 
-print(f'[Tool 4] spawning refresh_runner.py subprocess for '
-       f'{KERBEROS}/{DASHBOARD_NAME}...')
-proc = subprocess.run(
-    [sys.executable, REFRESH_RUNNER_PATH,
-     '--kerberos',         KERBEROS,
-     '--dashboard-id',     DASHBOARD_NAME,
-     '--dashboard-folder', DASHBOARD_PATH],
-    capture_output=True, text=True, timeout=600,
-)
-if proc.returncode != 0:
+print(f"[Tool 4] spawning refresh_runner.py for {KERBEROS}/{DASHBOARD_NAME}...")
+
+log_path = f"/tmp/dashboard_refresh/{KERBEROS}_{DASHBOARD_NAME}_{int(time.time())}.log"
+os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+with open(log_path, "wb") as log_fh:
+    proc = subprocess.Popen(
+        [sys.executable, REFRESH_RUNNER_PATH, "--folder", DASHBOARD_PATH],
+        stdout=log_fh, stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+    )
+    rc = proc.wait()
+
+if rc != 0:
     raise RuntimeError(
-        f"[Tool 4] refresh_runner subprocess exited "
-        f"rc={proc.returncode}:\n"
-        f"--- stdout ---\n{proc.stdout}\n"
-        f"--- stderr ---\n{proc.stderr}"
+        f"[Tool 4] refresh_runner subprocess exited rc={rc}; see {log_path}"
     )
 
-# Verify the runner wrote refresh_status.json with status=success.
-# The runner's contract (prism/dashboard-refresh.md \u00a72.5) is to
-# always update this file at end-of-run -- a green returncode without
-# a green status.json is a runner contract violation.
 status = json.loads(
-    s3_manager.get(f'{DASHBOARD_PATH}/refresh_status.json')
-    .rstrip(b'\x00').decode('utf-8')
+    s3_manager.get(f"{DASHBOARD_PATH}/refresh_status.json")
+    .rstrip(b"\x00").decode("utf-8")
 )
-if status.get('status') != 'success':
+if status.get("status") != "success":
     raise RuntimeError(
         f"[Tool 4] subprocess returned 0 but refresh_status.json "
-        f"status='{status.get('status')}'; "
-        f"errors={status.get('errors')}"
+        f"status='{status.get('status')}'; errors={status.get('errors')}"
     )
-print(f'[Tool 4] subprocess refresh complete '
-       f'(rc=0, status=success, '
-       f'elapsed={status.get(\"elapsed_seconds\")}s)')
+print(f"[Tool 4] subprocess refresh complete "
+       f"(rc=0, status=success, elapsed={status.get('elapsed_seconds')}s)")
 
-# Now the user-facing success message (Rule 6 + Rule 9).
-# This is the FIRST output the user sees; everything above is
-# internal plumbing.
-DATASETS = ', '.join(json.loads(
-    s3_manager.get(f'{DASHBOARD_PATH}/manifest.json').decode('utf-8')
-).get('datasets', {}).keys())
-print(f'\n{DASHBOARD_NAME} live at {PORTAL_URL}')
-print(f'- Refresh: daily (next cron tick picks it up; on-demand via [Refresh] button)')
-print(f'- Datasets: {DATASETS}')
+# User-facing success message (Rule 6 + Rule 7).
+DATASETS = ", ".join(json.loads(
+    s3_manager.get(f"{DASHBOARD_PATH}/manifest.json").decode("utf-8")
+).get("datasets", {}).keys())
+print(f"\n{DASHBOARD_NAME} live at {PORTAL_URL}")
+print(f"- Refresh: daily (next cron tick picks it up; on-demand via [Refresh] button)")
+print(f"- Datasets: {DATASETS}")
 ```
 
-**Why subprocess and not in-line exec.** The runner subprocess builds its own `_build_exec_namespace` (`prism/dashboard-refresh.md` §5.5) inside a fresh Python interpreter. That namespace is leaner than `execute_analysis_script`'s sandbox (no `save_artifact`, no alt-data clients as of 2026-04-27 — see §6.5 below). A `pull_data.py` that runs cleanly in Tool 1's in-session exec but uses a name the runner doesn't inject will pass Tools 1+2+3 silently and fail at Tool 4 — which is exactly what we want, because that same failure would otherwise surface as a broken `[Refresh]` click tomorrow. Tool 4 catches it now.
+**Why subprocess and not in-process.** The runner subprocess re-execs every PULLS entry + `build_dashboard(folder)` inside a fresh Python interpreter using real imports. PRISM's in-session `run_pull` / `build_dashboard` calls use the same engine code via the same imports — but in-session globals (any name PRISM happened to define earlier in the session) could shadow real names. The subprocess proves the persisted scripts work in a clean interpreter. **Per-dashboard subprocess** also means a slow Haver pull on this dashboard cannot stall any other dashboard's refresh on the same cron tick.
 
-**Failure handling.** A non-zero subprocess return OR a non-success `refresh_status.json` status raises. PRISM does NOT fall back to the in-session compile and surface that to the user — the in-session compile is a different artifact and we don't promote it as the "dashboard". The right surface is the subprocess failure verbatim, including stdout + stderr + the runner's `errors[]`.
+**No timeout on the subprocess.** The previous model used `subprocess.run(..., timeout=600, capture_output=True)`. Both flags caused frequent hangs (`capture_output=True` buffers everything in memory; `timeout=600` rejected legitimately slow Haver pulls). The new pattern is `Popen` + log file (the runner streams stdout/stderr to the log) + `wait()` (no arbitrary timeout — let the runner decide). The browser polls `refresh_status.json` separately for liveness.
 
-**Timeout.** 600s default — the same 10-minute ceiling the API endpoint uses for stale-lock detection (`prism/dashboard-refresh.md` §4 Tier 1). A real refresh that exceeds 10 minutes is its own bug.
+---
 
-### 6.2 Pull primitives + `save_artifact` cheat sheet
+## §C. Recipe 2 — CRUD on `manifest_template.json`
 
-Inside `pull_data.py` they all land their CSVs in the same flat folder by passing `output_path=f'{SESSION_PATH}/data'`. Per Rule 5, `SESSION_PATH` is a literal `pull_data.py` self-defines on its first line (PRISM substitutes the dashboard-path literal at author time per §6.1 Tool 1) — neither the in-session sandbox nor the daily refresh runner injects it. Both halves resolve `f'{SESSION_PATH}/data'` to the same S3 folder because the literal is baked into the persisted script. There is no separate `DASHBOARD_PATH` reference inside `pull_data.py`.
+For ADD / EDIT / EXTEND on an existing dashboard's spec — add a chart, append a tab, edit a filter, change a chart_type, swap a dataset key, tweak metadata. **Raw JSON CRUD**, never wholesale rewrite. The §A.2 path-decision table is the trigger: any of those user-asks routes here.
+
+The five-step skeleton:
+
+1. **AUDIT** — `_audit_dashboard_layout(folder)`; raises if folder isn't canonical.
+2. **READ** — load template from S3, `deepcopy` for mutation safety.
+3. **MUTATE** — surgical mutation per the patterns below.
+4. **VALIDATE** — `validate_manifest(tpl)` raises on schema violations.
+5. **WRITE** — persist to S3.
+6. **VERIFY** — `build_dashboard(folder)` recompiles against current data; surfaces shape errors immediately.
+
+```python
+import json, copy
+
+DASHBOARD_PATH = f"users/{KERBEROS}/dashboards/{DASHBOARD_NAME}"
+
+# 1. AUDIT
+m = json.loads(s3_manager.get(f"{DASHBOARD_PATH}/manifest.json").decode("utf-8"))
+_audit_dashboard_layout(DASHBOARD_PATH, m)
+
+# 2. READ + deepcopy
+tpl = copy.deepcopy(json.loads(
+    s3_manager.get(f"{DASHBOARD_PATH}/manifest_template.json").decode("utf-8")))
+
+# 3. MUTATE (pick the pattern from C.1-C.8 below)
+# ...
+
+# 4. VALIDATE
+validate_manifest(tpl)
+
+# 5. WRITE
+s3_manager.put(json.dumps(tpl, indent=2).encode("utf-8"),
+               f"{DASHBOARD_PATH}/manifest_template.json")
+
+# 6. VERIFY (in-process recompile against current data)
+build_dashboard(DASHBOARD_PATH)
+```
+
+### C.0 The `_walk_rows` helper
+
+Widgets live in one of two places depending on `tpl["layout"]["kind"]`:
+
+| `kind` | Widgets at | Iterate via |
+|---|---|---|
+| `"grid"` (default) | `tpl["layout"]["rows"][i][j]` | nested for-loop over rows |
+| `"tabs"` | `tpl["layout"]["tabs"][k]["rows"][i][j]` | nested for-loop over tabs → rows |
+
+Inline this small helper at the top of any CRUD script:
+
+```python
+def _walk_rows(tpl):
+    """Yield (location_dict, row_list) pairs across both layout kinds.
+    location_dict carries the route back to the row for in-place mutation:
+      {"tab_id": "<id>", "row_idx": i}  for tabs layout
+      {"row_idx": i}                    for grid layout
+    """
+    layout = tpl["layout"]
+    if layout.get("kind") == "tabs":
+        for tab in layout["tabs"]:
+            for i, row in enumerate(tab["rows"]):
+                yield {"tab_id": tab["id"], "row_idx": i}, row
+    else:
+        for i, row in enumerate(layout["rows"]):
+            yield {"row_idx": i}, row
+
+def _find_widget(tpl, widget_id):
+    for loc, row in _walk_rows(tpl):
+        for j, w in enumerate(row):
+            if w.get("id") == widget_id:
+                return w, {**loc, "col_idx": j}
+    raise KeyError(f"widget {widget_id!r} not in manifest_template")
+```
+
+### C.1 Append a widget to a tab.row
+
+```python
+NEW_WIDGET = {
+    "widget": "chart", "id": "curve_real", "w": 6,
+    "title": "Real 10y curve",
+    "spec": {"chart_type": "line", "dataset": "rates_real",
+             "mapping": {"x": "date", "y": "real_10y", "y_title": "Real 10y (%)"}},
+}
+
+tab = next(t for t in tpl["layout"]["tabs"] if t["id"] == "overview")
+while len(tab["rows"]) <= 2:
+    tab["rows"].append([])
+tab["rows"][2].append(NEW_WIDGET)
+```
+
+### C.2 Insert a widget at a specific column position
+
+When the ask is "put the new chart NEXT TO the curve chart" (not at the end of the row):
+
+```python
+w, loc = _find_widget(tpl, "curve_lvl")
+tab = next(t for t in tpl["layout"]["tabs"] if t["id"] == loc["tab_id"])
+tab["rows"][loc["row_idx"]].insert(loc["col_idx"] + 1, NEW_WIDGET)
+```
+
+### C.3 Replace a widget's spec by id
+
+When the ask is "change the curve chart from line to multi_line":
+
+```python
+w, _ = _find_widget(tpl, "curve_lvl")
+w["spec"]["chart_type"] = "multi_line"
+w["spec"]["mapping"]["color"] = "series"
+```
+
+In-place mutation on the dict returned by `_find_widget` mutates the template — the helper returns the actual ref, not a copy.
+
+### C.4 Remove a widget by id
+
+```python
+w, loc = _find_widget(tpl, "curve_2s10s")
+rows = (next(t["rows"] for t in tpl["layout"]["tabs"] if t["id"] == loc["tab_id"])
+        if "tab_id" in loc else tpl["layout"]["rows"])
+del rows[loc["row_idx"]][loc["col_idx"]]
+if not rows[loc["row_idx"]]:
+    del rows[loc["row_idx"]]
+```
+
+### C.5 Add a new tab
+
+```python
+NEW_TAB = {
+    "id": "credit", "label": "Credit",
+    "description": "IG and HY spreads, default rates, issuance.",
+    "rows": [],   # widgets get appended via C.1 / C.2
+}
+
+tabs = tpl["layout"]["tabs"]
+after_idx = next(i for i, t in enumerate(tabs) if t["id"] == "rates")
+tabs.insert(after_idx + 1, NEW_TAB)
+```
+
+### C.5b Convert a grid layout to tabs (then add the new tab via C.5)
+
+When the inherited template is `kind: "grid"` (no `tabs` wrapper), C.5 doesn't apply directly — there is no `tabs[]` to insert into. Convert in place first, then run C.5 against the now-tabbed layout. The conversion preserves every widget by promoting the existing `rows` into a single tab.
+
+```python
+layout = tpl["layout"]
+if layout.get("kind") != "tabs":
+    existing_rows = layout.get("rows", [])
+    cols = layout.get("cols", 12)
+    # Pick a stable id for the inherited content. Use the manifest id
+    # (or a domain noun if obvious) so future C.5 inserts don't collide.
+    seed_tab_id = tpl.get("id", "main").replace("_", "-")
+    tpl["layout"] = {
+        "kind": "tabs", "cols": cols,
+        "tabs": [{
+            "id": seed_tab_id, "label": tpl.get("title", "Overview"),
+            "description": "Inherited content (auto-promoted from grid layout).",
+            "rows": existing_rows,
+        }],
+    }
+```
+
+After the conversion, the §C.5 add-a-tab pattern works unchanged. Filter `targets`, `show_when` references, and `links[].members` are widget-id keyed, NOT layout-shape keyed — they need no rewrite. The seed tab's `id` becomes part of the URL state (`?tab=<seed>`); pick something durable on first conversion to keep deep links stable.
+
+### C.6 Add / update / remove a filter
+
+```python
+NEW_FILTER = {
+    "id": "country", "type": "multiSelect", "label": "Country",
+    "field": "country",
+    "options": ["US", "DE", "JP", "UK"],
+    "default": ["US", "DE"],
+    "targets": ["fx_curve", "fx_carry_table"],
+}
+tpl.setdefault("filters", []).append(NEW_FILTER)
+
+# Update an existing filter's default / options
+f = next(f for f in tpl["filters"] if f["id"] == "lookback")
+f["default"] = "1Y"
+f["options"] = ["3M", "6M", "1Y", "2Y", "5Y"]
+
+# Remove
+tpl["filters"] = [f for f in tpl.get("filters", []) if f["id"] != "doomed_filter_id"]
+```
+
+### C.7 Add / remove a dataset slot
+
+`manifest_template.json` carries dataset SLOTS — each slot's `source` field is empty in the template, populated at compile time by `populate_template(tpl, datasets)` inside `build_dashboard()`. Adding / removing a slot in the template is HALF the change; the other half is editing `pull_data.py` (so a CSV with the matching stem lands in `data/`) or `build.py` (so a transform produces it as a derived dataset).
+
+```python
+# Add
+tpl.setdefault("datasets", {})
+tpl["datasets"]["rates_real"] = {
+    "source": [],
+    "schema": {"date": "datetime", "real_10y": "float", "real_5y": "float"},
+}
+
+# Remove the slot AND every widget that referenced it
+del tpl["datasets"]["rates_real"]
+referencing_ids = set()
+for loc, row in _walk_rows(tpl):
+    for w in row:
+        if w.get("spec", {}).get("dataset") == "rates_real":
+            referencing_ids.add(w["id"])
+for wid in referencing_ids:
+    w, loc = _find_widget(tpl, wid)
+    rows = (next(t["rows"] for t in tpl["layout"]["tabs"] if t["id"] == loc["tab_id"])
+            if "tab_id" in loc else tpl["layout"]["rows"])
+    rows[loc["row_idx"]].remove(w)
+```
+
+### C.8 Patch metadata fields
+
+```python
+md = tpl.setdefault("metadata", {})
+md["sources"] = ["GS Market Data", "Haver", "FRED"]
+md["tags"] = ["rates", "credit"]
+md["refresh_frequency"] = "daily"
+md["summary"] = {"title": "Today's read",
+                  "body": "Front-end has richened ~6bp on a softer print."}
+```
+
+The three required fields per §2.3 (`kerberos` / `dashboard_id` / `methodology`) must be non-empty; if the inherited template is missing any, set them BEFORE the rest of the mutation.
+
+### C.9 The CRUD contract (5 rules)
+
+| # | Rule | Consequence of skipping |
+|---|---|---|
+| 1 | AUDIT before mutating | Edits land on a non-compliant folder; runner picks up wrong bytes |
+| 2 | `deepcopy` the loaded template before mutation | In-session re-runs see prior mutation state; bugs are non-reproducible |
+| 3 | `validate_manifest(tpl)` BEFORE writing | Schema-broken template ships; refresh runner fails on the next tick |
+| 4 | `build_dashboard(folder)` BEFORE surfacing the change | Data-shape break passes validate but breaks at compile; user sees broken render |
+| 5 | Surgical mutation on inherited templates; never wholesale rewrite | Mutation drops widgets / tabs / filters PRISM didn't include in this script's dict |
+
+For rare patterns not covered by C.1-C.8 (multi-target filter rebinding, `show_when` reference cleanup, link member rewrites), fetch `dashboards/template_crud.md` — it's a thin spoke that points back here for the daily patterns.
+
+---
+
+## §D. Recipe 3 — Add / edit a pull pipeline
+
+When `pull_data.py` needs to change (Steps 2 or 3 of the reuse ladder in `dashboards/pipelines.md` §3), READ → MUTATE → WRITE on the persisted bytes — never re-emit the whole script from a fresh string for an "add" / "edit" / "extend" ask.
+
+The six steps:
+
+1. **AUDIT** — `_audit_dashboard_layout(folder)`.
+2. **READ** — fetch live `pull_data.py` bytes from S3.
+3. **MUTATE** — `str.replace` against a unique anchor; `assert new_src != src` so silent no-ops surface as errors.
+4. **WRITE** — `s3_manager.put(new_src.encode("utf-8"), f"{folder}/scripts/pull_data.py")`.
+5. **VERIFY** — `run_pull(folder, '<new_or_changed_pull>')`; read the resulting CSV to confirm columns / shape.
+6. **PROPAGATE** — if the dataset shape changed (column rename, new column needed by a widget), edit `build.py` transforms (same READ → MUTATE → WRITE) and `manifest_template.json` (§C). Then `build_dashboard(folder)` to verify end-to-end.
+
+```python
+DASHBOARD_PATH = f"users/{KERBEROS}/dashboards/{DASHBOARD_NAME}"
+
+# 1. AUDIT
+m = json.loads(s3_manager.get(f"{DASHBOARD_PATH}/manifest.json").decode("utf-8"))
+_audit_dashboard_layout(DASHBOARD_PATH, m)
+
+# 2. READ
+src = s3_manager.get(f"{DASHBOARD_PATH}/scripts/pull_data.py").decode("utf-8")
+
+# 3. MUTATE -- add a new pull function + PULLS entry
+#    The anchor here is the closing brace of the PULLS dict; we add the
+#    new entry just above it. Multi-line anchor with leading whitespace
+#    is stable across reformatting.
+new_src = src.replace(
+    "PULLS = {\n    'rates': pull_rates,\n}",
+    "def pull_cpi():\n"
+    "    pull_haver_data(\n"
+    "        codes=['JCXFE@USECON', 'PCUSLFE@USECON'],\n"
+    "        name='cpi', output_path=f'{SESSION_PATH}/data',\n"
+    "        s3_manager=s3_manager,\n"
+    "    )\n"
+    "\n"
+    "PULLS = {\n"
+    "    'rates': pull_rates,\n"
+    "    'cpi':   pull_cpi,\n"
+    "}",
+)
+assert new_src != src, "anchor not found in live pull_data.py"
+
+# Also need to import pull_haver_data if it wasn't already; second mutation
+new_src2 = new_src.replace(
+    "from ai_development.mcp.utils.data_functions import (\n"
+    "    pull_market_data, save_artifact,\n"
+    ")",
+    "from ai_development.mcp.utils.data_functions import (\n"
+    "    pull_market_data, pull_haver_data, save_artifact,\n"
+    ")",
+)
+assert new_src2 != new_src, "import-line anchor not found"
+
+# 4. WRITE
+s3_manager.put(new_src2.encode("utf-8"),
+                f"{DASHBOARD_PATH}/scripts/pull_data.py")
+
+# 5. VERIFY -- run just the new pull, in-process; read the CSV back
+run_pull(DASHBOARD_PATH, "cpi")
+df = pd.read_csv(io.BytesIO(s3_manager.get(f"{DASHBOARD_PATH}/data/cpi.csv")),
+                  index_col=0, parse_dates=True)
+print(f"[verify] cpi: shape={df.shape} cols={df.columns.tolist()}")
+
+# 6. PROPAGATE -- add a new dataset slot to the template + a chart that uses it
+tpl = copy.deepcopy(json.loads(
+    s3_manager.get(f"{DASHBOARD_PATH}/manifest_template.json").decode("utf-8")))
+tpl["datasets"]["cpi"] = {"source": [], "schema": {"date": "datetime", "core_cpi": "float"}}
+# ... append a chart widget per C.1 ...
+validate_manifest(tpl)
+s3_manager.put(json.dumps(tpl, indent=2).encode("utf-8"),
+                f"{DASHBOARD_PATH}/manifest_template.json")
+
+# In-process recompile against current data
+build_dashboard(DASHBOARD_PATH)
+```
+
+**Anchor selection.** Pick the SMALLEST contiguous string that uniquely identifies the insertion point. Multi-line anchors with leading whitespace are stable across reformatting; single-token anchors collide. Always include enough context (one line above, one line below) that the anchor is unique. The `assert new_src != src` guards against silent no-op when the anchor drifts.
+
+**Multi-anchor sequencing.** When ONE edit needs two or more `str.replace`s (e.g. extending a `pull_*_data` import line AND extending the `PULLS` dict, OR renaming a function AND every caller), CHAIN the assertions against the prior intermediate, never against the original `src`. If both asserts compare to `src`, the second can pass even when the second `replace` was a no-op (because the first already mutated):
+
+```python
+src      = s3_manager.get(...).decode("utf-8")
+new_src1 = src.replace(IMPORT_OLD, IMPORT_NEW)
+assert new_src1 != src,      "import-line anchor not found"
+new_src2 = new_src1.replace(PULLS_OLD, PULLS_NEW)
+assert new_src2 != new_src1, "PULLS-dict anchor not found"   # against new_src1, NOT src
+s3_manager.put(new_src2.encode("utf-8"), ...)
+```
+
+The `new_src1` baseline is what catches the second-anchor drift. Asserting both against `src` would silently accept a half-applied edit when the second anchor has been reformatted out from under PRISM since the first build.
+
+**When the dataset shape changes — the build.py transform edit.** If the new pull adds a column that an existing chart needs to render, OR the new pull is meant to feed a derived dataset (a join, a YoY column), the `build.py` edit follows the same READ → MUTATE → WRITE pattern:
+
+```python
+src = s3_manager.get(f"{DASHBOARD_PATH}/scripts/build.py").decode("utf-8")
+new_src = src.replace(
+    "TRANSFORMS = [derive_spread]",
+    "def derive_real_yields(datasets):\n"
+    "    nominal = datasets['rates_eod']\n"
+    "    cpi = datasets['cpi']\n"
+    "    inflation_compensation = cpi['core_cpi'].pct_change(12) * 100\n"
+    "    real = nominal[['us_10y']].copy()\n"
+    "    real['real_10y'] = real['us_10y'] - inflation_compensation\n"
+    "    datasets['rates_real'] = real.reset_index()\n"
+    "    return datasets\n"
+    "\n"
+    "TRANSFORMS = [derive_spread, derive_real_yields]",
+)
+assert new_src != src, "anchor not found in live build.py"
+s3_manager.put(new_src.encode("utf-8"), f"{DASHBOARD_PATH}/scripts/build.py")
+build_dashboard(DASHBOARD_PATH)   # in-process recompile, runs the new transform
+```
+
+**Pipeline reuse decision.** Before authoring a new pull function, walk the reuse ladder in `dashboards/pipelines.md` §3:
+
+- Step 1 — does the widget need columns from a CSV that ALREADY exists in `data/`? Then REUSE — no `pull_data.py` change.
+- Step 2 — does the widget need a new column from a SOURCE that's already wired up in `pull_data.py`? Then EXTEND the existing pull function's argument list (one anchor edit on the pull function body).
+- Step 3 — does the widget need a NEW SOURCE? Then ADD a new pull function as shown above.
+
+Most "add a column" asks resolve to Step 1 or 2. Step 3 is the rarer case (new vendor, new alt-data source).
+
+---
+
+## §E. Recipe 4 — Refresh discipline
+
+Three operations, one canonical use for each:
+
+| Operation | Use when | In-process or subprocess? | Cost |
+|---|---|---|---|
+| `run_pull(folder, '<name>')` | Iterating on ONE pipeline during dev — the user just changed `pull_<name>` and wants to see the new CSV | In-process | Fast (one source) |
+| `build_dashboard(folder)` | After ANY edit to `manifest_template.json` (§C) or `build.py` `TRANSFORMS` (§D) — recompile against current `data/*.csv` | In-process | Fast (no fresh pulls; just load + populate + compile + write) |
+| `refresh_dashboard(folder)` | When the user wants a clean-slate refresh from in-session AND every pull is fast | In-process | Slow (every pull runs sequentially) |
+| `subprocess.run(refresh_runner.py)` | Final action of Recipe 1 (Tool 4); after a pipeline-shape change in §D; whenever you want a fresh-interpreter refresh | Subprocess | Slow + isolated (clean Python process) |
+
+**Why in-process for `build_dashboard`.** The build is just JSON + CSV loading + populate + compile + write. ~1-3 seconds for a typical dashboard. There's no reason to spawn a subprocess for it; the in-session iteration loop is fast.
+
+**Why subprocess for the FINAL `refresh_dashboard`.** Recipe 1's Tool 4 spawns `refresh_runner.py` even though it could call `refresh_dashboard(folder)` in-process — the subprocess proves the persisted scripts work in a CLEAN Python interpreter (no in-session globals shadowing real names). The user's first view of the dashboard at the portal URL is byte-identical to what tomorrow's cron will produce. For mid-iteration "let me see the latest", in-process `build_dashboard()` is fine.
+
+**Why per-dashboard subprocess in the cron.** The hourly cron (`refresh_dashboards.py`) walks every user, then per-due-dashboard spawns `refresh_runner.py` as its own subprocess. A slow Haver pull on dashboard A cannot stall dashboard B's refresh on the same cron tick. Per-dashboard isolation is the design.
+
+---
+
+## §F. Recipe 5 — Manifest exploration patterns
+
+When PRISM picks up an existing dashboard, build a mental model of what's there before mutating. Two scripts: a HIGH-LEVEL GLANCE (~30 lines) for routine pickups, a DEEP GLANCE (~60 lines) for substantial changes.
+
+### F.1 HIGH-LEVEL GLANCE — counts + top-level shape
+
+```python
+import json
+
+DASHBOARD_PATH = f"users/{KERBEROS}/dashboards/{DASHBOARD_NAME}"
+
+m = json.loads(s3_manager.get(f"{DASHBOARD_PATH}/manifest.json").decode("utf-8"))
+tpl = json.loads(s3_manager.get(f"{DASHBOARD_PATH}/manifest_template.json").decode("utf-8"))
+
+print(f"id:          {m.get('id')}")
+print(f"title:       {m.get('title')}")
+print(f"theme:       {m.get('theme')}  palette: {m.get('palette')}")
+print(f"layout:      {m['layout'].get('kind', 'grid')}")
+
+if m["layout"].get("kind") == "tabs":
+    tabs = m["layout"]["tabs"]
+    print(f"tabs:        {len(tabs)} -- {[t['id'] for t in tabs]}")
+    widget_count = sum(len(row) for tab in tabs for row in tab["rows"])
+else:
+    widget_count = sum(len(row) for row in m["layout"]["rows"])
+print(f"widgets:     {widget_count}")
+
+datasets = m.get("datasets", {})
+print(f"datasets:    {len(datasets)} -- {list(datasets)}")
+
+filters = m.get("filters", [])
+print(f"filters:     {len(filters)} -- {[(f['id'], f['type']) for f in filters]}")
+
+links = m.get("links", [])
+print(f"links:       {len(links)} -- {[(l['id'], l.get('kind')) for l in links]}")
+
+md = m.get("metadata", {})
+print(f"refresh:     {md.get('refresh_frequency', 'daily')} "
+       f"(last: {md.get('data_as_of')})")
+print(f"sources:     {md.get('sources')}")
+```
+
+### F.2 DEEP GLANCE — per-widget / per-filter / per-dataset breakdown
+
+```python
+import json, io
+import pandas as pd
+
+DASHBOARD_PATH = f"users/{KERBEROS}/dashboards/{DASHBOARD_NAME}"
+m = json.loads(s3_manager.get(f"{DASHBOARD_PATH}/manifest.json").decode("utf-8"))
+
+print("=" * 60)
+print("WIDGETS")
+print("=" * 60)
+def _walk(layout):
+    if layout.get("kind") == "tabs":
+        for tab in layout["tabs"]:
+            for i, row in enumerate(tab["rows"]):
+                for j, w in enumerate(row):
+                    yield tab["id"], i, j, w
+    else:
+        for i, row in enumerate(layout["rows"]):
+            for j, w in enumerate(row):
+                yield None, i, j, w
+
+for tab_id, ri, ci, w in _walk(m["layout"]):
+    loc = f"tabs/{tab_id}/r{ri}c{ci}" if tab_id else f"r{ri}c{ci}"
+    kind = w.get("widget", "?")
+    title = w.get("title") or w.get("label") or w.get("id", "")
+    line = f"  {kind:<10} id={w.get('id', '?'):<28} w={w.get('w', '?'):<3} {loc:<22} :: {title}"
+    if kind == "chart":
+        spec = w.get("spec", {})
+        line += f"  type={spec.get('chart_type')} dataset={spec.get('dataset')}"
+    elif kind in ("kpi", "stat_grid"):
+        line += f"  source={w.get('source') or [it.get('source') for it in w.get('items', [])]}"
+    elif kind == "table":
+        line += f"  dataset={w.get('dataset')}"
+    elif kind == "tool":
+        td = w.get("tool_def", {})
+        line += f"  tool={td.get('name')} inputs={len(td.get('inputs', []))} outputs={len(td.get('outputs', []))}"
+    print(line)
+
+print("\n" + "=" * 60)
+print("DATASETS  (CSVs on disk + manifest declarations)")
+print("=" * 60)
+for entry in s3_manager.list(f"{DASHBOARD_PATH}/data/"):
+    key = entry.get("Key") if isinstance(entry, dict) else entry
+    if not key or not key.endswith(".csv"):
+        continue
+    stem = key.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    df = pd.read_csv(io.BytesIO(s3_manager.get(key)))
+    in_manifest = "  declared" if stem in m.get("datasets", {}) else "  ORPHAN"
+    print(f"  {stem:<28} rows={len(df):<6} cols={df.columns.tolist()[:6]}  {in_manifest}")
+
+print("\n" + "=" * 60)
+print("FILTERS")
+print("=" * 60)
+for f in m.get("filters", []):
+    print(f"  {f['id']:<24} type={f['type']:<14} field={f.get('field')!r:<22} "
+           f"targets={f.get('targets')}")
+
+print("\n" + "=" * 60)
+print("PIPELINES  (from scripts/pull_data.py)")
+print("=" * 60)
+src = s3_manager.get(f"{DASHBOARD_PATH}/scripts/pull_data.py").decode("utf-8")
+ns = {"__name__": "_glance", "__builtins__": __builtins__}
+exec(compile(src, f"{DASHBOARD_PATH}/scripts/pull_data.py", "exec"), ns)
+print(f"  PULLS keys: {list(ns.get('PULLS', {}))}")
+
+src = s3_manager.get(f"{DASHBOARD_PATH}/scripts/build.py").decode("utf-8")
+ns = {"__name__": "_glance", "__builtins__": __builtins__}
+exec(compile(src, f"{DASHBOARD_PATH}/scripts/build.py", "exec"), ns)
+print(f"  TRANSFORMS:  {[fn.__name__ for fn in ns.get('TRANSFORMS', [])]}")
+```
+
+The DEEP GLANCE surfaces three kinds of drift PRISM should resolve before the requested edit:
+- **Manifest-orphan CSVs** — a CSV in `data/` whose stem isn't in `manifest.datasets`. Either register it or move to `archive/<UTC>/`.
+- **Empty `PULLS` / `TRANSFORMS`** — when the script is structurally valid but the registry / list is empty, the next refresh produces nothing useful.
+- **Filter targets pointing at non-existent widgets** — the validator catches this at compile time, but the DEEP GLANCE makes it visible before mutation.
+
+---
+
+## §G. Recipe 6 — Revert
+
+Reverting an edit is "re-edit the surface to the prior state". The prior state lives in one of three places, in this preference order:
+
+| Source | When it applies | How |
+|---|---|---|
+| **Chat history** | The user just asked to undo the most recent edit and PRISM still has the prior version of the changed file in the conversation history | Re-author the surface to the prior bytes via the same READ → MUTATE → WRITE pattern that produced the bad edit. For `manifest_template.json` use §C; for the two scripts use §D. The "edit" here is "set bytes to <prior content>". After WRITE, run `build_dashboard(folder)` to verify. |
+| **`history/<UTC>/` snapshots** | The dashboard has `keep_history: true` in its registry entry AND the rollback target is older than the chat history | List `s3_manager.list(f"{DASHBOARD_PATH}/history/")`; each `<UTC>/` subfolder contains the canonical 5 paths as they were at that timestamp. Copy the relevant file into the live path via `s3_manager.put`. After restore, run `build_dashboard(folder)` to recompile against current data. |
+| **Re-build from the user's description** | Neither chat history nor `history/` carries the prior state | Author the prior state from the user's description (just like a fresh CRUD edit per §C). Surface a diff vs current state before writing. The user is the source of truth here, not PRISM's memory. |
+
+After any revert, the same `build_dashboard(folder)` recompile + `_audit_dashboard_layout(folder)` audit applies — a botched revert is harder to recover from than the original bad change. Treat a revert as a normal CRUD edit; same gates apply.
+
+**No script versioning machinery.** Earlier iterations of this hub maintained a `scripts/versions/<name>_v<N>.py` chain with lockstep coupling between `pull_data` and `build`. That machinery is retired — the chat history (PRISM's primary memory of what changed) plus optional `history/<UTC>/` snapshots cover the recovery cases that matter, without the audit overhead of monotonic version chains. If you find yourself needing more than chat-history recovery, set `keep_history: true` on the registry entry; the runner will write a snapshot to `history/<UTC>/` on every successful refresh.
+
+---
+
+## 6. Pull primitives + `save_artifact` cheat sheet
+
+Inside `pull_data.py` they all land their CSVs in the same flat folder by passing `output_path=f'{SESSION_PATH}/data'`. Per Rule 5, `SESSION_PATH` is a literal `pull_data.py` self-defines on its first line.
 
 | Function | Call | On-disk CSV | Metadata sidecar | Manifest key |
 |---|---|---|---|---|
-| `pull_haver_data` | `pull_haver_data(codes=[...], start='YYYY-MM-DD', name='cpi', output_path=f'{SESSION_PATH}/data')` | `data/cpi.csv` | `data/cpi_metadata.json` | `'cpi'` |
-| `pull_market_data` (eod) | `pull_market_data(coordinates=[...], start='YYYY-MM-DD', name='rates', mode='eod', output_path=f'{SESSION_PATH}/data')` | `data/rates_eod.csv` (always `_eod` suffix) | `data/rates_metadata.json` (no suffix) | `'rates_eod'` |
+| `pull_haver_data` | `pull_haver_data(codes=[...], start='YYYY-MM-DD', name='cpi', output_path=f'{SESSION_PATH}/data', s3_manager=s3_manager)` | `data/cpi.csv` | `data/cpi_metadata.json` | `'cpi'` |
+| `pull_market_data` (eod) | `pull_market_data(coordinates=[...], start='YYYY-MM-DD', name='rates', mode='eod', output_path=f'{SESSION_PATH}/data', s3_manager=s3_manager)` | `data/rates_eod.csv` (always `_eod` suffix) | `data/rates_metadata.json` (no suffix) | `'rates_eod'` |
 | `pull_market_data` (intraday) | same but `mode='iday'` | `data/rates_intraday.csv` | `data/rates_metadata.json` | `'rates_intraday'` |
-| `pull_plottool_data` | `pull_plottool_data(expressions=[...], labels=[...], start='YYYY-MM-DD', name='swap_curve', output_path=f'{SESSION_PATH}/data')` | `data/swap_curve.csv` | `data/swap_curve_metadata.json` | `'swap_curve'` |
-| `pull_fred_data` | `pull_fred_data(series=[...], start='YYYY-MM-DD', name='unrate', output_path=f'{SESSION_PATH}/data')` | `data/unrate.csv` | `data/unrate_metadata.json` | `'unrate'` |
-| `save_artifact` | `save_artifact(data, name='gs_bank', output_path=f'{SESSION_PATH}/data')` | `data/gs_bank.csv` (or `.json` if dict) | none | `'gs_bank'` |
+| `pull_plottool_data` | `pull_plottool_data(expressions=[...], labels=[...], start='YYYY-MM-DD', name='swap_curve', output_path=f'{SESSION_PATH}/data', s3_manager=s3_manager)` | `data/swap_curve.csv` | `data/swap_curve_metadata.json` | `'swap_curve'` |
+| `pull_fred_data` | `pull_fred_data(series=[...], start='YYYY-MM-DD', name='unrate', output_path=f'{SESSION_PATH}/data', s3_manager=s3_manager)` | `data/unrate.csv` | `data/unrate_metadata.json` | `'unrate'` |
+| `save_artifact` | `save_artifact(data, name='gs_bank', output_path=f'{SESSION_PATH}/data', s3_manager=s3_manager)` | `data/gs_bank.csv` (or `.json` if dict) | none | `'gs_bank'` |
 
 Three rules from the table that are easy to get wrong:
 
 1. **`name=` does NOT include `_eod` / `_intraday`.** `pull_market_data` appends them. Pass `name='rates'` → `data/rates_eod.csv`. Pass `name='rates_eod'` → `data/rates_eod_eod.csv` (broken).
 2. **`pull_market_data` metadata sidecar uses the bare `name`,** not the suffixed CSV stem. So `name='rates'` produces `data/rates_metadata.json` (one file even when both eod and intraday CSVs exist).
-3. **`mode='eod'` is the default** but pass it explicitly. The intraday CSV is only written when `mode in ('iday', 'both')`. See §6.4 for the defensive try/except wrap.
+3. **`mode='eod'` is the default** but pass it explicitly. The intraday CSV is only written when `mode in ('iday', 'both')`. See §6.1 for the defensive try/except wrap.
 
-#### Pull discipline
+### 6.1 Intraday data robustness
 
-| Anti-pattern | Why broken | Fix |
-|---|---|---|
-| Wrapping EVERY pull in `try/except` that prints a warning and continues | Failed pull → no CSV → `build.py` either reads a stale CSV (silent staleness) or raises trying to read a missing file. Either way the refresh-runner records `status: "success"` while shipping broken data | Wrap `try/except` ONLY for legitimately-flaky data (intraday outside market hours, see §6.4). For every other pull, let the exception propagate so failed pulls surface as failed builds |
-| Plain-English column rename happens in BOTH `pull_data.py` and `build.py` | Rename happens twice; second rename targets columns that no longer exist after the first → `KeyError` at refresh time | Pick ONE side. Default is `build.py` (column names from the raw CSV are stable; rename co-located with the manifest it serves). Renames in `pull_data.py` are fine when the rename runs on a stable-named DataFrame returned from the pull function |
-| No verification print after a pipeline finishes | Silent shape change between sessions: a Haver code returns 1 column on Tue and 4 on Wed → `build.py`'s `df.columns = ['a']` raises with `Length mismatch` at refresh time | Every pipeline's last action is `print(f"[Pipeline N] {df.shape} cols={df.columns.tolist()[:5]}")`. Surfaces every pipeline's actual shape in the build log so drift is visible the same day |
-
-#### Reading the CSVs back in `build.py`
+Intraday data is unavailable overnight / weekends / holidays. Every `pull_<name>` function that fetches intraday MUST wrap it in `try/except` with EOD fallback. Every `derive_<name>` transform must handle missing intraday file defensively (the engine loads CSVs that exist; a missing intraday CSV simply doesn't appear in the datasets dict).
 
 ```python
-import io
-df = pd.read_csv(io.BytesIO(s3_manager.get(f'{SESSION_PATH}/data/rates_eod.csv')),
-                 index_col=0, parse_dates=True)
-df.columns = ['us_2y', 'us_10y']        # rename to plain English (Rule 1)
+def pull_rates():
+    pull_market_data(
+        coordinates=[...], start='2020-01-01',
+        name='rates', mode='eod',
+        output_path=f'{SESSION_PATH}/data',
+        s3_manager=s3_manager,
+    )
+    try:
+        pull_market_data(
+            coordinates=[...], mode='iday',
+            start=datetime.now().strftime('%Y-%m-%d'),
+            name='rates',
+            output_path=f'{SESSION_PATH}/data',
+            s3_manager=s3_manager,
+        )
+    except Exception as e:
+        print(f"Intraday unavailable (normal overnight/weekends): {e}")
 ```
 
-The path `{SESSION_PATH}/data/rates_eod.csv` is byte-identical to what `pull_data.py` wrote because both scripts open with the same `SESSION_PATH = "<DASHBOARD_PATH literal>"` line per Rule 5 — PRISM bakes the literal in at author time so build-time and refresh-time both resolve to the same S3 folder without depending on any executing-environment injection. The dataset key (`rates_eod`) matches the CSV stem; `populate_template` maps the cleaned DataFrame back into the template by that key.
+The same `multi_line` chart spec works for daily EOD and intraday minute-bar data — no special manifest configuration. Compact / sparkline-shaped intraday tiles can drop the slider via `spec.chart_zoom = {"slider": false}` to reclaim ~28px (`dashboards/filters.md` §3).
 
-#### `save_artifact()` for alternative data sources
+### 6.2 `save_artifact()` for alt data
 
 The four pull primitives only cover Haver / GS Market Data / TSDB expressions / FRED. For everything else (FDIC, SEC EDGAR, BIS, Treasury, Treasury Direct, NY Fed, prediction markets, OpenFIGI, Substack, Wikipedia, Pure / Alloy, scraped tables, hand-built DataFrames), `save_artifact()` is the universal save helper. Same `output_path` semantics; lands a CSV (or JSON for `dict` payloads) at `{output_path}/{name}.{ext}` and is idempotent on re-run.
 
 ```python
-# inside pull_data.py
-fdic_records = fdic_client.get_bank_financials(cert=33124, quarters=8)
-save_artifact(fdic_records, name='gs_bank', output_path=f'{SESSION_PATH}/data')
-# -> {SESSION_PATH}/data/gs_bank.csv
-
-sec_data = sec_edgar_client.cmd_company_financials('AAPL', 'default')
-save_artifact(sec_data, name='aapl_financials', output_path=f'{SESSION_PATH}/data')
-# dict -> {SESSION_PATH}/data/aapl_financials.json (build.py reads json.loads(...))
-
-ny_df = pull_nyfed_data('rates')   # not auto-saving; returns a DataFrame
-save_artifact(ny_df, name='nyfed_rates', output_path=f'{SESSION_PATH}/data')
+def pull_gs_bank():
+    from ai_development.mcp.clients.fdic_client import fdic_client
+    fdic_records = fdic_client.get_bank_financials(cert=33124, quarters=8)
+    save_artifact(fdic_records, name='gs_bank',
+                   output_path=f'{SESSION_PATH}/data',
+                   s3_manager=s3_manager)
+    # -> {SESSION_PATH}/data/gs_bank.csv
 ```
 
-`save_artifact()`'s output extension follows the input: DataFrame / `list[dict]` / object-with-`.to_frame()` → CSV; `dict` (or empty list) → JSON. `build.py` reads JSON via `json.loads(s3_manager.get(...).decode('utf-8'))` and converts to a DataFrame at populate time.
-
-### 6.3 Templates: `manifest_template` + `populate_template`
-
-Auto-injected into both the `execute_analysis_script` sandbox and the refresh-runner namespace; no import needed.
-
-```python
-# One-time: strip data rows, keep column headers + every other config
-tpl = manifest_template(initial_manifest)
-s3_manager.put(json.dumps(tpl, indent=2).encode(),
-                f'{DASHBOARD_PATH}/manifest_template.json')
-
-# Each refresh: fresh DataFrames wired into template slots
-m = populate_template(tpl, {"rates": eod_df, "cpi": cpi_df},
-                         metadata={"data_as_of": "..."},
-                         require_all_slots=True)
-compile_dashboard(m, output_path=f'{DASHBOARD_PATH}/dashboard.html')
-```
-
-Template is pure JSON (no pandas); safe to persist and diff. `require_all_slots=True` raises `KeyError` if a template slot has no DataFrame.
-
-### 6.4 Intraday data robustness
-
-Intraday data is unavailable overnight / weekends / holidays. Every `pull_data.py` that fetches intraday MUST wrap it in `try/except` with EOD fallback. Every `build.py` must handle missing intraday file defensively.
-
-```python
-# pull_data.py
-pull_market_data(
-    coordinates=[...], start='2020-01-01',
-    name='rates', mode='eod', output_path=f'{SESSION_PATH}/data')
-try:
-    pull_market_data(
-        coordinates=[...], mode='iday',
-        start=datetime.now().strftime('%Y-%m-%d'),
-        name='rates', output_path=f'{SESSION_PATH}/data')
-except Exception as e:
-    print(f"Intraday unavailable (normal overnight/weekends): {e}")
-
-# build.py
-eod_df = pd.read_csv(io.BytesIO(s3_manager.get(f'{SESSION_PATH}/data/rates_eod.csv')),
-                      index_col=0, parse_dates=True)
-try:
-    iday_df = pd.read_csv(io.BytesIO(s3_manager.get(f'{SESSION_PATH}/data/rates_intraday.csv')),
-                          index_col=0, parse_dates=True)
-except Exception:
-    iday_df = None
-current = (iday_df.ffill().iloc[-1] if iday_df is not None and len(iday_df) > 0
-           else eod_df.iloc[-1])
-```
-
-Both `pull_market_data` calls share `name='rates'`, so the metadata sidecar (`rates_metadata.json`) is written / overwritten by whichever call wrote last — both calls describe the same coordinates, so a single sidecar is correct.
-
-The same `multi_line` chart spec works for daily EOD and intraday minute-bar data — no special manifest configuration. Compact / sparkline-shaped intraday tiles can drop the slider via `spec.chart_zoom = {"slider": false}` to reclaim ~28px (`dashboards/filters.md` §3).
-
-### 6.5 Refresh-runner namespace gap
-
-The refresh runner's `_build_exec_namespace` injects `pd`, `np`, `io`, `json`, `os`, `datetime`, `s3_manager`, the four pull primitives, `compile_dashboard`, `populate_template`, `manifest_template`, `validate_manifest`. **It does NOT inject `SESSION_PATH`** — that is the script's own responsibility per Rule 5 (`pull_data.py` and `build.py` both open with an explicit `SESSION_PATH = "<dashboard-path-literal>"` line; see §6.1 Tool 1 / Tool 2 for the authoring pattern). As of 2026-04-27, the runner namespace also does NOT inject `save_artifact`, `pull_nyfed_data`, `pull_pure_data`, `pull_stacked_data`, or any of the alt-data clients (`fdic_client`, `sec_edgar_client`, `bis_client`, `treasury_client`, `treasury_direct_client`, `nyfed_client`, `prediction_markets_client`, `openfigi_client`, `substack_client`, `wikipedia_client`, Coalition / Inquiry helpers).
-
-Consequence: a `pull_data.py` using any of those builds cleanly during the in-session Tool 1 exec (the build-time exec runs in the sandbox, where they ARE injected) but the daily refresh raises `NameError`. A script that forgets the `SESSION_PATH = "..."` first line raises `NameError` even sooner — the in-session Tool 1 exec mirrors the runner's namespace shape (Rule 5), so the gap is symmetric.
-
-Behaviour when the gap fires:
-
-- **Single-source dashboards using only the four pull primitives** refresh cleanly with no caveat.
-- **Multi-source dashboards needing alt-data** are still buildable; the always-on `Refresh` button still renders (there is no manifest opt-out), and the daily/hourly runner attempt produces a `runner_error` with the offending name. The user clicks `Refresh`, the structured error modal pops with the full `NameError`, and the "Copy markdown for PRISM" button hands the failure back for triage. Until the runner namespace expands, set `refresh_frequency: "manual"` on the registry entry to suppress the cron attempt; keep the manifest as-is so the manual refresh remains one click away.
-
-Structural fix is PRISM-side: extend `_build_exec_namespace` to mirror the `execute_analysis_script` sandbox's data-retrieval bundle. Tracked in `prism/_changelog.md`.
-
-### 6.6 In-session quick recompile
-
-After a manifest-only edit (raw JSON CRUD on `manifest_template.json` per `dashboards/template_crud.md`), the FAST way to verify the change compiles cleanly is to exec `build.py` from S3. This is also the right verify step after a surgical edit on `build.py` itself (`§ 2.5.5`). It uses the CURRENT `data/*.csv` on disk (no fresh pull), runs the canonical recompile recipe, and surfaces compile-time / shape-time errors immediately:
-
-```python
-src = s3_manager.get(f"{DASHBOARD_PATH}/scripts/build.py").decode("utf-8")
-
-# Refresh-runner namespace shape (matches dashboard-refresh.md § 5.5).
-# SESSION_PATH is intentionally NOT in ns: build.py self-defines it on
-# its first line per Rule 5; the runner does the same on the daily refresh.
-ns = {
-    "pd": pd, "np": np, "io": io, "json": json, "os": os,
-    "datetime": datetime, "timezone": timezone,
-    "s3_manager": s3_manager,
-    "compile_dashboard": compile_dashboard,
-    "populate_template": populate_template,
-    "manifest_template": manifest_template,
-    "validate_manifest": validate_manifest,
-}
-exec(compile(src, f"{DASHBOARD_PATH}/scripts/build.py", "exec"), ns)
-print("[recompile] in-session exec succeeded; manifest.json + dashboard.html refreshed on S3")
-```
-
-**This is the in-session iteration loop.** PRISM CRUDs the template → writes → quick-recompiles → reads any compile error → CRUDs again → quick-recompiles. Tool 4's subprocess refresh (§ 6.1) is the canonical end-of-edit verification — it runs the SAME `build.py` plus a fresh `pull_data.py` re-exec in a clean interpreter, and IS load-bearing before surfacing the portal URL to the user.
-
-| Loop | When | What it proves |
-|---|---|---|
-| In-session quick recompile (this section) | After every CRUD mutation, after every surgical script edit | Template / script change is structurally valid + compiles against current data |
-| Tool 4 subprocess refresh (§ 6.1) | Once at end-of-edit, before surfacing the URL | Tomorrow's cron will produce byte-identical output; pull pipeline still works |
-
-Skipping the in-session quick recompile in favour of going straight to Tool 4 trades fast iteration for clean-interpreter assurance — fine for a single small edit, expensive for multi-step builds. The in-session loop pays for itself after two edits.
-
-**Failure handling.** If the quick recompile raises `ValueError("compile failed: ...")` from inside `build.py`'s `if not r.success: raise ...` line, the manifest is structurally invalid against current data — usually a chart mapping referencing a column that doesn't exist (`chart_mapping_column_missing`), an empty dataset (`chart_dataset_empty`), or a KPI source that doesn't resolve. The error message carries the full diagnostic body; pattern-match on the error code, fix forward (re-CRUD the template OR edit `pull_data.py` if the data is wrong), and re-run the recompile.
-
-If the quick recompile raises `NameError` for a name that's not in the namespace dict above (e.g. `save_artifact`, `pull_nyfed_data`), the issue is `build.py` calling something the runner won't have either at refresh time — same gap as § 6.5. Fix is to refactor `build.py` to use only namespace names, or to file the namespace expansion as a structural fix. A `NameError: 'SESSION_PATH'` specifically means the script forgot Rule 5's required first line — re-author `build.py` with the literal at the top.
+`save_artifact()`'s output extension follows the input: DataFrame / `list[dict]` / object-with-`.to_frame()` → CSV; `dict` (or empty list) → JSON. Transforms in `build.py` read JSON via `json.loads(s3_manager.get(...).decode('utf-8'))` if needed (the engine's CSV-only loader doesn't auto-load JSON files; do the load inside the transform).
 
 ---
 
-## 7. Sandbox patterns
-
-`compile_dashboard`, `manifest_template`, `populate_template`, `validate_manifest`, `df_to_source`, `chart_data_diagnostics`, `load_manifest`, `save_manifest` are auto-injected into both `execute_analysis_script` and the refresh-runner namespace. Never write `from echart_dashboard import ...` or `sys.path.insert(0, ...)`.
-
-In the sandbox, `compile_dashboard` writes to local FS if `output_path` is given — which is blocked by the AST checks. For persistent user dashboards, the right pattern is `write_html=False, write_json=False` and `s3_manager.put()` manually so the artifact lands at `{DASHBOARD_PATH}/dashboard.html` rather than the compiler's default `{session_path}/dashboards/{id}.html`:
-
-```python
-r = compile_dashboard(manifest, write_html=False, write_json=False, strict=True)
-if not r.success: raise ValueError(f"COMPILE FAILED: {r.error_message}")
-s3_manager.put(r.html.encode('utf-8'), f'{DASHBOARD_PATH}/dashboard.html')
-s3_manager.put(json.dumps(manifest, indent=2).encode('utf-8'),
-                f'{DASHBOARD_PATH}/manifest.json')
-```
-
----
-
-## 8. Palettes
+## 7. Palettes
 
 | Palette | Kind | Use |
 |---------|------|-----|
@@ -1533,60 +1378,57 @@ Brand hex anchors for `series_colors`: GS Navy `#002F6C`, GS Sky `#7399C6`, GS G
 
 ---
 
-## 9. Anti-patterns
+## 8. Anti-patterns
 
 **Data integrity:**
 
 | Anti-pattern | Do instead |
 |--------------|-----------|
-| `np.random.*` / `np.linspace` / `np.arange` / hand-typed arrays as data; `np.zeros()` fill for missing values | Pull real data first (§6.1). If no source, don't build the panel; render a note or use a small real slice |
-| Authoring `build.py` before `pull_data.py` produced real DataFrames | Run pulls first, print shapes / heads / dtypes, write manifest against verified columns |
+| `np.random.*` / `np.linspace` / `np.arange` / hand-typed arrays as data; `np.zeros()` fill for missing values | Pull real data first (Recipe 1). If no source, don't build the panel; render a note or use a small real slice |
+| Authoring `build.py` before any pull function produced a real CSV | Run pulls first, print shapes / heads / dtypes, write transforms against verified columns |
 | Literal numbers in manifest JSON | Pass the DataFrame; compiler converts |
-| KPI tile authored as `{"widget": "kpi", "label": "Cut prob", "value": 68, "suffix": "%"}` — hand-typed `value` without `source` | Validator rejects with `kpi_static_value_forbidden` (always-blocking). Wire the value through a dataset: `{"widget": "kpi", "label": "Cut prob", "source": "fed.latest.cut_prob", "suffix": "%"}` so the next refresh re-resolves it from `data/fed.csv`. If the number isn't already in a CSV, add the column to `pull_data.py` first (Rule 1). Build-time computation is fine as long as the result lands in `manifest.datasets[<key>]` and the KPI references it via `source` |
-| `stat_grid` items authored with literal `value: <num>` and no `source` | Same fix: `stat_grid_static_value_forbidden` (always-blocking). Each stat must set `source: "<ds>.<aggregator>.<col>"` (or the equivalent dotted-path source) so it refreshes |
-| PRISM hand-writing HTML / CSS / JS, or `build.py` >50 lines | Emit manifest; `compile_dashboard()` does the rest |
-| Source attribution in title / subtitle | `metadata.sources` for dashboard-level; `field_provenance` per-column (`dashboards/widgets.md` §4) |
-| Dropping provenance because vendor isn't standard | `system: "computed"` + `recipe`, or `system: "csv"` + path. Never drop |
-| Annotating self-evident facts (zero on a spread) | Omit |
+| KPI tile authored as `{"widget": "kpi", "label": "Cut prob", "value": 68, "suffix": "%"}` — hand-typed `value` without `source` | Validator rejects with `kpi_static_value_forbidden` (always-blocking). Wire the value through a dataset: `{"widget": "kpi", "label": "Cut prob", "source": "fed.latest.cut_prob", "suffix": "%"}` so the next refresh re-resolves it from `data/fed.csv`. If the number isn't already in a CSV, add a transform in `build.py` that derives it from existing pulls (Rule 1) |
+| `stat_grid` items authored with literal `value: <num>` and no `source` | Same fix: `stat_grid_static_value_forbidden` (always-blocking). Each stat must set `source: "<ds>.<aggregator>.<col>"` |
+| PRISM hand-writing HTML / CSS / JS, or `build.py` doing anything beyond defining `TRANSFORMS` | Emit manifest dicts; let `compile_dashboard()` do the rest. The one exception: `tool_def.compute_js` is a JS string LITERAL embedded in the Python dict (§A.1.1) |
 | Hand-tuning `y_title_gap` / `grid.left` | Just set `x_title` / `y_title`; compiler sizes from real label widths |
 
 **Atomicity of the build flow (Rule 7):**
 
 | Anti-pattern | Do instead |
 |--------------|-----------|
-| Returning to the user with "Next steps: I can now create `pull_data.py` and `build.py`, register the dashboard, set up daily refresh — would you like me to continue?" after `compile_dashboard()` produced an in-session HTML | Rule 7 violation: there are no "next steps" — Tools 1+2+3+4 are atomic. The dashboard does not exist as a deliverable until scripts are persisted, the registry entry sits in `dashboards[]`, the user-manifest pointer reflects it, both audits pass, and the Tool 4 subprocess refresh exits 0 with `refresh_status.json.status == "success"` (§6 atomicity table). Run all four tools without returning to the user; only the post-Tool-4 portal URL is user-facing |
-| Compiling in-session, surfacing the rendered HTML to the user, then deferring `scripts/pull_data.py` / `scripts/build.py` / registry write to a follow-up turn | The in-session compile and the on-S3 build are two different code paths. Without scripts on S3, the [Refresh] button raises `FileNotFoundError`, the hourly cron skips the unregistered dashboard, and tomorrow's data never arrives. Author the scripts FIRST (Tool 1 + Tool 2 §6.1), exec from S3, then register (Tool 3) — the in-session render is a side-effect of Tool 2, not the deliverable |
-| Asking the user to choose between a "preview" / "session-only" version and a "persistent" / "production" version of a dashboard | There is no preview state. A dashboard is either fully built (Tools 1+2+3+4 ran, both audits passed, Tool 4's subprocess refresh exited 0 with success status) or it does not exist. Conversational session-only manifests (§2.2 `{SESSION_PATH}/dashboards/{id}.json`) are a separate artefact class; they are not user-visible "preview dashboards" with a registration upgrade path |
-| Treating a missing `scripts/`, registry entry, or manifest pointer as a separable concern the user can opt into | All three are part of the build. The audits (`_audit_dashboard_layout` §2.5, `_audit_registry_state` §6.1 Tool 3) are the gate that defines "built"; if either raises, the build is not complete and nothing is surfaced to the user |
-| Phrasing user-facing messages with "to make this fully persistent" / "would you like me to set up auto-refresh" / "I can also build pull_data and build.py" | Forbidden language (§6 user-facing message contract). Each phrase implies the build has opt-in phases. Strip the phrase; the only message after a successful Tool 3 is the portal URL block in §6 |
+| Returning to the user with "Next steps: I can now create `pull_data.py` and `build.py`, register the dashboard, set up daily refresh — would you like me to continue?" after `compile_dashboard()` produced an in-session HTML | Rule 7 violation: there are no "next steps" — Tools 1+2+3+4 are atomic. Run all four tools without returning to the user; only the post-Tool-4 portal URL is user-facing |
+| Compiling in-session, surfacing the rendered HTML to the user, then deferring `scripts/pull_data.py` / `scripts/build.py` / registry write to a follow-up turn | The in-session compile and the on-S3 build are two different code paths. Without scripts on S3, the [Refresh] button raises `FileNotFoundError`. Author the scripts FIRST (Tool 1 + Tool 2), then register (Tool 3) |
+| Asking the user to choose between a "preview" / "session-only" version and a "persistent" / "production" version of a dashboard | There is no preview state. A dashboard is either fully built (Tools 1-4 all passed) or it does not exist |
+| Phrasing user-facing messages with "to make this fully persistent" / "would you like me to set up auto-refresh" / "I can also build pull_data and build.py" | Forbidden language. Strip the phrase; the only message after a successful Tool 4 is the portal URL block |
+
+**Edit discipline (§C / §D):**
+
+| Anti-pattern | Do instead |
+|--------------|-----------|
+| Wholesale rewrite of `manifest_template.json` from a fresh dict on an "add a chart" ask | §C surgical CRUD — load existing template, deepcopy, mutate in place, validate, write. Rebuilding from scratch silently wipes every widget / tab / filter PRISM didn't include in the fresh dict |
+| Re-emitting the WHOLE `pull_data.py` body as a fresh string on an "add a column" ask | §D surgical mutation — fetch live bytes, `str.replace` against an anchor, `assert new_src != src`, write. Re-emission risks dropping in-flight content PRISM partly remembers |
+| `str.replace` without `assert new_src != src` | The assert turns silent no-op (anchor drift) into a loud error. Always include it |
+| Editing `dashboard.html` or `manifest.json` directly to "fix a render bug" | Both are derived; the next refresh overwrites them. Fix the spec or the transforms instead |
+| Persisting `scripts/build.py` with `compile_dashboard(..., strict=False)` inside a transform | The engine's `build_dashboard()` always uses `strict=True`. Transforms only mutate the datasets dict; they don't call `compile_dashboard` themselves |
+| `try/except` around a transform that swallows errors | Let exceptions propagate. The runner catches the `ValueError` and records `last_refresh_status="error"`; the structured error modal surfaces the diagnostic |
+| Loading CSV files into transforms manually (`pd.read_csv(...)` inside `derive_*`) | The engine loads every CSV in `data/` before calling transforms. Read from the `datasets` dict the engine passes in, keyed by CSV stem |
 
 **Persistence + the build flow:**
 
 | Anti-pattern | Do instead |
 |--------------|-----------|
-| Persisting `scripts/build.py` with `compile_dashboard(..., strict=False)` | `strict=True` is the SSOT for the persisted build script. `strict=False` is for in-session iteration only and has been observed shipping `(no data)` placeholder cards as `last_refresh_status="success"`. The compiler also hard-fails a load-bearing allow-list (`ALWAYS_BLOCKING_ERROR_CODES`) regardless of `strict`, so even the deviant case raises on the failures that matter — but the SSOT is `strict=True` |
-| Wrapping `compile_dashboard()` in `try/except` so the build "succeeds" past validation failures | Let the `ValueError` propagate. The refresh runner catches it, records `last_refresh_status="error"`, and the structured error modal surfaces the diagnostic to the user |
-| Loading CSV files into `populate_template` without renaming columns to plain English (Rule 1) | Every `pd.read_csv(...)` is followed by a `df.columns = [...]` rename. Vendor-native column names (Haver codes like `PFNP@DAILY`, market-data coordinate names like `IR_USD_FOMCJump_30Apr2026_Rate`) into a manifest with chart specs that map `mapping.x="outcome"` / `mapping.x="meeting"` is the canonical failure mode |
-| Building a dashboard via `Dashboard(...)` constructor + `.build()` (the OOP class-builder API) | Use the dict-based `compile_dashboard()` flow. `Dashboard.build()` skips `chart_data_diagnostics` entirely; column-mapping mistakes silently fall through to placeholder cards |
-| Saving a user dashboard only to `SESSION_PATH`; skipping the refresh button by editing HTML | Persist to `users/{kerberos}/dashboards/...`; set `metadata.kerberos` + `dashboard_id` |
-| Pulling data and/or compiling in-session, *then* writing scripts to S3 as an afterthought — two divergent code paths | Write the script to S3 first, `s3_manager.get` it back, `exec` it |
-| Inlining data pull + manifest build into one tool call so neither `pull_data.py` nor `build.py` exist as standalone files | Use the three-tool model: Tool 1 persists+execs `pull_data.py`; Tool 2 persists+execs `build.py`; Tool 3 registers |
-| Saving scripts to `SESSION_PATH/scripts/` instead of `{DASHBOARD_PATH}/scripts/` | Refresh runner only looks at `{DASHBOARD_PATH}/scripts/` |
-| `registry[DASHBOARD_NAME] = entry` — writing the new dashboard as a TOP-LEVEL key in `dashboards_registry.json` | `registry['dashboards'].append(entry)` (or replace-by-id). The hourly refresh runner only iterates `registry['dashboards']`; a top-level-keyed entry is invisible → 404 → no `refresh_status.json`. There is no `register_dashboard()` helper; the canonical hand-rolled upsert lives in §6.1 Tool 3 |
+| `registry[DASHBOARD_NAME] = entry` — writing the new dashboard as a TOP-LEVEL key in `dashboards_registry.json` | `registry['dashboards'].append(entry)` (or replace-by-id). The hourly refresh runner only iterates `registry['dashboards']`; a top-level-keyed entry is invisible → 404 → no `refresh_status.json` |
 | Treating `update_user_manifest(kerberos, artifact_type='dashboard')` as the registry-write step | It only updates `users/{kerberos}/manifest.json`'s pointer block. Save the registry with `s3_manager.put(...)` FIRST, then call the wrapper |
 | Setting `last_refreshed` / `last_refresh_status` to the build timestamp at registration time | Leave both as `null` at registration; the refresh runner owns those fields and overwrites them on the first real refresh |
-| Writing `history_retention_days` into the registry entry | Field is not part of the live schema (2026-04-27); treat as planned/unimplemented, do not write it |
 | S3 paths with leading slash (`/users/...`) or `folder` with trailing slash | Live registry convention: no leading slash, no trailing slash on `folder`; `data_path` points to the `data/` directory, not `manifest.json` |
 
-**Data routing (Rule 5 + `pull_*_data` quirks):**
+**Data routing (Rule 5):**
 
 | Anti-pattern | Do instead |
 |--------------|-----------|
-| Calling any `pull_*_data` / `save_artifact` WITHOUT `output_path=f'{SESSION_PATH}/data'` | Always pass `output_path`. Otherwise CSVs land in per-source subfolders and `build.py`'s `data/<name>.csv` read raises `FileNotFoundError` on every refresh |
+| Calling any `pull_*_data` / `save_artifact` WITHOUT `output_path=f'{SESSION_PATH}/data'` | Always pass `output_path`. Otherwise CSVs land in per-source subfolders and `build_dashboard()`'s `data/<name>.csv` discovery misses them |
 | Passing `name='rates_eod'` to `pull_market_data` (function appends another `_eod` → `data/rates_eod_eod.csv`) | Pass `name='rates'`. Sidecar uses the bare name (`data/rates_metadata.json`) |
-| Hand-rolling `s3_manager.put(df.to_csv().encode(), ...)` for FDIC / SEC EDGAR / BIS / Treasury / NY Fed / scraper output | Use `save_artifact(data, name='...', output_path=f'{SESSION_PATH}/data')`. Polymorphic, idempotent |
 | `manifest.datasets` keys NOT matching on-disk CSV stems (key `'rates'` while CSV is `data/rates_eod.csv`) | Make the dataset key the CSV stem byte-for-byte: `'rates_eod'`, `'rates_intraday'`, `'cpi'` |
-| `pull_data.py` uses names the runner doesn't inject (`save_artifact`, alt-data clients) AND the registry entry is left at the default `refresh_frequency` | Restrict to the four pull primitives, OR set the registry entry's `refresh_frequency: "manual"` so the cron skips it until the runner namespace expands (§6.5). The browser's `Refresh` button stays available either way; failed clicks surface in the structured error modal |
 | Setting `metadata.refresh_enabled = False` to hide the browser `Refresh` button | The field is retired — the button is non-suppressible from the manifest. Drop the field; rely on the structured error modal to surface failures |
 
 **Layout (§4.1):**
@@ -1595,65 +1437,36 @@ Brand hex anchors for `series_colors`: GS Navy `#002F6C`, GS Sky `#7399C6`, GS G
 |--------------|-----------|
 | `widget: "chart"` with any `w` other than `cols//2` (2-up) or `cols//3` (3-up) | Validator rejects with `chart widget width must be 4 or 6...`. Use `w: 6` paired with another chart, or `w: 4` in a 3-up tile row. KPIs, tables, markdown, notes, and dividers may still span any width |
 | A single-chart row | Split into two complementary views (level + change, nominal + real, US + cross-country) and run 2-up. The 2-up framing is the dashboard idiom; one-up is the wide-PNG idiom (use Altair's `make_chart` instead) |
-| Three `w: 4` charts where the middle one is conceptually different | Pair odd-one-out with two thematically-matched companions, or move it to its own paired row |
-| `line` / `multi_line` / `area` with >4 y-series (wide `y: [list]` of len 5+, OR long-form with a `color` column having 5+ distinct values) | Validator rejects with `chart_too_many_series` (always-blocking). Drop to ≤4 series (filter to top-N), bucket tail into "Other", split into small multiples (one widget per category, paired 2-up), or pivot framing (Index=100 normalisation, `correlation_matrix`, aggregate `stat_grid`). See `dashboards/charts.md` §3.1 |
+| `line` / `multi_line` / `area` with >4 y-series (wide `y: [list]` of len 5+, OR long-form with a `color` column having 5+ distinct values) | Validator rejects with `chart_too_many_series` (always-blocking). Drop to ≤4 series (filter to top-N), bucket tail into "Other", split into small multiples (one widget per category, paired 2-up), or pivot framing (Index=100 normalisation, `correlation_matrix`, aggregate `stat_grid`) |
 
 **Folder sanctity (Rule 4 + §2.5):**
 
 | Anti-pattern | Do instead |
 |--------------|-----------|
-| Leaving `scripts/build.bak` / `scripts/pull_data_old.py` / `scripts/pull_data.prev.py` next to the live files "for reference" | Either it's the live file or it doesn't belong AT THE TOP of `scripts/`. The runner cannot tell which of two `.py` files in `scripts/` is "real". Versioned snapshots belong under `scripts/versions/<pull_data\|build>_v<N>.py` per §2.6 — anything else under `scripts/` other than the two live files + the `versions/` subfolder is rogue |
-| Hand-creating versioned snapshots (`scripts/versions/build_v7.py` written by `s3_manager.put` outside the §6.1 Tools 1+2 cycle) | §2.6 versioning is OWNED by Tools 1+2. Bumping by hand — without going through `_next_script_version()` + `_persist_versioned_script()` — risks gap (`build_v7` exists but `pull_data_v7` doesn't = §2.6 coupling violation), drift (`scripts/build.py` ≠ `scripts/versions/build_v<max>.py` = §2.6 live-vs-version drift), or stale `manifest.metadata.script_version`. Always go through the canonical Tools 1+2 path |
-| Renaming the live scripts to anything else (`scripts/main.py`, `scripts/refresh.py`, `scripts/build_dashboard.py`) | The runner reads `scripts/pull_data.py` and `scripts/build.py` exactly. No flexibility. Audit raises FileNotFoundError on the canonical name |
-| Renaming versioned snapshots (`scripts/versions/build_v7_FINAL.py`, `scripts/versions/build_FINAL.py`, `scripts/versions/build_v7_buggy.py`) | The §2.6 audit allow-lists exactly the regex `^(pull_data\|build)_v\d+\.py$`. Anything else under `scripts/versions/` is rogue. Suffix annotations like "_FINAL" / "_buggy" belong in `dev/notes.md` or PRISM's session log, not in the versioned filename |
-| Manually deleting `scripts/versions/<name>_vK.py` "to clean up" | The version chain is meant to be monotonic and complete. Deleting a snapshot loses the bytes that produced version K — exactly the diagnostic information the §2.6 versioning exists to preserve. If the versioned history grows uncomfortably long, surface it; the answer is folder-level eviction policy (out-of-scope today), never per-version cherry-pick |
+| Leaving `scripts/build.bak` / `scripts/pull_data_old.py` next to the live files "for reference" | Move to `archive/<UTC>/` instead. The live `scripts/pull_data.py` and `scripts/build.py` are the only two files the runner reads |
+| Renaming the live scripts to anything else (`scripts/main.py`, `scripts/refresh.py`, `scripts/build_dashboard.py`) | The runner reads `scripts/pull_data.py` and `scripts/build.py` exactly. No flexibility |
 | Multiple manifest copies (`manifest.json` + `manifest_old.json` / `manifest_v2.json` / `manifest.20260424.json`) | Exactly one `manifest.json`. Quarantine the others to `archive/<UTC>/` |
-| Per-source data subfolders (`data/haver/cpi.csv`, `data/market_data/rates_eod.csv`) | Flat `data/cpi.csv`, `data/rates_eod.csv`. Driven by `output_path=f'{SESSION_PATH}/data'` on every pull (Rule 5). Audit flags any `data/<subdir>/` |
-| Self-suffix CSVs from the `pull_market_data` `name=` footgun (`data/rates_eod_eod.csv`) | Pass `name='rates'` (bare); the function appends `_eod`. The audit flags `rates_eod_eod` because no `manifest.datasets["rates_eod_eod"]` key exists to allow it |
-| Manifest-orphan CSVs in `data/` (`data/old_dataset.csv` with no `manifest.datasets["old_dataset"]`) | Either register the key in `manifest.datasets` or quarantine the CSV. The audit's allowed-data set is derived from the manifest, so orphan CSVs raise |
-| Scratch siblings at dashboard scope (`dashboard_results.md`, `_artifacts.json`, `notes.txt`, `README.md`) | Session-scope artefacts belong under `{SESSION_PATH}/`, not `{DASHBOARD_PATH}/`. The audit flags any non-canonical top-level path |
-| Auto-deleting rogue files when the audit raises (`s3_manager.delete()` in a loop) | `s3_manager.move(...)` to `archive/<UTC>/` instead. Rogue files sometimes turn out to be the real artefact mis-named; archive is recoverable, delete is not (§2.5.2) |
-| Inheriting an existing non-compliant dashboard and proceeding directly with the surface change the user asked for | Compliance-first principle (top of file): audit first; if it raises, realignment takes priority over the requested change. Surface the trade transparently; cleanup; re-audit; then proceed. See §2.5.3 for the canonical cleanup-first protocol |
-| Suppressing the audit (commenting it out, wrapping in `try/except: pass`) because "the dashboard renders fine" | The audit catches refresh-time footguns that don't surface at build time. The compiler validates the manifest; the audit validates the **folder around** the manifest. Both are load-bearing |
+| Per-source data subfolders (`data/haver/cpi.csv`, `data/market_data/rates_eod.csv`) | Flat `data/cpi.csv`, `data/rates_eod.csv`. Driven by `output_path=f'{SESSION_PATH}/data'` on every pull (Rule 5) |
+| Self-suffix CSVs from the `pull_market_data` `name=` footgun (`data/rates_eod_eod.csv`) | Pass `name='rates'` (bare); the function appends `_eod`. Rename the broken file to `archive/<UTC>/` and re-run the pull with the right `name=` |
+| Inheriting an existing non-compliant dashboard and proceeding directly with the surface change the user asked for | Run `_audit_dashboard_layout(folder)` FIRST; if it raises, re-author the missing canonical files before proceeding with the requested edit. Surface the trade transparently |
 
 ---
 
-## 10. Pre-flight checklist
+## 9. Pre-flight checklist
 
-**Folder layout (Rule 4 + §2.5).** Run the sanctity audit; it raises on any whitelist violation (missing required OR rogue paths):
+**Folder layout (Rule 4 + §2.5).** Run the sanctity audit; it raises if any of the canonical 5 are missing:
 
 ```python
 m = json.loads(s3_manager.get(f'{DASHBOARD_PATH}/manifest.json').decode('utf-8'))
-_audit_dashboard_layout(DASHBOARD_PATH, m)   # §2.5.1
+_audit_dashboard_layout(DASHBOARD_PATH, m)
 ```
-
-The audit covers everything the old hand-rolled `s3_manager.list()` loop did, plus exclusivity, plus the §2.6 versioning contract. Specifically it verifies:
-
-- `dashboard.html` / `manifest.json` / `manifest_template.json` exist exactly once
-- `scripts/pull_data.py` and `scripts/build.py` exist exactly once at the top of `scripts/` (live runner targets)
-- `scripts/versions/pull_data_v<N>.py` and `scripts/versions/build_v<N>.py` exist for at least N=1 and form a coupled chain (every N for one script has a matching N for the other) — §2.6 contract
-- `scripts/pull_data.py` is byte-identical to `scripts/versions/pull_data_v<max(N)>.py`; same for `build` (live = highest version invariant)
-- `manifest.metadata.script_version` (if set) equals `max(N)` on disk
-- `data/<key>.csv` (or `.json`) exists for every `manifest.datasets` key, byte-for-byte; `pull_market_data` auto-appends `_eod` / `_intraday`
-- `data/<bare>_metadata.json` sidecars allowed (where `bare` strips `_eod` / `_intraday`)
-- No rogue paths anywhere — no `_v2` siblings AT THE TOP of `scripts/`, no `_old`, no per-source `data/<source>/` subfolders, no scratch `.md` / `.json` siblings, no manifest-orphan CSVs, no off-pattern files inside `scripts/versions/`
-
-`refresh_status.json` is NOT a build-time artefact — the refresh runner writes it on first refresh attempt. The audit allows it as optional; do not pre-create it.
-
-**Script versioning (Rule 4 + §2.6):**
-
-- `SCRIPT_VERSION` was pinned exactly once at the start of Tool 1 via `_next_script_version(DASHBOARD_PATH)` and reused unchanged across Tool 2 (and any in-session retries)
-- Both `_persist_versioned_script(DASHBOARD_PATH, 'pull_data', ..., SCRIPT_VERSION)` and `_persist_versioned_script(DASHBOARD_PATH, 'build', ..., SCRIPT_VERSION)` ran with the same `SCRIPT_VERSION` (coupled bump)
-- After Tools 1+2: `scripts/versions/pull_data_v{SCRIPT_VERSION}.py` AND `scripts/versions/build_v{SCRIPT_VERSION}.py` both exist, byte-identical to the live `scripts/<name>.py`
-- `manifest.metadata.script_version == SCRIPT_VERSION` after Tool 2 (build.py stamps it from the live `_max_script_version()` on every populate)
-- For first builds: `SCRIPT_VERSION == 1` and `scripts/versions/<pull_data|build>_v1.py` lands as part of the same atomic Tools 1+2 cycle that creates the live scripts
 
 **Configuration:**
 
 - `metadata.kerberos`, `metadata.dashboard_id`, and `metadata.methodology` all set (validator hard-rejects the build without them — they gate the always-on Methodology / Refresh / Share chrome buttons)
 - `metadata.data_as_of` set; `refresh_frequency` set. The browser `Refresh` button is non-suppressible from the manifest; do NOT add `metadata.refresh_enabled` (retired field, silently ignored)
 - Registry entry **appended into `registry['dashboards']`** (not written as a top-level key); verify by re-loading and asserting `DASHBOARD_NAME in [d['id'] for d in registry['dashboards']]`
-- `update_user_manifest(kerberos, artifact_type='dashboard')` called AFTER the registry write succeeds (the wrapper updates the user manifest pointer block, it does not write the registry itself)
+- `update_user_manifest(kerberos, artifact_type='dashboard')` called AFTER the registry write succeeds
 
 **Data integrity:**
 
@@ -1661,36 +1474,36 @@ The audit covers everything the old hand-rolled `s3_manager.list()` loop did, pl
 - Every `pull_*_data(...)` and `save_artifact(...)` passes `output_path=f'{SESSION_PATH}/data'` (Rule 5)
 - Every `pull_market_data` `name=` is the bare base (no `_eod` / `_intraday`)
 - Every `manifest.datasets` key matches the on-disk CSV stem byte-for-byte
-- `pull_data.py` printed real shapes / heads / dtypes before `build.py` was authored; intraday handled defensively
-- If `pull_data.py` uses `save_artifact` or any alt-data client, set the registry entry's `refresh_frequency: "manual"` until the runner namespace expands (§6.5). The browser `Refresh` button stays on regardless
+- Every `pull_<name>` function printed real shapes / heads / dtypes (or PRISM did so via `run_pull(folder, name)` then `pd.read_csv(...)`) before authoring `build.py` transforms; intraday handled defensively (§6.1)
 - Datasets cleaned: `df.reset_index()` for DTI-keyed frames, plain English columns, no MultiIndex
 - Every dataset backing a chart / table carries `field_provenance` (per-column `system` + `symbol`)
-- Time-series pulls preserve full back-history (§11); never clip to the visible window
+- Time-series pulls preserve full back-history (§10); never clip to the visible window
 
 **Build mechanics:**
 
-- Tool 1 authored as string, persisted to S3, then `s3_manager.get`-ed and `exec`-ed
-- Tool 2 same pattern; `build.py` is thin (~12 lines)
-- Both ran cleanly to completion — the build IS the refresh smoke test
+- `pull_data.py` defines `PULLS = {<name>: <fn>, ...}` at module level (engine reads this; nothing else)
+- `build.py` defines `TRANSFORMS = [<fn>, ...]` at module level (engine reads this; nothing else). Empty list (`TRANSFORMS = []`) is fine for dashboards with no derivations
+- Each function in `PULLS` and `TRANSFORMS` follows the contract: pulls take no args; transforms take and return the datasets dict
+- Both scripts open with the explicit `SESSION_PATH = "<dashboard-path-literal>"` line (Rule 5)
+- Both scripts use real Python imports for their helpers (no namespace dependency on what the runner injects)
 
 **Atomicity (Rule 7):**
 
 - Tools 1+2+3+4 ran in a single uninterrupted sequence; PRISM did NOT return to the user between them
-- Tool 4's `subprocess.run(refresh_runner.py, ...)` exited 0 AND `refresh_status.json` shows `status == "success"` (Rule 9)
-- `_audit_dashboard_layout(...)` ran at end of Tool 2 and passed (§2.5)
-- `_audit_registry_state(...)` ran at end of Tool 3 and passed (§6.1 Tool 3)
-- Both audits passing is the gate that defines "built"; if either raises, the dashboard does not exist and nothing is surfaced to the user
-- The user-facing message is exactly the §6 contract: portal URL on line 1, refresh frequency + datasets next; no "next steps", no "would you like me to…", no opt-in language
+- Tool 4's `subprocess` exited 0 AND `refresh_status.json` shows `status == "success"`
+- `_audit_dashboard_layout(...)` ran at end of Tool 2 and passed
+- Registry verification (re-load, assert id is in `registry['dashboards']`) passed at end of Tool 3
+- The user-facing message is exactly the §B contract: portal URL on line 1, refresh frequency + datasets next; no "next steps", no "would you like me to…", no opt-in language
 
 **Hand-off (Rule 6):** the success message leads with the portal URL (`/profile/dashboards/{id}/`); the `dashboard.html` S3 path is mentioned only if the user explicitly asks for it.
 
 ---
 
-## 11. Time horizons
+## 10. Time horizons
 
 **Pull deep history.** The defaults below are initial zoom windows, not data-layer caps. Every time-series chart ships with a per-chart `dataZoom` slider (`dashboards/filters.md` §3) carrying the full dataset, and `dateRange` filters operate in view-mode by default with intervals `1M/3M/6M/YTD/1Y/2Y/5Y/All` — but both reach back only as far as the data goes.
 
-If `pull_data.py` clips a 30-year FRED series to 2 years before persisting (or `build.py` slices / resamples / inner-joins it post-merge), those years are gone; the slider can't scroll into history that was never pulled. Loss of back-history at the PRISM transformation layer is irreversible from the dashboard side.
+If `pull_data.py` clips a 30-year FRED series to 2 years before persisting (or a transform slices / resamples / inner-joins it post-merge), those years are gone; the slider can't scroll into history that was never pulled. Loss of back-history at the PRISM transformation layer is irreversible from the dashboard side.
 
 | Frequency | Initial zoom (default) | Rationale |
 |-----------|------------------------|-----------|

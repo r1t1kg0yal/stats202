@@ -1,5 +1,5 @@
 """
-ai_development/dashboards -- ECharts dashboard compiler.
+ai_development/dashboards -- ECharts dashboard compiler + folder operations.
 
 Scope: dashboards only. ``compile_dashboard`` lowers a JSON manifest into
 an interactive HTML dashboard. ECharts is NOT the path PRISM uses for
@@ -12,23 +12,43 @@ Multi-panel composition is a manifest concern (rows / cols / tabs in
 the dashboard layout), not a separate one-off composite-canvas API --
 those n-pack composite helpers belong to Altair's static-PNG surface.
 
-PRISM-bound public surface (what ``execute_analysis_script`` should
-inject and what ``dashboards.md`` documents):
+Public surface PRISM imports (real Python imports -- no namespace
+injection at exec time):
 
-    from ai_development.dashboards.echart_dashboard import (
+    # Folder operations -- the three entry points for every dashboard op.
+    # Operate on a dashboard folder (S3 path); call from PRISM ephemeral
+    # code OR from refresh_runner.py.
+    from ai_development.dashboards import (
+        run_pull,                  # run ONE pull from PULLS (in-process)
+        build_dashboard,           # template + CSVs + transforms -> compile
+        refresh_dashboard,         # all PULLS + build_dashboard
+    )
+
+    # Compile primitives (used by build_dashboard internally; PRISM rarely
+    # calls these directly under the new model).
+    from ai_development.dashboards import (
         compile_dashboard,         # JSON manifest -> dashboard HTML + JSON
         validate_manifest,         # dry-run structural validator
         manifest_template,         # strip data -> reusable template
         populate_template,         # template + fresh DataFrames -> manifest
         df_to_source,              # DataFrame -> canonical list-of-lists
-        load_manifest,             # JSON path -> manifest dict
-        save_manifest,             # manifest dict -> JSON file
+        load_manifest, save_manifest,
     )
-    # ``chart_data_diagnostics`` is exposed via the same module for
-    # post-compile linting (empty datasets, all-NaN columns, etc.).
+    # chart_data_diagnostics is exposed via the same module for post-
+    # compile linting (empty datasets, all-NaN columns, etc.).
+
+Sibling scripts (also part of the payload):
+
+    refresh_runner.py    single-dashboard CLI invoked by the Django
+                          [Refresh] button via subprocess.Popen.
+                          Runs refresh_dashboard(folder).
+    refresh_dashboards.py
+                          hourly cron entry point. Walks UserRegistry,
+                          per-user reads dashboards_registry.json,
+                          spawns refresh_runner.py per due dashboard.
 
 Internal-only modules (still drag-and-drop installed, not part of the
-public injected surface):
+public surface):
 
     config.py            brand tokens + theme + palettes + dimensions
     echart_studio.py     single-chart builder (used internally by the
@@ -39,15 +59,16 @@ public injected surface):
 
 Design: the manifest.json is the source of truth. ``compile_dashboard``
 takes that JSON (dict, path, or JSON string), validates, lowers each
-``widget: chart`` through the internal builders, and writes manifest +
-interactive HTML to the session folder. Callers never write HTML.
+``widget: chart`` through the internal builders, and emits manifest +
+interactive HTML. ``build_dashboard(folder)`` wraps that lifecycle for
+the standard "load template + CSVs + transforms -> compile + write to
+S3" recipe so PRISM doesn't reinvent it per dashboard.
 
-DataFrame contract: PRISM emits Python in ``execute_analysis_script``
-that builds DataFrames from real data functions (``pull_market_data``,
-``pull_haver_data``, FRED, etc.) and passes them straight into the
-manifest datasets. Literal numbers never appear in the JSON emitted by
-PRISM. Three accepted shapes for a dataset entry, all normalised to the
-same on-disk form by the compiler:
+DataFrame contract: PRISM emits Python that builds DataFrames from real
+data functions (``pull_market_data``, ``pull_haver_data``, FRED, etc.)
+and stores them as dataset values. Literal numbers never appear in the
+JSON emitted by PRISM. Three accepted shapes for a dataset entry, all
+normalised to the same on-disk form by the compiler:
 
     manifest["datasets"]["rates"] = df_rates                    # shorthand
     manifest["datasets"]["rates"] = {"source": df_rates}        # explicit
@@ -62,4 +83,18 @@ opened from a file:// path, or streamed from S3 via a presigned URL.
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
+
+from echart_dashboard import (  # noqa: E402,F401
+    run_pull,
+    build_dashboard,
+    refresh_dashboard,
+    compile_dashboard,
+    validate_manifest,
+    manifest_template,
+    populate_template,
+    df_to_source,
+    load_manifest,
+    save_manifest,
+    chart_data_diagnostics,
+)

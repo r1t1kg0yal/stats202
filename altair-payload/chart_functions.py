@@ -2503,10 +2503,11 @@ class LastValueLabel(Annotation):
       single string), one label is drawn at the line's end.
     * On a wide-format chart auto-melted into long format, each
       original column appears as its own labeled series.
-    * On a dual-axis chart, only left-axis series get labels by
-      default. Pass ``include_right_axis=True`` to opt into right-axis
-      labels (best-effort -- right-axis label placement on Vega-Lite's
-      shared-domain layer can drift; review the rendered chart).
+    * On a dual-axis chart, ``LastValueLabel`` is suppressed (the
+      annotation is dropped with a non-fatal warning and the normal
+      color legend renders instead). For end-of-line labels alongside
+      two y-scales, build a single-axis chart per series and combine
+      via ``make_2pack_vertical()``.
 
     The ``label`` field on the base ``Annotation`` is ignored -- labels
     are derived from the series identity. ``show_value=True`` appends
@@ -2527,6 +2528,11 @@ class LastValueLabel(Annotation):
     font_size: int = 10
     font_weight: Literal["normal", "bold"] = "normal"
     include_right_axis: bool = False
+    """Obsolete since 2026-05-05 -- LastValueLabel is now stripped on
+    dual-axis charts in ``make_chart`` before ``to_layer`` runs. Field
+    retained so existing call sites remain valid (pass-through is a
+    no-op on dual-axis; on single-axis the kwarg has never had any
+    effect). Will be removed in a future release."""
 
     def to_layer(
         self,
@@ -2554,6 +2560,20 @@ class LastValueLabel(Annotation):
         dual_axis_series = list(mapping.get("dual_axis_series") or [])
         is_dual_axis = bool(dual_axis_series)
 
+        # Defensive backstop: ``make_chart`` strips LastValueLabel on
+        # dual-axis BEFORE annotation rendering runs (see the
+        # "LastValueLabel on dual-axis: prohibited" block in
+        # ``make_chart``), so this branch should never execute. If it
+        # does, something has bypassed the strip -- log loudly and
+        # skip rendering rather than producing a misshapen layer.
+        if is_dual_axis:
+            logger.error(
+                "[LastValueLabel] reached to_layer on a dual-axis chart "
+                "-- the make_chart-level strip should have removed this "
+                "annotation. Skipping render."
+            )
+            return alt.Chart(pd.DataFrame({"_": []})).mark_point()
+
         if (
             not (color_field and color_field in df.columns)
             and y_field in df.columns
@@ -2568,16 +2588,7 @@ class LastValueLabel(Annotation):
             )
             return alt.Chart(pd.DataFrame({"_": []})).mark_point()
 
-        if is_dual_axis and not self.include_right_axis:
-            df_use = df[~df[color_field].isin(dual_axis_series)].copy()
-            if df_use.empty:
-                logger.warning(
-                    "[LastValueLabel] all series are on the right axis but "
-                    "include_right_axis=False; skipping."
-                )
-                return alt.Chart(pd.DataFrame({"_": []})).mark_point()
-        else:
-            df_use = df.copy()
+        df_use = df.copy()
 
         df_clean = df_use.dropna(subset=[x_col, y_field])
         if df_clean.empty:
@@ -2605,92 +2616,123 @@ class LastValueLabel(Annotation):
 
         color_scale = _get_color_scale(skin)
 
-        # On dual-axis charts the layered chart resolves y as
-        # ``independent``, so a new layer would draw its own y-axis on the
-        # left and clobber the base axis. Suppress the new layer's axis
-        # and bind it to the left domain so labels align with the lines.
+        # Route each series to the correct axis. On a dual-axis chart the
+        # layered chart resolves y as ``independent``; LVL emits one
+        # sublayer per side, each pinned to its own y-domain (right side
+        # may be inverted via ``y_domain_right=[max, min]``). Without
+        # this split, right-axis values get plotted on the left scale's
+        # domain and land far outside the visible plot area.
         dual_cfg = mapping.get("dual_axis_config") or {}
-        y_kwargs: Dict[str, Any] = {}
-        if is_dual_axis and dual_cfg.get("y_domain_left") is not None:
-            y_kwargs["scale"] = alt.Scale(domain=list(dual_cfg["y_domain_left"]))
-            y_kwargs["axis"] = alt.Axis(
-                orient="left", title=None, labels=False, ticks=False, domain=False,
-            )
 
-        # Stagger label y-positions so 2+ series ending at the same y
-        # don't paint a single illegible smudge. The dot stays at the
-        # actual y; only the text mark uses the staggered y. Use the
-        # FULL dataset's y-range (or the dual-axis left domain) as the
-        # backdrop -- using last_rows alone would yield a degenerate
-        # y_range when 2+ series end at the same value.
-        y_domain_for_stagger: Optional[Tuple[float, float]] = None
-        if is_dual_axis and dual_cfg.get("y_domain_left") is not None:
-            y_domain_for_stagger = tuple(dual_cfg["y_domain_left"])  # type: ignore[arg-type]
+        if is_dual_axis:
+            is_right_series = (
+                last_rows[color_field].astype(str).isin(dual_axis_series)
+            )
+            side_groups: List[Tuple[str, pd.DataFrame, Optional[List[float]]]] = [
+                ("left", last_rows[~is_right_series].copy(),
+                 dual_cfg.get("y_domain_left")),
+                ("right", last_rows[is_right_series].copy(),
+                 dual_cfg.get("y_domain_right")),
+            ]
         else:
-            full_y = pd.to_numeric(df_clean[y_field], errors="coerce").dropna()
-            if not full_y.empty:
-                y_min_full = float(full_y.min())
-                y_max_full = float(full_y.max())
-                if y_max_full > y_min_full:
-                    y_pad_full = (y_max_full - y_min_full) * 0.05
-                    y_domain_for_stagger = (
-                        y_min_full - y_pad_full,
-                        y_max_full + y_pad_full,
-                    )
-        last_rows = _stagger_lvl_text_y(
-            last_rows,
-            y_field=y_field,
-            label_col="_label",
-            font_size=self.font_size,
-            y_domain=y_domain_for_stagger,
-        )
+            side_groups = [("left", last_rows, None)]
 
         layers: List[alt.Chart] = []
 
-        if self.show_dot:
-            dot_kwargs: Dict[str, Any] = {
-                "size": self.dot_size,
-                "filled": True,
-                "opacity": 1.0,
-            }
-            dot_chart = alt.Chart(last_rows).mark_point(**dot_kwargs).encode(
-                x=alt.X(x_col, **x_kwargs),
-                y=alt.Y(f"{y_field}:Q", **y_kwargs),
-                color=(
-                    alt.value(self.dot_color)
-                    if self.dot_color
-                    else alt.Color(
-                        f"{color_field}:N", scale=color_scale, legend=None,
-                    )
-                ),
-            )
-            layers.append(dot_chart)
+        for side_name, rows, y_scale_domain in side_groups:
+            if rows.empty:
+                continue
 
-        text_chart = (
-            alt.Chart(last_rows)
-            .mark_text(
-                align="left",
-                baseline="middle",
-                dx=self.dx,
-                dy=0,
-                fontSize=self.font_size,
-                fontWeight=self.font_weight,
-            )
-            .encode(
-                x=alt.X(x_col, **x_kwargs),
-                y=alt.Y("_y_text:Q", **y_kwargs),
-                text=alt.Text("_label:N"),
-                color=(
-                    alt.value(self.label_color)
-                    if self.label_color
-                    else alt.Color(
-                        f"{color_field}:N", scale=color_scale, legend=None,
-                    )
-                ),
-            )
-        )
-        layers.append(text_chart)
+            # Stagger text within THIS side only -- using a different
+            # side's y-range would yield wrong pixel collisions. Pass the
+            # natural (lo, hi) order to ``_stagger_lvl_text_y`` even when
+            # the right axis is inverted; the alt.Scale below carries the
+            # inverted-domain encoding.
+            if y_scale_domain is not None:
+                raw = list(y_scale_domain)
+                y_stagger_domain: Optional[Tuple[float, float]] = (
+                    min(raw), max(raw),
+                )
+            else:
+                full_y = pd.to_numeric(rows[y_field], errors="coerce").dropna()
+                if not full_y.empty:
+                    y_min_s = float(full_y.min())
+                    y_max_s = float(full_y.max())
+                    if y_max_s > y_min_s:
+                        y_pad_s = (y_max_s - y_min_s) * 0.05
+                        y_stagger_domain = (
+                            y_min_s - y_pad_s, y_max_s + y_pad_s,
+                        )
+                    else:
+                        y_stagger_domain = None
+                else:
+                    y_stagger_domain = None
 
+            rows = _stagger_lvl_text_y(
+                rows,
+                y_field=y_field,
+                label_col="_label",
+                font_size=self.font_size,
+                y_domain=y_stagger_domain,
+            )
+
+            # Per-side y-encoding: pin to this side's domain (potentially
+            # inverted) and suppress the layer's own axis decorations so
+            # only the base chart's axes remain visible.
+            y_kwargs: Dict[str, Any] = {}
+            if y_scale_domain is not None:
+                y_kwargs["scale"] = alt.Scale(domain=list(y_scale_domain))
+                y_kwargs["axis"] = alt.Axis(
+                    orient=("right" if side_name == "right" else "left"),
+                    title=None, labels=False, ticks=False, domain=False,
+                )
+
+            if self.show_dot:
+                dot_kwargs: Dict[str, Any] = {
+                    "size": self.dot_size,
+                    "filled": True,
+                    "opacity": 1.0,
+                }
+                dot_chart = alt.Chart(rows).mark_point(**dot_kwargs).encode(
+                    x=alt.X(x_col, **x_kwargs),
+                    y=alt.Y(f"{y_field}:Q", **y_kwargs),
+                    color=(
+                        alt.value(self.dot_color)
+                        if self.dot_color
+                        else alt.Color(
+                            f"{color_field}:N", scale=color_scale, legend=None,
+                        )
+                    ),
+                )
+                layers.append(dot_chart)
+
+            text_chart = (
+                alt.Chart(rows)
+                .mark_text(
+                    align="left",
+                    baseline="middle",
+                    dx=self.dx,
+                    dy=0,
+                    fontSize=self.font_size,
+                    fontWeight=self.font_weight,
+                )
+                .encode(
+                    x=alt.X(x_col, **x_kwargs),
+                    y=alt.Y("_y_text:Q", **y_kwargs),
+                    text=alt.Text("_label:N"),
+                    color=(
+                        alt.value(self.label_color)
+                        if self.label_color
+                        else alt.Color(
+                            f"{color_field}:N", scale=color_scale, legend=None,
+                        )
+                    ),
+                )
+            )
+            layers.append(text_chart)
+
+        if not layers:
+            return alt.Chart(pd.DataFrame({"_": []})).mark_point()
         if len(layers) == 1:
             return layers[0]
         return alt.layer(*layers)
@@ -4148,10 +4190,10 @@ def render_annotations(
     # ``LastValueLabel`` puts the series name at the end of each line, so
     # the matching legend would be redundant. Re-encode the base chart's
     # color channel with ``legend=None``, preserving the active skin's
-    # categorical palette via ``_get_color_scale``. Skip on dual-axis
-    # (LayerChart) where the inner layers carry their own color encodings;
-    # that path would need per-layer surgery and isn't typical for direct
-    # labeling.
+    # categorical palette via ``_get_color_scale``. Dual-axis charts
+    # never reach this branch with LVL because ``make_chart`` strips
+    # LVL annotations on dual-axis before render_annotations runs;
+    # ``not is_dual_axis`` is kept as a defensive backstop.
     if any(isinstance(a, LastValueLabel) for a in annotations):
         color_field = mapping.get("color")
         if (
@@ -5183,7 +5225,14 @@ def render_annotations(
         # ``axis`` value on PointHighlight / Callout when
         # ``axis='left'`` (the right-axis case is already handled in
         # the dedicated branch above and ``continue``s past here).
-        if is_dual_axis and dual_axis_config:
+        # ``LastValueLabel`` is excluded as a defensive backstop --
+        # ``make_chart`` strips LVL on dual-axis before annotations
+        # render, so this isinstance check should never be true here.
+        if (
+            is_dual_axis
+            and dual_axis_config
+            and not isinstance(annotation, LastValueLabel)
+        ):
             annotation_axis = getattr(annotation, "axis", "left")
             side_domain_key = (
                 "y_domain_right" if annotation_axis == "right"
@@ -12166,6 +12215,39 @@ def make_chart(
             error_message=f"Chart build failed: {type(exc).__name__}: {exc}",
             warnings=warnings,
         )
+
+    # ---- LastValueLabel on dual-axis: prohibited, drop with warning ----
+    # ``LastValueLabel`` is suppressed on dual-axis charts -- the normal
+    # color legend renders instead. Two-axis charts already carry two
+    # title strings + an inverted-domain affordance; bolting end-of-line
+    # labels on top of that overloads the canvas (left/right LVL labels
+    # collide with their own axis ticks, and ``include_right_axis=True``
+    # routes label placement through Vega-Lite's shared-domain layer
+    # which drifts). The strip happens BEFORE render_annotations and
+    # _estimate_lvl_right_margin so both downstream paths see the
+    # cleaned list -- the legend-suppression branch in render_annotations
+    # never fires (LVL is gone) and the right-margin reserve drops to 0
+    # naturally. Mirrors the Trendline-on-dual-axis precedent.
+    if annotations and mapping.get("dual_axis_series"):
+        lvl_count = sum(1 for a in annotations if isinstance(a, LastValueLabel))
+        if lvl_count:
+            logger.warning(
+                "[make_chart] Suppressed %d LastValueLabel annotation"
+                "(s) on a dual-axis chart -- LVL is not supported on "
+                "dual-axis ``multi_line``. The normal color legend "
+                "renders instead.",
+                lvl_count,
+            )
+            warnings.append(
+                f"LastValueLabel suppressed on dual-axis chart "
+                f"({lvl_count} stripped); the normal color legend "
+                f"renders instead. For end-of-line labels, build a "
+                f"single-axis chart per series and combine via "
+                f"``make_2pack_vertical()``."
+            )
+            annotations = [
+                a for a in annotations if not isinstance(a, LastValueLabel)
+            ]
 
     # ---- Annotations (layer first; configure must be applied AFTER ------
     # because altair rejects ``alt.layer(...)`` of charts that already
