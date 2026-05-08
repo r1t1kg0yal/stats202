@@ -376,18 +376,35 @@ def _err(path: str, msg: str) -> str:
 
 
 # -----------------------------------------------------------------------------
-# tool_def `compute.source` static-text scanners
+# tool_def `compute.source` sanitizer + static-text scanners
 # -----------------------------------------------------------------------------
 # Python-into-JS interpolation in a `widget: tool`'s compute_js body is a
-# load-bearing failure mode -- `None` / `True` / `False` / `nan` / `inf` /
-# `Timestamp(...)` / `Decimal(...)` reach the runtime as JS ReferenceErrors
-# (the right panel of the tool tile renders blank, the red `.tool-error`
-# strip shows `compute error: <token> is not defined`). Authors typically
-# introduce the leak by f-string-splicing a Python value into compute_js
-# when first composing the manifest dict. The engine catches this at
-# validate time so `compile_dashboard` reports `success=False` with the
-# verbose `tool_compute_python_literal_in_js` body before persistence,
-# never at refresh time.
+# load-bearing failure mode -- raw Python tokens become JS ReferenceErrors
+# at runtime (the right panel of the tool tile renders blank, the red
+# `.tool-error` strip shows `compute error: <token> is not defined`).
+# Authors typically introduce the leak by f-string-splicing a Python
+# value into compute_js when first composing the manifest dict.
+#
+# Per Principle #7 (Engines Absorb Friction), the engine handles this in
+# two tiers:
+#
+#   Tier A -- equivalence-preserving substitutions. Python None / True /
+#       False / nan / inf / -inf and numpy scalar reprs all have JS
+#       spellings with identical semantics. These are AUTO-SANITIZED at
+#       compile time: the engine rewrites `None` -> `null`, `True` -> `true`,
+#       etc., on the persisted compute source. PRISM never has to remember
+#       the dialect for this set; r.warnings carries one entry per
+#       substitution made so the rewrite is observable but never blocks.
+#
+#   Tier B -- semantic-shifting substitutions. `Timestamp(...)` /
+#       `datetime.date(...)` / `datetime.datetime(...)` / `Decimal(...)`
+#       cannot be naively substituted because JS Date uses 0-indexed
+#       months (Python 1-12) and JS Number is float64 (Decimal precision
+#       lossy). These continue to BLOCK at validate time with the
+#       `tool_compute_python_literal_in_js` always-blocking code; the
+#       error message names the trap and the corrective action (pass the
+#       value via `inputs[].default = '<isoformat>'` or cast via float()
+#       before splicing).
 #
 # A second class of silent failure: the author declares an output id
 # (e.g. `summary` or `ff_paths`) but the compute function returns an
@@ -401,23 +418,46 @@ def _err(path: str, msg: str) -> str:
 # missing reported) so authors can opt out by structuring the compute
 # differently if needed.
 
-# JS-source patterns that signal Python literals leaked into compute_js.
-# Each pair: (regex, human-readable label). Case-sensitive on the Python
-# tokens because lowercase `none` / `true` / `false` happen frequently
-# inside legitimate identifier names (`maxNone`, `trueValue`).
-_TOOL_COMPUTE_JS_PYTHON_LITERAL_PATTERNS: List[Tuple[str, str]] = [
-    (r"\bNone\b",             "Python None (use null)"),
-    (r"\bTrue\b",             "Python True (use true)"),
-    (r"\bFalse\b",            "Python False (use false)"),
-    (r"\bnan\b",              "Python/numpy nan (use NaN)"),
-    (r"\binf\b",              "Python/numpy inf (use Infinity)"),
-    (r"-inf\b",               "Python -inf (use -Infinity)"),
-    (r"Timestamp\(",          "pandas Timestamp repr (serialize via .isoformat())"),
-    (r"datetime\.date\(",     "Python datetime.date repr (serialize via .isoformat())"),
-    (r"datetime\.datetime\(", "Python datetime.datetime repr (serialize via .isoformat())"),
-    (r"Decimal\(",            "Python Decimal repr (serialize as number)"),
-    (r"np\.float\d+\(",       "numpy scalar repr (cast to native float)"),
-    (r"np\.int\d+\(",         "numpy scalar repr (cast to native int)"),
+# Tier A: equivalence-preserving Python -> JS substitutions. Each tuple is
+# (regex, replacement, human-readable label for the warning surface).
+# Case-sensitive on the Python tokens because lowercase `none` / `true` /
+# `false` happen frequently inside legitimate identifier names
+# (`maxNone`, `trueValue`).
+_TIER_A_COMPUTE_JS_SUBSTITUTIONS: List[Tuple[str, str, str]] = [
+    (r"\bNone\b",  "null",      "Python None -> JS null"),
+    (r"\bTrue\b",  "true",      "Python True -> JS true"),
+    (r"\bFalse\b", "false",     "Python False -> JS false"),
+    # -inf must run before inf so the leading minus is preserved
+    (r"-inf\b",    "-Infinity", "Python -inf -> JS -Infinity"),
+    (r"\binf\b",   "Infinity",  "Python inf -> JS Infinity"),
+    (r"\bnan\b",   "NaN",       "Python/numpy nan -> JS NaN"),
+]
+
+# Numpy scalar substitutions. Captures the inner numeric / boolean
+# argument; the wrapper call is removed.
+_TIER_A_NUMPY_SUBSTITUTIONS: List[Tuple[str, str, str]] = [
+    (r"np\.float\d+\(([^)]+)\)", r"\1",   "numpy float scalar -> JS number"),
+    (r"np\.int\d+\(([^)]+)\)",   r"\1",   "numpy int scalar -> JS number"),
+    (r"np\.bool_\(\s*True\s*\)",  "true",  "numpy bool True -> JS true"),
+    (r"np\.bool_\(\s*False\s*\)", "false", "numpy bool False -> JS false"),
+]
+
+# Tier B: semantic-shifting Python tokens that block at validate. Each
+# pair: (regex, human-readable label naming the trap + corrective action).
+_TIER_B_COMPUTE_JS_BLOCKERS: List[Tuple[str, str]] = [
+    (r"Timestamp\(",
+     "pandas Timestamp repr (JS Date months are 0-indexed; "
+     "naive substitution silently flips January->February. "
+     "Pass via inputs[].default = '<isoformat>' or .isoformat() before splicing)"),
+    (r"datetime\.date\(",
+     "Python datetime.date repr (same month-indexing trap as Timestamp; "
+     "pass via .isoformat())"),
+    (r"datetime\.datetime\(",
+     "Python datetime.datetime repr (same month-indexing trap; "
+     "pass via .isoformat())"),
+    (r"Decimal\(",
+     "Python Decimal repr (precision contract differs; JS Number is float64, "
+     "lossy. Cast via float() before splicing)"),
 ]
 
 # JS comment + string stripper. Order matters in the alternation: block
@@ -444,21 +484,158 @@ def _strip_js_strings_and_comments(src: str) -> str:
     return _JS_STRIP_PATTERN.sub(" ", src)
 
 
+def _split_js_source_preserving_strings_and_comments(src: str):
+    """Yield (kind, chunk) pairs partitioning ``src`` into either
+    'preserve' (string literals + comments -- treat as opaque) or 'code'
+    (everything else -- safe to rewrite). The concatenation of chunks
+    equals ``src`` byte-for-byte, so callers can apply substitutions on
+    'code' chunks only and reassemble without losing content."""
+    pos = 0
+    for match in _JS_STRIP_PATTERN.finditer(src):
+        if match.start() > pos:
+            yield ("code", src[pos:match.start()])
+        yield ("preserve", match.group(0))
+        pos = match.end()
+    if pos < len(src):
+        yield ("code", src[pos:])
+
+
+def _sanitize_compute_js(src: str) -> Tuple[str, List[str], List[str]]:
+    """Walk a compute_js source body, apply Tier A substitutions on the
+    code-bearing portion (preserving string literals + comments), and
+    detect Tier B blocker patterns.
+
+    Returns:
+        sanitized: src with Tier A substitutions applied; identical to
+            src when no Tier A patterns matched.
+        warnings:  list of human-readable Tier A substitution labels
+            (one per pattern that fired). Empty when no rewrites.
+        blockers:  list of human-readable Tier B blocker labels (one
+            per pattern that matched). Empty when nothing semantic-
+            shifting was found.
+
+    String literals + JS comments are NEVER substituted (PRISM may
+    legitimately write the word 'None' inside a tooltip string or block
+    comment). Substitution operates on the code-bearing chunks only.
+    """
+    if not isinstance(src, str) or not src:
+        return src or "", [], []
+
+    out_chunks: List[str] = []
+    warnings_seen: List[str] = []
+    blockers_seen: List[str] = []
+    for kind, chunk in _split_js_source_preserving_strings_and_comments(src):
+        if kind == "preserve":
+            out_chunks.append(chunk)
+            continue
+        # kind == "code" -- apply Tier A substitutions and Tier B detection.
+        for pattern, replacement, label in _TIER_A_COMPUTE_JS_SUBSTITUTIONS:
+            new_chunk = re.sub(pattern, replacement, chunk)
+            if new_chunk != chunk and label not in warnings_seen:
+                warnings_seen.append(label)
+            chunk = new_chunk
+        for pattern, replacement, label in _TIER_A_NUMPY_SUBSTITUTIONS:
+            new_chunk = re.sub(pattern, replacement, chunk)
+            if new_chunk != chunk and label not in warnings_seen:
+                warnings_seen.append(label)
+            chunk = new_chunk
+        for pattern, label in _TIER_B_COMPUTE_JS_BLOCKERS:
+            if re.search(pattern, chunk) and label not in blockers_seen:
+                blockers_seen.append(label)
+        out_chunks.append(chunk)
+    return "".join(out_chunks), warnings_seen, blockers_seen
+
+
 def _scan_compute_js_for_python_literals(src: str) -> List[str]:
-    """Scan a JS source body for Python tokens that would be JS
-    ReferenceErrors at runtime. Strips strings + comments first so
-    legitimate JS strings containing the word "None" don't trip.
-    Returns a list of human-readable findings (one per pattern hit);
-    empty list = clean.
+    """Scan a JS source body for Tier B Python tokens that block compile.
+
+    Strips strings + comments first so legitimate JS strings containing
+    'Timestamp(' don't false-trip. Returns a list of human-readable
+    findings (one per Tier B pattern hit); empty list = no blockers.
+
+    Tier A patterns (None / True / False / nan / inf / numpy scalars)
+    are NOT scanned here -- they are auto-sanitized upstream of the
+    validator via `_sanitize_compute_js`. By the time this function
+    runs, the compute source is already Tier A-clean.
     """
     if not isinstance(src, str) or not src:
         return []
     stripped = _strip_js_strings_and_comments(src)
     findings: List[str] = []
-    for pattern, label in _TOOL_COMPUTE_JS_PYTHON_LITERAL_PATTERNS:
+    for pattern, label in _TIER_B_COMPUTE_JS_BLOCKERS:
         if re.search(pattern, stripped):
             findings.append(label)
     return findings
+
+
+def _sanitize_manifest_compute_js(manifest: Dict[str, Any]) -> List[str]:
+    """Walk every ``widget: tool`` in ``manifest.layout`` and apply
+    `_sanitize_compute_js` to its `tool_def.compute.source` (or the flat
+    `tool_def.compute_js` shortcut). Mutates each compute source in
+    place; returns the list of human-readable Tier A substitution
+    labels prefixed with the originating widget id so warnings name the
+    widget they came from.
+
+    Tier B blocker findings are NOT returned here -- they continue to
+    fire from `_validate_tool_widget` so the always-blocking
+    `tool_compute_python_literal_in_js` error code lands in the
+    validate stream the same way it always has.
+
+    Idempotent: running this twice on the same manifest produces
+    identical bytes after the first call (Tier A substitutions are
+    fixpoints; nothing matches on the second pass).
+    """
+    layout = manifest.get("layout") or {}
+    if not isinstance(layout, dict):
+        return []
+    kind = layout.get("kind", "grid")
+    rows_lists: List[List[Any]] = []
+    if kind == "tabs":
+        for tab in layout.get("tabs", []) or []:
+            if isinstance(tab, dict):
+                tabrows = tab.get("rows") or []
+                if isinstance(tabrows, list):
+                    rows_lists.extend(r for r in tabrows if isinstance(r, list))
+    else:
+        gridrows = layout.get("rows") or []
+        if isinstance(gridrows, list):
+            rows_lists.extend(r for r in gridrows if isinstance(r, list))
+
+    warnings: List[str] = []
+    for row in rows_lists:
+        for w in row:
+            if not isinstance(w, dict):
+                continue
+            if w.get("widget") != "tool":
+                continue
+            tdef = w.get("tool_def")
+            if not isinstance(tdef, dict):
+                continue
+            wid = w.get("id") or "<unnamed>"
+            # Sanitize the flat shortcut field if present (compute_js).
+            if isinstance(tdef.get("compute_js"), str):
+                src0 = tdef["compute_js"]
+                sanitized, sub_warnings, _blockers = _sanitize_compute_js(src0)
+                if sanitized != src0:
+                    tdef["compute_js"] = sanitized
+                for w_label in sub_warnings:
+                    warnings.append(f"widget '{wid}' compute_js: {w_label}")
+            # Sanitize the nested form (compute.source) too. load_tool_def
+            # later normalises one to the other; sanitizing both keeps the
+            # mutation idempotent across either input shape.
+            compute_block = tdef.get("compute")
+            if isinstance(compute_block, dict) and isinstance(
+                compute_block.get("source"), str
+            ):
+                src0 = compute_block["source"]
+                sanitized, sub_warnings, _blockers = _sanitize_compute_js(src0)
+                if sanitized != src0:
+                    compute_block["source"] = sanitized
+                for w_label in sub_warnings:
+                    msg = f"widget '{wid}' compute.source: {w_label}"
+                    if msg not in warnings:
+                        warnings.append(msg)
+    return warnings
 
 
 def _check_compute_returns_all_outputs(
@@ -535,27 +712,32 @@ def _validate_tool_widget(w: Dict[str, Any], wbase: str,
         errs.append(_err(f"{wbase}.tool_def.compute.source",
                             "tool def compute.source is empty or missing"))
     else:
-        # Compile-time scan #1: Python literals leaked into compute_js.
-        # ALWAYS_BLOCKING because the runtime will hit a JS ReferenceError
-        # on every input change (right panel renders blank, red error
-        # strip in the tile shows `compute error: <token> is not defined`).
+        # Compile-time scan #1: Tier B Python literals leaked into compute_js.
+        # ALWAYS_BLOCKING because naive substitution would silently change
+        # values (JS Date is 0-indexed on month; JS Number is float64 -
+        # Decimal precision lossy). Tier A literals (None / True / False /
+        # nan / inf / numpy scalars) are auto-sanitized upstream of this
+        # scan via `_sanitize_compute_js` -- by the time this fires, the
+        # source is Tier A-clean and only Tier B residue can reach here.
         # Strips strings + comments first so legitimate JS strings
-        # containing the word "None" don't false-trip.
+        # containing 'Timestamp(' don't false-trip.
         leaked = _scan_compute_js_for_python_literals(src)
         if leaked:
             errs.append(_err(
                 f"{wbase}.tool_def.compute.source",
                 f"tool_compute_python_literal_in_js: compute_js contains "
-                f"Python literal(s) that JavaScript will hit as a "
-                f"ReferenceError at runtime: {leaked!r}. Likely cause: "
-                f"f-string interpolation of a Python value into the "
-                f"compute_js source when first composing the manifest "
-                f"dict. Fix: drive Python values through `inputs[].default` "
-                f"(the engine JSON-serialises defaults on render: "
-                f"None->null, True->true, Timestamp->ISO string), or "
-                f"`json.dumps()` before splicing if interpolation is "
-                f"unavoidable. compute_js itself should contain only JS "
-                f"literals. Skill rule: `dashboards/widget_tool.md` \u00a71."
+                f"Python literal(s) whose JS substitution would silently "
+                f"change values: {leaked!r}. Likely cause: f-string "
+                f"interpolation of a Python value into the compute_js "
+                f"source when first composing the manifest dict. Fix: "
+                f"drive these values through `inputs[].default` (the "
+                f"engine JSON-serialises defaults on render: Timestamp "
+                f"-> ISO string, Decimal -> float), or call `.isoformat()` "
+                f"/ `float()` before splicing. (The equivalence-preserving "
+                f"set None / True / False / nan / inf / numpy scalars is "
+                f"auto-sanitized by the engine -- PRISM does not need to "
+                f"remember Python-vs-JS dialect for these.) Skill rule: "
+                f"`dashboards/widget_tool.md` \u00a71."
             ))
 
         # Compile-time scan #2: declared output ids that don't appear as
@@ -2032,6 +2214,13 @@ def validate_manifest(
         for ce in compute_errors_inner:
             errs.append(ce)
         _augment_manifest(manifest)
+        # Tier A compute_js sanitization on the working layout (already
+        # deep-copied above so the caller's manifest is preserved). Tier B
+        # blocker patterns are NOT rewritten here -- they are detected
+        # downstream by `_validate_tool_widget`'s scan and emitted as
+        # the always-blocking `tool_compute_python_literal_in_js` error.
+        # See `_sanitize_compute_js` for the Tier A / Tier B split.
+        _sanitize_manifest_compute_js(manifest)
     except Exception:  # noqa: BLE001
         pass  # let validation report the issue
 
@@ -3713,6 +3902,7 @@ def prepare_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     _apply_computed_datasets(manifest)
     _apply_show_when_compile(manifest)
     _augment_manifest(manifest)
+    _sanitize_manifest_compute_js(manifest)
     return manifest
 
 
@@ -5001,13 +5191,17 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     "table_dataset_empty",
     "pivot_dataset_empty",
     "pivot_column_missing",
-    # Tool widget compute_js leaks: Python literal interpolated into JS
-    # source. Runtime hits `compute error: <token> is not defined` on
-    # every input change; right panel of tool tile renders blank.
-    # Validator-stage codes (string-error path); kept here for documentary
-    # completeness so any future CDD-stage emission of the same code is
-    # also always-blocking. See `_validate_tool_widget` for the scan +
-    # `dashboards/widget_tool.md` \u00a71 for the authoring rule.
+    # Tool widget compute_js leaks: Tier B Python literal in compute_js
+    # source whose JS substitution would silently change values
+    # (Timestamp / datetime / Decimal -- JS Date months are 0-indexed,
+    # JS Number is float64 lossy on Decimal). Runtime would hit
+    # `compute error: <token> is not defined` on every input change;
+    # right panel of tool tile renders blank. The Tier A set
+    # (None / True / False / nan / inf / numpy scalars) is auto-sanitized
+    # at compile time via `_sanitize_compute_js` and never reaches this
+    # code; only Tier B residue triggers the block. See
+    # `_validate_tool_widget` for the scan + `dashboards/widget_tool.md`
+    # \u00a71 for the authoring rule.
     "tool_compute_python_literal_in_js",
     # Tool widget output id missing from compute return literal: declared
     # output id has no `<id>:` key in compute source. Runtime renders the
@@ -7797,6 +7991,15 @@ def compile_dashboard(
     # contribute diagnostics, target counts, etc.).
     _apply_show_when_compile(manifest_dict)
     _augment_manifest(manifest_dict)
+    # Tier A compute_js sanitization (Principle #7). Auto-rewrite the
+    # equivalence-preserving Python literals (None / True / False / nan /
+    # inf / numpy scalars) to their JS spellings on the persisted source
+    # so PRISM never has to remember the dialect for these. Tier B
+    # patterns (Timestamp / datetime / Decimal) are NOT rewritten here --
+    # they continue to BLOCK at validate via `_validate_tool_widget`'s
+    # Tier B scan with the always-blocking `tool_compute_python_literal_in_js`
+    # code, because naive substitution would silently change values.
+    sanitize_warnings = _sanitize_manifest_compute_js(manifest_dict)
 
     # compile_dashboard is the user-facing build path; the four
     # always-on chrome buttons (Methodology / Refresh / Share /
@@ -7846,7 +8049,8 @@ def compile_dashboard(
         agg_warnings = (list(errs)
                          + list(compute_errors)
                          + [str(d) for d in shape_diags]
-                         + [str(d) for d in cdd_diags_pre])
+                         + [str(d) for d in cdd_diags_pre]
+                         + [f"compute_js sanitized: {w}" for w in sanitize_warnings])
         agg_diags = list(shape_diags) + list(cdd_diags_pre)
         # Construct a verbose ``error_message`` carrying every diagnostic
         # body so the canonical PRISM-side raise pattern --
@@ -7971,6 +8175,11 @@ def compile_dashboard(
         html_path.write_text(html, encoding="utf-8")
 
     warnings: List[str] = [str(d) for d in diags]
+    # Surface Tier A compute_js sanitization rewrites (Principle #7) so
+    # the rewrite is observable to the caller (PRISM logs them; the
+    # in-browser failure modal never sees them because compile succeeded).
+    for sw in sanitize_warnings:
+        warnings.append(f"compute_js sanitized: {sw}")
     if save_pngs:
         # pick a dir: explicit override, or alongside the html file
         resolved_png_dir: Optional[Path] = None

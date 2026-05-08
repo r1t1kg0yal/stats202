@@ -7,6 +7,8 @@
 
 A dashboard is a JSON manifest plus two small Python files. PRISM emits Python that produces structured JSON; the engine does the rest. **PRISM never writes HTML, CSS, or JavaScript** — every byte the browser sees is emitted by the rendering engine. The one exception is `tool_def.compute_js` (a JS string LITERAL embedded inside a Python dict that authors the manifest) — see §A's carve-out.
 
+**ECharts is the ONLY sanctioned path for PRISM dashboards.** `compile_dashboard(manifest)` and the v2 entry points (`run_pull` / `build_dashboard` / `refresh_dashboard`) are the entire surface. Hand-rolled HTML / CSS / JS, ad-hoc `make_chart` composites used as dashboards, third-party dashboard frameworks (plotly / bokeh / dash / streamlit / panel), or any "preview" / "quick HTML render" outside this engine produce undefined behaviour: no Refresh button, no portal embedding, no failure modal, no registry hooks, no validation gates, no shared brand, no auto-refresh, no community share. If the user asks for a "dashboard" / "monitor" / "tracker" / "screen" / "wrap", the answer is `compile_dashboard(manifest)` via §B. There is no other path. If a one-off PNG chart is what the user wants, that's Altair's `make_chart()` — not echarts, not a dashboard.
+
 One visual style only — Goldman Sachs brand: GS Navy `#002F6C`, PMS 652 Sky Blue `#7399C6`, Goldman Sans, thin grey grid on paper-white. No theme switcher.
 
 The engine surfaces three folder-operation entry points (`run_pull`, `build_dashboard`, `refresh_dashboard`) plus the compile primitives (`compile_dashboard`, `populate_template`, `manifest_template`, `validate_manifest`). Together they carry every dashboard operation. PRISM uses real Python imports — no namespace-injection gymnastics.
@@ -53,7 +55,7 @@ The hard rule: **PRISM authors `.py` files and `.json` dicts. PRISM does NOT aut
 
 #### A.1.1 The `tool_def.compute_js` carve-out
 
-`tool_def.compute_js` is a JS string LITERAL embedded inside the Python dict that authors the manifest — the same surface area as authoring SQL strings or JSON literals inside Python. That IS Python code (the file is `.py`, the string is data); it is NOT PRISM authoring a `.js` file. The validator codes `tool_compute_python_literal_in_js` + `tool_compute_missing_output_key` block the leak class at validate time (see `dashboards/widget_tool.md` §1). All other widget surfaces are pure JSON dicts authored from Python — already conformant.
+`tool_def.compute_js` is a JS string LITERAL embedded inside the Python dict that authors the manifest — the same surface area as authoring SQL strings or JSON literals inside Python. That IS Python code (the file is `.py`, the string is data); it is NOT PRISM authoring a `.js` file. The engine **auto-sanitizes** the equivalence-preserving Python literals (`None` → `null`, `True` → `true`, `False` → `false`, `nan` → `NaN`, `inf` → `Infinity`, numpy scalars cast to native numerics) at compile time — PRISM may type either dialect; the engine emits valid JS and `r.warnings` carries one entry per substitution so the rewrite is observable. The semantic-shifting set (`Timestamp(...)`, `datetime.date(...)`, `datetime.datetime(...)`, `Decimal(...)`) still blocks at validate via `tool_compute_python_literal_in_js` because naive substitution would silently change values (JS `Date` months are 0-indexed; `Number` is float64 — `Decimal` precision lossy); pass these through `inputs[].default = '<isoformat>'` or cast via `float()` first. `tool_compute_missing_output_key` blocks declared output ids that don't appear as `<id>:` keys in the compute return literal. All other widget surfaces are pure JSON dicts authored from Python — already conformant.
 
 ### A.2 Path decision by user-ask shape
 
@@ -746,7 +748,8 @@ os.makedirs(os.path.dirname(log_path), exist_ok=True)
 
 with open(log_path, "wb") as log_fh:
     proc = subprocess.Popen(
-        [sys.executable, REFRESH_RUNNER_PATH, "--folder", DASHBOARD_PATH],
+        [sys.executable, REFRESH_RUNNER_PATH,
+         "--folder", DASHBOARD_PATH, "--log-path", log_path],
         stdout=log_fh, stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
     )

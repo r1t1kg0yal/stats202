@@ -3,9 +3,17 @@
 
 Walks ``UserRegistry``, reads each user's ``dashboards_registry.json``,
 and spawns ``refresh_runner.py`` as a subprocess for each dashboard
-that is enabled and due. Per-dashboard isolation: a slow pull on one
-dashboard cannot block any other dashboard's refresh. After the
-subprocess pass, calls ``UserManifestManager.update_dashboard_pointer``
+that is enabled and due. Per-dashboard subprocess isolation:
+a failure / hang in one dashboard's refresh cannot CORRUPT another
+dashboard's state -- each refresh runs in its own Python interpreter
+with its own filesystem locks and S3 client. The cron walks dashboards
+SEQUENTIALLY (``proc.wait()`` blocks per dashboard); a slow Haver pull
+on dashboard A delays dashboard B on the same cron tick but does not
+crash it. ``_is_due`` thresholds (>=1h hourly / >=20h daily / >=160h
+weekly) keep tick volume small in steady state -- most ticks are no-ops
+because few dashboards cross their threshold simultaneously.
+
+After the subprocess pass, calls ``UserManifestManager.update_dashboard_pointer``
 once per kerberos that had at least one successful refresh, so the
 manifest pointer block (count / active_count / last_refreshed)
 doesn't drift across hourly ticks (per
@@ -99,8 +107,11 @@ def _user_registry_entries(kerberos: str) -> list:
 
 def _spawn_runner(folder: str, log_root: str = "/tmp/dashboard_refresh") -> dict:
     """Spawn ``refresh_runner.py --folder <folder> --log-path <log>`` and
-    BLOCK until it exits. Per-dashboard subprocess: a slow / hung pull
-    on one dashboard cannot stall the rest of the cron pass.
+    BLOCK until it exits. Per-dashboard subprocess isolation: a failure
+    or hang in one dashboard's refresh cannot CORRUPT another dashboard's
+    state. The cron walks dashboards SEQUENTIALLY -- ``proc.wait()`` blocks
+    on each spawn, so a slow Haver pull on dashboard A delays dashboard B
+    on the same cron tick but does not crash it.
 
     Returns ``{folder, returncode, elapsed_seconds, log_path}`` on a
     successful spawn, or ``{folder, returncode: -1, error, log_path}``
@@ -169,10 +180,13 @@ def _update_user_manifests(successful_kerberos: set) -> None:
 def main() -> int:
     """Walk every user, refresh every due dashboard via subprocess.
 
-    Per-dashboard isolation: each refresh runs in its own
-    ``refresh_runner.py`` subprocess so a stuck pull on dashboard A
-    cannot block dashboards B / C / D. Spawn-time failures on one
-    dashboard are caught and recorded; the cron continues.
+    Per-dashboard subprocess isolation: each refresh runs in its own
+    ``refresh_runner.py`` subprocess so a failure on dashboard A
+    cannot CORRUPT state on dashboards B / C / D. The walk is
+    SEQUENTIAL (``proc.wait()`` blocks per dashboard); a slow pull on
+    A delays B / C / D on the same cron tick but does not crash them.
+    Spawn-time failures on one dashboard are caught and recorded; the
+    cron continues to the next dashboard.
     """
     started = _utcnow()
     print(

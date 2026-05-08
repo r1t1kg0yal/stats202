@@ -62,6 +62,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Standard library
 # ---------------------------------------------------------------------------
+import colorsys
 import concurrent.futures
 import copy
 import hashlib
@@ -257,6 +258,38 @@ DIMENSION_PRESETS: Dict[str, Tuple[int, int]] = {
     "thumbnail": (300, 200),
     "teams": (420, 210),
 }
+
+# Title / subtitle text-budget calibration. Used by
+# ``_validate_and_wrap_text`` to compute (a) how many chars fit on one
+# line of a given chart-area width and (b) the hard total-length cap
+# above which the engine refuses to render. Calibrated empirically
+# against the dev/_probe_2pack_titles.py gallery: each slot has its
+# own font size, so each slot has its own pixel-per-character rate
+# (bigger font -> fewer chars fit per pixel of horizontal space).
+#
+# The four composite-specific slot kinds give the composite a real
+# typographic hierarchy: a larger composite super-title (32px), a
+# medium super-subtitle (22px), a notably smaller per-chart title
+# (18px) so the per-panel headers defer to the composite header above
+# them, and the existing 10px per-chart subtitle. ``make_chart``'s
+# standalone title still uses the generic ``"title"`` slot at the
+# skin's default 26px.
+_TEXT_PX_PER_CHAR: Dict[str, float] = {
+    # Generic single-chart slots (make_chart standalone, 26px / 14px).
+    "title":    6.8,
+    "subtitle": 5.1,
+    # Composite-specific slots. Per-char rates scale with font size --
+    # bigger fonts take more horizontal pixels per character.
+    "composite_super_title":    8.0,   # 32px bold
+    "composite_super_subtitle": 6.0,   # 22px medium
+    "subchart_title":           4.5,   # 18px bold inside a panel
+    "subchart_subtitle":        3.5,   # 10px regular inside a panel
+}
+# Hard cap on the number of wrapped lines a single title or subtitle
+# slot may produce. Anything that would wrap to more than this is
+# rejected with a helpful ValueError. Two lines is the convention
+# financial-report titles use: title-on-line-1, qualifier-on-line-2.
+_TEXT_LINE_CAP: int = 2
 
 # ``AVAILABLE_SKINS`` is defined later (Stage: SKINS) once the GS_CLEAN
 # config dict is constructed.
@@ -1195,6 +1228,15 @@ _OBVIOUS_HLINE_THRESHOLDS: Dict[float, str] = {
     50.0: "PMI/ISM expansion-contraction threshold (universally known)",
     2.0: "Fed 2% inflation target (universally known)",
 }
+
+
+# Fraction of the data's x-range from the right edge inside which any
+# ``VLine`` annotation is auto-rejected. The chart's right edge IS the
+# latest x value -- a marker placed in the right-most 5% of the data
+# (e.g. a "Today" / "Now" / latest-event VLine) reads as the chart edge
+# itself rather than as an event, adding clutter without information.
+# ``render_annotations`` silently drops these and warns via the logger.
+_VLINE_RIGHT_EDGE_REJECT_FRAC: float = 0.05
 
 
 def _resolve_axis_type(df: pd.DataFrame, col: str) -> str:
@@ -2525,7 +2567,7 @@ class LastValueLabel(Annotation):
     dot_size: int = 60
     dot_color: Optional[str] = None
     dx: int = 6
-    font_size: int = 10
+    font_size: int = 12
     font_weight: Literal["normal", "bold"] = "normal"
     include_right_axis: bool = False
     """Obsolete since 2026-05-05 -- LastValueLabel is now stripped on
@@ -2614,7 +2656,29 @@ class LastValueLabel(Annotation):
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
 
-        color_scale = _get_color_scale(skin)
+        # Per-row precomputed label colors: Vega-Lite defaults to ``shared``
+        # color-scale resolution across layers, so declaring a separate
+        # ``alt.Scale(range=darkened)`` on the LVL inner layers is silently
+        # overridden by the base line chart's lighter palette when the LVL
+        # output is layered into the parent in ``render_annotations``.
+        # Resolving this with ``resolve_scale(color='independent')`` would
+        # also break legitimate shared-color encodings on other annotation
+        # types (Trendline, etc.). Instead, materialize the darkened color
+        # per row and encode with ``scale=None`` so Vega-Lite uses the
+        # literal hex values directly and bypasses scale merging entirely.
+        # Slot index follows the sorted-unique convention Vega-Lite applies
+        # by default to nominal color domains, so the LVL slot-to-series
+        # mapping matches the line layer's mapping one-to-one.
+        scheme = skin.get("color_scheme", GS_CLEAN["color_scheme"])
+        dark_scheme = [_darken_color_for_label(c) for c in scheme]
+        unique_series = sorted(last_rows[color_field].astype(str).unique())
+        series_to_dark: Dict[str, str] = {
+            s: dark_scheme[i % len(dark_scheme)]
+            for i, s in enumerate(unique_series)
+        }
+        last_rows["_label_color"] = (
+            last_rows[color_field].astype(str).map(series_to_dark)
+        )
 
         # Route each series to the correct axis. On a dual-axis chart the
         # layered chart resolves y as ``independent``; LVL emits one
@@ -2700,7 +2764,7 @@ class LastValueLabel(Annotation):
                         alt.value(self.dot_color)
                         if self.dot_color
                         else alt.Color(
-                            f"{color_field}:N", scale=color_scale, legend=None,
+                            "_label_color:N", scale=None, legend=None,
                         )
                     ),
                 )
@@ -2724,7 +2788,7 @@ class LastValueLabel(Annotation):
                         alt.value(self.label_color)
                         if self.label_color
                         else alt.Color(
-                            f"{color_field}:N", scale=color_scale, legend=None,
+                            "_label_color:N", scale=None, legend=None,
                         )
                     ),
                 )
@@ -3254,6 +3318,91 @@ def _auto_stagger_band_labels(
         )
 
     return new_annotations
+
+
+def _drop_right_edge_vlines(
+    annotations: List[Annotation],
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+) -> List[Annotation]:
+    """Drop ``VLine`` annotations whose ``x`` falls in the right-most
+    ``_VLINE_RIGHT_EDGE_REJECT_FRAC`` (5%) of the data's x-range.
+
+    Runs BEFORE ``_auto_stagger_vline_labels`` so a clustered labeled
+    VLine in the right-edge zone never has its label extracted into a
+    surviving ``PointLabel`` -- both the line AND the label drop
+    together. The chart's right edge IS the latest x value, so a
+    marker placed there reads as the chart edge itself rather than as
+    an event. Pure deterministic reject; the LEFT edge is unchanged
+    because the user typically picks a meaningful start date.
+
+    Datetime and numeric x-axes are filtered. Nominal x-axes (e.g.
+    yield-curve tenors) fall through unchanged -- the same shape as
+    the existing VLine out-of-range filter inside
+    ``render_annotations``.
+    """
+    if not annotations:
+        return annotations
+    if not any(isinstance(a, VLine) for a in annotations):
+        return annotations
+
+    x_col = mapping.get("x", "x")
+    if x_col not in df.columns or len(df) == 0:
+        return annotations
+
+    is_dt = pd.api.types.is_datetime64_any_dtype(df[x_col])
+    is_num = pd.api.types.is_numeric_dtype(df[x_col])
+    if not (is_dt or is_num):
+        return annotations
+
+    try:
+        if is_dt:
+            x_min = df[x_col].min()
+            x_max = df[x_col].max()
+            x_range = x_max - x_min
+            right_band = (
+                x_range * _VLINE_RIGHT_EDGE_REJECT_FRAC
+                if x_range.total_seconds() > 0
+                else pd.Timedelta(0)
+            )
+        else:
+            x_min = float(df[x_col].min())
+            x_max = float(df[x_col].max())
+            x_range = x_max - x_min
+            right_band = (
+                x_range * _VLINE_RIGHT_EDGE_REJECT_FRAC
+                if x_range > 0
+                else 0.0
+            )
+        threshold = x_max - right_band
+    except Exception:  # noqa: BLE001
+        return annotations
+
+    kept: List[Annotation] = []
+    for ann in annotations:
+        if not isinstance(ann, VLine):
+            kept.append(ann)
+            continue
+        try:
+            vline_val = pd.Timestamp(ann.x) if is_dt else float(ann.x)
+        except (TypeError, ValueError):
+            kept.append(ann)
+            continue
+        if vline_val >= threshold:
+            logger.warning(
+                "Suppressed VLine at x=%s: in the right-most %d%% of "
+                "the data range [%s, %s]. The chart's right edge IS "
+                "the latest x value, so a marker there reads as the "
+                "chart edge itself rather than as an event. Move the "
+                "annotation earlier or call the date / value out in "
+                "the title / subtitle.",
+                ann.x,
+                int(_VLINE_RIGHT_EDGE_REJECT_FRAC * 100),
+                x_min, x_max,
+            )
+            continue
+        kept.append(ann)
+    return kept
 
 
 def _auto_stagger_vline_labels(
@@ -3962,6 +4111,11 @@ def render_annotations(
       2. Auto-stagger colliding Band / VLine labels.
       3. Drop HLines at universally-known thresholds (zero, PMI 50, Fed 2%).
       4. Drop VLines / HLines that fall outside the visible data range.
+         (Right-edge VLines in the right-most 5% of the data range run
+         through ``_drop_right_edge_vlines`` upstream, BEFORE the
+         auto-stagger pass, so a clustered labeled VLine in the
+         right-edge zone doesn't have its label extracted into a
+         surviving ``PointLabel``.)
       5. Encode dual-axis HLines / Segments / PointHighlights / Callouts
          against the correct y field (left or right).
       6. ``PlotText`` annotations are layered using ``alt.value(px)``
@@ -4215,6 +4369,11 @@ def render_annotations(
 
     layers: List[alt.Chart] = [chart]
 
+    # ---- right-edge VLine reject (runs BEFORE staggering so a clustered
+    # ----  labeled VLine in the right-edge zone doesn't have its label
+    # ----  extracted into a surviving PointLabel) -----------------------
+    annotations = _drop_right_edge_vlines(annotations, df, mapping)
+
     # ---- auto-stagger ---------------------------------------------------
     annotations = _auto_stagger_band_labels(annotations, df, mapping, clamped_domain)
     annotations = _auto_stagger_vline_labels(annotations, df, mapping, clamped_domain)
@@ -4435,6 +4594,13 @@ def render_annotations(
                     continue
 
         # ---- out-of-range filtering: VLine ------------------------------
+        # The right-most 5% reject for VLine runs upstream in
+        # ``_drop_right_edge_vlines`` (called BEFORE the auto-stagger
+        # pass) so that a clustered labeled VLine in the right-edge zone
+        # doesn't have its label extracted into a surviving PointLabel.
+        # This block keeps the OUT-OF-RANGE drop only -- VLines whose x
+        # sits outside the data range plus 10% padding would stretch the
+        # x scale and create whitespace.
         if isinstance(annotation, VLine):
             x_col = mapping.get("x", "x")
             if x_col in df.columns:
@@ -6469,44 +6635,143 @@ def _wrap_text_to_width(text: str, width_px: int, font_size: int) -> str:
     return "\n".join(out_lines)
 
 
-def _wrap_title_for_width(title: str, width_px: int) -> List[str]:
-    """Word-wrap a title so it fits inside ``width_px``.
+def _chars_per_line(slot_kind: str, width_px: int) -> int:
+    """Return the soft chars-per-line budget for ``slot_kind`` at ``width_px``.
 
-    Bold sans-serif at ~26px averages ~14px per character; we leave a
-    little headroom because the title is left-anchored and the chart
-    renders side margins. A title longer than this budget is split into
-    multiple lines on word boundaries (or hard-broken when a single word
-    is wider than the budget).
-
-    Explicit ``\\n`` characters in ``title`` force a hard line break and
-    are honored (each segment is independently wrapped to ``width_px``).
+    ``slot_kind`` is either ``"title"`` or ``"subtitle"``. Anything else
+    falls back to the title (more conservative) calibration.
     """
-    if not title:
-        return [title or ""]
-    chars_per_line = max(20, int(width_px / 14))
+    px_per_char = _TEXT_PX_PER_CHAR.get(slot_kind, _TEXT_PX_PER_CHAR["title"])
+    return max(20, int(width_px / px_per_char))
+
+
+def _wrap_text_at_width(text: str, chars_per_line: int) -> List[str]:
+    """Pure word-wrap helper: wrap ``text`` to lines of ``chars_per_line``.
+
+    Tokens longer than ``chars_per_line`` are hard-broken at the limit so
+    a single non-breaking word (e.g. a URL) cannot blow past the budget.
+    Does NOT inspect ``\\n`` -- callers should split on newlines first if
+    they want to honour explicit line breaks.
+    """
+    tokens: List[str] = []
+    for raw in str(text).split():
+        if len(raw) > chars_per_line:
+            for i in range(0, len(raw), chars_per_line):
+                tokens.append(raw[i : i + chars_per_line])
+        else:
+            tokens.append(raw)
+    if not tokens:
+        return [""]
     out_lines: List[str] = []
-    for segment in str(title).split("\n"):
-        # Hard-break any token longer than chars_per_line BEFORE wrapping
-        # so a single 200-char no-space title doesn't blow past width_px.
-        tokens: List[str] = []
-        for raw in segment.split():
-            if len(raw) > chars_per_line:
-                for i in range(0, len(raw), chars_per_line):
-                    tokens.append(raw[i : i + chars_per_line])
-            else:
-                tokens.append(raw)
-        if not tokens:
-            out_lines.append("")
-            continue
-        current = tokens[0]
-        for word in tokens[1:]:
-            if len(current) + 1 + len(word) <= chars_per_line:
-                current = f"{current} {word}"
-            else:
-                out_lines.append(current)
-                current = word
-        out_lines.append(current)
-    return out_lines or [""]
+    current = tokens[0]
+    for word in tokens[1:]:
+        if len(current) + 1 + len(word) <= chars_per_line:
+            current = f"{current} {word}"
+        else:
+            out_lines.append(current)
+            current = word
+    out_lines.append(current)
+    return out_lines
+
+
+def _validate_and_wrap_text(
+    text: Optional[str],
+    *,
+    slot_kind: str,
+    width_px: int,
+    slot_label: str,
+    widening_hint: Optional[str] = None,
+) -> Optional[List[str]]:
+    """Validate length + auto-wrap a title or subtitle to fit ``width_px``.
+
+    Two-stage policy that pairs a soft-wrap budget with a hard length
+    cap, on the philosophy that the engine should absorb friction PRISM
+    would otherwise have to pre-format around (Design Principle #7):
+
+      * Below ``_chars_per_line(slot_kind, width_px)``: render single
+        line.
+      * Above per-line but below ``per_line * _TEXT_LINE_CAP`` total
+        chars: word-wrap into 1..2 lines and render multi-line.
+      * Above the hard cap, OR contains so many explicit ``\\n`` that the
+        wrapped output would be more than ``_TEXT_LINE_CAP`` lines:
+        raise ``ValueError`` with a message naming the slot, the limit,
+        and concrete suggestions for shortening.
+
+    Explicit ``\\n`` in ``text`` is honoured as a manual line break
+    (auto-wrap is skipped for such inputs -- PRISM is taking control of
+    the line breaks). The hard total-length cap still applies.
+
+    Args:
+        text: The user-provided title or subtitle. ``None`` / empty
+            returns ``None``.
+        slot_kind: ``"title"`` or ``"subtitle"`` -- selects the per-char
+            pixel budget used to compute ``chars_per_line``.
+        width_px: Horizontal pixel budget the text needs to fit inside.
+            For ``make_chart`` this is the chart's panel width; for a
+            sub-chart inside a composite this is the per-panel width
+            from ``COMPOSITE_DIMENSIONS``; for a composite super-title
+            this is the total chart-area width spanned by the layout.
+        slot_label: Human-friendly slot name used in the error message
+            (e.g. ``"composite super-title"``).
+        widening_hint: Optional extra suggestion appended to the error
+            message (e.g. naming a wider ``dimension_preset``).
+
+    Returns:
+        ``None`` if ``text`` is empty.
+        A 1- or 2-element list of strings otherwise. Callers pass the
+        list directly to ``alt.TitleParams(text=...)`` (Vega-Lite
+        accepts a list of strings as a multi-line title) or unwrap to a
+        single string when ``len(result) == 1``.
+
+    Raises:
+        ValueError: when ``text`` exceeds the slot's hard char limit or
+            wraps to more than ``_TEXT_LINE_CAP`` lines.
+    """
+    if not text:
+        return None
+    s = str(text)
+    cpl = _chars_per_line(slot_kind, width_px)
+    hard_cap = cpl * _TEXT_LINE_CAP
+
+    if len(s) > hard_cap:
+        suggestions = [
+            "shorten the text",
+            (
+                "move detail into the subtitle slot (subtitles get a "
+                "wider per-line budget)"
+            )
+            if slot_kind == "title"
+            else "split the subtitle across multiple shorter sentences",
+        ]
+        if widening_hint:
+            suggestions.append(widening_hint)
+        raise ValueError(
+            f"{slot_label} is {len(s)} characters; the maximum at "
+            f"width {width_px}px is {hard_cap} characters "
+            f"({cpl} per line, max {_TEXT_LINE_CAP} lines after "
+            f"auto-wrap). Try one of: " + "; ".join(suggestions) + "."
+        )
+
+    if "\n" in s:
+        lines = [seg.strip() for seg in s.split("\n") if seg.strip()]
+    else:
+        lines = _wrap_text_at_width(s, cpl)
+
+    if len(lines) > _TEXT_LINE_CAP:
+        suggestions = [
+            "shorten the text",
+            "use fewer explicit \\n breaks",
+        ]
+        if widening_hint:
+            suggestions.append(widening_hint)
+        raise ValueError(
+            f"{slot_label} wraps to {len(lines)} lines at width "
+            f"{width_px}px (max {_TEXT_LINE_CAP} lines, "
+            f"{cpl} chars per line). Try one of: "
+            + "; ".join(suggestions) + "."
+        )
+
+    return lines
 
 
 def calculate_tick_values(
@@ -7130,6 +7395,49 @@ def _get_color_scale(skin_config: Dict[str, Any]) -> alt.Scale:
     """Build an ``alt.Scale`` from the skin's color scheme."""
     scheme = skin_config.get("color_scheme", GS_CLEAN["color_scheme"])
     return alt.Scale(range=scheme)
+
+
+def _darken_color_for_label(
+    color_hex: str,
+    factor: float = 0.6,
+    floor: float = 0.18,
+) -> str:
+    """Return a darker variant of ``color_hex`` suitable for label text.
+
+    The line color in the gs_clean palette is tuned for the line itself
+    (slot 2 ``#B9D9EB`` light blue, slot 3 ``#729FCF`` mid blue, slot 4
+    ``#A6A6A6`` grey) -- those values sit at the top of the readable
+    range for line strokes against a white background, but reuse as
+    on-chart label text drops the text just below comfortable reading
+    contrast. ``LastValueLabel`` calls this to produce a label/dot
+    color that keeps the series' hue and saturation (so the visual
+    line-to-label mapping survives) while pulling lightness down to a
+    contrast-safe band. Lines themselves render with the original
+    palette unchanged.
+
+    The transform is HSL-lightness scaling with a floor: ``new_L =
+    max(L * factor, floor)``. The floor stops already-dark slots
+    (slot 1 navy ``#003359`` at L~17%) from collapsing into pure
+    black; the multiplicative factor scales light slots aggressively
+    so the readability gap is closed where the problem actually is.
+    """
+    hex_str = color_hex.lstrip("#")
+    if len(hex_str) != 6:
+        return color_hex
+    try:
+        r = int(hex_str[0:2], 16) / 255.0
+        g = int(hex_str[2:4], 16) / 255.0
+        b = int(hex_str[4:6], 16) / 255.0
+    except ValueError:
+        return color_hex
+    h, l_val, s = colorsys.rgb_to_hls(r, g, b)
+    new_l = max(l_val * factor, floor)
+    nr, ng, nb = colorsys.hls_to_rgb(h, new_l, s)
+    return "#{:02X}{:02X}{:02X}".format(
+        int(round(nr * 255)),
+        int(round(ng * 255)),
+        int(round(nb * 255)),
+    )
 
 
 # ===========================================================================
@@ -12277,10 +12585,28 @@ def make_chart(
     # ---- Title / subtitle / skin config ---------------------------------
     chart_props: Dict[str, Any] = {}
     if title:
-        title_lines = _wrap_title_for_width(title, width)
-        subtitle_lines = (
-            _wrap_title_for_width(subtitle, width) if subtitle else None
-        )
+        try:
+            title_lines = _validate_and_wrap_text(
+                title, slot_kind="title", width_px=width,
+                slot_label="make_chart() title",
+                widening_hint=(
+                    "use a wider dimension_preset (e.g. 'wide' or "
+                    "'presentation')"
+                ),
+            )
+            subtitle_lines = _validate_and_wrap_text(
+                subtitle, slot_kind="subtitle", width_px=width,
+                slot_label="make_chart() subtitle",
+                widening_hint=(
+                    "use a wider dimension_preset (e.g. 'wide' or "
+                    "'presentation')"
+                ),
+            )
+        except ValueError as exc:
+            return ChartResult(
+                chart_type=chart_type, skin=skin, success=False,
+                error_message=str(exc), warnings=warnings,
+            )
         # Always emit TitleParams with explicit anchor='start' so that
         # when the chart is later wrapped in an hconcat (side panels) the
         # title remains start-aligned to the chart's plot region instead
@@ -12288,7 +12614,8 @@ def make_chart(
         # anchors the title to the chart group bounds (axes + plot area)
         # rather than the outer composition bounds.
         title_text: Any = (
-            title_lines if len(title_lines) > 1 else title_lines[0]
+            title_lines if title_lines and len(title_lines) > 1
+            else (title_lines[0] if title_lines else title)
         )
         if subtitle_lines:
             chart_props["title"] = alt.TitleParams(
@@ -12762,14 +13089,59 @@ def _build_single_chart(
         chart_type, df, mapping, skin_config, width, height, spec.layers
     )
 
-    # Per-sub-chart title/subtitle.
+    # Per-sub-chart title/subtitle. Length-validated + auto-wrapped so a
+    # long ``ChartSpec.title`` doesn't blow past the panel boundary the
+    # composite reserved for it. ValueError propagates to make_composite,
+    # which collects it into ``chart_errors`` and renders survivors.
+    #
+    # The explicit ``fontSize`` / ``subtitleFontSize`` overrides are what
+    # make the composite hierarchy read as a hierarchy: per-chart titles
+    # are deliberately smaller than the composite super-title (set in
+    # ``make_composite``) so the eye lands on the super-title first and
+    # the per-panel titles second. Without these overrides Altair would
+    # inherit the skin's 26px default, which sits within 2px of the
+    # super-title and flattens the visual order.
     if spec.title:
-        if spec.subtitle:
+        title_lines = _validate_and_wrap_text(
+            spec.title, slot_kind="subchart_title", width_px=width,
+            slot_label=f"ChartSpec.title ({spec.chart_type!r})",
+            widening_hint=(
+                "use a wider dimension_preset (e.g. 'wide')"
+            ),
+        )
+        subtitle_lines = _validate_and_wrap_text(
+            spec.subtitle, slot_kind="subchart_subtitle",
+            width_px=width,
+            slot_label=f"ChartSpec.subtitle ({spec.chart_type!r})",
+            widening_hint=(
+                "use a wider dimension_preset (e.g. 'wide')"
+            ),
+        )
+        title_text: Any = (
+            title_lines if title_lines and len(title_lines) > 1
+            else (title_lines[0] if title_lines else spec.title)
+        )
+        if subtitle_lines:
+            subtitle_text: Any = (
+                subtitle_lines
+                if len(subtitle_lines) > 1
+                else subtitle_lines[0]
+            )
             chart = chart.properties(
-                title=alt.TitleParams(text=spec.title, subtitle=spec.subtitle)
+                title=alt.TitleParams(
+                    text=title_text,
+                    subtitle=subtitle_text,
+                    fontSize=18,
+                    subtitleFontSize=10,
+                )
             )
         else:
-            chart = chart.properties(title=spec.title)
+            chart = chart.properties(
+                title=alt.TitleParams(
+                    text=title_text,
+                    fontSize=18,
+                )
+            )
 
     # Annotations.
     if spec.annotations:
@@ -13628,6 +14000,44 @@ def make_composite(
     layout_dims = COMPOSITE_DIMENSIONS.get(layout_family, COMPOSITE_DIMENSIONS["4_grid"])
     chart_width, chart_height = layout_dims.get(dimension_preset, (350, 280))
 
+    # Pre-validate the composite super-title and super-subtitle so a
+    # too-long string fails the whole composite fast (rather than
+    # letting sub-chart building succeed and only blowing up when the
+    # title is applied at the bottom of this function). The super-title
+    # spans the widest row of the layout: ``cols * chart_width +
+    # (cols - 1) * spacing``.
+    super_title_lines: Optional[List[str]] = None
+    super_subtitle_lines: Optional[List[str]] = None
+    if title or subtitle:
+        super_cols, _super_rows = _layout_grid_shape(layout, n_charts)
+        super_title_width = (
+            super_cols * chart_width + max(0, super_cols - 1) * spacing
+        )
+        try:
+            super_title_lines = _validate_and_wrap_text(
+                title, slot_kind="composite_super_title",
+                width_px=super_title_width,
+                slot_label="composite super-title",
+                widening_hint=(
+                    "use a wider dimension_preset (e.g. 'wide') so the "
+                    "title row gets more horizontal pixels"
+                ),
+            )
+            super_subtitle_lines = _validate_and_wrap_text(
+                subtitle, slot_kind="composite_super_subtitle",
+                width_px=super_title_width,
+                slot_label="composite super-subtitle",
+                widening_hint=(
+                    "use a wider dimension_preset (e.g. 'wide')"
+                ),
+            )
+        except ValueError as exc:
+            return CompositeResult(
+                png_path=None, layout=layout, n_charts=n_charts,
+                success=False, error_message=str(exc),
+                warnings=warnings_list, skin=skin,
+            )
+
     # Pre-compute a consensus x-axis label rotation so every temporal
     # sub-chart shares the same tick angle. Without this, panels with
     # different time spans render with mismatched axes (one horizontal,
@@ -13746,17 +14156,42 @@ def make_composite(
                 warnings=warnings_list, skin=skin, chart_errors=chart_errors,
             )
 
-    # Top-level title.
-    if title:
+    # Top-level title. Uses the lines from the upfront-validated
+    # super_title_lines / super_subtitle_lines so a wrapped title
+    # renders as multi-line (Vega-Lite accepts a List[str] as a
+    # multi-line title body) and a too-long title would have already
+    # short-circuited above with CompositeResult(success=False).
+    if super_title_lines:
         title_props: Dict[str, Any] = {
-            "text": title,
-            "fontSize": skin_config.get("title_font_size", 26) + 2,
+            "text": (
+                super_title_lines
+                if len(super_title_lines) > 1
+                else super_title_lines[0]
+            ),
+            # Composite super-title fontSize is set explicitly (not
+            # ``skin.title_font_size + N``) because the composite
+            # hierarchy needs a clear typographic ladder against the
+            # 18px per-chart titles set in ``_build_single_chart``. 32
+            # is ~78% larger than 18 -- big enough that the eye lands
+            # on the super-title first.
+            "fontSize": 32,
             "font": skin_config.get("font_family", "Liberation Sans, Arial, sans-serif"),
             "anchor": "middle",
+            # ``offset`` is the orthogonal pixel gap between the title
+            # block and the chart-area below it. Vega-Lite's default is
+            # ~4-14px which leaves the composite super-title sitting
+            # almost on top of the per-sub-chart titles in a 4-level
+            # hierarchy. Bump to leave clear breathing room between the
+            # composite header and the per-panel headers below.
+            "offset": 20,
         }
-        if subtitle:
-            title_props["subtitle"] = subtitle
-            title_props["subtitleFontSize"] = skin_config.get("title_font_size", 26) - 2
+        if super_subtitle_lines:
+            title_props["subtitle"] = (
+                super_subtitle_lines
+                if len(super_subtitle_lines) > 1
+                else super_subtitle_lines[0]
+            )
+            title_props["subtitleFontSize"] = 22
             title_props["subtitleColor"] = "#666666"
         composite = composite.properties(title=title_props)
 

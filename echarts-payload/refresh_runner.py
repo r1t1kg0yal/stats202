@@ -52,6 +52,7 @@ from ai_development.dashboards import build_dashboard, run_pull
 # Copy-for-PRISM markdown surface "which phase blew up" without the
 # runner having to re-introspect the traceback.
 _PHASE_PULL_PREFIX = "scripts/pull_data.py"
+_PHASE_PULL_LOAD   = "scripts/pull_data.py::<load>"  # module-level imports + PULLS dict literal
 _PHASE_BUILD       = "scripts/build.py"
 _PHASE_PARSE       = "<argparse>"
 
@@ -179,10 +180,15 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
 
     final_status = "error"
     errors: list = []
-    failing_phase = _PHASE_PULL_PREFIX  # default attribution if pre-pull blows up
+    failing_phase = _PHASE_PULL_LOAD  # default attribution if module-level load blows up
 
     try:
-        # Phase 1: enumerate pulls + run each via the engine entry point
+        # Phase 1: enumerate pulls + run each via the engine entry point.
+        # _list_pulls execs pull_data.py at module level (imports + PULLS
+        # dict literal) so an import failure / syntax error here surfaces
+        # under _PHASE_PULL_LOAD before any pull runs. Once we have the
+        # pull names, each iteration retags failing_phase to the specific
+        # pull about to run.
         pull_names = _list_pulls(folder)
         for name in pull_names:
             failing_phase = f"{_PHASE_PULL_PREFIX}::{name}"

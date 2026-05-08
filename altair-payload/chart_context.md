@@ -275,6 +275,16 @@ If data is unavailable, skip the panel (smaller composite) or add a text
 annotation. Never use `np.zeros()` as fallback -- it produces misleading
 flat lines at 0.
 
+### 4.8 Title/subtitle length: 2-line cap, auto-wrap
+
+Title and subtitle slots (on `make_chart`, `ChartSpec`, and every
+`make_*pack_*` composite) auto-wrap to a max of 2 lines and reject input
+that would wrap longer. The engine reports the exact char limit in the
+error message; PRISM does not need to remember per-preset numbers.
+Explicit `\n` is honored as a manual line break (and counts toward the
+2-line cap). On rejection, shorten, move detail into the subtitle slot
+(subtitles get more chars per line), or pick a wider `dimension_preset`.
+
 ---
 
 ## 5. profile_df: pre-charting DataFrame analysis
@@ -586,7 +596,7 @@ annotation?" If no, omit.
 | Any annotation whose data coordinate falls outside the visible plot domain — `Band(y1=A, y2=B)` with one edge above the data, `Segment` / `Arrow` with an endpoint above the data, `PointLabel` / `PointHighlight` / `Callout` at an off-data coordinate | Vega-Lite's shared scale expands to include the offending coordinate, stretching the chart frame and pushing the title up to make room | Engine drops the annotation silently. Keep all annotation coordinates inside the data range; for narrative thresholds outside the data, use the title / subtitle. For full-axis horizontal lines use `HLine` (drops if `y` is outside but doesn't stretch). For "highlight a band above X" patterns, clamp the band's upper edge to the data's max — `Band(y1=X, y2=df['value'].max())` — instead of using an arbitrary upper bound |
 | `HLine(y=2.0, label='Fed 2% Target')` on inflation chart | Every macro reader knows the 2% target | Use the title: "Core PCE Still 80bp Above Target" |
 | `HLine(y=last_value)` to label the latest reading | `LastValueLabel` already does this | Use `LastValueLabel(show_value=True)` |
-| `VLine` at the latest data point labeled "Today" / "Now" | The chart's right edge IS today | Omit |
+| `VLine` whose `x` falls in the right-most 5% of the data range (e.g., a "Today" / "Now" marker at the latest data point, an event marker on the last bar) | The chart's right edge IS the latest x value -- a marker placed there reads as the chart edge itself, not as an event | Engine drops it silently, label included. If the date matters, call it out in the title / subtitle (`"As of <date>"`). The 5% reject is positional (data range, not viewport) and applies to datetime and numeric x-axes only |
 | `PointLabel` / `Callout` describing slope ("rising", "falling", "flat") | The line's slope conveys this | Omit; use the title to make the directional claim |
 | `Band` covering the entire visible range, labeled "Sample period" | The whole chart IS the sample | Omit |
 | Threshold lines at round numbers (`HLine(y=50)`, `HLine(y=100)`) chosen for visual reference | Round numbers carry no information unless they are policy / regime / target levels | Omit unless the threshold itself is the story |
