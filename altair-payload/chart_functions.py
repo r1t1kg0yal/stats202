@@ -145,6 +145,7 @@ DimensionPreset = Literal[
     "presentation",  # 900x500 - Large, for slides
     "thumbnail",     # 300x200 - Very small preview
     "teams",         # 420x210 - Required for Teams medium thumbnails
+    "page_grid",     # facet-grid only -- auto-sized per (rows, cols)
 ]
 
 
@@ -257,7 +258,46 @@ DIMENSION_PRESETS: Dict[str, Tuple[int, int]] = {
     "presentation": (900, 500),
     "thumbnail": (300, 200),
     "teams": (420, 210),
+    # ``page_grid`` is a sentinel: actual panel dims are derived from
+    # the facet grid shape (rows, cols) at render time. The tuple here
+    # is the USABLE composite outer area on US Letter portrait
+    # (~1200 x 1600 px) that ``_resolve_facet_panel_dims`` divides up.
+    # Sized so a 5x4 grid lands at ~260x280 per panel after default
+    # 50px inter-panel spacing -- intentionally airy so the small-
+    # multiples grid reads as a print-paper layout, not a packed
+    # dashboard.
+    "page_grid": (1200, 1600),
 }
+
+
+# ---------------------------------------------------------------------------
+# Facet-grid (small-multiples) constants
+# ---------------------------------------------------------------------------
+
+# Chart types that support ``mapping['facet']``. Single-distribution and
+# matrix shapes are rejected because their natural expression is a single
+# canvas rather than a panel grid.
+_FACET_VALID_CHART_TYPES: frozenset = frozenset({
+    "multi_line", "timeseries",
+    "scatter", "scatter_multi",
+    "bar", "bar_horizontal",
+    "area",
+    "histogram",
+})
+
+# Hard cap on grid size. Beyond 6x6, per-panel readability collapses;
+# PRISM should aggregate or switch to a heatmap.
+_FACET_HARD_CAP: int = 36
+
+# Soft warning threshold. 25-35 panels render but emit a warning
+# nudging PRISM to consider aggregation.
+_FACET_SOFT_WARN_THRESHOLD: int = 25
+
+# Default spacing between facet panels (px). Wider than make_*pack_*
+# composites because facet grids on letter portrait want real breathing
+# room between panels -- inter-panel whitespace is what makes a 5x4
+# country grid scan as small-multiples rather than as a busy mosaic.
+_FACET_DEFAULT_SPACING: int = 50
 
 # Title / subtitle text-budget calibration. Used by
 # ``_validate_and_wrap_text`` to compute (a) how many chars fit on one
@@ -779,22 +819,37 @@ def validate_plot_ready_df(
     # render as the same color). Reject up-front rather than silently produce
     # an unreadable chart. Donut is exempt because its slices are always
     # visually grouped + labelled by the legend.
+    #
+    # TEMPORAL / NUMERIC color columns are also exempt because the engine
+    # auto-switches them to a sequential gradient palette (viridis / turbo /
+    # etc.) where every point gets a unique color from a continuous scale --
+    # the 12-color cap doesn't apply and "many distinct values" is the
+    # whole point (phase-space plots show evolution by gradient).
     color_field = _get_field(mapping, "color")
     if (
         color_field
         and color_field in df.columns
         and chart_type not in {"donut"}
     ):
-        cardinality = df[color_field].nunique()
-        if cardinality > MAX_COLOR_CARDINALITY:
-            raise ValidationError(
-                f"Color column '{color_field}' has {cardinality} unique values, "
-                f"exceeding MAX_COLOR_CARDINALITY={MAX_COLOR_CARDINALITY}. "
-                f"The GS palette only has {MAX_COLOR_CARDINALITY} colors; "
-                f"beyond this point series repeat hues and become indistinguishable. "
-                f"Filter to top-{MAX_COLOR_CARDINALITY} categories first, e.g. "
-                f"`df = top_k_categories(df, '{color_field}', k={MAX_COLOR_CARDINALITY})`."
+        color_series = df[color_field]
+        is_gradient_color = (
+            pd.api.types.is_datetime64_any_dtype(color_series)
+            or (
+                pd.api.types.is_numeric_dtype(color_series)
+                and not pd.api.types.is_bool_dtype(color_series)
             )
+        )
+        if not is_gradient_color:
+            cardinality = color_series.nunique()
+            if cardinality > MAX_COLOR_CARDINALITY:
+                raise ValidationError(
+                    f"Color column '{color_field}' has {cardinality} unique values, "
+                    f"exceeding MAX_COLOR_CARDINALITY={MAX_COLOR_CARDINALITY}. "
+                    f"The GS palette only has {MAX_COLOR_CARDINALITY} colors; "
+                    f"beyond this point series repeat hues and become indistinguishable. "
+                    f"Filter to top-{MAX_COLOR_CARDINALITY} categories first, e.g. "
+                    f"`df = top_k_categories(df, '{color_field}', k={MAX_COLOR_CARDINALITY})`."
+                )
     # Donut: same cap, but enforced separately below in the chart-specific
     # block so the suggested fix points at the right column.
 
@@ -7109,13 +7164,20 @@ TYPOGRAPHY_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "line_strokeWidth": 1.5,
     },
     "compact": {
-        # Slight reduction for 400x300 canvas.
-        "title_fontSize": 20,
-        "title_subtitleFontSize": 14,
-        "axis_labelFontSize": 12,
-        "axis_titleFontSize": 14,
-        "legend_labelFontSize": 12,
-        "legend_titleFontSize": 14,
+        # Default for facet-grid panels in the 220-400px range. Sized
+        # for legibility on a printed letter-portrait page where the
+        # composite gets viewed at arm's length, not zoomed in --
+        # tick labels at 24pt and axis titles at 22pt are large enough
+        # to read at print size without zoom. ``axis_tickCount=6``
+        # caps y-tick density so 24pt labels don't crowd at small
+        # panel heights.
+        "title_fontSize": 28,
+        "title_subtitleFontSize": 18,
+        "axis_labelFontSize": 24,
+        "axis_titleFontSize": 22,
+        "axis_tickCount": 6,
+        "legend_labelFontSize": 18,
+        "legend_titleFontSize": 22,
         "line_strokeWidth": 2,
     },
 }
@@ -7161,6 +7223,8 @@ def _apply_typography_overrides(spec: Dict[str, Any], preset: str) -> Dict[str, 
         config["axis"]["labelFontSize"] = overrides["axis_labelFontSize"]
     if "axis_titleFontSize" in overrides:
         config["axis"]["titleFontSize"] = overrides["axis_titleFontSize"]
+    if "axis_tickCount" in overrides:
+        config["axis"]["tickCount"] = overrides["axis_tickCount"]
 
     # Legend group.
     config.setdefault("legend", {})
@@ -9049,15 +9113,44 @@ def _build_scatter(
     )
 
     if color_field and color_field in df.columns:
-        point = point.encode(
-            color=alt.Color(
-                color_field,
-                type="nominal",
-                scale=_get_color_scale(skin_config),
-                sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                legend=alt.Legend(title=None),
-            )
+        # Auto-detect gradient mode: when the color column is temporal
+        # or numeric, use a sequential palette + temporal/quantitative
+        # encoding type so phase-space plots show point evolution as a
+        # color gradient (e.g. dot color = quarter index, the dots
+        # paint a rainbow path from earliest to latest in time).
+        # Categorical (object / string) columns keep the existing
+        # nominal palette so cluster-by-group scatters are unchanged.
+        color_series = df[color_field]
+        color_is_temporal = pd.api.types.is_datetime64_any_dtype(color_series)
+        color_is_numeric = (
+            pd.api.types.is_numeric_dtype(color_series)
+            and not pd.api.types.is_bool_dtype(color_series)
         )
+        if color_is_temporal or color_is_numeric:
+            scheme = mapping.get("color_scheme", "viridis")
+            color_type = "temporal" if color_is_temporal else "quantitative"
+            point = point.encode(
+                color=alt.Color(
+                    color_field,
+                    type=color_type,
+                    scale=alt.Scale(scheme=scheme),
+                    legend=alt.Legend(title=None),
+                )
+            )
+            logger.debug(
+                "[_build_scatter] gradient color: field=%r type=%s scheme=%s",
+                color_field, color_type, scheme,
+            )
+        else:
+            point = point.encode(
+                color=alt.Color(
+                    color_field,
+                    type="nominal",
+                    scale=_get_color_scale(skin_config),
+                    sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
+                    legend=alt.Legend(title=None),
+                )
+            )
 
     if size_field and size_field in df.columns:
         point = point.encode(size=alt.Size(size_field, type="quantitative"))
@@ -12251,6 +12344,13 @@ def make_chart(
     caption: Union[str, Dict[str, Any], None] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
+    facet_cols: Optional[int] = None,
+    share_x: bool = False,
+    share_y: bool = False,
+    share_color: bool = False,
+    same_scale: bool = False,
+    edge_only_ticks: bool = False,
+    edge_only_axis_titles: bool = False,
 ) -> ChartResult:
     """Create a single chart from a DataFrame.
 
@@ -12294,10 +12394,35 @@ def make_chart(
             (str or dict). Sit OUTSIDE the plot region and stretch to
             chart height. Useful for paragraphs of running commentary
             on a single chart or as part of a composite pack.
+        facet_cols: When ``mapping['facet']`` is set, the number of
+            columns in the panel grid. Rows derived as
+            ``ceil(n_panels / facet_cols)``. Default is near-square.
+        share_x / share_y: When ``mapping['facet']`` is set, opt INTO
+            shared x / y axis ranges across panels (default
+            independent, matching ``make_*pack_*``).
+        share_color: When ``mapping['facet']`` is set, opt INTO a
+            single shared color domain + a single composite-level
+            legend (default per-panel legends).
+        same_scale: Smart "force same scale" toggle. When True, the
+            engine routes to the right share_* combination per
+            chart_type: time-series and bar charts share y;
+            scatter / scatter_multi share both x AND y;
+            histograms share x. Equivalent to setting share_x /
+            share_y by hand for each chart_type but cheaper.
+        edge_only_ticks: When ``mapping['facet']`` is set, suppress
+            tick labels on inner panels -- only the bottom row keeps
+            x-tick labels and only the leftmost column keeps y-tick
+            labels. Tick MARKS still render so grid lines stay
+            aligned. Default False.
+        edge_only_axis_titles: Same as ``edge_only_ticks`` but for
+            axis titles. Default False.
 
     Returns:
         ``ChartResult`` (always returned, even on failure -- check
-        ``result.success`` and ``result.error_message``).
+        ``result.success`` and ``result.error_message``). When
+        ``mapping['facet']`` is set, the result represents the whole
+        composite grid -- ``chart_type`` carries a ``_facet`` suffix
+        and ``vegalite_json`` is the composite Vega-Lite spec.
     """
     warnings: List[str] = []
 
@@ -12348,6 +12473,54 @@ def make_chart(
     )
     logger.debug("[make_chart] mapping: %s", mapping)
     logger.debug("[make_chart] columns: %s", list(df.columns))
+
+    # ---- Facet (small-multiples) early branch ---------------------------
+    # When the caller sets ``mapping['facet']``, dispatch entirely into
+    # ``_render_facet_grid``. The facet flow handles its own auto-melt,
+    # validation, panel build, layout, PNG render, and S3 upload, then
+    # returns a ``ChartResult`` with ``chart_type=<base>_facet``.
+    if "facet" in mapping:
+        # Smart-route ``same_scale=True`` per chart_type.
+        if same_scale:
+            if chart_type in {"scatter", "scatter_multi"}:
+                share_x = True
+                share_y = True
+            elif chart_type in {"histogram"}:
+                share_x = True
+            else:  # multi_line / timeseries / area / bar / bar_horizontal
+                share_y = True
+        return _render_facet_grid(
+            df=df, chart_type=chart_type, mapping=mapping,
+            title=title, subtitle=subtitle,
+            skin=skin, intent=intent,
+            dimensions=dimensions,
+            annotations=annotations,
+            output_dir=output_dir,
+            filename_prefix=filename_prefix,
+            filename_suffix=filename_suffix,
+            session_path=session_path,
+            s3_manager=s3_manager,
+            save_as=save_as,
+            interactive=interactive,
+            auto_beautify=auto_beautify,
+            layers=layers,
+            user_id=user_id,
+            facet_cols=facet_cols,
+            share_x=share_x, share_y=share_y, share_color=share_color,
+            edge_only_ticks=edge_only_ticks,
+            edge_only_axis_titles=edge_only_axis_titles,
+        )
+
+    # ---- Reject page_grid for non-facet calls ---------------------------
+    if dimensions == "page_grid":
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                "dimension_preset='page_grid' is only valid in facet mode. "
+                "Either set mapping['facet']='<col>' to use the facet grid, "
+                "or pick a different preset (wide / square / compact / ...)."
+            ),
+        )
 
     # ---- Auto-melt for multi_line / area --------------------------------
     if chart_type in {"multi_line", "area"}:
@@ -13039,6 +13212,8 @@ def _build_single_chart(
     reserve_caption_h: Optional[int] = None,
     reserve_side_left_w: Optional[int] = None,
     reserve_side_right_w: Optional[int] = None,
+    title_fontsize_override: Optional[int] = None,
+    subtitle_fontsize_override: Optional[int] = None,
 ) -> alt.Chart:
     """Build a single Altair chart from a ``ChartSpec`` for composite use.
 
@@ -13121,6 +13296,8 @@ def _build_single_chart(
             title_lines if title_lines and len(title_lines) > 1
             else (title_lines[0] if title_lines else spec.title)
         )
+        title_fs = title_fontsize_override if title_fontsize_override else 18
+        subtitle_fs = subtitle_fontsize_override if subtitle_fontsize_override else 10
         if subtitle_lines:
             subtitle_text: Any = (
                 subtitle_lines
@@ -13131,15 +13308,15 @@ def _build_single_chart(
                 title=alt.TitleParams(
                     text=title_text,
                     subtitle=subtitle_text,
-                    fontSize=18,
-                    subtitleFontSize=10,
+                    fontSize=title_fs,
+                    subtitleFontSize=subtitle_fs,
                 )
             )
         else:
             chart = chart.properties(
                 title=alt.TitleParams(
                     text=title_text,
-                    fontSize=18,
+                    fontSize=title_fs,
                 )
             )
 
@@ -13922,6 +14099,996 @@ def _compose_charts(
         raise ValueError(f"Unknown layout: {layout}")
 
     return _isolate(composed)
+
+
+# ===========================================================================
+# MODULE: FACET GRID (SMALL-MULTIPLES) -- driven by mapping['facet']
+# ===========================================================================
+#
+# This block implements ``make_chart`` faceted mode: when the caller sets
+# ``mapping['facet'] = '<column>'`` (plus an optional ``facet_cols=N`` and
+# the sync booleans), ``make_chart`` dispatches into ``_render_facet_grid``
+# which builds one alt.Chart per facet value and lays them out in an NxM
+# grid. The layout uses the same ``alt.hconcat`` / ``alt.vconcat`` /
+# ``_isolate`` machinery as ``make_composite`` so per-panel scales /
+# legends stay independent by default.
+#
+# The sync defaults match today's composite philosophy: INDEPENDENT.
+# Callers opt INTO sharing via ``share_y=True`` etc.
+#
+# See ``.cursor/rules/viz-platforms.mdc`` (RBR + targeted-gallery SOP)
+# for the QC contract this code obeys.
+
+
+def _resolve_facet_grid_shape(
+    n_panels: int, facet_cols: Optional[int],
+) -> Tuple[int, int]:
+    """Resolve (rows, cols) given panel count and optional explicit cols.
+
+    When ``facet_cols`` is not provided, fall back to a near-square
+    layout favouring slightly-wider-than-tall (more cols than rows is
+    the default page-portrait reading order).
+    """
+    if n_panels <= 0:
+        raise ValidationError("Facet grid requires at least 1 panel.")
+    if facet_cols is not None:
+        if facet_cols <= 0:
+            raise ValidationError(
+                f"facet_cols must be positive, got {facet_cols}."
+            )
+        cols = min(facet_cols, n_panels)
+    else:
+        # Near-square default: cols = ceil(sqrt(n)). For 20 -> 5x4 (5 cols
+        # 4 rows); for 9 -> 3x3; for 12 -> 4x3.
+        cols = int(np.ceil(np.sqrt(n_panels)))
+    rows = int(np.ceil(n_panels / cols))
+    return (rows, cols)
+
+
+def _resolve_facet_panel_dims(
+    rows: int, cols: int,
+    dimensions: Optional[str],
+    spacing: int,
+) -> Tuple[int, int]:
+    """Resolve per-panel (width, height) from grid shape + preset.
+
+    Facet panels are always SQUARE -- ``panel_w == panel_h`` regardless
+    of grid shape. Asymmetric panels (e.g. 4x2 with very wide cells or
+    4x4 with tall cells) read as inconsistent; small-multiples
+    convention is uniform square cells. Computes the largest square
+    that fits inside the per-cell width budget AND the per-cell height
+    budget, then returns that square edge for both dimensions. Grids
+    with fewer rows than cols (or vice-versa) intentionally leave
+    canvas space unused -- readability of squares wins over filling
+    every pixel.
+
+    For ``dimensions='page_grid'`` (the default for facet mode), divide
+    the usable US Letter portrait area (1200 x 1600 px) into rows*cols
+    cells, accounting for inter-panel spacing. For any other named
+    preset, treat its (w, h) as the per-cell BUDGET (the square edge
+    is min of those two numbers). No preset -> compact-ish 280x280.
+    """
+    if dimensions == "page_grid" or dimensions is None:
+        usable_w, usable_h = DIMENSION_PRESETS.get("page_grid", (1200, 1600))
+    elif dimensions in DIMENSION_PRESETS:
+        usable_w, usable_h = DIMENSION_PRESETS[dimensions]
+    else:
+        return (280, 280)
+
+    # Subtract inter-panel spacing so total stays inside usable area.
+    avail_w = usable_w - max(0, cols - 1) * spacing
+    avail_h = usable_h - max(0, rows - 1) * spacing
+    cell_w = max(140, avail_w // cols)
+    cell_h = max(120, avail_h // rows)
+    edge = int(min(cell_w, cell_h))
+    return (edge, edge)
+
+
+def _resolve_typography_for_panel_size(panel_w: int, panel_h: int) -> str:
+    """Pick the typography-overrides preset best-suited to a panel size.
+
+    Returns one of ``thumbnail`` / ``teams`` / ``compact`` / ``""`` (no
+    override). Used by ``_render_facet_grid`` so the panel font sizes
+    auto-shrink for tight grids without the caller specifying.
+
+    Tuned for facet-grid use specifically: panels in the 200-400px
+    range stay on ``compact`` (12-13pt axis labels) instead of dropping
+    to ``teams`` (8pt) or ``thumbnail`` (7pt), because at letter-paper
+    panel sizes the typography presets designed for genuinely tiny
+    standalone canvases (Teams thumbnails, app embeds) shrink labels
+    past readability.
+    """
+    if panel_w < 180 or panel_h < 160:
+        return "thumbnail"
+    if panel_w < 220 or panel_h < 200:
+        return "teams"
+    return "compact"
+
+
+def _get_facet_panel_order(
+    df: pd.DataFrame, facet_col: str,
+    explicit_order: Optional[List[Any]] = None,
+) -> List[Any]:
+    """Resolve the panel id ordering.
+
+    Default is first-appearance order in df (predictable; matches how
+    PRISM tends to construct its DataFrames). An explicit
+    ``explicit_order`` argument (currently unused but reserved for
+    a future ``mapping['facet_order']``) takes precedence.
+    """
+    if explicit_order is not None:
+        # Validate that every requested id exists in the data.
+        present = set(df[facet_col].unique())
+        missing = [v for v in explicit_order if v not in present]
+        if missing:
+            raise ValidationError(
+                f"facet_order references panel ids not in df[{facet_col!r}]: "
+                f"{missing}. Available: {sorted(present)}."
+            )
+        return list(explicit_order)
+    # First-appearance order (preserves the user's natural ordering).
+    seen: List[Any] = []
+    seen_set: set = set()
+    for v in df[facet_col].tolist():
+        if v not in seen_set:
+            seen.append(v)
+            seen_set.add(v)
+    return seen
+
+
+def _split_df_by_facet(
+    df: pd.DataFrame, facet_col: str, panel_order: List[Any],
+) -> List[Tuple[Any, pd.DataFrame]]:
+    """Yield (panel_id, sub_df) pairs in ``panel_order``."""
+    out: List[Tuple[Any, pd.DataFrame]] = []
+    for panel_id in panel_order:
+        sub = df[df[facet_col] == panel_id].copy()
+        out.append((panel_id, sub))
+    return out
+
+
+def _compute_shared_numeric_domain(
+    df: pd.DataFrame, field: str, padding_frac: float = 0.05,
+) -> Optional[List[float]]:
+    """Compute a [lo, hi] numeric domain spanning the entire df.
+
+    Pads by ``padding_frac`` of the range on each side so points don't
+    sit flush against the panel edge. Returns ``None`` if the field
+    isn't numeric or has no valid values.
+    """
+    if field not in df.columns:
+        return None
+    vals = pd.to_numeric(df[field], errors="coerce").dropna()
+    if len(vals) == 0:
+        return None
+    lo, hi = float(vals.min()), float(vals.max())
+    if lo == hi:
+        # Pin a small synthetic range so Vega-Lite doesn't collapse.
+        eps = max(abs(lo) * 0.05, 1e-6)
+        return [lo - eps, hi + eps]
+    span = hi - lo
+    return [lo - span * padding_frac, hi + span * padding_frac]
+
+
+def _compute_shared_temporal_domain(
+    df: pd.DataFrame, field: str,
+) -> Optional[List[str]]:
+    """Compute an ISO-formatted temporal [lo, hi] domain spanning df.
+
+    Returned as ISO strings so they round-trip cleanly through
+    Vega-Lite's spec dict.
+    """
+    if field not in df.columns:
+        return None
+    if not pd.api.types.is_datetime64_any_dtype(df[field]):
+        return None
+    vals = df[field].dropna()
+    if len(vals) == 0:
+        return None
+    return [vals.min().isoformat(), vals.max().isoformat()]
+
+
+def _compute_shared_color_domain(
+    df: pd.DataFrame, field: str,
+) -> Optional[List[Any]]:
+    """Compute a sorted union of the color column's unique values."""
+    if field not in df.columns:
+        return None
+    uniq = df[field].dropna().unique().tolist()
+    return sorted(uniq, key=lambda v: str(v))
+
+
+def _inject_scale_domain_into_spec(
+    spec: Dict[str, Any], encoding_key: str, domain: List[Any],
+) -> None:
+    """Patch ``encoding[<encoding_key>].scale.domain = domain`` in-place.
+
+    Walks every layer / hconcat / vconcat / concat child so the domain
+    propagates uniformly. ``domain`` is set verbatim; the caller is
+    responsible for sensible bounds.
+    """
+    if not isinstance(spec, dict):
+        return
+    enc = spec.get("encoding")
+    if isinstance(enc, dict) and encoding_key in enc:
+        ek = enc[encoding_key]
+        if isinstance(ek, dict):
+            scale = ek.setdefault("scale", {})
+            if isinstance(scale, dict):
+                scale["domain"] = domain
+    for child_key in ("layer", "hconcat", "vconcat", "concat"):
+        children = spec.get(child_key)
+        if isinstance(children, list):
+            for child in children:
+                _inject_scale_domain_into_spec(child, encoding_key, domain)
+
+
+def _strip_axis_labels_from_spec(
+    spec: Dict[str, Any], encoding_key: str,
+) -> None:
+    """Drop tick-label rendering from ``encoding[encoding_key].axis``.
+
+    The tick MARKS still render (so the grid lines stay aligned across
+    panels); only the label text is suppressed. Used to implement
+    ``edge_only_ticks=True``: outer panels keep labels, inner panels
+    pass through this helper.
+    """
+    if not isinstance(spec, dict):
+        return
+    enc = spec.get("encoding")
+    if isinstance(enc, dict) and encoding_key in enc:
+        ek = enc[encoding_key]
+        if isinstance(ek, dict):
+            axis = ek.setdefault("axis", {})
+            if isinstance(axis, dict):
+                axis["labels"] = False
+    for child_key in ("layer", "hconcat", "vconcat", "concat"):
+        children = spec.get(child_key)
+        if isinstance(children, list):
+            for child in children:
+                _strip_axis_labels_from_spec(child, encoding_key)
+
+
+def _strip_axis_title_from_spec(
+    spec: Dict[str, Any], encoding_key: str,
+) -> None:
+    """Drop the axis title from ``encoding[encoding_key].axis``."""
+    if not isinstance(spec, dict):
+        return
+    enc = spec.get("encoding")
+    if isinstance(enc, dict) and encoding_key in enc:
+        ek = enc[encoding_key]
+        if isinstance(ek, dict):
+            axis = ek.setdefault("axis", {})
+            if isinstance(axis, dict):
+                axis["title"] = None
+            # Also strip the redundant top-level title= on the encoding
+            # itself (Vega-Lite has BOTH places it can land).
+            if "title" in ek:
+                ek["title"] = None
+    for child_key in ("layer", "hconcat", "vconcat", "concat"):
+        children = spec.get(child_key)
+        if isinstance(children, list):
+            for child in children:
+                _strip_axis_title_from_spec(child, encoding_key)
+
+
+def _strip_legend_from_spec(spec: Dict[str, Any]) -> None:
+    """Suppress the color/strokeDash legend from a panel spec.
+
+    Used when ``share_color=True`` so the composite-level legend renders
+    once instead of per-panel.
+    """
+    if not isinstance(spec, dict):
+        return
+    enc = spec.get("encoding")
+    if isinstance(enc, dict):
+        for ek_name in ("color", "strokeDash", "shape", "stroke"):
+            ek = enc.get(ek_name)
+            if isinstance(ek, dict):
+                ek["legend"] = None
+    for child_key in ("layer", "hconcat", "vconcat", "concat"):
+        children = spec.get(child_key)
+        if isinstance(children, list):
+            for child in children:
+                _strip_legend_from_spec(child)
+
+
+def _build_facet_gradient_legend_panel(
+    color_field: str,
+    color_min: Any, color_max: Any,
+    color_type: str,
+    scheme: str,
+    width: int,
+) -> Optional[Dict[str, Any]]:
+    """Horizontal gradient color bar for facet+gradient mode.
+
+    Builds a single composite-level legend showing the continuous color
+    scale (e.g. dates from earliest to latest). Replaces the per-panel
+    gradient legends that would otherwise pollute every facet cell.
+    Renders as a 200-step rect grid stretched across the composite
+    width with axis labels at evenly-spaced ticks. Height is fixed at
+    52px so the legend bar reads as a "scale strip" rather than a
+    full chart.
+    """
+    if color_min is None or color_max is None:
+        return None
+
+    n_steps = 200
+    if color_type == "temporal":
+        try:
+            t_min = pd.Timestamp(color_min)
+            t_max = pd.Timestamp(color_max)
+        except Exception:  # noqa: BLE001
+            return None
+        if t_min >= t_max:
+            return None
+        steps = pd.date_range(t_min, t_max, periods=n_steps + 1)
+        x1_vals = [v.isoformat() for v in steps[:-1]]
+        x2_vals = [v.isoformat() for v in steps[1:]]
+        midpoints = [
+            (steps[i] + (steps[i + 1] - steps[i]) / 2).isoformat()
+            for i in range(n_steps)
+        ]
+        encoding_type = "T"
+    else:
+        try:
+            v_min = float(color_min)
+            v_max = float(color_max)
+        except Exception:  # noqa: BLE001
+            return None
+        if v_min >= v_max:
+            return None
+        edges = np.linspace(v_min, v_max, n_steps + 1)
+        x1_vals = list(edges[:-1])
+        x2_vals = list(edges[1:])
+        midpoints = [(edges[i] + edges[i + 1]) / 2 for i in range(n_steps)]
+        encoding_type = "Q"
+
+    spec: Dict[str, Any] = {
+        "data": {
+            "values": [
+                {"_x1": x1_vals[i], "_x2": x2_vals[i], "_c": midpoints[i]}
+                for i in range(n_steps)
+            ]
+        },
+        "mark": {"type": "rect", "stroke": None},
+        "encoding": {
+            "x": {
+                "field": "_x1", "type": encoding_type,
+                "axis": {
+                    "title": color_field,
+                    "labelFontSize": 24,
+                    "titleFontSize": 22,
+                    "labelFontWeight": "normal",
+                    "titleFontWeight": "normal",
+                    "tickCount": 5,
+                    "grid": False,
+                },
+            },
+            "x2": {"field": "_x2", "type": encoding_type},
+            "color": {
+                "field": "_c", "type": encoding_type,
+                "scale": {"scheme": scheme},
+                "legend": None,
+            },
+        },
+        "width": width,
+        "height": 24,
+    }
+    return spec
+
+
+def _build_facet_legend_panel(
+    color_domain: List[Any],
+    skin_config: Dict[str, Any],
+    width: int,
+) -> Optional[Dict[str, Any]]:
+    """Build a stand-alone tiny chart whose only render is a color legend.
+
+    Returns a Vega-Lite spec dict suitable for vconcat-ing under the
+    facet grid as the single shared legend. Width-sized to match the
+    composite grid width.
+    """
+    if not color_domain:
+        return None
+    # Build a one-row dataset with one entry per color domain value so
+    # Altair renders a categorical legend.
+    legend_df = pd.DataFrame({
+        "_legend_label": [str(v) for v in color_domain],
+        "_legend_y": [0] * len(color_domain),
+    })
+    legend = (
+        alt.Chart(legend_df)
+        .mark_point(size=80, filled=True)
+        .encode(
+            x=alt.X(
+                "_legend_label:N",
+                axis=alt.Axis(
+                    title=None,
+                    labelFontSize=10,
+                    labelPadding=4,
+                    domain=False,
+                    ticks=False,
+                ),
+                sort=list(legend_df["_legend_label"]),
+            ),
+            y=alt.Y(
+                "_legend_y:Q",
+                axis=None,
+                scale=alt.Scale(domain=[-0.5, 0.5]),
+            ),
+            color=alt.Color(
+                "_legend_label:N",
+                legend=None,
+                sort=list(legend_df["_legend_label"]),
+            ),
+        )
+        .properties(width=width, height=28)
+    )
+    return legend.to_dict()
+
+
+def _compose_facet_grid(
+    panel_specs: List[Dict[str, Any]],
+    rows: int, cols: int, spacing: int,
+) -> Dict[str, Any]:
+    """Lay out a list of per-panel Vega-Lite spec dicts in an NxM grid.
+
+    Pads trailing cells with invisible blank specs so the grid stays
+    rectangular when ``len(panel_specs) < rows * cols``.
+
+    Returns a top-level Vega-Lite spec with ``vconcat`` of ``hconcat``
+    rows. The caller is responsible for adding a top-level title /
+    config / schema.
+    """
+    n = len(panel_specs)
+    n_cells = rows * cols
+
+    # Use the first panel's width/height as the blank-cell footprint so
+    # the rectangular grid stays aligned.
+    blank_w = 280
+    blank_h = 220
+    if panel_specs:
+        first = panel_specs[0]
+        if isinstance(first.get("width"), int):
+            blank_w = int(first["width"])
+        if isinstance(first.get("height"), int):
+            blank_h = int(first["height"])
+
+    cells: List[Dict[str, Any]] = list(panel_specs)
+    while len(cells) < n_cells:
+        cells.append({
+            "data": {"values": [{"_blank": 0}]},
+            "mark": {"type": "point", "opacity": 0},
+            "width": blank_w, "height": blank_h,
+        })
+
+    rows_specs: List[Dict[str, Any]] = []
+    for r in range(rows):
+        row_cells = cells[r * cols:(r + 1) * cols]
+        # Each row is an hconcat with independent scales/legends.
+        row_spec = {
+            "hconcat": row_cells,
+            "spacing": spacing,
+            "resolve": {
+                "scale": {
+                    "color": "independent",
+                    "x": "independent",
+                    "y": "independent",
+                },
+                "legend": {"color": "independent"},
+            },
+        }
+        rows_specs.append(row_spec)
+
+    composed = {
+        "vconcat": rows_specs,
+        "spacing": spacing,
+        "resolve": {
+            "scale": {
+                "color": "independent",
+                "x": "independent",
+                "y": "independent",
+            },
+            "legend": {"color": "independent"},
+        },
+    }
+    return composed
+
+
+def _strip_schema_and_config(spec: Dict[str, Any]) -> None:
+    """Strip ``$schema`` and ``config`` from a per-panel spec, in place.
+
+    Vega-Lite 4.x rejects these inside ``hconcat`` / ``vconcat`` -- they
+    must live exactly once at the top level. ``_build_single_chart``
+    already does this for ChartSpec-driven composites; the facet path
+    builds panels through a slightly different code path (it goes via
+    a synthesised ChartSpec-equivalent flow) so we re-strip defensively.
+    """
+    spec.pop("$schema", None)
+    spec.pop("config", None)
+
+
+def _inline_named_datasets_in_spec(spec: Dict[str, Any]) -> None:
+    """Resolve ``data: {name: X}`` references against ``spec.datasets``.
+
+    Vega-Lite only honours a ``datasets`` block at the TOP LEVEL of a
+    spec; per-cell ``datasets`` inside ``hconcat`` / ``vconcat`` are
+    silently ignored, so any cell whose ``data`` is a name reference
+    renders empty. ``_build_single_chart`` already inlines-and-strips
+    on its first to_dict round-trip, but Altair re-serializes named
+    datasets when the rebuilt chart's ``.to_dict()`` is called again
+    inside the facet path -- so the facet code does the same fix-up
+    once more on each panel before composing.
+
+    Walks every nested layer / hconcat / vconcat. Mutates ``spec`` in
+    place: pops ``datasets`` and rewrites every ``data: {name: ...}``
+    that names a known dataset to ``data: {values: [...]}``.
+    """
+    if not isinstance(spec, dict):
+        return
+    datasets = spec.pop("datasets", None)
+    if not datasets:
+        return
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            d = node.get("data")
+            if (
+                isinstance(d, dict)
+                and "name" in d
+                and "values" not in d
+            ):
+                ds_name = d["name"]
+                if ds_name in datasets:
+                    node["data"] = {"values": datasets[ds_name]}
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(spec)
+
+
+def _render_facet_grid(
+    df: pd.DataFrame,
+    chart_type: str,
+    mapping: Dict[str, Any],
+    *,
+    title: Optional[str],
+    subtitle: Optional[str],
+    skin: str,
+    intent: str,
+    dimensions: Optional[str],
+    annotations: Optional[List[Annotation]],
+    output_dir: str,
+    filename_prefix: Optional[str],
+    filename_suffix: Optional[str],
+    session_path: Optional[str],
+    s3_manager: Any,
+    save_as: Optional[str],
+    interactive: bool,
+    auto_beautify: bool,
+    layers: Optional[List[Dict[str, Any]]],
+    user_id: Optional[str],
+    facet_cols: Optional[int],
+    share_x: bool,
+    share_y: bool,
+    share_color: bool,
+    edge_only_ticks: bool,
+    edge_only_axis_titles: bool,
+) -> ChartResult:
+    """Build a facet (small-multiples) grid and return a ChartResult.
+
+    See ``make_chart`` for the public API. This function is the engine
+    behind ``mapping['facet']`` mode.
+    """
+    warnings_list: List[str] = []
+
+    # ---- Validate chart_type is allowed ---------------------------------
+    if chart_type not in _FACET_VALID_CHART_TYPES:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                f"chart_type {chart_type!r} does not support mapping['facet']. "
+                f"Valid: {sorted(_FACET_VALID_CHART_TYPES)}. "
+                f"For matrix-shaped data, drop facet and use chart_type="
+                f"'heatmap'. For donut / boxplot / bullet / waterfall, "
+                f"the natural expression is a single canvas."
+            ),
+        )
+
+    facet_col = mapping.get("facet")
+    if not facet_col or facet_col not in df.columns:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                f"mapping['facet']={facet_col!r} is not a column in df. "
+                f"Available columns: {list(df.columns)}."
+            ),
+        )
+
+    # ---- Resolve panel order, count, grid shape -------------------------
+    panel_order = _get_facet_panel_order(df, facet_col)
+    n_panels = len(panel_order)
+
+    if n_panels > _FACET_HARD_CAP:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                f"Facet grid would render {n_panels} panels, exceeding the "
+                f"hard cap of {_FACET_HARD_CAP} (6x6). At this size per-panel "
+                f"readability collapses. Aggregate to group level (e.g. "
+                f"region instead of country) or switch to chart_type="
+                f"'heatmap' for a single dense canvas."
+            ),
+        )
+    if n_panels >= _FACET_SOFT_WARN_THRESHOLD:
+        warnings_list.append(
+            f"Facet grid has {n_panels} panels (>= {_FACET_SOFT_WARN_THRESHOLD}); "
+            f"per-panel readability is tight. Consider aggregating to a "
+            f"smaller set of panels or using a heatmap."
+        )
+
+    rows, cols = _resolve_facet_grid_shape(n_panels, facet_cols)
+
+    # ---- Resolve per-panel dimensions -----------------------------------
+    spacing = _FACET_DEFAULT_SPACING
+    panel_w, panel_h = _resolve_facet_panel_dims(rows, cols, dimensions, spacing)
+
+    # ---- Drop facet from per-panel mapping (each panel is one panel id)
+    panel_mapping = dict(mapping)
+    panel_mapping.pop("facet", None)
+
+    # ---- Compute shared scales (if requested) ---------------------------
+    # Field resolution: x, y, color come from mapping. ``y`` may be a list
+    # for auto-melt -- we run auto-melt locally so subsequent shared-scale
+    # calcs see the long-form column.
+    x_field = mapping.get("x")
+    y_field = mapping.get("y")
+    color_field = mapping.get("color")
+
+    # Pre-melt the WHOLE df so shared scales see the same long-form
+    # the per-panel build will. This mirrors make_chart's standard flow.
+    if chart_type in {"multi_line", "area"} and isinstance(y_field, list):
+        try:
+            df, panel_mapping = _auto_melt_for_multiline(df, panel_mapping)
+            # Refresh field handles after melt.
+            x_field = panel_mapping.get("x")
+            y_field = panel_mapping.get("y")
+            color_field = panel_mapping.get("color")
+        except ValidationError as exc:
+            return ChartResult(
+                chart_type=chart_type, skin=skin, success=False,
+                error_message=f"Auto-melt failed: {exc}",
+                warnings=warnings_list,
+            )
+
+    # Sanitize column names once on the parent df so panel splits inherit
+    # the safe names.
+    df, panel_mapping = _sanitize_column_names(df, panel_mapping)
+    # Re-resolve fields against the sanitised mapping.
+    x_field = panel_mapping.get("x")
+    y_field = panel_mapping.get("y")
+    color_field = panel_mapping.get("color")
+    facet_col = panel_mapping.get("facet", facet_col)
+
+    shared_y_domain: Optional[List[float]] = None
+    shared_x_domain_temporal: Optional[List[str]] = None
+    shared_x_domain_numeric: Optional[List[float]] = None
+    shared_color_domain: Optional[List[Any]] = None
+
+    if share_y and isinstance(y_field, str):
+        shared_y_domain = _compute_shared_numeric_domain(df, y_field)
+    if share_x and isinstance(x_field, str):
+        if pd.api.types.is_datetime64_any_dtype(df.get(x_field, pd.Series([]))):
+            shared_x_domain_temporal = _compute_shared_temporal_domain(df, x_field)
+        else:
+            shared_x_domain_numeric = _compute_shared_numeric_domain(df, x_field)
+    if share_color and isinstance(color_field, str):
+        shared_color_domain = _compute_shared_color_domain(df, color_field)
+
+    # ---- Build skin config ---------------------------------------------
+    if skin not in AVAILABLE_SKINS:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                f"Unknown skin {skin!r}. Available: {list(AVAILABLE_SKINS.keys())}"
+            ),
+            warnings=warnings_list,
+        )
+    skin_config = get_skin(skin, intent)
+
+    # ---- Build each panel (uses _build_single_chart for parity) ---------
+    panel_specs: List[Dict[str, Any]] = []
+    panel_errors: List[Dict[str, Any]] = []
+
+    for idx, panel_id in enumerate(panel_order):
+        sub_df = df[df[facet_col] == panel_id].copy()
+        if len(sub_df) == 0:
+            panel_errors.append({
+                "panel_index": idx, "panel_id": panel_id,
+                "error": "empty sub-df",
+            })
+            continue
+
+        # Build a synthesised ChartSpec for this panel. Per-panel title
+        # is the panel id stringified (short -- "US", "Canada", etc.).
+        sub_mapping = dict(panel_mapping)
+        sub_mapping.pop("facet", None)
+
+        sub_spec = ChartSpec(
+            df=sub_df,
+            chart_type=chart_type,
+            mapping=sub_mapping,
+            title=str(panel_id),
+            subtitle=None,
+            annotations=annotations,
+            layers=layers,
+        )
+
+        try:
+            chart = _build_single_chart(
+                sub_spec, skin_config, panel_w, panel_h,
+                title_fontsize_override=26,
+            )
+        except Exception as exc:  # noqa: BLE001
+            panel_errors.append({
+                "panel_index": idx, "panel_id": panel_id,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            })
+            warnings_list.append(
+                f"Panel {idx + 1} ({panel_id!r}) failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
+
+        spec_dict = chart.to_dict()
+        _strip_schema_and_config(spec_dict)
+        _inline_named_datasets_in_spec(spec_dict)
+
+        # ---- Strip y-axis title when it's redundant --------------------
+        # Time-series / bar / area: every panel's y is the SAME metric
+        # (the composite title carries it). Per-panel y-titles are
+        # redundant clutter and steal horizontal pixels from the plot.
+        #
+        # Scatter / scatter_multi: x and y describe DIFFERENT variables
+        # (e.g. CPI vs GDP) -- the y-title is needed so the reader knows
+        # which axis is which. Keep it.
+        if chart_type not in {"scatter", "scatter_multi"}:
+            _strip_axis_title_from_spec(spec_dict, "y")
+
+        # ---- Always strip per-panel legends in facet mode ---------------
+        # Categorical legends repeat across panels (redundant); gradient
+        # legends are self-evident from the data ordering. When
+        # ``share_color=True`` and the color is categorical, a single
+        # shared legend is rebuilt at the composite level (see below).
+        # For gradient color, no legend is added.
+        _strip_legend_from_spec(spec_dict)
+
+        # ---- Apply shared-scale injections ------------------------------
+        if shared_y_domain is not None:
+            _inject_scale_domain_into_spec(spec_dict, "y", shared_y_domain)
+        if shared_x_domain_temporal is not None:
+            _inject_scale_domain_into_spec(
+                spec_dict, "x", shared_x_domain_temporal,
+            )
+        elif shared_x_domain_numeric is not None:
+            _inject_scale_domain_into_spec(
+                spec_dict, "x", shared_x_domain_numeric,
+            )
+        if shared_color_domain is not None:
+            _inject_scale_domain_into_spec(
+                spec_dict, "color", shared_color_domain,
+            )
+
+        # ---- Apply edge-only chrome reductions --------------------------
+        row_idx = idx // cols
+        col_idx = idx % cols
+        is_bottom_row = (row_idx == rows - 1) or (idx + cols >= n_panels)
+        is_left_col = (col_idx == 0)
+
+        if edge_only_ticks:
+            if not is_bottom_row:
+                _strip_axis_labels_from_spec(spec_dict, "x")
+            if not is_left_col:
+                _strip_axis_labels_from_spec(spec_dict, "y")
+
+        if edge_only_axis_titles:
+            if not is_bottom_row:
+                _strip_axis_title_from_spec(spec_dict, "x")
+            if not is_left_col:
+                _strip_axis_title_from_spec(spec_dict, "y")
+
+        # Force per-panel width/height onto the top-level spec so the
+        # grid cells stay rectangular.
+        spec_dict["width"] = panel_w
+        spec_dict["height"] = panel_h
+
+        panel_specs.append(spec_dict)
+
+    if not panel_specs:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                f"All {n_panels} facet panels failed to build. "
+                f"First error: {panel_errors[0] if panel_errors else 'unknown'}"
+            ),
+            warnings=warnings_list,
+        )
+
+    # ---- Compose the grid ----------------------------------------------
+    composite_spec = _compose_facet_grid(panel_specs, rows, cols, spacing)
+
+    # ---- Shared-color legend panel under the grid ----------------------
+    # CATEGORICAL color (when share_color=True): horizontal strip with one
+    #   labelled point per category.
+    # GRADIENT color (temporal / numeric, always when set on a scatter):
+    #   continuous gradient bar showing the date / value range.
+    # No-color: nothing.
+    composite_outer_w = cols * panel_w + max(0, cols - 1) * spacing
+    color_is_gradient = False
+    color_is_temporal = False
+    if color_field and color_field in df.columns:
+        c_series = df[color_field]
+        color_is_temporal = pd.api.types.is_datetime64_any_dtype(c_series)
+        color_is_numeric = (
+            pd.api.types.is_numeric_dtype(c_series)
+            and not pd.api.types.is_bool_dtype(c_series)
+        )
+        color_is_gradient = color_is_temporal or color_is_numeric
+
+    if color_is_gradient and color_field:
+        c_series = df[color_field]
+        gradient_scheme = panel_mapping.get("color_scheme", "viridis")
+        if color_is_temporal:
+            c_min = c_series.min()
+            c_max = c_series.max()
+        else:
+            c_vals = pd.to_numeric(c_series, errors="coerce").dropna()
+            c_min = float(c_vals.min()) if len(c_vals) else None
+            c_max = float(c_vals.max()) if len(c_vals) else None
+        gradient_spec = _build_facet_gradient_legend_panel(
+            color_field=color_field,
+            color_min=c_min, color_max=c_max,
+            color_type="temporal" if color_is_temporal else "quantitative",
+            scheme=gradient_scheme,
+            width=composite_outer_w,
+        )
+        if gradient_spec:
+            _strip_schema_and_config(gradient_spec)
+            composite_spec["vconcat"].append(gradient_spec)
+    elif share_color and shared_color_domain:
+        legend_spec = _build_facet_legend_panel(
+            shared_color_domain, skin_config,
+            width=composite_outer_w,
+        )
+        if legend_spec:
+            _strip_schema_and_config(legend_spec)
+            composite_spec["vconcat"].append(legend_spec)
+
+    # ---- Top-level title / config / schema ------------------------------
+    composite_spec["$schema"] = "https://vega.github.io/schema/vega-lite/v5.json"
+    composite_spec["config"] = skin_config.get("config", {})
+
+    composite_outer_h = rows * panel_h + max(0, rows - 1) * spacing
+
+    if title or subtitle:
+        try:
+            title_lines = _validate_and_wrap_text(
+                title, slot_kind="composite_super_title",
+                width_px=composite_outer_w,
+                slot_label="facet grid title",
+                widening_hint=(
+                    "use a smaller facet_cols or aggregate to fewer panels"
+                ),
+            )
+            subtitle_lines = _validate_and_wrap_text(
+                subtitle, slot_kind="composite_super_subtitle",
+                width_px=composite_outer_w,
+                slot_label="facet grid subtitle",
+                widening_hint=(
+                    "use a smaller facet_cols or aggregate to fewer panels"
+                ),
+            )
+        except ValueError as exc:
+            return ChartResult(
+                chart_type=chart_type, skin=skin, success=False,
+                error_message=str(exc), warnings=warnings_list,
+            )
+        title_text: Any = (
+            title_lines if title_lines and len(title_lines) > 1
+            else (title_lines[0] if title_lines else title)
+        )
+        title_block: Dict[str, Any] = {
+            "text": title_text, "anchor": "start",
+            "fontSize": 38, "fontWeight": "bold",
+        }
+        if subtitle_lines:
+            title_block["subtitle"] = (
+                subtitle_lines if len(subtitle_lines) > 1
+                else subtitle_lines[0]
+            )
+            title_block["subtitleFontSize"] = 22
+        composite_spec["title"] = title_block
+
+    # ---- Typography overrides (auto-pick from panel size) ---------------
+    typography_preset = _resolve_typography_for_panel_size(panel_w, panel_h)
+    if typography_preset and auto_beautify:
+        try:
+            composite_spec = _apply_typography_overrides(
+                composite_spec, typography_preset,
+            )
+        except Exception as exc:  # noqa: BLE001
+            warnings_list.append(
+                f"Typography overrides skipped (non-fatal): {exc}"
+            )
+
+    # ---- Filename + PNG output ------------------------------------------
+    filename_base = _generate_filename(
+        title, f"{chart_type}_facet", filename_prefix, filename_suffix,
+    )
+    if save_as:
+        png_path = (
+            f"{session_path}/{save_as}" if session_path else save_as
+        )
+    else:
+        if session_path:
+            png_path = f"{session_path}/{filename_base}.png"
+        else:
+            png_path = (
+                os.path.join(output_dir, f"{filename_base}.png")
+                if output_dir
+                else f"{filename_base}.png"
+            )
+
+    png_save_failed = False
+    png_error_message = ""
+    download_url: Optional[str] = None
+    try:
+        png_bytes = _render_chart_to_png(composite_spec, scale=2.0)
+        s3_manager.put(png_bytes, png_path)
+    except Exception as exc:  # noqa: BLE001
+        send_error_email(
+            error_message=f"PNG export failed in facet grid: {exc}",
+            traceback_info=traceback.format_exc(),
+            tool_name="chart_functions._render_facet_grid",
+            tool_parameters={
+                "chart_type": chart_type, "skin": skin,
+                "title": title, "n_panels": n_panels,
+                "rows": rows, "cols": cols,
+            },
+            metadata={"error_type": type(exc).__name__, "stage": "png_export"},
+            context="PNG export failed during facet grid render.",
+        )
+        png_save_failed = True
+        png_error_message = str(exc)
+        png_path = None
+        warnings_list.append(f"PNG export failed: {png_error_message}")
+
+    if png_path and not png_save_failed:
+        try:
+            download_url = generate_presigned_download_url(png_path).presigned_url
+        except Exception as exc:  # noqa: BLE001
+            warnings_list.append(f"Failed to generate PNG download URL: {exc}")
+
+    return ChartResult(
+        png_path=png_path,
+        download_url=download_url,
+        vegalite_json=composite_spec,
+        chart_type=f"{chart_type}_facet",
+        skin=skin,
+        success=not png_save_failed,
+        error_message=(
+            f"PNG export unavailable: {png_error_message}" if png_save_failed
+            else None
+        ),
+        warnings=warnings_list,
+        interactive=False,
+    )
 
 
 def make_composite(
