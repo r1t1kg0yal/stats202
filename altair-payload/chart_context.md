@@ -144,7 +144,7 @@ When the user hands PRISM the chart-type pick ("analysis", "what's interesting")
 |---|---|---|
 | Scatter (+ trendline) | Direct X-Y: shape (linear/log/hump), strength, outliers in one frame | `'scatter'` + `mapping['trendline']=True`. Per-group: `'scatter_multi'` + `color=...` + `mapping['trendlines']=True` |
 | Dual-axis multi_line in change space | Co-movement over time. Both columns transformed to the SAME change measure (YoY %, MoM %, log-diff) BEFORE charting | `'multi_line'` + `mapping['dual_axis_series']=[...]` (§9). Change-space > levels for correlation |
-| Lead-lag | Does X anticipate Y? Scatter (`Y_t` vs `X_{t-N}`) or dual-axis with one series shifted | Scatter: `df['x_lagged'] = df['x'].shift(N)`. Time-shift: `.shift(-N)` + rebuild long-format. Sweep N (1, 3, 6, 12 monthly), then `make_*pack_*` |
+| Lead-lag | Does X anticipate Y? Scatter quantifies strength; time-shifted dual-axis traces the implied path | Scatter form: `merged['x_lag'] = x.shift(N)` then `'scatter'` + `mapping['trendline']=True`. Time-shift form: shift the predictor's date column `+N` months -> dual-axis + `VLine` at "Today" (full recipe §9.6). Sweep N (1, 3, 6, 12 monthly), then `make_*pack_*` |
 
 **Anti-pattern:** single-series `multi_line` when the question was "is anything happening?" That shape narrates; it doesn't argue.
 
@@ -399,7 +399,7 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 | `PointLabel` | `x`, `y`, `dx`/`dy` (pixel offsets), `font_size`, `align`. Plain floating text. Use sparingly |
 | `PointHighlight` | `x`, `y`, `size` (default `100`), `opacity`, `shape` (`'circle'`/`'square'`/`'diamond'`/`'triangle'`/`'cross'`/`'stroke'`), `filled`, `stroke_color`, `stroke_width`. Default color `"#C00000"`. Often combined with Callout/PointLabel |
 | `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. Default `'halo'` solves "PointLabel fights gridlines". `dx` 0-60; `abs(dx)>80` risks off-canvas (warns) |
-| `LastValueLabel` | `show_value` (default `False`), `value_format` (auto magnitude-aware decimals or e.g. `"{:+.2f}"`/`"{:.0%}"`), `show_dot` (default `True`), `dot_size`, `dot_color`, `dx`, `font_size` (default 14), `font_weight`. FT/Bloomberg end-of-line labels for `multi_line` (replaces legend). Auto-derives from color column. `label` ignored on multi-series; for single-series overrides y-field name. Labels whose endpoints would overlap in pixel space are auto-staggered vertically; dots stay at the true endpoints. Suppressed on dual-axis (§9.4) |
+| `LastValueLabel` | `show_value` (default `False`), `value_format` (auto magnitude-aware decimals or e.g. `"{:+.2f}"`/`"{:.0%}"`), `dx`, `font_size` (default 15), `font_weight`. FT/Bloomberg end-of-line labels for `multi_line` (replaces legend). Auto-derives from color column. `label` ignored on multi-series; for single-series overrides y-field name. Labels whose endpoints would overlap in pixel space are auto-staggered vertically. Suppressed on dual-axis (§9.4). Text-only — `show_dot` / `dot_size` / `dot_color` are accepted as kwargs for back-compat but ignored at render time |
 | `Trendline` | `method` (`'linear'`/`'exp'`/`'log'`/`'pow'`/`'poly'`/`'quad'`), `stroke_width`, `stroke_dash`. Regression overlay on scatter |
 | `PlotText` | `text`, `position` (default `'auto'`; or 9 corner/edge anchors), `padding_x`/`_y`, `font_size`, `italic`, `align`, `max_width_pct`. In-plot narrative anchored to a corner. `'auto'` picks corner colliding least with data; bar/waterfall disqualify bottom corners. `middle-*` anchors are INSIDE plot region, no auto-collision (warns) |
 
@@ -509,6 +509,61 @@ annotations = [
 | Compare magnitudes side-by-side (not co-movement) | `make_2pack_vertical()` -- two stacked panels with own axes |
 | 3+ series with scale problems | z-score normalize, single axis `multi_line` |
 | Per-series regime annotations | one `multi_line` per series in a composite |
+
+### 9.6 Lead-lag pattern
+
+When the question is "does X anticipate Y?" -- ISM PMI ahead of equity returns by ~6m, jobless claims ahead of the unemployment rate by ~3m, HY spreads ahead of defaults by ~12m -- the dual-axis chart becomes a lead-lag chart by shifting the predictor's date column forward by the lead horizon. The visual: the predictor's line extends past the predicted series's last actual; past co-movement implies the predicted series's near-term direction. High-leverage shape because it both shows the relationship AND argues a forecast in one frame.
+
+| Form | Question | Build |
+|---|---|---|
+| Time-shifted dual-axis | "What does X imply for Y over the next N months?" | Shift predictor `+N` months -> dual-axis + `VLine` at "Today" |
+| Scatter `Y_t` vs `X_{t-N}` | "How tight is the lag-N relationship?" | `merged['x_lag'] = x.shift(N)` then `'scatter'` + `mapping['trendline']=True` |
+| Sweep N | "Which lead horizon fits best?" | 4-pack of N=3, 6, 9, 12 via `make_4pack_grid` |
+| Combine | "Strength + path in one frame" | `make_2pack_horizontal(scatter_spec, time_shift_spec)` |
+
+```python
+predictor_shift = predictor.copy()
+predictor_shift['date'] = predictor_shift['date'] + pd.DateOffset(months=6)
+df_long = pd.concat([
+    predicted.rename(columns={'spx_yoy_pct': 'value'}).assign(series='SPX YoY (%)'),
+    predictor_shift.rename(columns={'ism': 'value'}).assign(series='ISM (lead 6m)'),
+])
+today = predicted['date'].max()
+future_end = predictor_shift['date'].max()
+
+make_chart(
+    df=df_long, chart_type='multi_line',
+    mapping={
+        'x': 'date', 'y': 'value', 'color': 'series',
+        'dual_axis_series': ['ISM (lead 6m)'],
+        'y_title': 'SPX YoY (%)', 'y_title_right': 'ISM (lead 6m)',
+    },
+    title='ISM Leads SPX by 6 Months',
+    annotations=[
+        VLine(x=today, label='Today', style='dashed'),
+        Band(x1=today, x2=future_end, label='Implied', opacity=0.18),
+    ],
+)
+```
+
+The x-axis extends naturally to the predictor's last shifted date (Vega-Lite's domain union). Annotations placed inside the future zone render correctly because the predictor's data fills it -- the off-data-stretches-frame anti-pattern (§8.2) does NOT apply here.
+
+**`VLine` at "Today" is the canonical demarcation; `Band` over the future zone is an optional second hint.** The predictor's line crosses into the demarcated zone; the predicted series stops at "Today". For a single implied-target callout, add one of:
+
+```python
+Arrow(x1=today, y1=last_actual, x2=future_end, y2=implied_target, label='Implied')
+PointHighlight(x=future_end, y=implied_target, axis='left', size=140)
+Callout(x=future_end, y=implied_target, axis='left', label=f'Implied: {implied_target:+.1f}%')
+```
+
+`implied_target` comes from the predictor's calibration (e.g. linear fit of predicted on lagged predictor); compute it before charting -- the engine does not derive it.
+
+| Don't | Why |
+|---|---|
+| `strokeDash` on the predicted series to switch from solid (past) to dashed (implied future) on dual-axis | Silently dropped on dual-axis (§9.4). `VLine` + `Band` on the LEFT axis is cleaner anyway and works |
+| `layers=[{'type':'point', 'data': future_df, ...}]` for forecast dots on a dual-axis chart | Custom-data point layers don't pin reliably to either axis on dual-axis; the dots disappear. Use `Arrow` / `PointHighlight` / `Callout` for the implied target instead |
+| Single-axis `multi_line` on disparate scales without z-score | Engine y-scale gate rejects (§9.1). Dual-axis is the canonical container for lead-lag |
+| Stacked `make_2pack_vertical` of predictor + predicted | Loses the visual co-movement that's the whole point. Reserve composites for lead-lag + its scatter quantification |
 
 ---
 

@@ -62,7 +62,6 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Standard library
 # ---------------------------------------------------------------------------
-import colorsys
 import concurrent.futures
 import copy
 import hashlib
@@ -2587,15 +2586,15 @@ class Callout(Annotation):
 class LastValueLabel(Annotation):
     """Direct end-of-line labeling for ``multi_line`` charts.
 
-    Replaces the legend with labels at the right-hand edge of each
+    Replaces the legend with text labels at the right-hand edge of each
     series, in that series' own color (FT/Bloomberg house style).
     Removes the "which line is which?" lookup tax.
 
     Behavior:
 
     * On a ``multi_line`` chart with a ``color`` column, each series
-      gets a small filled circle plus a text label at its last data
-      point (the row with ``max(x)`` for that series).
+      gets a text label at its last data point (the row with ``max(x)``
+      for that series), drawn in the line's hex.
     * On a single-series ``multi_line`` (no color column, ``y`` is a
       single string), one label is drawn at the line's end.
     * On a wide-format chart auto-melted into long format, each
@@ -2614,15 +2613,28 @@ class LastValueLabel(Annotation):
     ``"Gold  2,350"`` and a 0.085 series reads ``"USD/EUR  0.085"``
     instead of both forced to ``"{:.2f}"``. Pass an explicit Python
     format template (e.g. ``"{:+.2f}"``, ``"{:.0%}"``) to override.
+
+    Text-only: ``show_dot`` / ``dot_size`` / ``dot_color`` are accepted
+    as kwargs for back-compat (existing call sites do not need to
+    change) but are ignored at render time. The dot used to anchor the
+    label visually; the line itself extending into the label margin
+    plays that role now.
     """
 
     show_value: bool = False
     value_format: Optional[str] = None
     show_dot: bool = True
+    """Deprecated -- ignored at render time. Field retained so existing
+    call sites passing ``show_dot=...`` do not raise. The dot has been
+    removed entirely; use ``label_color`` (not ``dot_color``) to
+    override the label hex."""
     dot_size: int = 80
+    """Deprecated -- ignored at render time. See ``show_dot``."""
     dot_color: Optional[str] = None
+    """Deprecated -- ignored at render time. See ``show_dot``. Use
+    ``label_color`` to override the label hex."""
     dx: int = 6
-    font_size: int = 14
+    font_size: int = 15
     font_weight: Literal["normal", "bold"] = "normal"
     include_right_axis: bool = False
     """Obsolete since 2026-05-05 -- LastValueLabel is now stripped on
@@ -2676,7 +2688,8 @@ class LastValueLabel(Annotation):
             and y_field in df.columns
         ):
             return self._build_single_series_layer(
-                df, x_col, x_type, x_sort, y_field, mapping=mapping,
+                df, x_col, x_type, x_sort, y_field,
+                mapping=mapping, skin=skin,
             )
 
         if not (color_field and color_field in df.columns):
@@ -2711,28 +2724,28 @@ class LastValueLabel(Annotation):
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
 
-        # Per-row precomputed label colors: Vega-Lite defaults to ``shared``
-        # color-scale resolution across layers, so declaring a separate
-        # ``alt.Scale(range=darkened)`` on the LVL inner layers is silently
-        # overridden by the base line chart's lighter palette when the LVL
-        # output is layered into the parent in ``render_annotations``.
-        # Resolving this with ``resolve_scale(color='independent')`` would
+        # Per-row precomputed label colors that match the line color
+        # exactly (FT/Bloomberg house style: the label IS the legend, in
+        # the line's own colour -- including the lighter palette slots
+        # such as ``#B9D9EB``). Vega-Lite defaults to ``shared`` color-
+        # scale resolution across layers, so any ``alt.Scale`` declared
+        # on the LVL inner layer is silently overridden by the base line
+        # chart's palette. ``resolve_scale(color='independent')`` would
         # also break legitimate shared-color encodings on other annotation
-        # types (Trendline, etc.). Instead, materialize the darkened color
-        # per row and encode with ``scale=None`` so Vega-Lite uses the
-        # literal hex values directly and bypasses scale merging entirely.
+        # types (Trendline, etc.). Instead, materialize the literal scheme
+        # color per row and encode with ``scale=None`` so Vega-Lite uses
+        # the hex values directly and bypasses scale merging entirely.
         # Slot index follows the sorted-unique convention Vega-Lite applies
         # by default to nominal color domains, so the LVL slot-to-series
         # mapping matches the line layer's mapping one-to-one.
         scheme = skin.get("color_scheme", GS_CLEAN["color_scheme"])
-        dark_scheme = [_darken_color_for_label(c) for c in scheme]
         unique_series = sorted(last_rows[color_field].astype(str).unique())
-        series_to_dark: Dict[str, str] = {
-            s: dark_scheme[i % len(dark_scheme)]
+        series_to_color: Dict[str, str] = {
+            s: scheme[i % len(scheme)]
             for i, s in enumerate(unique_series)
         }
         last_rows["_label_color"] = (
-            last_rows[color_field].astype(str).map(series_to_dark)
+            last_rows[color_field].astype(str).map(series_to_color)
         )
 
         # Route each series to the correct axis. On a dual-axis chart the
@@ -2817,25 +2830,6 @@ class LastValueLabel(Annotation):
                     title=None, labels=False, ticks=False, domain=False,
                 )
 
-            if self.show_dot:
-                dot_kwargs: Dict[str, Any] = {
-                    "size": self.dot_size,
-                    "filled": True,
-                    "opacity": 1.0,
-                }
-                dot_chart = alt.Chart(rows).mark_point(**dot_kwargs).encode(
-                    x=alt.X(x_col, **x_kwargs),
-                    y=alt.Y(f"{y_field}:Q", **y_kwargs),
-                    color=(
-                        alt.value(self.dot_color)
-                        if self.dot_color
-                        else alt.Color(
-                            "_label_color:N", scale=None, legend=None,
-                        )
-                    ),
-                )
-                layers.append(dot_chart)
-
             text_chart = (
                 alt.Chart(rows)
                 .mark_text(
@@ -2875,6 +2869,7 @@ class LastValueLabel(Annotation):
         x_sort: Optional[List[Any]],
         y_field: str,
         mapping: Optional[Dict[str, Any]] = None,
+        skin: Optional[Dict[str, Any]] = None,
     ) -> alt.Chart:
         df_clean = df.dropna(subset=[x_col, y_field])
         if df_clean.empty:
@@ -2912,23 +2907,15 @@ class LastValueLabel(Annotation):
             x_kwargs["sort"] = x_sort
 
         layers: List[alt.Chart] = []
-        color = self.label_color or self.dot_color or "#333333"
-
-        if self.show_dot:
-            dot_chart = (
-                alt.Chart(end_df)
-                .mark_point(
-                    size=self.dot_size,
-                    filled=True,
-                    opacity=1.0,
-                    color=color,
-                )
-                .encode(
-                    x=alt.X(x_col, **x_kwargs),
-                    y=alt.Y(f"{y_field}:Q"),
-                )
-            )
-            layers.append(dot_chart)
+        # Default to the same color the single-series line itself renders
+        # in (skin.primary_color), so the LVL label and the line are the
+        # same hex by construction. Explicit ``label_color`` on the
+        # annotation still wins. ``dot_color`` is no longer in this
+        # chain -- the dot has been removed.
+        line_color = (
+            skin.get("primary_color", "#003359") if skin else "#003359"
+        )
+        color = self.label_color or line_color
 
         text_chart = (
             alt.Chart(end_df)
@@ -7294,38 +7281,53 @@ BASE_CONFIG: Dict[str, Any] = {
 GS_CLEAN: Dict[str, Any] = {
     **BASE_CONFIG,
     "name": "gs_clean",
-    "description": "Clean, professional style. PRISM default; matches "
-                   "chart_functions_studio.py 'gs_clean' theme exactly.",
+    "description": "Clean, professional style. PRISM default. Palette is the "
+                   "readability-tuned variant of chart_functions_studio.py's "
+                   "'gs_clean' theme (lighter slots pulled to a contrast-safe "
+                   "lightness band so line strokes and on-line labels share "
+                   "the same hex).",
     # ----- single-color anchors -------------------------------------------
     # ``primary_color`` is the first palette slot (also used for single-
     # series bars / lines / scatter points).  ``secondary_color`` is the
-    # second palette slot (light-blue) used by ``_build_layer`` overlays.
-    # ``accent_color`` is the alert/red used for negative deltas in
-    # waterfalls and right-axis annotations.
-    "primary_color": "#003359",
-    "secondary_color": "#B9D9EB",
-    "accent_color": "#C00000",
+    # second palette slot used by ``_build_layer`` overlays.  ``accent_color``
+    # is the alert/red used for negative deltas in waterfalls and right-axis
+    # annotations.  All three are the same readability-tuned values used in
+    # ``color_scheme`` below -- annotation and line colors MUST match (hard
+    # rule: a LastValueLabel label / dot rendered on top of a line uses
+    # the line's own hex, not a separate "labels-only" derivation).
+    "primary_color": "#00355C",
+    "secondary_color": "#3892C4",
+    "accent_color": "#730000",
     "background_color": "#FFFFFF",
     "grid_color": "#E6E6E6",
     "trendline_color": "#999999",
     # ----- categorical color scheme (PRISM "gs_primary" palette) ---------
-    # Source: chart_functions_studio.py line 884 (GS_PRIMARY palette).
-    # Order matters: matches PRISM's series-priority guidance (navy ->
-    # light blue -> mid blue -> grey -> red -> ...).
+    # Source: chart_functions_studio.py line 884 (GS_PRIMARY palette),
+    # then pulled into the readability-tuned band so the lighter slots
+    # (slot 2 light blue, slot 3 mid blue, slot 4 grey, slot 9 orange in
+    # particular) print legibly as both line strokes AND on-chart label
+    # text against the white background.  The transform is HSL-lightness
+    # scaling with a floor: ``new_L = max(L * 0.6, 0.18)``.  Already-dark
+    # slots (slot 1 navy) barely move (#003359 -> #00355C); light slots
+    # move materially (#B9D9EB -> #3892C4).  This is the SAME palette used
+    # by ``LastValueLabel`` for label and dot colors -- one palette,
+    # rendered identically wherever a series appears.
+    # Order matches PRISM's series-priority guidance (navy -> light blue
+    # -> mid blue -> grey -> red -> ...).
     # The OCR'd MD had #B9099B (magenta) in slot 2; that was a misread of
-    # the canonical #B9D9EB (light blue). Other downstream slots were
+    # the canonical light-blue source.  Other downstream slots were
     # similarly corrupted in the MD; this list is the authoritative one.
     "color_scheme": [
-        "#003359",  # 1. navy        (primary)
-        "#B9D9EB",  # 2. light blue
-        "#729FCF",  # 3. mid blue
-        "#A6A6A6",  # 4. grey
-        "#C00000",  # 5. red         (accent)
-        "#4F81BD",  # 6. cobalt blue
-        "#9BBB59",  # 7. olive green
-        "#8064A2",  # 8. purple
-        "#F79646",  # 9. orange
-        "#4BACC6",  # 10. teal
+        "#00355C",  # 1. navy        (primary; was #003359)
+        "#3892C4",  # 2. light blue  (was #B9D9EB)
+        "#315F90",  # 3. mid blue    (was #729FCF)
+        "#646464",  # 4. grey        (was #A6A6A6)
+        "#730000",  # 5. red         (accent; was #C00000)
+        "#2C4D75",  # 6. cobalt blue (was #4F81BD)
+        "#5F7530",  # 7. olive green (was #9BBB59)
+        "#4D3B62",  # 8. purple      (was #8064A2)
+        "#B65708",  # 9. orange      (was #F79646)
+        "#276A7C",  # 10. teal       (was #4BACC6)
     ],
     "heatmap_scheme": "blues",
     "font_family": "Liberation Sans, Arial, sans-serif",
@@ -7483,47 +7485,37 @@ def _get_color_scale(skin_config: Dict[str, Any]) -> alt.Scale:
     return alt.Scale(range=scheme)
 
 
-def _darken_color_for_label(
-    color_hex: str,
-    factor: float = 0.6,
-    floor: float = 0.18,
-) -> str:
-    """Return a darker variant of ``color_hex`` suitable for label text.
+def _scatter_multi_color_opacity(n: int) -> float:
+    """Point opacity for the categorical multi-color scatter path.
 
-    The line color in the gs_clean palette is tuned for the line itself
-    (slot 2 ``#B9D9EB`` light blue, slot 3 ``#729FCF`` mid blue, slot 4
-    ``#A6A6A6`` grey) -- those values sit at the top of the readable
-    range for line strokes against a white background, but reuse as
-    on-chart label text drops the text just below comfortable reading
-    contrast. ``LastValueLabel`` calls this to produce a label/dot
-    color that keeps the series' hue and saturation (so the visual
-    line-to-label mapping survives) while pulling lightness down to a
-    contrast-safe band. Lines themselves render with the original
-    palette unchanged.
+    Scales down with point count so dense clusters stay readable.
+    At low n (<= 50) returns the historical 0.85; as n grows, opacity
+    drops via a power-law so overlapping dots stack additively into a
+    legible density gradient instead of solid color blobs that swallow
+    both density and category identity. Floors at 0.20 (any lower and
+    individual points become invisible at the default mark size of 60).
 
-    The transform is HSL-lightness scaling with a floor: ``new_L =
-    max(L * factor, floor)``. The floor stops already-dark slots
-    (slot 1 navy ``#003359`` at L~17%) from collapsing into pure
-    black; the multiplicative factor scales light slots aggressively
-    so the readability gap is closed where the problem actually is.
+    Formula: ``alpha = clamp(0.20, 0.85, 0.85 * (50 / n) ** 0.4)``
+
+    Sample curve:
+        n=  50 -> 0.85
+        n= 100 -> 0.64
+        n= 200 -> 0.49
+        n= 500 -> 0.34
+        n=1000 -> 0.26
+        n=2000 -> 0.20  (floor)
+
+    Single-color and gradient (temporal / numeric ``color_field``)
+    scatters intentionally do NOT use this curve -- single-color keeps
+    the skin default (0.7) because there is no color-overlap mud to
+    avoid, and gradient sits at a static 0.85 because phase-space plots
+    are typically dozens of points where the gradient itself encodes
+    density via hue.
     """
-    hex_str = color_hex.lstrip("#")
-    if len(hex_str) != 6:
-        return color_hex
-    try:
-        r = int(hex_str[0:2], 16) / 255.0
-        g = int(hex_str[2:4], 16) / 255.0
-        b = int(hex_str[4:6], 16) / 255.0
-    except ValueError:
-        return color_hex
-    h, l_val, s = colorsys.rgb_to_hls(r, g, b)
-    new_l = max(l_val * factor, floor)
-    nr, ng, nb = colorsys.hls_to_rgb(h, new_l, s)
-    return "#{:02X}{:02X}{:02X}".format(
-        int(round(nr * 255)),
-        int(round(ng * 255)),
-        int(round(nb * 255)),
-    )
+    if n <= 0:
+        return 0.85
+    raw = 0.85 * (50.0 / float(n)) ** 0.4
+    return max(0.20, min(0.85, raw))
 
 
 # ===========================================================================
@@ -9094,14 +9086,34 @@ def _build_scatter(
     mark_config = skin_config.get("mark_config", {}).get("point", {})
     primary_color = skin_config.get("primary_color", "#003359")
 
-    # Fix 4: opacity differs based on whether color grouping is used.
-    # Single-series scatter: full opacity for crisp dots. Grouped: 0.85 so
-    # overlapping clusters remain readable.
-    point_opacity = (
-        0.85
-        if (color_field and color_field in df.columns)
-        else mark_config.get("opacity", 1.0)
-    )
+    # Opacity branches by color-encoding regime. The categorical
+    # multi-color path scales opacity DOWN with point count via
+    # ``_scatter_multi_color_opacity`` so dense scatters with many
+    # overlapping points stack into a legible density gradient instead
+    # of solid color blobs that destroy both density signal and
+    # category identity. Single-color uses the skin default; gradient
+    # (temporal / numeric color) sits at a static 0.85 because
+    # phase-space plots are typically sparse enough that opaque dots
+    # read fine and the gradient itself carries the density story.
+    has_color = bool(color_field) and color_field in df.columns
+    if has_color:
+        _color_series = df[color_field]
+        _is_gradient_color = (
+            pd.api.types.is_datetime64_any_dtype(_color_series)
+            or (
+                pd.api.types.is_numeric_dtype(_color_series)
+                and not pd.api.types.is_bool_dtype(_color_series)
+            )
+        )
+    else:
+        _is_gradient_color = False
+
+    if has_color and not _is_gradient_color:
+        point_opacity = _scatter_multi_color_opacity(len(df))
+    elif has_color and _is_gradient_color:
+        point_opacity = 0.85
+    else:
+        point_opacity = mark_config.get("opacity", 1.0)
 
     point = (
         alt.Chart(df)
@@ -9164,13 +9176,21 @@ def _build_scatter(
                 color_field, color_type, scheme,
             )
         else:
+            # Force the legend swatches back to full opacity so the
+            # color -> category mapping stays crisp even when the data
+            # points themselves are translucent (the
+            # ``_scatter_multi_color_opacity`` curve can push points
+            # down to alpha 0.20 for dense scatters; without the
+            # ``symbolOpacity`` override the legend dots inherit that
+            # same alpha and become a faded color-key that defeats the
+            # purpose of the legend).
             point = point.encode(
                 color=alt.Color(
                     color_field,
                     type="nominal",
                     scale=_get_color_scale(skin_config),
                     sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                    legend=alt.Legend(title=None),
+                    legend=alt.Legend(title=None, symbolOpacity=1.0),
                 )
             )
 
@@ -9607,6 +9627,12 @@ def _build_bar(
         # The label layer leaves x/y axis unspecified so Vega-Lite's
         # shared-axis resolution inherits the base bar's axis (title,
         # ticks, format) instead of overriding it with ``title=null``.
+        # Color is contrast-aware: positive bars sit on white background
+        # (label rendered above the bar via baseline='bottom'+dy=-4) so
+        # near-black reads cleanly; negative bars place the label
+        # *inside* the dark-blue bar (same anchor lands above the
+        # y_value point, which for negatives is the bar's far edge), so
+        # white reads cleanly there. Mirrors the heatmap-cell pattern.
         if not color_field and df[x_field].nunique() <= 15:
             text_labels = (
                 alt.Chart(df)
@@ -9614,8 +9640,7 @@ def _build_bar(
                     align="center",
                     baseline="bottom",
                     dy=-4,
-                    color="#888888",
-                    fontSize=10,
+                    fontSize=11,
                     fontWeight="bold",
                 )
                 .encode(
@@ -9626,6 +9651,11 @@ def _build_bar(
                     text=alt.Text(
                         y_field, type="quantitative",
                         format=_smart_number_format(df[y_field]),
+                    ),
+                    color=alt.condition(
+                        f"datum['{y_field}'] < 0",
+                        alt.value("white"),
+                        alt.value("#222222"),
                     ),
                 )
                 .properties(width=width, height=height)
@@ -9649,8 +9679,8 @@ def _build_bar(
                     alt.Chart(stack_totals)
                     .mark_text(
                         align="center", baseline="bottom",
-                        dy=-4, color="#888888",
-                        fontSize=10, fontWeight="bold",
+                        dy=-4, color="#222222",
+                        fontSize=11, fontWeight="bold",
                     )
                     .encode(
                         x=alt.X(
