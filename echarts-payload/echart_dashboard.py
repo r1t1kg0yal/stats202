@@ -434,12 +434,25 @@ _TIER_A_COMPUTE_JS_SUBSTITUTIONS: List[Tuple[str, str, str]] = [
 ]
 
 # Numpy scalar substitutions. Captures the inner numeric / boolean
-# argument; the wrapper call is removed.
+# argument; the wrapper call is removed. Both the short (``np.``) and
+# full (``numpy.``) module-name spellings are absorbed because PRISM may
+# import numpy either way -- the engine never makes PRISM remember which
+# alias was used at compose time.
 _TIER_A_NUMPY_SUBSTITUTIONS: List[Tuple[str, str, str]] = [
-    (r"np\.float\d+\(([^)]+)\)", r"\1",   "numpy float scalar -> JS number"),
-    (r"np\.int\d+\(([^)]+)\)",   r"\1",   "numpy int scalar -> JS number"),
-    (r"np\.bool_\(\s*True\s*\)",  "true",  "numpy bool True -> JS true"),
-    (r"np\.bool_\(\s*False\s*\)", "false", "numpy bool False -> JS false"),
+    # np.* short alias
+    (r"\bnp\.float\d+\(([^)]+)\)", r"\1",   "numpy float scalar -> JS number"),
+    (r"\bnp\.int\d+\(([^)]+)\)",   r"\1",   "numpy int scalar -> JS number"),
+    (r"\bnp\.bool_\(\s*True\s*\)",  "true",  "numpy bool True -> JS true"),
+    (r"\bnp\.bool_\(\s*False\s*\)", "false", "numpy bool False -> JS false"),
+    (r"\bnp\.True_\b",              "true",  "numpy True_ -> JS true"),
+    (r"\bnp\.False_\b",             "false", "numpy False_ -> JS false"),
+    # numpy.* full module name
+    (r"\bnumpy\.float\d+\(([^)]+)\)", r"\1",   "numpy float scalar (numpy.*) -> JS number"),
+    (r"\bnumpy\.int\d+\(([^)]+)\)",   r"\1",   "numpy int scalar (numpy.*) -> JS number"),
+    (r"\bnumpy\.bool_\(\s*True\s*\)",  "true",  "numpy bool True (numpy.*) -> JS true"),
+    (r"\bnumpy\.bool_\(\s*False\s*\)", "false", "numpy bool False (numpy.*) -> JS false"),
+    (r"\bnumpy\.True_\b",              "true",  "numpy True_ (numpy.*) -> JS true"),
+    (r"\bnumpy\.False_\b",             "false", "numpy False_ (numpy.*) -> JS false"),
 ]
 
 # Tier B: semantic-shifting Python tokens that block at validate. Each
@@ -529,12 +542,19 @@ def _sanitize_compute_js(src: str) -> Tuple[str, List[str], List[str]]:
             out_chunks.append(chunk)
             continue
         # kind == "code" -- apply Tier A substitutions and Tier B detection.
-        for pattern, replacement, label in _TIER_A_COMPUTE_JS_SUBSTITUTIONS:
+        # Order: numpy wrapper patterns FIRST so `np.bool_(True)` /
+        # `numpy.float64(1.23)` get absorbed as a unit before the bare-
+        # token pass rewrites `True` -> `true` (which would otherwise
+        # leave `np.bool_(true)` as an unmatched wrapper still emitting a
+        # JS ReferenceError). After numpy wrappers are gone, the bare
+        # Python literal pass cleans up any remaining standalone tokens
+        # and the bare `np.True_` / `numpy.True_` aliases.
+        for pattern, replacement, label in _TIER_A_NUMPY_SUBSTITUTIONS:
             new_chunk = re.sub(pattern, replacement, chunk)
             if new_chunk != chunk and label not in warnings_seen:
                 warnings_seen.append(label)
             chunk = new_chunk
-        for pattern, replacement, label in _TIER_A_NUMPY_SUBSTITUTIONS:
+        for pattern, replacement, label in _TIER_A_COMPUTE_JS_SUBSTITUTIONS:
             new_chunk = re.sub(pattern, replacement, chunk)
             if new_chunk != chunk and label not in warnings_seen:
                 warnings_seen.append(label)
@@ -635,6 +655,190 @@ def _sanitize_manifest_compute_js(manifest: Dict[str, Any]) -> List[str]:
                     msg = f"widget '{wid}' compute.source: {w_label}"
                     if msg not in warnings:
                         warnings.append(msg)
+    return warnings
+
+
+# -----------------------------------------------------------------------------
+# Manifest boolean coercion
+# -----------------------------------------------------------------------------
+# Boolean fields in a manifest dict are an absorption surface, not a
+# discipline surface. PRISM may type a toggle filter's default as the
+# string "false", the int 0, a numpy.bool_(False), or the canonical
+# Python False -- the user's intent in every dialect is identical, and
+# the engine MUST treat them identically. The trapdoor we are closing
+# here: the JS runtime does partial absorption via `!!f.default`, but
+# `!!"false"` is `true` (non-empty string is truthy in JS), so a manifest
+# authored with `default: "false"` silently flips the checkbox to ON.
+# Per Principle #7 (Engines Absorb Friction), the engine normalises every
+# known dialect to canonical Python bool BEFORE validation runs, so:
+#
+#   1. The validator sees clean booleans (its `isinstance(v, bool)` and
+#      `if v is False` checks fire on the right values).
+#   2. `json.dumps` emits canonical JSON `true` / `false` downstream.
+#   3. The JS runtime's `!!` and `===` paths both work as-written.
+#   4. PRISM never has to remember the dialect.
+#
+# Mirrors the Tier A compute_js sanitization shape (auto-rewrite +
+# observable warnings) and runs alongside it in prepare_manifest /
+# compile_dashboard / validate_manifest's working copy.
+
+# True-side dialect tokens: bool True, int 1, numpy.bool_(True),
+# string "true"/"True"/"TRUE"/"1" with surrounding whitespace tolerated.
+# False-side mirrors. Anything not in either set -> _to_bool returns
+# None and the field is left untouched (the validator will flag it
+# downstream if the field requires bool semantically; coercion does
+# not fabricate behaviour).
+
+def _to_bool(v: Any) -> Optional[bool]:
+    """Coerce ``v`` to a canonical Python bool when it matches a
+    recognised boolean dialect; return None when the dialect is
+    unrecognised so the caller can leave the value untouched.
+
+    Recognised dialects:
+        bool                     identity
+        numpy.bool_              cast to bool
+        int 1 / int 0            True / False (other ints reject)
+        str (case-insensitive,   "true" / "1"  -> True
+             whitespace          "false" / "0" -> False
+             trimmed)            (other strings reject)
+
+    Float and other numeric types are NOT recognised on purpose -- a
+    field that holds a truthy float was probably typed wrong upstream
+    and is better caught by the validator than silently coerced.
+    """
+    # bool BEFORE int: bool is an int subclass in Python.
+    if isinstance(v, bool):
+        return v
+    try:
+        import numpy as _np
+        if isinstance(v, _np.bool_):
+            return bool(v)
+    except ImportError:
+        pass
+    if isinstance(v, int) and v in (0, 1):
+        return bool(v)
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if s in ("true", "1"):
+            return True
+        if s in ("false", "0"):
+            return False
+    return None
+
+
+# Widget-level keys whose value, when present and not a dict, is
+# expected to be a boolean. Path-blind allowlist because these fields
+# share the same semantics across many widget kinds (e.g. every chart
+# kind accepts `markers`; every table accepts `frozen_first_col`; every
+# popup-eligible widget accepts `click_popup` / `row_click`). When the
+# value IS a dict (click_popup can hold a popup spec; row_click likewise),
+# coercion skips the field -- only string/int/numpy bool dialects are
+# normalised, never the dict-shape escape hatch.
+_WIDGET_BOOL_FIELDS: frozenset = frozenset({
+    "click_popup",
+    "row_click",
+    "frozen_first_col",
+    "freeze_first_col",
+    "show_provenance",
+    "show_source",
+    "show_legend",
+    "show_values",
+    "value_visible",
+    "delta_visible",
+    "sparkline_visible",
+    "compare_period_visible",
+    "markers",
+    "areaFill",
+    "same_scale",
+    "show_range",
+    "show_percentile",
+    "stack",
+    "smooth",
+    "showSymbol",
+    "stat_strip_off",
+    "show_axis_labels",
+})
+
+
+def _coerce_manifest_booleans(manifest: Dict[str, Any]) -> List[str]:
+    """Walk the manifest and coerce every known boolean-typed field
+    from PRISM's likely dialects (string "true"/"false"/"1"/"0", int
+    1/0, numpy.bool_) to canonical Python bool. Mutates in place;
+    returns a list of human-readable substitution warnings (one per
+    field coerced, naming the path + the original token + the coerced
+    value).
+
+    Coverage:
+        - filters[i].default for type in ("toggle", "rule")
+        - tool_def.inputs[i].default for type == "toggle"
+        - tool_def.inputs[i].paste_enabled
+        - widget-level fields in `_WIDGET_BOOL_FIELDS` (click_popup,
+          row_click, frozen_first_col, show_provenance, markers, etc.)
+
+    NOT coerced:
+        - select / multiSelect / radio filter defaults (those compare
+          against options whose values may legitimately be the strings
+          "true" / "false" themselves -- coercion would silently
+          stomp the option-value match).
+        - any widget field NOT in `_WIDGET_BOOL_FIELDS` (out of scope
+          here; add the field to the allowlist if a future incident
+          surfaces a new boolean-leak path).
+        - dict-shape values for click_popup / row_click (escape hatch
+          for full popup specs is preserved).
+
+    Idempotent: running this twice on the same manifest produces
+    identical bytes after the first call.
+    """
+    warnings: List[str] = []
+
+    def _try_coerce(path: str, container: Dict[str, Any], key: str) -> None:
+        if key not in container:
+            return
+        v = container[key]
+        if isinstance(v, bool):
+            return
+        coerced = _to_bool(v)
+        if coerced is None:
+            return
+        container[key] = coerced
+        warnings.append(f"{path}: coerced {v!r} -> {coerced}")
+
+    # 1. Filter defaults -- toggle / rule are the only filter types
+    #    whose default is bool-typed. select / multiSelect / radio
+    #    defaults are option-value strings and must NOT be coerced.
+    for i, f in enumerate(manifest.get("filters", []) or []):
+        if not isinstance(f, dict):
+            continue
+        if f.get("type") in ("toggle", "rule"):
+            _try_coerce(f"filters[{i}].default", f, "default")
+
+    # 2. Walk widgets in any layout shape (grid or tabs) and coerce
+    #    widget-level bool fields + tool widget input defaults.
+    layout = manifest.get("layout") or {}
+    for w, _row, _idx, _container in _walk_widgets_in_layout(layout):
+        wid = w.get("id") or "<unnamed>"
+        wbase = f"widget[{wid}]"
+
+        for fld in _WIDGET_BOOL_FIELDS:
+            # click_popup / row_click can also be a dict (full popup
+            # spec). Skip the dict shape; only coerce dialect cases.
+            if fld in w and isinstance(w[fld], dict):
+                continue
+            _try_coerce(f"{wbase}.{fld}", w, fld)
+
+        if w.get("widget") == "tool":
+            tdef = w.get("tool_def")
+            if isinstance(tdef, dict):
+                for ii, inp in enumerate(tdef.get("inputs") or []):
+                    if not isinstance(inp, dict):
+                        continue
+                    ipath = f"{wbase}.tool_def.inputs[{ii}]"
+                    if inp.get("type") == "toggle":
+                        _try_coerce(f"{ipath}.default", inp, "default")
+                    if "paste_enabled" in inp:
+                        _try_coerce(f"{ipath}.paste_enabled",
+                                    inp, "paste_enabled")
+
     return warnings
 
 
@@ -2214,6 +2418,13 @@ def validate_manifest(
         for ce in compute_errors_inner:
             errs.append(ce)
         _augment_manifest(manifest)
+        # Boolean dialect normalisation on the working manifest. Closes
+        # the JS `!!"false"` is True trapdoor by replacing PRISM's
+        # alternate boolean dialects (string "true"/"false"/"1"/"0",
+        # int 1/0, numpy.bool_) with canonical Python bool BEFORE the
+        # validator runs, so `isinstance(v, bool)` and `if v is False`
+        # checks downstream see the right values. Per Principle #7.
+        _coerce_manifest_booleans(manifest)
         # Tier A compute_js sanitization on the working layout (already
         # deep-copied above so the caller's manifest is preserved). Tier B
         # blocker patterns are NOT rewritten here -- they are detected
@@ -3883,6 +4094,13 @@ def prepare_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         4. ``_augment_manifest``             -- infer filter ``scope``,
            strip ``{value, label}`` defaults to primitives, auto-wire
            ``widget.dataset_ref`` for filter-reachable charts.
+        5. ``_coerce_manifest_booleans``     -- normalize PRISM dialects
+           ("true"/"false" strings, 1/0 ints, numpy.bool_) to canonical
+           Python bool on every known boolean-typed field. Closes the
+           silent JS `!!"false"` is True trapdoor.
+        6. ``_sanitize_manifest_compute_js`` -- Tier A Python-literal
+           rewrite on every tool widget's compute_js source (None ->
+           null, True -> true, etc.).
 
     Returns the same manifest for chaining (``prepare_manifest(m); ...``).
 
@@ -3902,6 +4120,7 @@ def prepare_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     _apply_computed_datasets(manifest)
     _apply_show_when_compile(manifest)
     _augment_manifest(manifest)
+    _coerce_manifest_booleans(manifest)
     _sanitize_manifest_compute_js(manifest)
     return manifest
 
@@ -7991,6 +8210,16 @@ def compile_dashboard(
     # contribute diagnostics, target counts, etc.).
     _apply_show_when_compile(manifest_dict)
     _augment_manifest(manifest_dict)
+    # Boolean dialect normalisation (Principle #7). Coerce PRISM's
+    # alternate boolean dialects (string "true"/"false"/"1"/"0", int
+    # 1/0, numpy.bool_) to canonical Python bool on every known
+    # boolean-typed field BEFORE validation. Closes the silent
+    # `!!"false"` is True trapdoor that would otherwise flip a toggle
+    # filter's checkbox state opposite to author intent. Each coercion
+    # surfaces in r.warnings so the rewrite is observable but never
+    # blocks (the field types are bool semantically; the coercion is
+    # equivalence-preserving).
+    coerce_warnings = _coerce_manifest_booleans(manifest_dict)
     # Tier A compute_js sanitization (Principle #7). Auto-rewrite the
     # equivalence-preserving Python literals (None / True / False / nan /
     # inf / numpy scalars) to their JS spellings on the persisted source
@@ -8050,6 +8279,7 @@ def compile_dashboard(
                          + list(compute_errors)
                          + [str(d) for d in shape_diags]
                          + [str(d) for d in cdd_diags_pre]
+                         + [f"manifest bool coerced: {w}" for w in coerce_warnings]
                          + [f"compute_js sanitized: {w}" for w in sanitize_warnings])
         agg_diags = list(shape_diags) + list(cdd_diags_pre)
         # Construct a verbose ``error_message`` carrying every diagnostic
@@ -8175,9 +8405,12 @@ def compile_dashboard(
         html_path.write_text(html, encoding="utf-8")
 
     warnings: List[str] = [str(d) for d in diags]
-    # Surface Tier A compute_js sanitization rewrites (Principle #7) so
-    # the rewrite is observable to the caller (PRISM logs them; the
-    # in-browser failure modal never sees them because compile succeeded).
+    # Surface Tier A compute_js sanitization rewrites + manifest boolean
+    # coercion rewrites (Principle #7) so each rewrite is observable to
+    # the caller (PRISM logs them; the in-browser failure modal never
+    # sees them because compile succeeded).
+    for cw in coerce_warnings:
+        warnings.append(f"manifest bool coerced: {cw}")
     for sw in sanitize_warnings:
         warnings.append(f"compute_js sanitized: {sw}")
     if save_pngs:

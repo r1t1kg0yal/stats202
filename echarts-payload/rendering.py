@@ -3805,10 +3805,36 @@ DASHBOARD_APP_JS = r"""
   // conditions only.
   var WIDGET_SHOW_WHEN = PAYLOAD.widgetShowWhen || {};
 
+  // Mirror of the engine-side _to_bool. Returns true / false when x
+  // matches the recognised boolean dialect (JS bool, 'true' / 'false'
+  // string in any case, '1' / '0'); returns undefined otherwise so
+  // callers know to fall back to JS's loose equality. Closes the
+  // `true == 'true'` is false silent-failure mode that bites when
+  // PRISM authors a show_when filter clause comparing a toggle filter
+  // against the string 'true' (or vice versa).
+  function _toBoolish(x){
+    if (typeof x === 'boolean') return x;
+    if (typeof x === 'string'){
+      var s = x.trim().toLowerCase();
+      if (s === 'true' || s === '1') return true;
+      if (s === 'false' || s === '0') return false;
+    }
+    return undefined;
+  }
+
   function _evalShowWhenCmp(a, op, b){
     if (a == null || b == null) return false;
-    if (op === '==')  return a == b;
-    if (op === '!=')  return a != b;
+    // Bool-aware == / !=. When BOTH sides parse as boolean dialect,
+    // compare on the canonical bool form so 'true' == true. When
+    // only one side is bool-dialect (e.g. comparing a toggle against
+    // a non-bool literal 'foo'), fall through to JS loose equality.
+    if (op === '==' || op === '!='){
+      var ab = _toBoolish(a), bb = _toBoolish(b);
+      var eq = (ab !== undefined && bb !== undefined)
+                 ? (ab === bb)
+                 : (a == b);
+      return op === '==' ? eq : !eq;
+    }
     if (op === '>')   return parseFloat(a) >  parseFloat(b);
     if (op === '>=')  return parseFloat(a) >= parseFloat(b);
     if (op === '<')   return parseFloat(a) <  parseFloat(b);
