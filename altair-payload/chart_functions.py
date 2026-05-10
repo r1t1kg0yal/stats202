@@ -2619,10 +2619,10 @@ class LastValueLabel(Annotation):
     show_value: bool = False
     value_format: Optional[str] = None
     show_dot: bool = True
-    dot_size: int = 60
+    dot_size: int = 80
     dot_color: Optional[str] = None
     dx: int = 6
-    font_size: int = 12
+    font_size: int = 14
     font_weight: Literal["normal", "bold"] = "normal"
     include_right_axis: bool = False
     """Obsolete since 2026-05-05 -- LastValueLabel is now stripped on
@@ -2756,43 +2756,54 @@ class LastValueLabel(Annotation):
         else:
             side_groups = [("left", last_rows, None)]
 
+        # Actual plot-region pixel height for this chart. ``mapping`` is
+        # the per-render copy that ``render_annotations`` populates with
+        # ``_chart_height_px`` before dispatching to ``to_layer``. Falls
+        # back to the ``wide`` preset (350 px) so existing standalone
+        # callers that bypass ``render_annotations`` (none in production
+        # today; ``make_chart`` always routes through it) still work.
+        chart_height_px = int(
+            mapping.get("_chart_height_px") or 350  # type: ignore[arg-type]
+        )
+
         layers: List[alt.Chart] = []
 
         for side_name, rows, y_scale_domain in side_groups:
             if rows.empty:
                 continue
 
-            # Stagger text within THIS side only -- using a different
-            # side's y-range would yield wrong pixel collisions. Pass the
-            # natural (lo, hi) order to ``_stagger_lvl_text_y`` even when
-            # the right axis is inverted; the alt.Scale below carries the
-            # inverted-domain encoding.
+            # The y-domain that ``_stagger_lvl_text_y`` uses to convert
+            # data->pixels MUST match the chart's actual y-axis domain.
+            # Pre-2026-05-10 the algorithm built this domain from the
+            # per-series END VALUES only, which on a chart where lines
+            # bunch at the end becomes a tiny interval (e.g. 99.9 ..
+            # 100.0). The pixel<->data conversion then thought 0.1 pts
+            # of y was huge -- so the staggering decided no overlap
+            # existed and labels piled on top of each other. Fix: use
+            # the full chart's y-axis domain.
             if y_scale_domain is not None:
+                # Dual-axis path (dead branch today; LVL is stripped on
+                # dual-axis upstream). Honour the explicit per-side
+                # domain so the math is correct if this path is ever
+                # reached.
                 raw = list(y_scale_domain)
-                y_stagger_domain: Optional[Tuple[float, float]] = (
-                    min(raw), max(raw),
-                )
+                y_axis_domain: Tuple[float, float] = (min(raw), max(raw))
             else:
-                full_y = pd.to_numeric(rows[y_field], errors="coerce").dropna()
-                if not full_y.empty:
-                    y_min_s = float(full_y.min())
-                    y_max_s = float(full_y.max())
-                    if y_max_s > y_min_s:
-                        y_pad_s = (y_max_s - y_min_s) * 0.05
-                        y_stagger_domain = (
-                            y_min_s - y_pad_s, y_max_s + y_pad_s,
-                        )
-                    else:
-                        y_stagger_domain = None
-                else:
-                    y_stagger_domain = None
+                # Single-axis path: derive the same domain
+                # ``_build_timeseries`` uses for the rendered y-axis.
+                y_axis_domain = calculate_y_axis_domain(
+                    df_clean[y_field],
+                    handle_outliers=False,
+                    prevent_zero_start=True,
+                )
 
             rows = _stagger_lvl_text_y(
-                rows,
+                rows.reset_index(drop=True),
                 y_field=y_field,
                 label_col="_label",
                 font_size=self.font_size,
-                y_domain=y_stagger_domain,
+                y_domain=y_axis_domain,
+                chart_height_px=chart_height_px,
             )
 
             # Per-side y-encoding: pin to this side's domain (potentially
@@ -5429,7 +5440,18 @@ def render_annotations(
             continue
 
         # ---- default: delegate to the annotation's own to_layer() -------
-        layer = annotation.to_layer(chart, df, mapping, skin_config)
+        # Stash the actual plot-region pixel dimensions in a SHALLOW COPY
+        # of mapping so annotations whose layout depends on pixel space
+        # (today: LastValueLabel's bunching detection in to_layer) can
+        # convert data->pixels correctly. Annotations that don't need
+        # this just ignore the keys. We copy rather than mutate so the
+        # caller's mapping dict is never modified out from under them.
+        annotation_mapping: Dict[str, Any] = dict(mapping)
+        if chart_width is not None:
+            annotation_mapping["_chart_width_px"] = chart_width
+        if chart_height is not None:
+            annotation_mapping["_chart_height_px"] = chart_height
+        layer = annotation.to_layer(chart, df, annotation_mapping, skin_config)
 
         # Dual-axis safety net. Annotations that did not take a
         # dedicated branch above (HLine, Segment, PointHighlight /
