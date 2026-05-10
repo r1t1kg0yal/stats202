@@ -3,23 +3,62 @@ session: BoltWeb pricing engine — capability surface + access mechanism + inte
 sent: 2026-05-09
 reply: scans/prism/2026-05-09_boltweb_pricing_engine_reply.md
 reply_folded_into:
-  - prism/ (likely a new curated doc — `prism/boltweb.md` — covering BoltWeb's
-    asset-class coverage, computation surface, input/output contracts, sandbox
-    + refresh-runner injection status, and worked examples)
-  - prism/api-clients.md (cross-link if BoltWeb lives at `mcp/clients/boltweb*`
-    or follows the L1/L2 client pattern; flag any divergence from the canonical
-    `_USE_GS_PROXY` / `session_and_auth` / `manual_https_request` shape)
-  - prism/code-sandbox.md (§2 namespace tables — confirm or add the
-    BoltWeb entry points alongside `pull_haver_data` / `pull_market_data` /
-    `pull_plottool_data` / `save_artifact`)
-  - prism/dashboard-refresh.md (§5.5 `_build_exec_namespace` injection table —
-    confirm or add BoltWeb entry points so dashboard refresh-time pricing
-    calls don't hit `NameError` the way alt-data clients currently do per the
-    2026-04-27 known gap)
-  - prism/competitive-spec.md (sub-section confirming or contesting the
-    "Bloomberg full terminal" parity claims for SWPM / OVME / CDSW /
-    DLIB / MARS classes once BoltWeb's actual coverage is on the page)
-status: OPEN
+  - NOT YET FOLDED — reply received, filing complete, analysis-pending. Likely
+    new prism/pricing-engine.md (or prism/gs-quant.md) covering the gs_quant
+    + gs_quant_internal + BoltWeb routing-prefix surface end-to-end. Plus
+    light updates to api-clients.md / code-sandbox.md / dashboard-refresh.md /
+    competitive-spec.md per the original prompt frontmatter.
+status: USED — reply received and filed at scans/prism/. Section 4 (computation
+  surface) returned empty body; Section 6 (output contract) returned only one
+  table row. The §4 gap can be back-filled either by a targeted re-prompt or
+  by inferring from spoke Section 9 (BoltWeb is transport+routing only; the
+  pricing primitives live behind the server-side valuation engine and are NOT
+  exposed at PRISM's Python namespace).
+key_findings:
+  - BoltWeb itself is tiny — 3 modules / ~8 KB / 5 public symbols
+    (valuation, capture_market_ref, BotnationApi, botnation_to_portfolio,
+    PlexApi). The actual pricing engine is gs_quant + gs_quant_internal
+    behind it; BoltWeb is the routing prefix into one valuation backend.
+  - PRISM has NO first-party wrapper. gs_quant_internal is vendored on
+    sys.path; scripts import directly via `from gs_quant_internal.boltweb
+    import ...`. No mcp/clients/, no mcp/utils/, no _USE_GS_PROXY pattern.
+  - Auth via gs_quant_auth's KerberosSessionMixin/MQLoginMixin; PRISM
+    runs as service account pmacros2.
+  - NEITHER the execute_analysis_script sandbox NOR the dashboard refresh
+    runner pre-injects BoltWeb / gs_quant. Same status as alt-data clients
+    per dashboard-refresh.md §5.5: importable, not pre-wired. A pull_data.py
+    must initialise GsSession itself (boilerplate from hub Section 1).
+  - Working pricing paths: vanilla rates swaps + swaptions + caps +
+    Bermudans, USTs (via GovtBondBuilder/CUSIP), CDS single-name + index,
+    MBS TBA, EqAutoCallable + EqPortfolioSwap, FX vanilla options +
+    binaries + autocallables + TARFs, commodity swaps + forwards.
+  - Broken / missing paths: bond futures, cash IG/HY corporate bond live
+    PV/DV01 (TSDB EOD duration fallback only), CMOs / MBS prepay, EqOption
+    PV/Greeks (probe-before-rely), COMMOD MDAPI coordinates, RiskCube /
+    InquiryCube (NOT PERMISSIONED for pmacros2), XVA primitives.
+  - Risk: PV + Greeks work for the working classes (.calc(IRDelta), etc.).
+    Scenarios via CarryScenario / CurveScenario /
+    MarketDataShockBasedScenario. No XVA exposed.
+  - NLP trade-parsing via botnation_to_portfolio(message) is a genuine
+    differentiator with no Bloomberg-widget analogue — open-ended catalog
+    (700+ TDAPI builders) that maps "5y USD SOFR swap 10mm pay fixed"
+    directly to a priced Portfolio.
+  - Output: FloatWithInfo for scalars; PortfolioRiskResult for batched
+    Portfolio.calc([...]). ErrorValue is the soft-failure surface — must
+    always isinstance(result, ErrorValue) check.
+  - Latency: ~0.5s per priced builder; 0.38–1.59s for Botnation parse.
+    Cold-start materially slower. 10–50 calls per turn = 5–25s feasible
+    inline; Portfolio batch is the optimisation.
+  - Entitlement gate: pmacros2 can WRITE Portfolio.save_as_quote() but
+    generally CANNOT READ Portfolio.from_quote(other_user_quote_id) due to
+    per-quote ACL on Marquee. Significant for cross-user / community
+    dashboard workflows.
+  - Confirmed: BoltWeb + gs_quant + gs_quant_internal is the COMPLETE
+    pricing surface PRISM has. No slang / Athena / CalQ / CRiSK / Finch /
+    SecDB siblings.
+  - Existing skill: gs_quant_spoke_boltweb.md (32 KB) covers the WRITE
+    path and entitlement story. Does NOT cross-link to widget_tool.md or
+    dashboard-refresh.md.
 ---
 
 Title: BoltWeb pricing engine — capability surface, access mechanism, sandbox integration, hard limits
