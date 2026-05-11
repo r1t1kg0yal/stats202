@@ -97,6 +97,7 @@ from ai_development.mcp.utils.error_handler import send_error_email
 from ai_development.mcp.utils.unit_helper_functions import guess_units_from_name
 from ai_development.mcp.utils.vision_functions import check_chart_quality
 from ai_development.mcp.utils.chart_functions_studio import (
+    GS_PRIMARY,
     PrismInteractiveResult,
     wrap_interactive_prism,
 )
@@ -2614,25 +2615,12 @@ class LastValueLabel(Annotation):
     instead of both forced to ``"{:.2f}"``. Pass an explicit Python
     format template (e.g. ``"{:+.2f}"``, ``"{:.0%}"``) to override.
 
-    Text-only: ``show_dot`` / ``dot_size`` / ``dot_color`` are accepted
-    as kwargs for back-compat (existing call sites do not need to
-    change) but are ignored at render time. The dot used to anchor the
-    label visually; the line itself extending into the label margin
-    plays that role now.
+    Text-only: there is no endpoint dot. The line itself extending into
+    the label margin plays that anchoring role.
     """
 
     show_value: bool = False
     value_format: Optional[str] = None
-    show_dot: bool = True
-    """Deprecated -- ignored at render time. Field retained so existing
-    call sites passing ``show_dot=...`` do not raise. The dot has been
-    removed entirely; use ``label_color`` (not ``dot_color``) to
-    override the label hex."""
-    dot_size: int = 80
-    """Deprecated -- ignored at render time. See ``show_dot``."""
-    dot_color: Optional[str] = None
-    """Deprecated -- ignored at render time. See ``show_dot``. Use
-    ``label_color`` to override the label hex."""
     dx: int = 6
     font_size: int = 15
     font_weight: Literal["normal", "bold"] = "normal"
@@ -2724,21 +2712,32 @@ class LastValueLabel(Annotation):
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
 
-        # Per-row precomputed label colors that match the line color
-        # exactly (FT/Bloomberg house style: the label IS the legend, in
-        # the line's own colour -- including the lighter palette slots
-        # such as ``#B9D9EB``). Vega-Lite defaults to ``shared`` color-
-        # scale resolution across layers, so any ``alt.Scale`` declared
-        # on the LVL inner layer is silently overridden by the base line
-        # chart's palette. ``resolve_scale(color='independent')`` would
-        # also break legitimate shared-color encodings on other annotation
-        # types (Trendline, etc.). Instead, materialize the literal scheme
-        # color per row and encode with ``scale=None`` so Vega-Lite uses
-        # the hex values directly and bypasses scale merging entirely.
-        # Slot index follows the sorted-unique convention Vega-Lite applies
-        # by default to nominal color domains, so the LVL slot-to-series
+        # Per-row precomputed label colors. Source palette is
+        # ``skin['label_color_scheme']`` (falling back to
+        # ``skin['color_scheme']`` then GS_CLEAN's color_scheme so
+        # custom skins without a label palette keep today's
+        # match-line-exactly behaviour). For GS_CLEAN the label
+        # palette is GS_PRIMARY's ``label_colors``: identical to the
+        # line palette for the dark slots (navy / red / cobalt /
+        # purple / orange / teal) and a darker HSL-derived hex
+        # (L * 0.55, hue/sat preserved) for the readability-weak
+        # slots (light blue / mid blue / grey / olive). Vega-Lite
+        # defaults to ``shared`` color-scale resolution across
+        # layers, so any ``alt.Scale`` declared on the LVL inner
+        # layer is silently overridden by the base line chart's
+        # palette. ``resolve_scale(color='independent')`` would also
+        # break legitimate shared-color encodings on other
+        # annotation types (Trendline, etc.). Instead, materialize
+        # the literal label hex per row and encode with
+        # ``scale=None`` so Vega-Lite uses the hex values directly
+        # and bypasses scale merging entirely. Slot index follows
+        # the sorted-unique convention Vega-Lite applies by default
+        # to nominal color domains, so the LVL slot-to-series
         # mapping matches the line layer's mapping one-to-one.
-        scheme = skin.get("color_scheme", GS_CLEAN["color_scheme"])
+        scheme = skin.get(
+            "label_color_scheme",
+            skin.get("color_scheme", GS_CLEAN["color_scheme"]),
+        )
         unique_series = sorted(last_rows[color_field].astype(str).unique())
         series_to_color: Dict[str, str] = {
             s: scheme[i % len(scheme)]
@@ -2908,10 +2907,9 @@ class LastValueLabel(Annotation):
 
         layers: List[alt.Chart] = []
         # Default to the same color the single-series line itself renders
-        # in (skin.primary_color), so the LVL label and the line are the
-        # same hex by construction. Explicit ``label_color`` on the
-        # annotation still wins. ``dot_color`` is no longer in this
-        # chain -- the dot has been removed.
+        # in (skin.primary_color), so the LVL label and the line share
+        # the same hex by construction. Explicit ``label_color`` on the
+        # annotation still wins.
         line_color = (
             skin.get("primary_color", "#003359") if skin else "#003359"
         )
@@ -5564,56 +5562,67 @@ class DateFormatConfig:
 # Static date-format presets keyed by intent. ``determine_date_format`` may
 # return one of these directly or build a new ``DateFormatConfig`` with a
 # dynamically computed ``label_angle``. ``label_angle=None`` means "let
-# ``calculate_optimal_label_angle`` decide".
+# the resolver pick the smallest step that fits at angle=0".
 #
-# House style:
-#   - Sub-annual ticks (every 1, 3, or 6 months): use ``%b-%y``
-#     ("Apr-25") so the month is informative.
-#   - Annual or longer ticks (every 12+ months): every tick lands on
-#     January and the "Jan-" prefix is pure noise, so we drop down to
-#     bare ``%Y`` ("2024"). Charts with multi-decade history are far
-#     more readable this way.
+# House style (NO DIAGONAL TICK LABELS for time-series x-axes -- the
+# engine guarantees horizontal labels by coarsening the tick step before
+# rotating). Per-bucket conventions:
+#
+#   - Annual+ stride (every 12+ months): bare ``%Y`` ("2024"). Every
+#     tick lands on January, so the "Jan-" prefix is noise.
+#   - Sub-annual month-aligned stride (1 / 3 / 6 month step): ``%b %y``
+#     ("Mar 24"). Day is dropped because monthly ticks always land on
+#     day 1 -- "01 " is noise. House separator is a SPACE (not the
+#     hyphen used previously) for visual consistency with the daily
+#     formats below.
+#   - Sub-monthly stride (week / day): ``%d %b`` ("06 Mar"). Year is
+#     dropped because spans <= ~30 days rarely cross calendar years and
+#     the chart title / context carries the year anchor. Day is informative
+#     (Mondays for ISO-weekly ticks, arbitrary dates for daily ticks).
+#   - Intraday: ``%H:%M`` (single-day) or conditional labelExpr that shows
+#     the date at midnight ticks and the time elsewhere (multi-day).
+#
 # Always abbreviate months (``%b`` -> "Jan"), never full month names
 # (``%B``), and always 2-digit year (``%y``) when paired with a month.
 DATE_FORMAT_PRESETS: Dict[str, DateFormatConfig] = {
     "quarterly": DateFormatConfig(
-        format="%b-%y",
+        format="%b %y",
         tick_count=None,
         label_angle=None,
         description="Semi-annual ticks (span 2-10 years)",
     ),
     "years_few": DateFormatConfig(
-        format="%b-%y",
+        format="%b %y",
         tick_count=None,
         label_angle=None,
         description="Show month-year (span 3-10 years)",
     ),
     "year_month": DateFormatConfig(
-        format="%b-%y",
+        format="%b %y",
         tick_count=12,
         label_angle=None,
         description="Show month and year (span 1-3 years)",
     ),
     "month_year": DateFormatConfig(
-        format="%b-%y",
+        format="%b %y",
         tick_count=None,
         label_angle=None,
         description="Show abbreviated month/year (span 6-12 months)",
     ),
     "month_day": DateFormatConfig(
-        format="%d %b-%y",
+        format="%d %b",
         tick_count=None,
         label_angle=None,
-        description="Show month, day, and year (span 1-6 months)",
+        description="Show month and day (span 1-6 months)",
     ),
     "day_month": DateFormatConfig(
-        format="%d %b-%y",
+        format="%d %b",
         tick_count=None,
         label_angle=None,
-        description="Show day, month, and year (span < 1 month)",
+        description="Show day and month (span < 1 month)",
     ),
     "daily": DateFormatConfig(
-        format="%d %b-%y",
+        format="%d %b",
         tick_count=None,
         label_angle=None,
         description="Short date (span < 2 weeks)",
@@ -5861,23 +5870,89 @@ _TICK_STEP_LADDER: List[Tuple[str, int]] = [
 ]
 
 
+# Nice ladders for "coarsen the tick step until horizontal labels fit".
+# Each branch in ``_determine_date_format_raw`` walks the matching ladder
+# upward from its initial step until ``n_ticks <= max_horizontal_ticks``.
+# The final entry is the coarsest fallback: if nothing fits even at the
+# top of the ladder, the engine returns that step at angle=0 anyway and
+# accepts whatever Vega-Lite labelOverlap behaviour kicks in. The
+# invariant is "never rotate" -- horizontal-or-bust.
+_NICE_MONTH_STEPS: Tuple[int, ...] = (1, 2, 3, 6, 12, 24, 36, 60, 120)
+_NICE_YEAR_STEPS: Tuple[int, ...] = (1, 2, 5, 10, 20, 25, 50, 100)
+_NICE_DAY_STEPS: Tuple[int, ...] = (1, 2, 7, 14)
+
+
+def _unique_sorted_diffs(date_series: pd.Series) -> pd.Series:
+    """Return the inter-sample diffs of UNIQUE dates in the series.
+
+    On long-format multi-line DataFrames the ``date_series`` argument
+    carries duplicate dates (one row per series at the same timestamp).
+    Computing ``.diff()`` directly on the raw series gives mostly zeros
+    for inter-row gaps and skews the cadence measurement -- median diff
+    collapses to 0 and the resulting ``is_intraday = median_diff < 20h``
+    check fires on plain daily multi-line data, dispatching the chart
+    into the intraday branch with intraday formats. De-duplicate first
+    to recover the genuine sample-to-sample stride.
+    """
+    if len(date_series) == 0:
+        return pd.Series([], dtype="timedelta64[ns]")
+    unique_sorted = pd.Series(pd.unique(date_series)).sort_values()
+    return unique_sorted.diff().dropna()
+
+
+def _coarsen_month_step_to_fit(
+    span_months: float,
+    chart_width: int,
+    initial_step: int = 1,
+) -> Tuple[int, str, str, int]:
+    """Pick the smallest month-step from the nice ladder whose ticks fit
+    horizontally at ``chart_width``.
+
+    Returns ``(step_months, fmt, sample_label, n_ticks)``. If no step in
+    the ladder fits, returns the coarsest step (angle=0 will still be
+    enforced by the caller; Vega-Lite's labelOverlap handles any residual
+    crowding).
+    """
+    last: Optional[Tuple[int, str, str, int]] = None
+    for step in _NICE_MONTH_STEPS:
+        if step < initial_step:
+            continue
+        fmt = "%Y" if step >= 12 else "%b %y"
+        sample = "2025" if step >= 12 else "Mar 25"
+        n_ticks = max(int(span_months / step) + 1, 2)
+        max_horiz = _max_ticks_for_width(chart_width, sample, 0)
+        last = (step, fmt, sample, n_ticks)
+        if n_ticks <= max_horiz:
+            return last
+    if last is None:
+        return (max(initial_step, 1), "%b %y", "Mar 25", 2)
+    return last
+
+
 def _format_for_step(
     interval: str, step: int,
 ) -> Tuple[str, str]:
     """Return ``(format, sample_label)`` for a temporal tick_step.
 
-    Year-aligned ticks (every Jan) carry no month info, so use bare
-    ``%Y``. Sub-annual ticks need ``%b-%y`` to disambiguate. Sub-monthly
-    needs the day prefix.
+    Per the house-style rules in ``DATE_FORMAT_PRESETS``:
+      - Year-aligned ticks (every Jan) -> bare ``%Y`` ("2025"). Month
+        prefix is noise because every tick is January.
+      - Sub-annual month-aligned ticks (1 / 3 / 6 month step) -> ``%b %y``
+        ("Mar 25"). Day is dropped because monthly ticks always land on
+        day 1; house separator is a space.
+      - Sub-monthly ticks (week / day) -> ``%d %b`` ("06 Mar"). Year is
+        dropped because the chart context carries the year anchor and
+        spans this short rarely cross year boundaries.
+      - Intraday strides use 24-hour times.
     """
     if interval == "year":
         return ("%Y", "2025")
     if interval == "month" and step >= 12:
         return ("%Y", "2025")
     if interval == "month":
-        return ("%b-%y", "Apr-25")
+        return ("%b %y", "Mar 25")
     if interval in ("week", "day"):
-        return ("%d %b-%y", "01 Mar-25")
+        return ("%d %b", "06 Mar")
     if interval == "hours":
         return ("%H:%M", "09:30")
     if interval in ("minutes", "seconds"):
@@ -5902,8 +5977,8 @@ def _ensure_min_temporal_ticks(
     counts the actual boundaries in range; if fewer than ``min_ticks``
     land inside, it drops one notch on the coarsening ladder
     (year/2 -> year/1 -> month/6 -> month/3 -> month/1 -> ...) until
-    the count is satisfied. If the new step's labels don't fit
-    horizontally at ``chart_width``, the angle is forced to -45.
+    the count is satisfied. The angle is always 0 -- the engine never
+    rotates time-series tick labels, period.
 
     Only applies to configs that already use ``tick_step``; configs
     that use ``tick_count`` (the soft hint) are passed through
@@ -5953,12 +6028,10 @@ def _ensure_min_temporal_ticks(
             continue
 
         new_format, sample_label = _format_for_step(iv, st)
-        max_horiz = _max_ticks_for_width(chart_width, sample_label, 0)
-        new_angle = 0 if candidate_count <= max_horiz else -45
         return DateFormatConfig(
             format=new_format,
             tick_count=cfg.tick_count,
-            label_angle=new_angle,
+            label_angle=0,
             description=(
                 f"Coarsening dropped to ({iv} step={st}) for >= "
                 f"{effective_min} ticks in range"
@@ -5987,14 +6060,15 @@ def determine_date_format(
          force ``tick_count`` to match the number of calendar days so
          Vega-Lite doesn't place sub-daily ticks that produce duplicate
          date labels (Bug-1 fix).
-      3. **Calendar spans** (> 5 days): pick a format from a series of
-         span buckets (decade ticks, multi-year, sub-annual, year-month,
-         month-day, day-month) and let
-         ``calculate_optimal_label_angle`` decide the rotation.
+      3. **Calendar spans** (> 5 days): pick a tick step from a series
+         of span buckets (decade ticks, multi-year, sub-annual,
+         year-month, month-day, day-month) and coarsen the step until
+         the labels fit horizontally at ``chart_width``.
 
-    All ``tick_count`` / ``tick_step`` values are clamped by
-    ``_max_ticks_for_width`` so the result honours the available canvas.
-    Final post-processing through ``_ensure_min_temporal_ticks``
+    The engine **never rotates time-series tick labels**. Every branch
+    forces ``label_angle = 0`` and uses ``_coarsen_month_step_to_fit``
+    (or its per-bucket equivalent) to widen the tick step until the
+    labels fit. Final post-processing through ``_ensure_min_temporal_ticks``
     guarantees at least 2 calendar-aligned ticks land inside the data
     range so a 20-month span never collapses to a lone "2026".
     """
@@ -6024,7 +6098,7 @@ def _determine_date_format_raw(
     # sample gap is sub-daily counts as intraday, which catches both
     # high-frequency (1-min ticks) and sparse (5 hourly readings) cases.
     if span_hours <= 5 * 24 and len(date_series) >= 2:
-        date_diffs = date_series.sort_values().diff().dropna()
+        date_diffs = _unique_sorted_diffs(date_series)
         if len(date_diffs) > 0:
             median_diff_seconds = float(date_diffs.dt.total_seconds().median())
         else:
@@ -6147,11 +6221,11 @@ def _determine_date_format_raw(
                 n_ticks = max(int(span_seconds / stride_seconds) + 1, 2)
                 max_horiz = _max_ticks_for_width(chart_width, sample, 0)
 
-            if n_ticks <= max_horiz:
-                angle = 0
-            else:
-                max_diag = _max_ticks_for_width(chart_width, sample, -45)
-                angle = -45 if n_ticks <= max_diag else -90
+            # ``angle`` is always 0 -- the engine never rotates time-series
+            # tick labels. The stride-bumping loop above already pushed the
+            # stride to the coarsest viable; if even that doesn't fit
+            # horizontally we let Vega-Lite's labelOverlap thin labels
+            # rather than rotate.
 
             if stride_seconds < 60:
                 tick_step = {"interval": "seconds", "step": stride_seconds}
@@ -6174,26 +6248,30 @@ def _determine_date_format_raw(
             return DateFormatConfig(
                 format=fmt,
                 tick_count=None,
-                label_angle=angle,
+                label_angle=0,
                 description=f"Intraday ticks (every {stride_label})",
                 tick_step=tick_step,
                 label_expr=label_expr,
             )
 
     # ---- BUG-1 FIX: short daily spans (<= 5 days) -------------------------
+    # Format is the day-month preset ("06 Mar"). Year is dropped because
+    # the chart context carries the year anchor and a 5-day window almost
+    # never crosses a calendar boundary. If the daily ticks don't fit
+    # horizontally at the chart width, drop down to every other day.
     if span_days <= 5:
         estimated_ticks = max(span_days, 1)
-        sample_labels = [
-            f"{i + 1:02d} Jan-25" for i in range(max(estimated_ticks, 3))
-        ]
-        label_angle = calculate_optimal_label_angle(
-            sample_labels, chart_width, estimated_ticks
-        )
+        max_horiz = _max_ticks_for_width(chart_width, "06 Mar", 0)
+        tick_step: Optional[Dict[str, Any]] = None
+        if estimated_ticks > max_horiz and estimated_ticks > 2:
+            tick_step = {"interval": "day", "step": 2}
+            estimated_ticks = max(int(span_days / 2) + 1, 2)
         return DateFormatConfig(
-            format="%d %b-%y",
-            tick_count=estimated_ticks,
-            label_angle=label_angle,
+            format="%d %b",
+            tick_count=estimated_ticks if tick_step is None else None,
+            label_angle=0,
             description="Short span <= 5 days with explicit daily ticks",
+            tick_step=tick_step,
         )
 
     span_years = span_days / 365.25
@@ -6222,25 +6300,21 @@ def _determine_date_format_raw(
             stride_years = 2
         max_horiz = _max_ticks_for_width(chart_width, "2025", 0)
         n_ticks = max(int(span_years / stride_years) + 1, 2)
+        # Coarsen the stride until the year ticks fit horizontally. If
+        # nothing in the ladder fits (extreme narrow panel), keep the
+        # coarsest stride and let labelOverlap thin labels -- never
+        # rotate.
         if n_ticks > max_horiz:
-            for nice in (2, 5, 10, 20, 25, 50):
+            for nice in _NICE_YEAR_STEPS:
                 if nice > stride_years:
                     stride_years = nice
                     n_ticks = max(int(span_years / stride_years) + 1, 2)
                     if n_ticks <= max_horiz:
                         break
-        estimated_ticks = max(int(span_years / stride_years), 2)
-        sample_labels = [
-            f"{int(min_date.year + i * stride_years)}"
-            for i in range(estimated_ticks)
-        ]
-        label_angle = calculate_optimal_label_angle(
-            sample_labels, chart_width, estimated_ticks
-        )
         return DateFormatConfig(
             format="%Y",
             tick_count=None,
-            label_angle=label_angle,
+            label_angle=0,
             description=f"Multi-year ticks (every {stride_years} years)",
             tick_step={"interval": "year", "step": stride_years},
         )
@@ -6274,7 +6348,7 @@ def _determine_date_format_raw(
 
     # ---- shorter spans: detect data frequency ------------------------------
     if len(date_series) >= 24:
-        date_diffs = date_series.sort_values().diff().dropna()
+        date_diffs = _unique_sorted_diffs(date_series)
         if len(date_diffs) > 0:
             median_diff_days = date_diffs.dt.days.median()
             # Sub-annual data with sub-10-year span: pick a tick step,
@@ -6283,37 +6357,13 @@ def _determine_date_format_raw(
             # (-> ``%b-%y``, "Apr-25").
             if 2 <= median_diff_days <= 30 and span_years <= 10:
                 step_months = _step_for_target(span_months, 5)
-                fmt = "%Y" if step_months >= 12 else "%b-%y"
-                sample = "2025" if step_months >= 12 else "Apr-25"
-                # Verify this step actually fits the canvas; double it
-                # if needed (e.g. 1024px chart with 60-month span at
-                # step=6 wants 11 ticks but only fits ~9 horizontally).
-                while True:
-                    n_ticks = _ticks_for_step(span_months, step_months)
-                    fmt = "%Y" if step_months >= 12 else "%b-%y"
-                    sample = "2025" if step_months >= 12 else "Apr-25"
-                    fits = n_ticks <= _max_ticks_for_width(
-                        chart_width, sample, 0,
-                    )
-                    if fits or step_months >= 120:
-                        break
-                    for nice in (1, 2, 3, 6, 12, 24, 36, 60, 120):
-                        if nice > step_months:
-                            step_months = nice
-                            break
-                    else:
-                        break
-                if (
-                    _ticks_for_step(span_months, step_months)
-                    > _max_ticks_for_width(chart_width, sample, 0)
-                ):
-                    angle = -45
-                else:
-                    angle = 0
+                step_months, fmt, sample, n_ticks = _coarsen_month_step_to_fit(
+                    span_months, chart_width, initial_step=step_months,
+                )
                 return DateFormatConfig(
                     format=fmt,
                     tick_count=None,
-                    label_angle=angle,
+                    label_angle=0,
                     description=(
                         f"Sub-annual ticks (every {step_months} months)"
                     ),
@@ -6322,57 +6372,32 @@ def _determine_date_format_raw(
 
     # ---- format selection by span ------------------------------------------
     if span_years >= 3:
-        # Aim for ~6 ticks. Pick a yearly or semi-annual step.
         if span_years >= 8:
             step_months = 24
         elif span_years >= 4:
             step_months = 12
         else:
             step_months = 6
-        fmt = "%Y" if step_months >= 12 else "%b-%y"
-        sample = "2025" if step_months >= 12 else "Apr-25"
-        n_ticks = _ticks_for_step(span_months, step_months)
-        max_horiz = _max_ticks_for_width(chart_width, sample, 0)
-        if n_ticks > max_horiz:
-            for nice in (12, 24, 36, 60, 120):
-                if nice > step_months:
-                    step_months = nice
-                    fmt = "%Y" if step_months >= 12 else "%b-%y"
-                    sample = "2025" if step_months >= 12 else "Apr-25"
-                    max_horiz = _max_ticks_for_width(chart_width, sample, 0)
-                    if _ticks_for_step(span_months, step_months) <= max_horiz:
-                        break
-            angle = 0 if _ticks_for_step(span_months, step_months) <= max_horiz else -45
-        else:
-            angle = 0
+        step_months, fmt, sample, n_ticks = _coarsen_month_step_to_fit(
+            span_months, chart_width, initial_step=step_months,
+        )
         return DateFormatConfig(
             format=fmt,
             tick_count=None,
-            label_angle=angle,
+            label_angle=0,
             description=f"Year-month ticks (every {step_months} months)",
             tick_step=_temporal_tick_step("month", step_months),
         )
 
     if span_years > 1:
-        # Aim for ~4 semi-annual ticks (e.g. 2 years -> 5 ticks every
-        # 6 months). For >2 years bump to 6-month or annual.
         step_months = 6 if span_years <= 2.5 else 12
-        fmt = "%Y" if step_months >= 12 else "%b-%y"
-        sample = "2025" if step_months >= 12 else "Apr-25"
-        n_ticks = _ticks_for_step(span_months, step_months)
-        max_horiz = _max_ticks_for_width(chart_width, sample, 0)
-        if n_ticks > max_horiz:
-            step_months = 12
-            fmt = "%Y"
-            sample = "2025"
-            max_horiz = _max_ticks_for_width(chart_width, sample, 0)
-            angle = 0 if _ticks_for_step(span_months, step_months) <= max_horiz else -45
-        else:
-            angle = 0
+        step_months, fmt, sample, n_ticks = _coarsen_month_step_to_fit(
+            span_months, chart_width, initial_step=step_months,
+        )
         return DateFormatConfig(
             format=fmt,
             tick_count=None,
-            label_angle=angle,
+            label_angle=0,
             description=f"Semi-annual to annual ticks (every {step_months} months)",
             tick_step=_temporal_tick_step("month", step_months),
         )
@@ -6382,60 +6407,78 @@ def _determine_date_format_raw(
         # this branch -- a calendar-aligned 6-month step on a 9-month
         # span lands on at most ONE calendar boundary inside the range,
         # producing a single isolated tick. If quarterly doesn't fit
-        # horizontally, rotate the labels instead.
+        # horizontally at the chart width, drop to annual instead.
         step_months = 3
+        max_horiz = _max_ticks_for_width(chart_width, "Mar 25", 0)
         n_ticks = _ticks_for_step(span_months, step_months)
-        max_horiz = _max_ticks_for_width(chart_width, "Apr-25", 0)
-        angle = 0 if n_ticks <= max_horiz else -45
+        if n_ticks > max_horiz:
+            step_months, fmt, sample, n_ticks = _coarsen_month_step_to_fit(
+                span_months, chart_width, initial_step=6,
+            )
+            return DateFormatConfig(
+                format=fmt,
+                tick_count=None,
+                label_angle=0,
+                description=f"Coarsened quarterly ticks (every {step_months} months)",
+                tick_step=_temporal_tick_step("month", step_months),
+            )
         return DateFormatConfig(
-            format="%b-%y",
+            format="%b %y",
             tick_count=None,
-            label_angle=angle,
+            label_angle=0,
             description=f"Quarterly ticks (every {step_months} months)",
             tick_step=_temporal_tick_step("month", step_months),
         )
 
     if span_months > 1:
-        # Roughly monthly ticks for 1-6 month spans, in "DD Mmm-YY" form.
-        step_months = 1
-        n_ticks = _ticks_for_step(span_months, step_months)
-        max_horiz = _max_ticks_for_width(chart_width, "01 Mar-25", 0)
-        angle = 0 if n_ticks <= max_horiz else -45
+        # 1-6 month spans. Monthly Vega-Lite ticks always land on day 1,
+        # so the day prefix is pure noise -- format is "%b %y" ("Mar 24").
+        # If 6 monthly ticks don't fit horizontally at the chart width,
+        # coarsen to a 2- or 3-month step (still horizontal, fewer labels)
+        # rather than rotate.
+        step_months, fmt, sample, n_ticks = _coarsen_month_step_to_fit(
+            span_months, chart_width, initial_step=1,
+        )
         return DateFormatConfig(
-            format="%d %b-%y",
+            format=fmt,
             tick_count=None,
-            label_angle=angle,
+            label_angle=0,
             description=f"Monthly ticks (every {step_months} month)",
             tick_step=_temporal_tick_step("month", step_months),
         )
 
     if span_days > 14:
-        # Weekly ticks for 2-4 week spans.
+        # 2-4 week spans. Weekly ticks land on Mondays -- arbitrary day
+        # numbers, so the day prefix is informative; year is dropped
+        # because spans this short rarely cross calendar boundaries and
+        # the chart context carries the year anchor. Coarsen to bi-weekly
+        # if weekly doesn't fit.
         step_days = 7
         n_ticks = max(int(span_days / step_days) + 1, 2)
-        max_horiz = _max_ticks_for_width(chart_width, "01 Mar-25", 0)
+        max_horiz = _max_ticks_for_width(chart_width, "06 Mar", 0)
         if n_ticks > max_horiz:
             step_days = 14
             n_ticks = max(int(span_days / step_days) + 1, 2)
-            angle = 0 if n_ticks <= max_horiz else -45
-        else:
-            angle = 0
         return DateFormatConfig(
-            format="%d %b-%y",
+            format="%d %b",
             tick_count=None,
-            label_angle=angle,
+            label_angle=0,
             description=f"Weekly ticks (every {step_days} days)",
             tick_step={"interval": "week", "step": max(step_days // 7, 1)},
         )
 
+    # ---- < 2 weeks ---------------------------------------------------------
+    # Daily ticks; year dropped (chart context carries it). Force angle=0;
+    # the existing _pick_tick_count_and_angle helper would happily rotate
+    # so we replace it with a tick-count cap that fits horizontally.
+    sample = "06 Mar"
+    max_horiz = _max_ticks_for_width(chart_width, sample, 0)
     desired_max = max(min(int(span_days), 7), 4)
-    tick_count, label_angle = _pick_tick_count_and_angle(
-        chart_width, "01 Feb-25", desired_max,
-    )
+    tick_count = max(min(desired_max, max_horiz), 2)
     return DateFormatConfig(
-        format="%d %b-%y",
+        format="%d %b",
         tick_count=tick_count,
-        label_angle=label_angle,
+        label_angle=0,
         description="Short date (span < 2 weeks)",
     )
 
@@ -7278,57 +7321,41 @@ BASE_CONFIG: Dict[str, Any] = {
 
 
 # Goldman Sachs Clean - the only published PRISM skin today.
+#
+# Single source of truth for the categorical palette: GS_PRIMARY in
+# chart_functions_studio.py.  ``color_scheme`` (and the named anchors
+# ``primary_color`` / ``secondary_color`` / ``accent_color``) are
+# derived from GS_PRIMARY["colors"] so the production skin and the
+# Chart Center default never drift.  ``label_color_scheme`` is the
+# parallel per-slot palette LastValueLabel uses -- identical to
+# ``color_scheme`` for the dark slots and a darker HSL-derived hex
+# for slots that read poorly as 15pt text on white (slots 1, 2, 3, 6).
+# Edit GS_PRIMARY there to change any production color; do not
+# hardcode hex values here.
+#
+# Slot order:
+#   0 navy (primary), 1 light blue (secondary), 2 mid blue,
+#   3 grey, 4 red (accent), 5 cobalt blue, 6 olive green, 7 purple,
+#   8 orange, 9 teal.
 GS_CLEAN: Dict[str, Any] = {
     **BASE_CONFIG,
     "name": "gs_clean",
-    "description": "Clean, professional style. PRISM default. Palette is the "
-                   "readability-tuned variant of chart_functions_studio.py's "
-                   "'gs_clean' theme (lighter slots pulled to a contrast-safe "
-                   "lightness band so line strokes and on-line labels share "
-                   "the same hex).",
-    # ----- single-color anchors -------------------------------------------
-    # ``primary_color`` is the first palette slot (also used for single-
-    # series bars / lines / scatter points).  ``secondary_color`` is the
-    # second palette slot used by ``_build_layer`` overlays.  ``accent_color``
-    # is the alert/red used for negative deltas in waterfalls and right-axis
-    # annotations.  All three are the same readability-tuned values used in
-    # ``color_scheme`` below -- annotation and line colors MUST match (hard
-    # rule: a LastValueLabel label / dot rendered on top of a line uses
-    # the line's own hex, not a separate "labels-only" derivation).
-    "primary_color": "#00355C",
-    "secondary_color": "#3892C4",
-    "accent_color": "#730000",
-    "background_color": "#FFFFFF",
-    "grid_color": "#E6E6E6",
-    "trendline_color": "#999999",
-    # ----- categorical color scheme (PRISM "gs_primary" palette) ---------
-    # Source: chart_functions_studio.py line 884 (GS_PRIMARY palette),
-    # then pulled into the readability-tuned band so the lighter slots
-    # (slot 2 light blue, slot 3 mid blue, slot 4 grey, slot 9 orange in
-    # particular) print legibly as both line strokes AND on-chart label
-    # text against the white background.  The transform is HSL-lightness
-    # scaling with a floor: ``new_L = max(L * 0.6, 0.18)``.  Already-dark
-    # slots (slot 1 navy) barely move (#003359 -> #00355C); light slots
-    # move materially (#B9D9EB -> #3892C4).  This is the SAME palette used
-    # by ``LastValueLabel`` for label and dot colors -- one palette,
-    # rendered identically wherever a series appears.
-    # Order matches PRISM's series-priority guidance (navy -> light blue
-    # -> mid blue -> grey -> red -> ...).
-    # The OCR'd MD had #B9099B (magenta) in slot 2; that was a misread of
-    # the canonical light-blue source.  Other downstream slots were
-    # similarly corrupted in the MD; this list is the authoritative one.
-    "color_scheme": [
-        "#00355C",  # 1. navy        (primary; was #003359)
-        "#3892C4",  # 2. light blue  (was #B9D9EB)
-        "#315F90",  # 3. mid blue    (was #729FCF)
-        "#646464",  # 4. grey        (was #A6A6A6)
-        "#730000",  # 5. red         (accent; was #C00000)
-        "#2C4D75",  # 6. cobalt blue (was #4F81BD)
-        "#5F7530",  # 7. olive green (was #9BBB59)
-        "#4D3B62",  # 8. purple      (was #8064A2)
-        "#B65708",  # 9. orange      (was #F79646)
-        "#276A7C",  # 10. teal       (was #4BACC6)
-    ],
+    "description": "Clean, professional style. PRISM default. Palette "
+                   "follows GS_PRIMARY in chart_functions_studio.py "
+                   "(single source of truth). Line strokes use "
+                   "``color_scheme``; LastValueLabel labels use "
+                   "``label_color_scheme`` -- identical to lines for the "
+                   "dark slots, darker HSL-derived hex for the "
+                   "readability-weak slots (light blue, mid blue, grey, "
+                   "olive).",
+    "primary_color":      GS_PRIMARY["colors"][0],   # #003359 navy
+    "secondary_color":    GS_PRIMARY["colors"][1],   # #94C7DD light blue
+    "accent_color":       GS_PRIMARY["colors"][4],   # #C00000 red (alert)
+    "background_color":   "#FFFFFF",
+    "grid_color":         "#E6E6E6",
+    "trendline_color":    "#999999",
+    "color_scheme":       list(GS_PRIMARY["colors"]),
+    "label_color_scheme": list(GS_PRIMARY["label_colors"]),
     "heatmap_scheme": "blues",
     "font_family": "Liberation Sans, Arial, sans-serif",
     "title_font_size": 26,
@@ -9611,6 +9638,24 @@ def _build_bar(
         )
 
         if color_field:
+            # ``order=alt.Order(color_field, sort=...)`` MUST use ``:N``
+            # shorthand: ``_force_data_embedding`` (a few lines below)
+            # swaps ``chart.data`` from a pandas DataFrame to a literal
+            # ``alt.Data(values=...)``. At ``to_dict()`` time (called in
+            # ``make_chart`` post-build), Vega-Lite walks every channel;
+            # any field reference without an inline type prompts dtype
+            # introspection on ``chart.data``, which now isn't a
+            # DataFrame, and Altair raises:
+            #   ValueError: <field> encoding field is specified without
+            #   a type; the type cannot be automatically inferred ...
+            # ``alt.Color`` here doesn't trip the failure because it
+            # already has ``type="nominal"`` explicit; ``alt.Order`` did
+            # not, so the bare ``color_field`` was the failure point.
+            # The same precedent exists for ``strokeDash`` at
+            # ``_build_multi_line_single_axis`` (the only other secondary
+            # channel encoded after data embedding) -- see the comment
+            # block there. ``alt.Color`` keeps the kwarg form for
+            # readability; only ``alt.Order`` had the bug.
             chart = chart.encode(
                 color=alt.Color(
                     color_field,
@@ -9620,7 +9665,7 @@ def _build_bar(
                     legend=alt.Legend(title=None),
                 ),
                 # Stable ordering across stacked segments.
-                order=alt.Order(color_field, sort="ascending"),
+                order=alt.Order(f"{color_field}:N", sort="ascending"),
             )
 
         # Value labels on bars (single-series, <=15 bars only).

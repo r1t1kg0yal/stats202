@@ -764,30 +764,6 @@ GS_CLEAN: Dict[str, Any] = {
 }
 
 
-BRIDGEWATER: Dict[str, Any] = {
-    "name": "bridgewater",
-    "label": "Bridgewater",
-    "description": "Muted, data-dense, grey on off-white",
-    "values": {
-        "background": "#fafaf7",
-        "fontFamily": "Helvetica",
-        "titleSize": 16, "titleColor": "#1c1c1c", "titleWeight": "bold",
-        "labelSize": 11, "axisTitleSize": 12,
-        "legendLabelSize": 10, "legendTitleSize": 11,
-        "gridColor": "#cccccc", "gridOpacity": 0.4,
-        "domainColor": "#555555", "tickColor": "#555555", "labelColor": "#333333",
-        "domainWidth": 0.5, "tickSize": 4,
-        "legendOrient": "bottom",
-        "padding": 8,
-        "strokeWidth": 1.5, "lineOpacity": 0.95,
-        "barOpacity": 0.9,
-        "areaOpacity": 0.6,
-        "primaryColor": "#2c3e50",
-    },
-    "palette": "bridgewater",
-}
-
-
 MINIMAL: Dict[str, Any] = {
     "name": "minimal",
     "label": "Minimal",
@@ -860,11 +836,10 @@ PRINT: Dict[str, Any] = {
 
 
 THEMES: Dict[str, Dict[str, Any]] = {
-    GS_CLEAN["name"]:    GS_CLEAN,
-    BRIDGEWATER["name"]: BRIDGEWATER,
-    MINIMAL["name"]:     MINIMAL,
-    DARK["name"]:        DARK,
-    PRINT["name"]:       PRINT,
+    GS_CLEAN["name"]: GS_CLEAN,
+    MINIMAL["name"]:  MINIMAL,
+    DARK["name"]:     DARK,
+    PRINT["name"]:    PRINT,
 }
 
 
@@ -889,17 +864,21 @@ def list_themes() -> List[Dict[str, Any]]:
 
 GS_PRIMARY: Dict[str, Any] = {
     "name": "gs_primary", "label": "GS Primary (PRISM default)", "kind": "categorical",
-    "colors": ["#003359", "#94C7DD", "#5C92CB", "#A6A6A6", "#C00000",
-               "#4F81BD", "#9BBB59", "#8064A2", "#F79646", "#4BACC6"],
+    "colors":       ["#003359", "#94C7DD", "#5C92CB", "#A6A6A6", "#C00000",
+                     "#4F81BD", "#9BBB59", "#8064A2", "#F79646", "#4BACC6"],
+    # Per-slot LastValueLabel hex. Identical to ``colors`` for slots that
+    # are readable as 15pt text on white (slots 0 navy, 4 red, 5 cobalt,
+    # 7 purple, 8 orange, 9 teal). Darker derived hex (HSL L * 0.55,
+    # hue/sat preserved) for the readability-weak slots (1 light blue,
+    # 2 mid blue, 3 grey, 6 olive). Engine reads via
+    # ``skin['label_color_scheme']``; falls back to ``colors`` when
+    # not set so other palettes keep today's match-line behaviour.
+    "label_colors": ["#003359", "#307A9A", "#274F7B", "#5B5B5B", "#C00000",
+                     "#4F81BD", "#566B2C", "#8064A2", "#F79646", "#4BACC6"],
 }
 GS_DIVERGING: Dict[str, Any] = {
     "name": "gs_diverging", "label": "GS Diverging", "kind": "diverging",
     "colors": ["#C00000", "#F79646", "#FFFFFF", "#5C92CB", "#003359"],
-}
-BRIDGEWATER_PALETTE: Dict[str, Any] = {
-    "name": "bridgewater", "label": "Bridgewater", "kind": "categorical",
-    "colors": ["#2c3e50", "#7f8c8d", "#c0392b", "#16a085", "#d35400",
-               "#8e44ad", "#2980b9"],
 }
 MONO_BLUE: Dict[str, Any] = {
     "name": "mono_blue", "label": "Monochrome Blue", "kind": "categorical",
@@ -934,7 +913,7 @@ SPECTRAL: Dict[str, Any] = {"name": "spectral", "label": "Spectral", "kind": "di
 
 PALETTES: Dict[str, Dict[str, Any]] = {
     p["name"]: p for p in [
-        GS_PRIMARY, GS_DIVERGING, BRIDGEWATER_PALETTE, MONO_BLUE, MONO_GREY,
+        GS_PRIMARY, GS_DIVERGING, MONO_BLUE, MONO_GREY,
         VIVID, TABLEAU, OKABE_ITO,
         VIRIDIS, BLUES, REDS, GREENS, REDBLUE, SPECTRAL,
     ]

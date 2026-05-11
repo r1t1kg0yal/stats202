@@ -22,8 +22,8 @@
 | Skin (only published) | `gs_clean` | §1 |
 | Intent values | `'explore'`, `'publish'`, `'monitor'` | §1 |
 | Layer types | `regression`, `rule`, `point` | §8.5 |
-| Chart Center themes (5) | `gs_clean`, `bridgewater`, `minimal`, `dark`, `print` | §11 |
-| Chart Center palettes (14) | `gs_primary`, `bridgewater`, `mono_blue`, `mono_grey`, `vivid`, `tableau`, `okabe_ito`, `viridis`, `blues`, `reds`, `greens`, `gs_diverging`, `redblue`, `spectral` | §11 |
+| Chart Center themes (4) | `gs_clean`, `minimal`, `dark`, `print` | §11 |
+| Chart Center palettes (13) | `gs_primary`, `mono_blue`, `mono_grey`, `vivid`, `tableau`, `okabe_ito`, `viridis`, `blues`, `reds`, `greens`, `gs_diverging`, `redblue`, `spectral` | §11 |
 
 ---
 
@@ -364,7 +364,7 @@ annotations = [
     Arrow(x1=T('2020-04'), y1=5, x2=T('2021-03'), y2=8, label='Recovery'),
     PointHighlight(x=T('2022-06'), y=9.1, size=120),
     Callout(x=T('2022-06'), y=9.1, label='Peak 9.1%', background='halo'),
-    LastValueLabel(show_value=True),
+    LastValueLabel(),
 ]
 ```
 
@@ -376,7 +376,6 @@ annotations = [
 | `Segment(x1=v, y1=v, x2=w, y2=w)` "y=x / 45-deg / identity" on scatter | Macro/rates axes are different units (bp vs %, $ vs index pts) -- y=x has no analytical meaning AND endpoints stretch frame. Engine drops silently on `scatter`/`scatter_multi`. Use `Trendline` (or `mapping['trendline']=True`) |
 | Any annotation outside the visible plot domain (`Band` edge above data; `Segment`/`Arrow` endpoint off-data; `PointLabel`/`PointHighlight`/`Callout` off-data coord) | Vega-Lite's shared scale expands to include the coord, stretching frame and pushing title up. Engine drops silently. Keep coords inside data; for narrative thresholds outside use title/subtitle. For "highlight above X" clamp: `Band(y1=X, y2=df['value'].max())`. `HLine` drops if y outside but doesn't stretch |
 | `HLine(y=2.0, label='Fed 2% Target')` on inflation | Every reader knows it. Use title: "Core PCE Still 80bp Above Target" |
-| `HLine(y=last_value)` to label latest | `LastValueLabel(show_value=True)` does this |
 | `VLine` at right edge labeled "Today"/"Now" | Right edge IS today |
 | `PointLabel`/`Callout` describing slope ("rising"/"falling") | Geometry conveys this. Use title for directional claim |
 | `Band` covering entire visible range labeled "Sample period" | The whole chart IS the sample |
@@ -399,7 +398,7 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 | `PointLabel` | `x`, `y`, `dx`/`dy` (pixel offsets), `font_size`, `align`. Plain floating text. Use sparingly |
 | `PointHighlight` | `x`, `y`, `size` (default `100`), `opacity`, `shape` (`'circle'`/`'square'`/`'diamond'`/`'triangle'`/`'cross'`/`'stroke'`), `filled`, `stroke_color`, `stroke_width`. Default color `"#C00000"`. Often combined with Callout/PointLabel |
 | `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. Default `'halo'` solves "PointLabel fights gridlines". `dx` 0-60; `abs(dx)>80` risks off-canvas (warns) |
-| `LastValueLabel` | `show_value` (default `False`), `value_format` (auto magnitude-aware decimals or e.g. `"{:+.2f}"`/`"{:.0%}"`), `dx`, `font_size` (default 15), `font_weight`. FT/Bloomberg end-of-line labels for `multi_line` (replaces legend). Auto-derives from color column. `label` ignored on multi-series; for single-series overrides y-field name. Labels whose endpoints would overlap in pixel space are auto-staggered vertically. Suppressed on dual-axis (§9.4). Text-only — `show_dot` / `dot_size` / `dot_color` are accepted as kwargs for back-compat but ignored at render time |
+| `LastValueLabel` | `dx`, `font_size` (default 15), `font_weight`. FT/Bloomberg end-of-line labels for `multi_line` (replaces legend). Auto-derives from color column. `label` ignored on multi-series; for single-series overrides y-field name. Labels whose endpoints would overlap in pixel space are auto-staggered vertically. Suppressed on dual-axis (§9.4). Text-only — no endpoint dot |
 | `Trendline` | `method` (`'linear'`/`'exp'`/`'log'`/`'pow'`/`'poly'`/`'quad'`), `stroke_width`, `stroke_dash`. Regression overlay on scatter |
 | `PlotText` | `text`, `position` (default `'auto'`; or 9 corner/edge anchors), `padding_x`/`_y`, `font_size`, `italic`, `align`, `max_width_pct`. In-plot narrative anchored to a corner. `'auto'` picks corner colliding least with data; bar/waterfall disqualify bottom corners. `middle-*` anchors are INSIDE plot region, no auto-collision (warns) |
 

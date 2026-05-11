@@ -2,7 +2,7 @@ Build any standard chart and surface BOTH the PNG download_url AND the Chart Cen
 
 ---
 
-Build a multi_line and apply the `bridgewater` theme via the Chart Center editor surface. Verify the theme overrides `gs_clean` consistently across axes, fonts, and grid lines. Let me know if frictions.
+Build a multi_line and apply the `dark` theme via the Chart Center editor surface. Verify the theme overrides `gs_clean` consistently across axes, fonts, and grid lines. Let me know if frictions.
 
 ---
 
