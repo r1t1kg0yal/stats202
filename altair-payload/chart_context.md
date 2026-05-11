@@ -18,12 +18,10 @@
 | Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §8 |
 | Composite functions (5) | `make_2pack_horizontal`, `make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`, `make_6pack_grid` | §10 |
 | Grid mode (small-multiples / facet) | `mapping['facet']`, `facet_cols`, `same_scale`, `share_x` / `share_y` / `share_color`, `dimensions='page_grid'` | spoke `chart_context_grids.md` (Spokes index below) |
-| Dimension presets (7) | `wide`, `square`, `tall`, `compact`, `presentation`, `thumbnail`, `page_grid` (facet only) | §12 |
+| Dimension presets (7) | `wide`, `square`, `tall`, `compact`, `presentation`, `thumbnail`, `page_grid` (facet only) | §11 |
 | Skin (only published) | `gs_clean` | §1 |
 | Intent values | `'explore'`, `'publish'`, `'monitor'` | §1 |
 | Layer types | `regression`, `rule`, `point` | §8.5 |
-| Chart Center themes (4) | `gs_clean`, `minimal`, `dark`, `print` | §11 |
-| Chart Center palettes (13) | `gs_primary`, `mono_blue`, `mono_grey`, `vivid`, `tableau`, `okabe_ito`, `viridis`, `blues`, `reds`, `greens`, `gs_diverging`, `redblue`, `spectral` | §11 |
 
 ---
 
@@ -48,7 +46,7 @@ result = make_chart(
     df=df, chart_type='multi_line', mapping={...},
     title='Title',                # Required for production
     subtitle='Subtitle',          # Optional (NEVER for source attribution)
-    skin='gs_clean', intent='explore', dimensions='wide',  # See §12 dimensions
+    skin='gs_clean', intent='explore', dimensions='wide',  # See §11 dimensions
     annotations=[...], layers=[...],
     save_as='charts/name.png',    # Optional fixed path (overwrites, no timestamp)
     auto_beautify=True,           # Date format, label angle, y-domain
@@ -68,8 +66,6 @@ Access via dot notation only -- `result['png_path']` raises `TypeError`.
 | Attribute | Type | Description |
 |---|---|---|
 | `png_path` / `download_url` | str | PNG S3 path / presigned URL |
-| `editor_html_path` / `editor_download_url` | str | Chart Center HTML / presigned URL |
-| `editor_chart_id` | str | sha1 of spec |
 | `vegalite_json` | dict | Final Vega-Lite spec |
 | `chart_type` / `skin` | str | Echoed |
 | `success` / `error_message` | bool / str-None | Render succeeded + details |
@@ -90,13 +86,11 @@ for r, qc in zip(results, qc_results):
     if not qc['passed']:
         print(f"FAIL: {r.png_path} -- {qc['reason']}")
         s3_manager.delete(r.png_path)
-        if r.editor_html_path:
-            s3_manager.delete(r.editor_html_path)
     elif r.success:
-        print(f"PASS PNG: {r.download_url}\n  Chart Center: {r.editor_download_url}")
+        print(f"PASS PNG: {r.download_url}")
 ```
 
-Session folders must contain only QC-passed charts. On QC fail, `s3_manager.delete()` BOTH the PNG and its `editor_html_path` companion, then fix or remove the offending call. Saying PRISM could not generate a chart is acceptable; showing a failed one is not.
+Session folders must contain only QC-passed charts. On QC fail, `s3_manager.delete()` the PNG, then fix or remove the offending call. Saying PRISM could not generate a chart is acceptable; showing a failed one is not.
 
 ---
 
@@ -623,68 +617,7 @@ All accept kwargs (`title`, `subtitle`, `dimension_preset`, `save_as`, `spacing`
 
 ---
 
-## 11. Prism Chart Center
-
-### 11.1 What it provides
-
-Every successful render produces TWO artifacts on the same `ChartResult`: a static PNG and a self-contained interactive editor HTML.
-
-- ~140 editable knobs (Dimensions, Title, Typography, Axes, Legend, Colors, Interactivity, per-mark for Line/Bar/Scatter/Area/Arc/Heatmap/Box/Bullet/Waterfall).
-- Themes / palettes / dimensions: see catalog index. 12 dimension presets = 7 PRISM canonical + `report`, `dashboard`, `widescreen`, `twopack`, `fourpack`, `custom`.
-- Spec sheets: named JSON style bundles (per user, optionally per chart type), browser localStorage, importable/exportable.
-- Export: PNG (1x/2x/4x), SVG, Vega-Lite JSON, Altair Python. Tabs: Chart, Data (sortable/filterable + summary stats), Code, Metadata.
-- Interactivity: tooltips, crosshair, brush zoom (x/y/both), legend click toggle, per-series color overrides. Client-side via CDN (`vega@5`, `vega-lite@5`, `vega-embed@6`).
-
-### 11.2 Styling delegation strategy (CRITICAL)
-
-PRISM does NOT iterate on chart styling. For ANY aesthetic request (line thickness, colors, fonts, legend, dimensions, palette, padding, "make it bigger", "make lines thicker"), hand the user the Chart Center link -- do not regenerate. Re-run `make_chart()` ONLY when the request changes the **data** (series / range / metric / filter), the **structure** (chart type, mapping, annotations, composite layout), or the **narrative** (title, subtitle).
-
-### 11.3 Delivering links to the end user (MANDATORY)
-
-After EVERY successful chart, surface BOTH links: PNG (renders inline) AND Chart Center URL. Markdown only. (1) print both URLs from the script (so they reach the LLM context); (2) emit them in the narrative reply with actual URL strings. Composites identical -- `CompositeResult` carries the same fields.
-
-```python
-result = make_chart(...)
-if result.success:
-    print(f"PNG: {result.download_url}")
-    print(f"Chart Center: {result.editor_download_url}")
-```
-
-```markdown
-![Chart](<result.download_url>)
-
-[Open in Prism Chart Center](<result.editor_download_url>) -- customize
-colors, fonts, dimensions, palette. Export as PNG / SVG / Vega-Lite JSON.
-```
-
-Chart Center URL is presigned (1h default); `editor_html_path` is a stable S3 path -- re-presign via `s3_manager` if it expires.
-
-### 11.4 Session folder & non-fatal failure
-
-```
-sessions/{timestamp}_{slug}/
-    {timestamp}_{chart_name}_{chart_type}.png
-    charts/{timestamp}_{chart_name}_{chart_type}_editor.html
-```
-
-`save_as='charts/foo.png'` lands editor companion at `charts/foo_editor.html` (same dir/base, no timestamp).
-
-If Chart Center generation fails (CDN unreachable, hash collision, template error), PNG still delivers; `editor_download_url`/`editor_html_path` are `None`; `result.warnings` carries cause -- deliver PNG and note Chart Center unavailable, never silently omit.
-
-### 11.5 Known limitations
-
-| Feature | Status | Workaround |
-|---|---|---|
-| Inverted right axis | Supported | `invert_right_axis: True` |
-| HLine / Segment on right axis | Supported | `axis='right'` |
-| `Trendline` on dual-axis multi_line | Not supported | Single-axis or `make_2pack_vertical()` |
-| >2 y-axes | Not supported | Composite layouts |
-| Candlestick / Sankey / Treemap | Not supported | Plotly (`px`) -- no GS styling |
-| Boxplot outlier markers | Not supported | Basic boxplot (Tukey 1.5*IQR whiskers) |
-
----
-
-## 12. Dimensions
+## 11. Dimensions
 
 | Preset | Size | Best for |
 |---|---|---|
@@ -700,7 +633,7 @@ Typography auto-scales for `thumbnail` and `compact`.
 
 ---
 
-## 13. Chart time horizon
+## 12. Chart time horizon
 
 | Frequency | Default | Horizon class | Use case |
 |---|---|---|---|
@@ -713,6 +646,6 @@ Override rules: "highest since 2008" -> chart MUST include 2008. Pre-pandemic ->
 
 ---
 
-## 14. Failure transparency
+## 13. Failure transparency
 
 Never silently substitute a different layout or rationalize a substitution. If a requested chart shape isn't feasible, tell the user and offer alternatives. Max 2 retries per chart concept; after 2 failures, deliver the best version with a note or ask the user about alternatives.

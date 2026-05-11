@@ -96,11 +96,7 @@ from ai_development.mcp.utils.download_links import generate_presigned_download_
 from ai_development.mcp.utils.error_handler import send_error_email
 from ai_development.mcp.utils.unit_helper_functions import guess_units_from_name
 from ai_development.mcp.utils.vision_functions import check_chart_quality
-from ai_development.mcp.utils.chart_functions_studio import (
-    GS_PRIMARY,
-    PrismInteractiveResult,
-    wrap_interactive_prism,
-)
+from ai_development.mcp.utils.chart_functions_studio import GS_PRIMARY
 
 # ---------------------------------------------------------------------------
 # Module logger
@@ -458,11 +454,22 @@ _MIN_SCATTER_VISIBLE_DOTS = 8
 # ``timeseries``) must occupy to read as anything other than a flat line.
 # Below this threshold ``_validate_y_scale_homogeneity`` raises
 # ``ValidationError`` with the three reshape options (2-pack composite,
-# dual-axis, normalize). Catches the canonical "gold + WTI" and
-# "FCI components at disparate levels" failure modes where a high-magnitude
-# (or high-level) series dominates the y-axis domain and the others
-# collapse to flat horizontal rails.
+# dual-axis, normalize). Catches the canonical "gold + WTI" failure mode
+# where a high-magnitude series dominates the y-axis domain and the
+# others collapse to flat horizontal rails near zero.
 _MIN_SERIES_VERTICAL_SHARE = 0.10
+
+# Companion gate to ``_MIN_SERIES_VERTICAL_SHARE``. Catches the case
+# where every series has visible per-series variation (each clears the
+# 10% flatness floor) but the series sit at level bands so far apart
+# that the chart still reads as flat-ish horizontal rails separated by
+# empty whitespace. Triggered when the largest gap between any two
+# adjacent (sorted-by-mean) series's means exceeds this multiple of the
+# largest individual series's span. Canonical example: corporate
+# saving (~2.5%) vs investment (~9.9%) of GDP -- each spans ~0.8 pp,
+# gap ~7.4 pp, ratio ~9x; FCI tenor contributions clustered at 10 / 30 /
+# 60 bp with span ~7 each -- ratio ~4x.
+_LEVEL_DISPARITY_RATIO_THRESHOLD = 3.0
 
 
 def _validate_y_axis_label(y_title: Optional[str], mapping: Dict[str, Any]) -> None:
@@ -1077,9 +1084,18 @@ def _validate_chart_data_integrity(
             )
 
     # Validation 5: y-axis scale homogeneity for single-axis multi-series
-    # time-series charts. Catches gold + WTI / FCI-components-at-disparate-
-    # levels patterns where one series compresses to a flat line.
+    # time-series charts. Catches the canonical "gold + WTI" pattern where
+    # one series compresses to a flat line because its span is a tiny
+    # fraction of the dominant series's range.
     _validate_y_scale_homogeneity(df, mapping, chart_type)
+
+    # Validation 6: y-axis level disparity for single-axis multi-series
+    # time-series charts. Catches the case where every series clears the
+    # flatness floor (Validation 5 passes) but the series sit at bands
+    # far enough apart that the chart still reads as flat horizontal
+    # rails separated by empty whitespace. Canonical example: FCI tenor
+    # contributions at 10 / 30 / 60 bp with per-series spans of ~7 each.
+    _validate_y_level_disparity(df, mapping, chart_type)
 
 
 def _validate_y_scale_homogeneity(
@@ -1197,6 +1213,122 @@ def _validate_y_scale_homogeneity(
         f"`mapping['dual_axis_series']=['{smallest}']` plus "
         f"`mapping['y_title_right']='...'`. Best when the argument is "
         f"co-movement of two series with different magnitudes.\n"
+        f"  (c) Z-score-normalize or rebase-to-100 every series before "
+        f"plotting so all variations share a dimensional scale (loses "
+        f"absolute level but preserves co-movement; best for 3+ series)."
+    )
+
+
+def _validate_y_level_disparity(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> None:
+    """Reject multi-series single-y-axis charts where every series has
+    visible variation but the gap between adjacent (sorted-by-mean)
+    series's means exceeds ``_LEVEL_DISPARITY_RATIO_THRESHOLD`` times
+    the largest individual span.
+
+    Companion to ``_validate_y_scale_homogeneity``. The flatness gate
+    catches "one series collapses to a flat rail because its span is a
+    tiny fraction of the global span" (gold + WTI). This gate catches
+    the visually-similar case where every series clears the flatness
+    floor but the series sit at bands far enough apart that the chart
+    still reads as flat horizontal rails separated by empty whitespace.
+
+    Canonical examples:
+      - corporate saving (~2.5%) + investment (~9.9%) of GDP -- each
+        spans ~0.8 pp, gap ~7.4 pp, ratio ~9x.
+      - FCI tenor contributions at 10 / 30 / 60 bp with per-series
+        spans of ~7 each -- ratio 30 / 7 ~4x.
+
+    Scope mirrors ``_validate_y_scale_homogeneity`` exactly:
+      - Applies to ``multi_line`` and ``timeseries`` only.
+      - Skipped when ``mapping['dual_axis_series']`` is set.
+      - Skipped when fewer than 2 distinct series are present.
+      - Skipped when global y span is zero.
+    """
+    if chart_type not in {"multi_line", "timeseries"}:
+        return
+    if mapping.get("dual_axis_series"):
+        return
+
+    color_field = _get_field(mapping, "color")
+    y_field = _get_field(mapping, "y")
+    if not (color_field and y_field):
+        return
+    if color_field not in df.columns or y_field not in df.columns:
+        return
+    if not pd.api.types.is_numeric_dtype(df[y_field]):
+        return
+
+    series_names = list(df[color_field].dropna().unique())
+    if len(series_names) < 2:
+        return
+
+    # Per-series mean + span; collect side-by-side.
+    series_stats: Dict[str, Tuple[float, float]] = {}
+    for name in series_names:
+        s = pd.to_numeric(
+            df.loc[df[color_field] == name, y_field], errors="coerce"
+        ).dropna()
+        if len(s) == 0:
+            continue
+        series_stats[str(name)] = (float(s.mean()), float(s.max() - s.min()))
+
+    if len(series_stats) < 2:
+        return
+
+    largest_span = max(span for _mean, span in series_stats.values())
+    if largest_span <= 0:
+        return  # All series flat; flatness gate (Validation 5) will catch.
+
+    # Sort by mean; find the largest adjacent-pair gap.
+    sorted_by_mean = sorted(series_stats.items(), key=lambda kv: kv[1][0])
+    gaps: List[Tuple[str, str, float]] = []
+    for (name_lo, (mean_lo, _)), (name_hi, (mean_hi, _)) in zip(
+        sorted_by_mean[:-1], sorted_by_mean[1:]
+    ):
+        gaps.append((name_lo, name_hi, mean_hi - mean_lo))
+    largest_gap_pair = max(gaps, key=lambda g: g[2])
+    name_lo, name_hi, max_gap = largest_gap_pair
+
+    ratio = max_gap / largest_span
+    if ratio <= _LEVEL_DISPARITY_RATIO_THRESHOLD:
+        return
+
+    # Pick the side of the largest gap with the smaller mean as the
+    # default ``dual_axis_series`` payload. Either side works; smaller-
+    # mean side is the more conventional "right axis = lower-level
+    # secondary" convention.
+    full_desc = "; ".join(
+        f"'{name}' mean={mean:.4g} span={span:.4g}"
+        for name, (mean, span) in sorted(
+            series_stats.items(), key=lambda kv: kv[1][0]
+        )
+    )
+
+    mean_lo = series_stats[name_lo][0]
+    mean_hi = series_stats[name_hi][0]
+
+    raise ValidationError(
+        f"Y-AXIS LEVEL DISPARITY: {len(series_stats)} series each have "
+        f"visible variation but sit at bands far enough apart that the "
+        f"chart will read as flat horizontal rails separated by empty "
+        f"whitespace. Largest mean gap: '{name_lo}' "
+        f"(mean {mean_lo:.4g}) vs '{name_hi}' (mean {mean_hi:.4g}); "
+        f"gap={max_gap:.4g}, largest individual span={largest_span:.4g}, "
+        f"ratio={ratio:.2f}x (rejection threshold: "
+        f"{_LEVEL_DISPARITY_RATIO_THRESHOLD:.0f}x). All series: "
+        f"{full_desc}. Three reshape options:\n"
+        f"  (a) Split into a 2-panel composite -- "
+        f"`make_2pack_horizontal(...)` or `make_2pack_vertical(...)` -- "
+        f"so each series gets its own y-axis (canonical fix for "
+        f"two-series level disparities like saving + investment).\n"
+        f"  (b) Route the lower-level series to a right axis: "
+        f"`mapping['dual_axis_series']=['{name_lo}']` plus "
+        f"`mapping['y_title_right']='...'`. Best when the argument is "
+        f"co-movement of two series with different levels.\n"
         f"  (c) Z-score-normalize or rebase-to-100 every series before "
         f"plotting so all variations share a dimensional scale (loses "
         f"absolute level but preserves co-movement; best for 3+ series)."
@@ -1596,12 +1728,43 @@ class HLine(Annotation):
         text_color = self.label_color or self.color
         layers: List[alt.Chart] = [line]
 
+        # Class 3 absorption: when ``make_chart`` stashes a right-edge
+        # anchor x in ``mapping`` (bar charts), route the label to the
+        # right side of the bar zone using ``align='right'`` against the
+        # rightmost x category. Otherwise default behaviour:
+        # ``align='left', dx=5`` (anchor floats near the plot horizontal
+        # midpoint by Vega-Lite default).
+        anchor_x = mapping.get("_anno_label_anchor_right_x")
+        x_field_user = mapping.get("x") if isinstance(mapping.get("x"), str) else None
+        if (
+            anchor_x is not None
+            and x_field_user
+            and x_field_user in df.columns
+        ):
+            label_df = pd.DataFrame({col_name: [self.y], x_field_user: [anchor_x]})
+            x_type = _resolve_axis_type(df, x_field_user)
+            label_align = "right"
+            label_dx = -5
+            label_x_enc = alt.X(x_field_user, type=x_type)
+        else:
+            label_df = line_df
+            label_align = "left"
+            label_dx = 5
+            label_x_enc = None
+
+        text_encode_kwargs: Dict[str, Any] = {
+            "y": alt.Y(f"{col_name}:Q"),
+            "text": alt.value(self.label),
+        }
+        if label_x_enc is not None:
+            text_encode_kwargs["x"] = label_x_enc
+
         if self.halo:
             halo_layer = (
-                alt.Chart(line_df)
+                alt.Chart(label_df)
                 .mark_text(
-                    align="left",
-                    dx=5,
+                    align=label_align,
+                    dx=label_dx,
                     dy=self._label_dy,
                     fontSize=10,
                     stroke=self.halo_color,
@@ -1610,26 +1773,20 @@ class HLine(Annotation):
                     strokeOpacity=1.0,
                     color=self.halo_color,
                 )
-                .encode(
-                    y=alt.Y(f"{col_name}:Q"),
-                    text=alt.value(self.label),
-                )
+                .encode(**text_encode_kwargs)
             )
             layers.append(halo_layer)
 
         text = (
-            alt.Chart(line_df)
+            alt.Chart(label_df)
             .mark_text(
-                align="left",
-                dx=5,
+                align=label_align,
+                dx=label_dx,
                 dy=self._label_dy,
                 fontSize=10,
                 color=text_color,
             )
-            .encode(
-                y=alt.Y(f"{col_name}:Q"),
-                text=alt.value(self.label),
-            )
+            .encode(**text_encode_kwargs)
         )
         layers.append(text)
         return alt.layer(*layers)
@@ -1752,8 +1909,43 @@ class Band(Annotation):
                 return band
 
             mid_y = (self.y1 + self.y2) / 2
-            label_df = pd.DataFrame({y_field: [mid_y]})
             label_color = self.label_color or "#666666"
+
+            # Class 3 absorption (mirrors HLine.to_layer): when
+            # ``make_chart`` stashes a right-edge anchor x in
+            # ``mapping`` (bar charts), route the band label to the
+            # right side using ``align='right'``. Otherwise keep the
+            # legacy default (no x encoding, label floats near
+            # horizontal midpoint via Vega-Lite).
+            anchor_x = mapping.get("_anno_label_anchor_right_x")
+            x_field_user = (
+                mapping.get("x") if isinstance(mapping.get("x"), str) else None
+            )
+            if (
+                anchor_x is not None
+                and x_field_user
+                and x_field_user in df.columns
+            ):
+                label_df = pd.DataFrame(
+                    {y_field: [mid_y], x_field_user: [anchor_x]}
+                )
+                x_type = _resolve_axis_type(df, x_field_user)
+                label_align = "right"
+                label_dx = -5
+                label_x_enc = alt.X(x_field_user, type=x_type)
+            else:
+                label_df = pd.DataFrame({y_field: [mid_y]})
+                label_align = "left"
+                label_dx = 10
+                label_x_enc = None
+
+            text_encode_kwargs: Dict[str, Any] = {
+                "y": alt.Y(f"{y_field}:Q"),
+                "text": alt.value(self.label),
+            }
+            if label_x_enc is not None:
+                text_encode_kwargs["x"] = label_x_enc
+
             halo_layer = (
                 alt.Chart(label_df)
                 .mark_text(
@@ -1763,24 +1955,20 @@ class Band(Annotation):
                     strokeJoin="round",
                     strokeOpacity=1.0,
                     color="#FFFFFF",
-                    dx=10,
+                    align=label_align,
+                    dx=label_dx,
                 )
-                .encode(
-                    y=alt.Y(f"{y_field}:Q"),
-                    text=alt.value(self.label),
-                )
+                .encode(**text_encode_kwargs)
             )
             text = (
                 alt.Chart(label_df)
                 .mark_text(
                     fontSize=9,
                     color=label_color,
-                    dx=10,
+                    align=label_align,
+                    dx=label_dx,
                 )
-                .encode(
-                    y=alt.Y(f"{y_field}:Q"),
-                    text=alt.value(self.label),
-                )
+                .encode(**text_encode_kwargs)
             )
             return band + halo_layer + text
 
@@ -2713,6 +2901,21 @@ class LastValueLabel(Annotation):
         last_idx = df_clean.groupby(color_field)[x_col].idxmax()
         last_rows = df_clean.loc[last_idx].reset_index(drop=True)
 
+        # Class 8 absorption (Phase 2 stress probe T5c, 2026-05-10):
+        # if ``_estimate_lvl_right_margin`` capped the reserve and
+        # stashed a per-label char budget, truncate series-name text
+        # with an ellipsis so the label fits the capped margin
+        # instead of overflowing the canvas. The value suffix (if
+        # ``show_value=True``) is always appended in full -- the
+        # truncation budget already accounted for it in the
+        # margin-estimate pass.
+        max_label_chars = mapping.get("_lvl_max_label_chars")
+
+        def _truncate(name: str) -> str:
+            if max_label_chars and len(name) > max_label_chars:
+                return name[: max(1, max_label_chars - 1)] + "\u2026"
+            return name
+
         if self.show_value:
             value_template = (
                 self.value_format
@@ -2720,12 +2923,14 @@ class LastValueLabel(Annotation):
                 else _smart_format_template(last_rows[y_field])
             )
             last_rows["_label"] = (
-                last_rows[color_field].astype(str)
+                last_rows[color_field].astype(str).map(_truncate)
                 + "  "
                 + last_rows[y_field].map(lambda v: value_template.format(v))
             )
         else:
-            last_rows["_label"] = last_rows[color_field].astype(str)
+            last_rows["_label"] = (
+                last_rows[color_field].astype(str).map(_truncate)
+            )
 
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
@@ -2907,6 +3112,12 @@ class LastValueLabel(Annotation):
             label_root = y_title
         else:
             label_root = y_field.replace("_", " ").strip().title()
+
+        # Class 8 absorption: truncate single-series label root when
+        # the right margin was capped (mirror the multi-series path).
+        max_label_chars = mapping.get("_lvl_max_label_chars")
+        if max_label_chars and len(label_root) > max_label_chars:
+            label_root = label_root[: max(1, max_label_chars - 1)] + "\u2026"
 
         label_text = label_root
         if self.show_value:
@@ -4149,6 +4360,14 @@ def _auto_stagger_hline_labels(
 # ending at near-identical y values don't paint as a single illegible smudge.
 # ---------------------------------------------------------------------------
 
+_LVL_MAX_RIGHT_MARGIN_FRAC: float = 0.25
+"""Cap LVL right-margin reserve at 25% of canvas width (Phase 2 class 8
+absorption from the 2026-05-10 collision audit + Phase 2 stress probe
+T5c). Without this, 30-50 character series names ("United States Treasury
+10-Year Constant Maturity Yield") consume 40-50% of canvas width and
+squash the plot region into an unreadable strip."""
+
+
 def _estimate_lvl_right_margin(
     annotations: Optional[List["Annotation"]],
     df: pd.DataFrame,
@@ -4164,6 +4383,14 @@ def _estimate_lvl_right_margin(
 
     Returns 0 when no LVL is present in the annotation list, otherwise a
     pixel value sized to fit the longest "series name [value]" label.
+
+    Class 8 absorption (Phase 2 stress probe T5c, 2026-05-10): cap the
+    reserve at ``_LVL_MAX_RIGHT_MARGIN_FRAC`` (25%%) of canvas width.
+    When the natural margin would exceed the cap, stash the fitted
+    character budget in ``mapping['_lvl_max_label_chars']`` so
+    ``LastValueLabel.to_layer`` can truncate the per-row label text
+    with an ellipsis. Result: long series names get truncated cleanly
+    to fit the cap instead of devouring the plot region.
     """
     if not annotations:
         return 0
@@ -4174,7 +4401,11 @@ def _estimate_lvl_right_margin(
     color_field = mapping.get("color")
     y_field = mapping.get("y")
 
+    chart_width = int(mapping.get("_chart_width_px") or 600)
+    cap = int(chart_width * _LVL_MAX_RIGHT_MARGIN_FRAC)
+
     margin = 0
+    fitted_chars_for_each: List[int] = []
     for lvl in lvl_anns:
         font_size = lvl.font_size
         # Average sans-serif body-text glyph is ~0.6 * font_size in width.
@@ -4198,7 +4429,32 @@ def _estimate_lvl_right_margin(
 
         # Width = chars * glyph + dx (text offset from data point) + 8 px slack.
         ann_margin = int(max_chars * char_w + lvl.dx + 8)
-        margin = max(margin, ann_margin)
+
+        if ann_margin > cap:
+            # Class 8: fit chars into the cap budget; keep enough for
+            # ellipsis ("...") visible.
+            fitted_label_px = max(20, cap - lvl.dx - 8)
+            fitted_label_chars = int(fitted_label_px / char_w)
+            # Reserve room for trailing ellipsis (3 chars) + the value
+            # suffix if show_value is on.
+            fitted_chars = max(8, fitted_label_chars - 3 - value_pad)
+            fitted_chars_for_each.append(fitted_chars)
+            margin = max(margin, cap)
+        else:
+            margin = max(margin, ann_margin)
+
+    if fitted_chars_for_each:
+        # All LVL annotations on this chart share a single truncation
+        # budget (LVL renders only one set of labels per chart in
+        # practice). Use the smallest fitted_chars to be safe.
+        mapping["_lvl_max_label_chars"] = min(fitted_chars_for_each)
+        logger.info(
+            "[_estimate_lvl_right_margin] Class 8 cap fired: long series "
+            "names truncated to %d chars + ellipsis to fit %d-px right "
+            "margin (cap = %.0f%% of %dpx canvas).",
+            min(fitted_chars_for_each), cap,
+            _LVL_MAX_RIGHT_MARGIN_FRAC * 100, chart_width,
+        )
 
     return margin
 
@@ -7584,8 +7840,8 @@ BASE_CONFIG: Dict[str, Any] = {
 # Single source of truth for the categorical palette: GS_PRIMARY in
 # chart_functions_studio.py.  ``color_scheme`` (and the named anchors
 # ``primary_color`` / ``secondary_color`` / ``accent_color``) are
-# derived from GS_PRIMARY["colors"] so the production skin and the
-# Chart Center default never drift.  ``label_color_scheme`` is the
+# derived from GS_PRIMARY["colors"] so every consumer of the palette
+# stays in lockstep.  ``label_color_scheme`` is the
 # parallel per-slot palette LastValueLabel uses -- identical to
 # ``color_scheme`` for the dark slots and a darker HSL-derived hex
 # for slots that read poorly as 15pt text on white (slots 1, 2, 3, 6).
@@ -7922,10 +8178,20 @@ def _resolve_color_sort(
     return seen
 
 
+_LEGEND_MAX_WIDTH_FRAC: float = 0.25
+"""Cap legend ``labelLimit`` at 25%% of canvas width (Phase 2 stress
+probe T5b finding F2). Without this, 35-50 char series names like
+"United States Treasury 10-Year Constant Maturity Yield" cause
+Vega-Lite to reserve 40-50%% of canvas width for the legend column,
+squashing the plot region. The cap forces Vega-Lite to truncate
+overlong labels with an ellipsis at render time."""
+
+
 def _calculate_legend_config(
     df: pd.DataFrame,
     color_field: str,
     base_config: Dict[str, Any],
+    chart_width: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Compute a legend kwargs dict that adapts to label length.
 
@@ -7933,6 +8199,14 @@ def _calculate_legend_config(
     omits ``clipHeight`` (Altair rejects ``clipHeight=None``). When
     labels exceed the base ``labelLimit``, increases ``labelLimit`` and
     adds dynamic ``clipHeight`` so wrapped lines don't overlap.
+
+    Class-8-style absorption (F2 from Phase 2 stress probe): when
+    ``chart_width`` is supplied, cap the resulting ``labelLimit`` at
+    ``_LEGEND_MAX_WIDTH_FRAC`` (25%%) of canvas width so very long
+    series names get ellipsis-truncated by Vega-Lite at render time
+    instead of consuming half the canvas. The cap is applied to the
+    final config returned (works on both the short-labels and
+    long-labels branches).
     """
     config = dict(base_config) if base_config else {}
     if color_field not in df.columns:
@@ -7952,6 +8226,18 @@ def _calculate_legend_config(
         config["labelLimit"] = max(300, max_label_len * 8)
         config.pop("clipHeight", None)
         config["rowPadding"] = 2
+
+    # F2 cap (apply last so it wins on both branches).
+    if chart_width is not None and chart_width > 0:
+        legend_cap_px = int(chart_width * _LEGEND_MAX_WIDTH_FRAC)
+        if config.get("labelLimit", 0) > legend_cap_px:
+            logger.info(
+                "[_calculate_legend_config] F2 cap fired: labelLimit "
+                "%d -> %d (cap %.0f%% of %dpx canvas).",
+                config["labelLimit"], legend_cap_px,
+                _LEGEND_MAX_WIDTH_FRAC * 100, chart_width,
+            )
+            config["labelLimit"] = legend_cap_px
 
     return config
 
@@ -8634,7 +8920,7 @@ def _build_timeseries(
         legend_title = _format_label(color_field, mapping, "color")
         base_legend_config = skin_config.get("config", {}).get("legend", {})
         dynamic_legend_cfg = _calculate_legend_config(
-            df, color_field, base_legend_config
+            df, color_field, base_legend_config, chart_width=width,
         )
         color_sort = _resolve_color_sort(
             df, color_field, mapping.get("color_sort") or mapping.get("legend_sort"),
@@ -9112,6 +9398,7 @@ def _build_profile_line(
     if color_field and color_field in df.columns:
         legend_cfg = _calculate_legend_config(
             df, color_field, skin_config.get("config", {}).get("legend", {}),
+            chart_width=width,
         )
         color_sort = _resolve_color_sort(
             df, color_field, mapping.get("color_sort") or mapping.get("legend_sort"),
@@ -9926,12 +10213,20 @@ def _build_bar(
         # The label layer leaves x/y axis unspecified so Vega-Lite's
         # shared-axis resolution inherits the base bar's axis (title,
         # ticks, format) instead of overriding it with ``title=null``.
-        # Color is contrast-aware: positive bars sit on white background
-        # (label rendered above the bar via baseline='bottom'+dy=-4) so
-        # near-black reads cleanly; negative bars place the label
-        # *inside* the dark-blue bar (same anchor lands above the
-        # y_value point, which for negatives is the bar's far edge), so
-        # white reads cleanly there. Mirrors the heatmap-cell pattern.
+        #
+        # Mixed-sign anchor split (F4 fix from Phase 2 stress probe):
+        # positive bars get labels ABOVE the bar (baseline='bottom',
+        # dy=-4 on the y=value anchor); negative bars get labels BELOW
+        # the bar (baseline='top', dy=+4 on the y=value anchor). The
+        # prior single-mark "label sits at apex inside dark fill for
+        # negatives" path produced labels at inconsistent positions
+        # along the bar fill (Q5 -1.10 sat near top of its bar; Q1
+        # -3.20 sat near bottom; Q3 -2.80 sat mid-bar) and the white-
+        # text-inside-dark-fill collided with HLine labels passing
+        # through the bar zone. Splitting positive vs negative into
+        # two text layers mirrors the natural "outside-the-bar" anchor
+        # used everywhere else in the engine and reads consistently.
+        # Both layers use dark text (#222222) on the white background.
         #
         # Class 1 absorption (collision sweep 2026-05-10): suppress the
         # value label on bars whose x-position is anchored by a Callout /
@@ -9951,33 +10246,60 @@ def _build_bar(
                         "[_build_bar] Suppressed %d bar value label(s) at "
                         "annotation-anchored x-position(s).", n_dropped,
                     )
-            text_labels = (
-                alt.Chart(df_for_labels)
-                .mark_text(
-                    align="center",
-                    baseline="bottom",
-                    dy=-4,
-                    fontSize=11,
-                    fontWeight="bold",
+
+            df_pos = df_for_labels[df_for_labels[y_field] >= 0]
+            df_neg = df_for_labels[df_for_labels[y_field] < 0]
+            value_fmt = _smart_number_format(df[y_field])
+
+            if len(df_pos) > 0:
+                pos_text = (
+                    alt.Chart(df_pos)
+                    .mark_text(
+                        align="center",
+                        baseline="bottom",
+                        dy=-4,
+                        fontSize=11,
+                        fontWeight="bold",
+                        color="#222222",
+                    )
+                    .encode(
+                        x=alt.X(
+                            x_field, type=x_type, sort=mapping.get("x_sort"),
+                        ),
+                        y=alt.Y(y_field, type="quantitative"),
+                        text=alt.Text(
+                            y_field, type="quantitative",
+                            format=value_fmt,
+                        ),
+                    )
+                    .properties(width=width, height=height)
                 )
-                .encode(
-                    x=alt.X(
-                        x_field, type=x_type, sort=mapping.get("x_sort"),
-                    ),
-                    y=alt.Y(y_field, type="quantitative"),
-                    text=alt.Text(
-                        y_field, type="quantitative",
-                        format=_smart_number_format(df[y_field]),
-                    ),
-                    color=alt.condition(
-                        f"datum['{y_field}'] < 0",
-                        alt.value("white"),
-                        alt.value("#222222"),
-                    ),
+                chart = chart + pos_text
+
+            if len(df_neg) > 0:
+                neg_text = (
+                    alt.Chart(df_neg)
+                    .mark_text(
+                        align="center",
+                        baseline="top",
+                        dy=4,
+                        fontSize=11,
+                        fontWeight="bold",
+                        color="#222222",
+                    )
+                    .encode(
+                        x=alt.X(
+                            x_field, type=x_type, sort=mapping.get("x_sort"),
+                        ),
+                        y=alt.Y(y_field, type="quantitative"),
+                        text=alt.Text(
+                            y_field, type="quantitative",
+                            format=value_fmt,
+                        ),
+                    )
+                    .properties(width=width, height=height)
                 )
-                .properties(width=width, height=height)
-            )
-            chart = chart + text_labels
+                chart = chart + neg_text
         elif not color_field:
             logger.info(
                 "[_build_bar] suppressing text labels: %d bars > threshold of 15",
@@ -10345,6 +10667,80 @@ def _build_bar_horizontal(
                     legend=alt.Legend(title=None),
                 )
             )
+
+        # Horizontal bar value labels (F5 fix from Phase 2 stress probe).
+        # The single-series path (no color) gets a value label per bar,
+        # mirroring the vertical-bar behaviour. Anchor split:
+        #   - Positive x values -> label OUTSIDE the bar to the RIGHT
+        #     (align='left', dx=+4 on x=value anchor). Dark text on
+        #     white plot background.
+        #   - Negative x values -> label INSIDE the bar near the OPEN
+        #     end (x=0 side, align='right', dx=-4 on x=value anchor=0).
+        #     White text on dark bar fill. Outside-left would land in
+        #     the y-axis category-label gutter and visibly collide with
+        #     the long y-axis tick text -- inside-at-x=0 sidesteps that
+        #     while keeping the value adjacent to the bar boundary the
+        #     user reads first.
+        if not color_field and df[y_field].nunique() <= 25:
+            value_fmt = _smart_number_format(df[x_field])
+            df_pos = df[df[x_field] >= 0]
+            df_neg = df[df[x_field] < 0].copy()
+
+            if len(df_pos) > 0:
+                pos_text = (
+                    alt.Chart(df_pos)
+                    .mark_text(
+                        align="left",
+                        baseline="middle",
+                        dx=4,
+                        fontSize=11,
+                        fontWeight="bold",
+                        color="#222222",
+                    )
+                    .encode(
+                        y=alt.Y(
+                            y_field, type="nominal",
+                            sort=mapping.get("y_sort"),
+                        ),
+                        x=alt.X(x_field, type="quantitative"),
+                        text=alt.Text(
+                            x_field, type="quantitative",
+                            format=value_fmt,
+                        ),
+                    )
+                    .properties(width=width, height=height)
+                )
+                chart = chart + pos_text
+
+            if len(df_neg) > 0:
+                # Anchor at x=0 (the open end) and let the original
+                # x_field column drive the displayed text. White text
+                # on dark fill sidesteps the y-axis gutter collision.
+                df_neg["_anchor_x"] = 0.0
+                neg_text = (
+                    alt.Chart(df_neg)
+                    .mark_text(
+                        align="right",
+                        baseline="middle",
+                        dx=-4,
+                        fontSize=11,
+                        fontWeight="bold",
+                        color="white",
+                    )
+                    .encode(
+                        y=alt.Y(
+                            y_field, type="nominal",
+                            sort=mapping.get("y_sort"),
+                        ),
+                        x=alt.X("_anchor_x", type="quantitative"),
+                        text=alt.Text(
+                            x_field, type="quantitative",
+                            format=value_fmt,
+                        ),
+                    )
+                    .properties(width=width, height=height)
+                )
+                chart = chart + neg_text
     else:
         # GROUPED via row faceting (horizontal equivalent of column-facet
         # for vertical bars). Each y-category becomes a row facet; the
@@ -12785,7 +13181,7 @@ def make_chart(
             point) layered on top of the base chart.
         x_label / y_label: Convenience aliases for ``mapping['x_title']`` /
             ``mapping['y_title']``.
-        user_id: Optional Kerberos ID for chart studio localStorage isolation.
+        user_id: Optional Kerberos ID resolved from the runtime context.
         caption: Below-chart caption text (str) or style-override dict
             (``{"text": ..., "italic": True, "font_size": 10, ...}``).
             Auto-wraps to chart width.
@@ -13134,6 +13530,110 @@ def make_chart(
                 y_range_suppress[0], y_range_suppress[1],
             )
 
+    # ---- Class 3 absorption: route HLine + horizontal-Band labels to the
+    # right edge on bar charts (audit
+    # `dev/scratch/_collision_audit_2026-05-10_1955/inventory.md` class 3,
+    # subsuming class 2).
+    #
+    # Bar charts auto-emit numeric value labels above each bar; HLine and
+    # horizontal Band labels default to roughly the plot center
+    # horizontally. The two label streams crash together in the same
+    # narrow y-band, creating a "label soup" region right where the data
+    # is densest (e.g. 22/A1 BLOCKER, 22/I1 + 22/L1 MAJOR, 24/K1 MAJOR
+    # repros from the audit). Route HLine + horizontal-Band labels to
+    # the right edge of the bar zone so they form a clean per-rule
+    # legend strip OUTSIDE the bar value-label region.
+    #
+    # Anchor x = the rightmost x category in df data order (NOT
+    # alphabetical -- the bar builder preserves data order for the
+    # axis). The HLine + Band downstream code reads
+    # ``mapping['_anno_label_anchor_right_x']`` from to_layer and
+    # switches to ``align='right'`` with ``dx=-5`` against that anchor.
+    # Grouped bar (color + stack=False) is excluded since annotations
+    # already get dropped there per class 11.
+    #
+    # Secondary suppression: routing labels to the rightmost bar's x
+    # creates a new collision risk -- the rightmost bar's own value
+    # label sits at the top of THAT bar, which is the same anchor x
+    # as the routed labels. When the rightmost bar's y value falls
+    # within 2%% of any routed HLine y (or inside any routed Band y
+    # range), the routed label overlaps the bar value label
+    # pixel-for-pixel. Suppress the bar value label at the rightmost
+    # x so the routed legend strip reads cleanly.
+    if (
+        chart_type == "bar"
+        and annotations
+        and not (mapping.get("color") and mapping.get("stack") is False)
+        and isinstance(mapping.get("x"), str)
+        and mapping["x"] in df.columns
+    ):
+        x_field = mapping["x"]
+        has_label_bearing_rule = any(
+            (isinstance(a, HLine) and a.label)
+            or (
+                isinstance(a, Band)
+                and a.y1 is not None and a.y2 is not None
+                and a.label
+            )
+            for a in annotations
+        )
+        if has_label_bearing_rule and len(df) > 0:
+            try:
+                last_x = df[x_field].iloc[-1]
+                mapping["_anno_label_anchor_right_x"] = last_x
+                logger.info(
+                    "[make_chart] Routing HLine + horizontal-Band labels "
+                    "to right edge (class 3 absorption); anchor x=%r",
+                    last_x,
+                )
+
+                # Secondary: check if the rightmost bar's y value
+                # collides with any routed HLine y or labelled Band
+                # y-range. If so, add last_x to the value-label
+                # suppression set so the bar value label drops out and
+                # the routed legend label survives alone.
+                y_field = mapping.get("y") if isinstance(mapping.get("y"), str) else None
+                if y_field and y_field in df.columns:
+                    last_row = df[df[x_field] == last_x]
+                    if len(last_row) > 0:
+                        last_y_val = float(last_row[y_field].iloc[-1])
+                        y_min_data = float(df[y_field].min())
+                        y_max_data = float(df[y_field].max())
+                        y_span = max(y_max_data - y_min_data, 1e-9)
+                        tol = y_span * 0.02
+                        collides = False
+                        for ann in annotations:
+                            if isinstance(ann, HLine) and ann.label:
+                                if abs(float(ann.y) - last_y_val) <= tol:
+                                    collides = True
+                                    break
+                            elif (
+                                isinstance(ann, Band)
+                                and ann.y1 is not None
+                                and ann.y2 is not None
+                                and ann.label
+                            ):
+                                y_lo = float(min(ann.y1, ann.y2))
+                                y_hi = float(max(ann.y1, ann.y2))
+                                if y_lo <= last_y_val <= y_hi:
+                                    collides = True
+                                    break
+                        if collides:
+                            existing = mapping.get("_suppress_bar_value_at_x") or set()
+                            if not isinstance(existing, set):
+                                existing = set(existing)
+                            existing.add(last_x)
+                            mapping["_suppress_bar_value_at_x"] = existing
+                            logger.info(
+                                "[make_chart] Class 3 secondary: also "
+                                "suppressing rightmost bar value label "
+                                "at x=%r (y=%.3f collides with routed "
+                                "HLine/Band).",
+                                last_x, last_y_val,
+                            )
+            except Exception:  # noqa: BLE001
+                pass
+
     # ---- Build the chart ------------------------------------------------
     try:
         chart = _dispatch_builder(
@@ -13222,6 +13722,17 @@ def make_chart(
         )
         warnings.extend(_plottext_warnings)
 
+    # ---- LastValueLabel right-margin reserve (pre-pass) -----------------
+    # Compute LVL right-margin BEFORE ``render_annotations`` so the
+    # class-8 truncation budget (stashed in
+    # ``mapping['_lvl_max_label_chars']`` when long series names would
+    # overflow the 25%%-of-canvas cap) is available when
+    # ``LastValueLabel.to_layer`` runs inside render_annotations and
+    # consumes the per-row text labels. Without this ordering the
+    # truncation would only take effect on the NEXT render of the
+    # same chart.
+    lvl_right_pad = _estimate_lvl_right_margin(annotations, df, mapping)
+
     # ---- Annotations (layer first; configure must be applied AFTER ------
     # because altair rejects ``alt.layer(...)`` of charts that already
     # carry a top-level ``config``).
@@ -13235,13 +13746,12 @@ def make_chart(
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Annotation layer failed (non-fatal): {exc}")
 
-    # ---- LastValueLabel right-margin reserve ----------------------------
+    # ---- Apply the LVL right-margin reserve -----------------------------
     # ``LastValueLabel`` paints labels OUTSIDE the plot region (to the
     # right of the last data point). Without canvas-right padding the
     # labels get clipped at the canvas edge -- this was the most-flagged
-    # P0 issue in the vision audit. Reserve the right padding here so
-    # the labels render in-bounds without compressing the plot region.
-    lvl_right_pad = _estimate_lvl_right_margin(annotations, df, mapping)
+    # P0 issue in the vision audit. Class 8 also caps this reserve at
+    # 25%% of canvas width when series names are exceptionally long.
     if lvl_right_pad > 0:
         chart = chart.properties(padding={
             "left": 5, "top": 5, "bottom": 5, "right": lvl_right_pad,
@@ -13408,42 +13918,6 @@ def make_chart(
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Failed to generate PNG download URL: {exc}")
 
-    # ---- Chart Studio interactive HTML companion -----------------------
-    editor_html_path: Optional[str] = None
-    editor_download_url: Optional[str] = None
-    editor_chart_id: Optional[str] = None
-
-    if not png_save_failed:
-        try:
-            studio_result = wrap_interactive_prism(
-                altair_chart=spec,
-                chart_type=chart_type,
-                dimensions=dimensions or "wide",
-                annotations=annotations,
-                user_id=user_id,
-                session_path=None,
-                chart_name=filename_base,
-            )
-            editor_html_s3_path = (
-                f"{session_path}/charts/{filename_base}_editor.html"
-                if session_path
-                else f"{filename_base}_editor.html"
-            )
-            s3_manager.put(
-                studio_result.editor_html.encode("utf-8"),
-                editor_html_s3_path,
-            )
-            editor_html_path = editor_html_s3_path
-            editor_chart_id = getattr(studio_result, "chart_id", None)
-            try:
-                editor_download_url = generate_presigned_download_url(
-                    editor_html_s3_path
-                ).presigned_url
-            except Exception:  # noqa: BLE001
-                pass
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"Chart editor generation failed (non-fatal): {exc}")
-
     return ChartResult(
         png_path=png_path,
         download_url=download_url,
@@ -13456,9 +13930,6 @@ def make_chart(
         ),
         warnings=warnings,
         interactive=interactive,
-        editor_html_path=editor_html_path,
-        editor_download_url=editor_download_url,
-        editor_chart_id=editor_chart_id,
     )
 
 
@@ -14251,6 +14722,19 @@ def _resolve_side_width(
     return _autofit_side_width(cfg, chart_width, default_pct)
 
 
+_SIDE_PANEL_MIN_READABLE_WIDTH_PX: int = 100
+"""Minimum panel width for any side panel carrying real text content
+(F7 fix from Phase 2 stress probe T14a -- 25/F1 BLOCKER). The previous
+40px floor combined with the 22%% chart-width cap produced 60-65px-wide
+panels in 2pack / 4pack cells (per-cell chart_width = 280-300px), which
+wraps text at 7-8 chars per line and creates a single-character-wide
+vertical column of text -- catastrophic readability collapse. Raising
+the floor to 100px lets ~14 chars per line through and the text reads
+as a real narrative panel even in narrow composite cells. Empty / single-
+space placeholder panels keep the prior 40px floor (no readability
+floor needed)."""
+
+
 def _autofit_side_width(
     cfg: Dict[str, Any], chart_width: int, default_pct: float = 0.22,
 ) -> int:
@@ -14259,14 +14743,31 @@ def _autofit_side_width(
     Wrap the text to the default budget first (so a long caption fills
     the budget like before), then measure the longest line and shrink
     the panel down to that width plus the inner padding.
+
+    F7 fix: enforce ``_SIDE_PANEL_MIN_READABLE_WIDTH_PX`` (100px) as
+    the floor for panels carrying real text content, otherwise narrow
+    composite cells (~300px wide) compute a tight cap (66px) that
+    collapses text into a 7-char-wide column. Cap is also expanded
+    to 50%% of chart_width in narrow cells so the floor can be met
+    without breaking the cap-respects-chart-width invariant. Empty /
+    single-space placeholder panels keep the 40px floor.
     """
     text = cfg.get("text", "")
     font_size = int(cfg.get("font_size", 11))
     padding = int(cfg.get("padding", 8))
 
-    cap_w_px = max(40, int(chart_width * default_pct))
+    # F7: floor depends on whether real text is present. Placeholder
+    # panels (blank cells in composite reserve rows) stay tight.
+    is_real_text = bool(text and text.strip())
+    floor = _SIDE_PANEL_MIN_READABLE_WIDTH_PX if is_real_text else 40
+
+    # F7: in narrow composite cells the 22%% cap is below the readable
+    # floor. Allow up to 50%% of chart_width so the floor wins.
+    cap_w_px = max(floor, int(chart_width * default_pct), int(chart_width * 0.5))
+    cap_w_px = min(cap_w_px, max(floor, int(chart_width * 0.5)))
+
     if not text:
-        return cap_w_px
+        return floor
 
     content_w = max(1, cap_w_px - 2 * padding)
     wrapped = _wrap_text_to_width(text, content_w, font_size)
@@ -14276,7 +14777,7 @@ def _autofit_side_width(
     # right edge by the auto-shrink.
     fitted_text_w = int(max_line_chars * char_w_px) + 1
     fitted_panel_w = fitted_text_w + 2 * padding
-    return min(max(40, fitted_panel_w), cap_w_px)
+    return min(max(floor, fitted_panel_w), cap_w_px)
 
 
 def _wrap_with_text_panels(
@@ -16036,40 +16537,6 @@ def make_composite(
         except Exception as exc:  # noqa: BLE001
             warnings_list.append(f"Composite presigned URL failed: {exc}")
 
-    # Optional editor HTML companion (composite-level).
-    editor_html_path: Optional[str] = None
-    editor_download_url: Optional[str] = None
-    if not png_save_failed:
-        try:
-            studio_result = wrap_interactive_prism(
-                altair_chart=spec_dict,
-                chart_type=f"{layout}_composite",
-                dimensions=dimension_preset,
-                annotations=None,
-                user_id=user_id,
-                session_path=None,
-                chart_name=filename_base,
-            )
-            editor_html_s3_path = (
-                f"{session_path}/charts/{filename_base}_editor.html"
-                if session_path
-                else f"{filename_base}_editor.html"
-            )
-            s3_manager.put(
-                studio_result.editor_html.encode("utf-8"), editor_html_s3_path
-            )
-            editor_html_path = editor_html_s3_path
-            try:
-                editor_download_url = generate_presigned_download_url(
-                    editor_html_s3_path
-                ).presigned_url
-            except Exception:  # noqa: BLE001
-                pass
-        except Exception as exc:  # noqa: BLE001
-            warnings_list.append(
-                f"Composite editor generation failed (non-fatal): {exc}"
-            )
-
     return CompositeResult(
         png_path=png_path,
         layout=layout,
@@ -16089,8 +16556,6 @@ def make_composite(
         vegalite_json=spec_dict,
         skin=skin,
         chart_errors=chart_errors,
-        editor_html_path=editor_html_path,
-        editor_download_url=editor_download_url,
     )
 
 
@@ -16850,9 +17315,8 @@ class Chart:
 
     Replaces v1's ``make_chart`` + ``ChartSpec`` duality with one
     class. Construction collects the spec; ``.render()`` produces a
-    PNG (and Chart Center HTML companion) and returns a
-    ``ChartResult``. ``render_grid([c1, c2, ...])`` consumes the same
-    objects for composite layouts.
+    PNG and returns a ``ChartResult``. ``render_grid([c1, c2, ...])``
+    consumes the same objects for composite layouts.
 
     All fields are keyword-only after the positional ``df`` and
     ``type``. Anything that was a key inside v1's ``mapping={...}``
@@ -17179,10 +17643,10 @@ class Chart:
                 Use for dashboard / report charts where a stable URL
                 matters. Omit for one-off chats; the engine generates
                 a timestamped slug.
-            verbose: When True (default), prints PNG and Chart Center
-                URLs on success; prints build-failure reason on
-                failure. Set False inside batch loops where the
-                caller will aggregate URLs itself.
+            verbose: When True (default), prints the PNG URL on
+                success; prints build-failure reason on failure.
+                Set False inside batch loops where the caller will
+                aggregate URLs itself.
             filename_prefix / filename_suffix: Optional slug components.
 
         Returns:
@@ -17291,8 +17755,8 @@ def render_grid(
         save_as: Fixed S3 path (relative to session_path).
         skin / spacing: Style knobs.
         filename_prefix / filename_suffix: Optional slug components.
-        verbose: Print PNG and Chart Center URLs on success;
-            print build-failure reasons on failure.
+        verbose: Print the PNG URL on success; print build-failure
+            reasons on failure.
 
     Returns:
         ``CompositeResult`` -- always returned. ``result.chart_errors``
@@ -17414,7 +17878,7 @@ def _v2_post_render(
     """Run the standard post-make_chart / make_composite pipeline.
 
     1. If render failed, print why (verbose) and return as-is.
-    2. On success, print PNG + Chart Center URLs and any warnings.
+    2. On success, print the PNG URL and any warnings.
 
     Quality control is NOT run here. PRISM's post-script sweep
     (``_check_charts_quality_injected`` in ``script_exec_tools.py``)
@@ -17433,11 +17897,8 @@ def _v2_post_render(
             print(f"[Chart:{label}] WARN: {w}")
         return result
     png_url = getattr(result, "download_url", None)
-    editor_url = getattr(result, "editor_download_url", None)
     if png_url:
         print(f"[Chart:{label}] PNG: {png_url}")
-    if editor_url:
-        print(f"[Chart:{label}] Chart Center: {editor_url}")
     for w in getattr(result, "warnings", []) or []:
         print(f"[Chart:{label}] WARN: {w}")
     return result
