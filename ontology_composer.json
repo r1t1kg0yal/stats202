@@ -1,0 +1,6585 @@
+{
+  "meta": {
+    "version": "0.2.3",
+    "as_of": "2026-05-10",
+    "purpose": "Concept-first SFC macro ontology. The ontology is organized by economic objects and transformations: countries, sectors, stocks, flows, prices/rates/FX, ratios, identities, modifiers, and chart recipes. Data providers are leaf-level bindings under concepts only.",
+    "organization_rule": "Never organize this file by dataset, provider, API, database, or source. Sources answer how to populate a concept; they do not define the concept tree.",
+    "single_concept_home": "Each economic object lives in exactly one of stocks, flows, or prices_rates_fx. Growth rates, cross-country gaps, and other transforms are modifiers on that home concept (or a single derived ratio identity), not parallel primitives under another section.",
+    "formula_modifier_calls": "In ratio formula strings, modifier(concept_id) denotes the pipeline applying that modifier to the canonical concept (e.g. yoy(real_gdp_local_chained)). Names align with modifiers.stock_flow_modifiers keys unless a ratio-only modifier is documented for ratio concepts.",
+    "population_split": {
+      "bis": "populated_here_as_source_bindings_inside_concepts",
+      "haver": "prism_populates_haver_codes_inside_existing_concept_bindings",
+      "raw_time_series": "not_stored_here"
+    },
+    "sources_used": [
+      "projects/macro/ontology/core_piece.md",
+      "projects/macro/ontology/scratch/conventions.md",
+      "projects/macro/ontology/scratch/ratios.md",
+      "projects/macro/dev/universe/countries.md",
+      "projects/macro/dev/universe/ratios.md",
+      "projects/macro/dev/universe/diffs.md",
+      "projects/apis/apis-payload/modules/bis_data_guide.md",
+      "projects/apis/apis-payload/clients/bis_client.py"
+    ]
+  },
+  "countries": {
+    "US": {
+      "name": "United States",
+      "currency": "USD",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "US",
+        "if_ref_area": "US",
+        "gl_ref_area": "US"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "EA20": {
+      "name": "Euro area aggregate",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "XM",
+        "if_ref_area": "5C",
+        "gl_ref_area": "XM"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "JP": {
+      "name": "Japan",
+      "currency": "JPY",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "JP",
+        "if_ref_area": "JP",
+        "gl_ref_area": "JP"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "UK": {
+      "name": "United Kingdom",
+      "currency": "GBP",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "GB",
+        "if_ref_area": "GB",
+        "gl_ref_area": "GB"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "DE": {
+      "name": "Germany",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "DE",
+        "if_ref_area": "DE",
+        "gl_ref_area": "DE"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "FR": {
+      "name": "France",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "FR",
+        "if_ref_area": "FR",
+        "gl_ref_area": "FR"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "IT": {
+      "name": "Italy",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "IT",
+        "if_ref_area": "IT",
+        "gl_ref_area": "IT"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "CH": {
+      "name": "Switzerland",
+      "currency": "CHF",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "CH",
+        "if_ref_area": "CH",
+        "gl_ref_area": "CH"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "ES": {
+      "name": "Spain",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "ES",
+        "if_ref_area": "ES",
+        "gl_ref_area": "ES"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "NL": {
+      "name": "Netherlands",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "NL",
+        "if_ref_area": "NL",
+        "gl_ref_area": "NL"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "AU": {
+      "name": "Australia",
+      "currency": "AUD",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "AU",
+        "if_ref_area": "AU",
+        "gl_ref_area": "AU"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "CA": {
+      "name": "Canada",
+      "currency": "CAD",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "CA",
+        "if_ref_area": "CA",
+        "gl_ref_area": "CA"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "CN": {
+      "name": "China",
+      "currency": "CNY",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "CN",
+        "if_ref_area": "CN",
+        "gl_ref_area": "CN"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "IN": {
+      "name": "India",
+      "currency": "INR",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "IN",
+        "if_ref_area": "IN",
+        "gl_ref_area": "IN"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "BR": {
+      "name": "Brazil",
+      "currency": "BRL",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "BR",
+        "if_ref_area": "BR",
+        "gl_ref_area": "BR"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "KR": {
+      "name": "South Korea",
+      "currency": "KRW",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "KR",
+        "if_ref_area": "KR",
+        "gl_ref_area": "KR"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "AT": {
+      "name": "Austria",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "AT",
+        "if_ref_area": "AT",
+        "gl_ref_area": "AT"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "NO": {
+      "name": "Norway",
+      "currency": "NOK",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "NO",
+        "if_ref_area": "NO",
+        "gl_ref_area": "NO"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "SE": {
+      "name": "Sweden",
+      "currency": "SEK",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "SE",
+        "if_ref_area": "SE",
+        "gl_ref_area": "SE"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "FI": {
+      "name": "Finland",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "FI",
+        "if_ref_area": "FI",
+        "gl_ref_area": "FI"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "DK": {
+      "name": "Denmark",
+      "currency": "DKK",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "DK",
+        "if_ref_area": "DK",
+        "gl_ref_area": "DK"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "PT": {
+      "name": "Portugal",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "PT",
+        "if_ref_area": "PT",
+        "gl_ref_area": "PT"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "GR": {
+      "name": "Greece",
+      "currency": "EUR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "GR",
+        "if_ref_area": "GR",
+        "gl_ref_area": "GR"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "NZ": {
+      "name": "New Zealand",
+      "currency": "NZD",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "NZ",
+        "if_ref_area": "NZ",
+        "gl_ref_area": "NZ"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "MX": {
+      "name": "Mexico",
+      "currency": "MXN",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "MX",
+        "if_ref_area": "MX",
+        "gl_ref_area": "MX"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "TR": {
+      "name": "Turkey",
+      "currency": "TRY",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "TR",
+        "if_ref_area": "TR",
+        "gl_ref_area": "TR"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "ZA": {
+      "name": "South Africa",
+      "currency": "ZAR",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "ZA",
+        "if_ref_area": "ZA",
+        "gl_ref_area": "ZA"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "ID": {
+      "name": "Indonesia",
+      "currency": "IDR",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "ID",
+        "if_ref_area": "ID",
+        "gl_ref_area": "ID"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "MY": {
+      "name": "Malaysia",
+      "currency": "MYR",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "MY",
+        "if_ref_area": "MY",
+        "gl_ref_area": "MY"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "TH": {
+      "name": "Thailand",
+      "currency": "THB",
+      "sfc31": true,
+      "fx21": true,
+      "bis": {
+        "area": "TH",
+        "if_ref_area": "TH",
+        "gl_ref_area": "TH"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "VN": {
+      "name": "Vietnam",
+      "currency": "VND",
+      "sfc31": true,
+      "fx21": false,
+      "bis": {
+        "area": "VN",
+        "if_ref_area": "VN",
+        "gl_ref_area": "VN"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "PL": {
+      "name": "Poland",
+      "currency": "PLN",
+      "sfc31": false,
+      "fx21": true,
+      "bis": {
+        "area": "PL",
+        "if_ref_area": "PL",
+        "gl_ref_area": "PL"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    },
+    "HU": {
+      "name": "Hungary",
+      "currency": "HUF",
+      "sfc31": false,
+      "fx21": true,
+      "bis": {
+        "area": "HU",
+        "if_ref_area": "HU",
+        "gl_ref_area": "HU"
+      },
+      "haver": {
+        "status": "prism_populate"
+      }
+    }
+  },
+  "regions": {
+    "SFC31": [
+      "US",
+      "EA20",
+      "JP",
+      "UK",
+      "DE",
+      "FR",
+      "IT",
+      "CH",
+      "ES",
+      "NL",
+      "AU",
+      "CA",
+      "CN",
+      "IN",
+      "BR",
+      "KR",
+      "AT",
+      "NO",
+      "SE",
+      "FI",
+      "DK",
+      "PT",
+      "GR",
+      "NZ",
+      "MX",
+      "TR",
+      "ZA",
+      "ID",
+      "MY",
+      "TH",
+      "VN"
+    ],
+    "FX21": [
+      "US",
+      "EA20",
+      "JP",
+      "UK",
+      "CH",
+      "CA",
+      "AU",
+      "NZ",
+      "SE",
+      "NO",
+      "MX",
+      "TR",
+      "BR",
+      "CN",
+      "KR",
+      "IN",
+      "ID",
+      "ZA",
+      "PL",
+      "HU",
+      "TH"
+    ],
+    "DM": [
+      "US",
+      "EA20",
+      "JP",
+      "UK",
+      "DE",
+      "FR",
+      "IT",
+      "CH",
+      "ES",
+      "NL",
+      "AU",
+      "CA",
+      "AT",
+      "NO",
+      "SE",
+      "FI",
+      "DK",
+      "PT",
+      "GR",
+      "NZ"
+    ],
+    "EM": [
+      "CN",
+      "IN",
+      "BR",
+      "KR",
+      "MX",
+      "TR",
+      "ZA",
+      "ID",
+      "MY",
+      "TH",
+      "VN",
+      "PL",
+      "HU"
+    ],
+    "G7": [
+      "US",
+      "JP",
+      "UK",
+      "DE",
+      "FR",
+      "IT",
+      "CA"
+    ],
+    "NORDICS": [
+      "NO",
+      "SE",
+      "FI",
+      "DK"
+    ],
+    "ASIA_EM": [
+      "CN",
+      "IN",
+      "KR",
+      "ID",
+      "MY",
+      "TH",
+      "VN"
+    ],
+    "LATAM": [
+      "BR",
+      "MX"
+    ],
+    "COMMODITY_BLOC": [
+      "AU",
+      "NZ",
+      "NO",
+      "CA",
+      "BR",
+      "MX",
+      "ZA",
+      "ID"
+    ],
+    "SAFE_HAVEN_BLOC": [
+      "JP",
+      "CH"
+    ],
+    "FRAGILITY_BLOC": [
+      "TR",
+      "HU",
+      "ZA",
+      "BR"
+    ]
+  },
+  "sectors": {
+    "HH": {
+      "label": "Households and NPISH"
+    },
+    "NFC": {
+      "label": "Non-financial corporations"
+    },
+    "FC": {
+      "label": "Financial corporations"
+    },
+    "FC_banks": {
+      "label": "Banks",
+      "parent": "FC"
+    },
+    "FC_OFIs": {
+      "label": "Other financial institutions and non-bank financial intermediaries",
+      "parent": "FC"
+    },
+    "GG": {
+      "label": "General government"
+    },
+    "CB": {
+      "label": "Central bank"
+    },
+    "RoW": {
+      "label": "Rest of world"
+    },
+    "TE": {
+      "label": "Total economy"
+    },
+    "Market": {
+      "label": "Market asset or securities universe"
+    }
+  },
+  "modifiers": {
+    "stock_flow_modifiers": {
+      "level": {
+        "definition": "Raw source value.",
+        "requires": []
+      },
+      "yoy": {
+        "definition": "Year-over-year growth rate.",
+        "requires": [
+          "level",
+          "frequency_alignment"
+        ]
+      },
+      "change": {
+        "definition": "Arithmetic change over a configured window.",
+        "requires": [
+          "level",
+          "lookback"
+        ]
+      },
+      "acceleration": {
+        "definition": "Change in the previous change or growth rate.",
+        "requires": [
+          "change",
+          "second_lookback"
+        ]
+      },
+      "real": {
+        "definition": "Nominal value deflated by the concept-specific deflator.",
+        "requires": [
+          "deflator_concept"
+        ]
+      },
+      "share_gdp": {
+        "definition": "Concept divided by nominal GDP.",
+        "requires": [
+          "nominal_gdp_local_or_common_currency"
+        ]
+      },
+      "share_world": {
+        "definition": "Country value divided by world aggregate.",
+        "requires": [
+          "currency_conversion_policy",
+          "world_member_set"
+        ]
+      },
+      "share_region": {
+        "definition": "Country value divided by regional aggregate.",
+        "requires": [
+          "currency_conversion_policy",
+          "region_member_set"
+        ]
+      },
+      "currency_converted": {
+        "definition": "Local-currency value converted to target currency.",
+        "requires": [
+          "fx_series",
+          "fx_timing"
+        ]
+      }
+    },
+    "ratio_modifiers": {
+      "level": {
+        "definition": "Ratio value."
+      },
+      "change": {
+        "definition": "Point change in ratio value over a configured window."
+      },
+      "acceleration": {
+        "definition": "Second difference in ratio value."
+      },
+      "country_diff": {
+        "definition": "Ratio(country_a) - Ratio(country_b)."
+      },
+      "us_diff": {
+        "definition": "Ratio(country) - Ratio(US)."
+      },
+      "global_diff": {
+        "definition": "Ratio(country) - weighted global ratio."
+      },
+      "region_diff": {
+        "definition": "Ratio(country) - weighted regional ratio."
+      },
+      "zscore": {
+        "definition": "Standardized ratio relative to its own history or cross-section."
+      }
+    },
+    "currency_conversion": {
+      "local_currency_stock": {
+        "fx_timing": "end_of_period",
+        "formula": "value_usd_t = value_local_t / local_per_usd_fx_t"
+      },
+      "local_currency_flow": {
+        "fx_timing": "period_average",
+        "formula": "value_usd_period = value_local_period / average_local_per_usd_fx_period"
+      },
+      "ratio_or_percent": {
+        "fx_timing": "none_for_ratio_value",
+        "formula": "aggregate_ratio = weighted_average(country_ratio, weights_in_common_currency)"
+      },
+      "source_native_percent_of_gdp": {
+        "fx_timing": "none",
+        "formula": "use_source_value"
+      },
+      "instrument_denomination": {
+        "fx_timing": "not_conversion",
+        "formula": "dimension identifies contract or claim denomination, not aggregation currency"
+      }
+    },
+    "default_aggregation": {
+      "stocks": "sum_converted_levels",
+      "flows": "sum_period_average_converted_flows",
+      "rates": "gdp_weighted_average_unless_domain_specific",
+      "ratios": "gdp_weighted_average_unless_ratio_specifies_other_weight",
+      "returns": "equal_or_market_cap_weighted"
+    }
+  },
+  "stocks": {
+    "hh_total_financial_assets": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Financial assets held by households and NPISH.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_currency_deposits": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household currency and deposit assets.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_equity_holdings": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Direct and indirect household equity holdings.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_debt_securities_holdings": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household debt securities holdings.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_pension_insurance_entitlements": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household pension and insurance entitlements.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_nonfinancial_assets": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household real estate, durables, and other nonfinancial assets.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_real_estate": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household residential real estate at market value.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_consumer_durables": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household vehicles, appliances, furniture, and other durables.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_loans_liabilities_total": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Total household loan liabilities.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        },
+        "bis": {
+          "status": "mapped_as_ratio_or_level",
+          "concept_hint": "hh_debt_gdp uses WS_TC with TC_BORROWERS=H"
+        }
+      }
+    },
+    "hh_home_mortgages": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household mortgage debt outstanding.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_consumer_credit": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household non-mortgage consumer credit.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_net_worth": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household total assets minus total liabilities.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_net_financial_wealth": {
+      "sector": "HH",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Household financial assets minus liabilities, excluding real estate.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_total_assets": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Total assets of non-financial corporations.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_total_liabilities": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Total liabilities of non-financial corporations.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_outstanding_debt": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Loans, bonds, and commercial paper owed by NFCs.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        },
+        "bis": {
+          "status": "mapped_as_ratio_or_level",
+          "concept_hint": "nfc_debt_gdp uses WS_TC with TC_BORROWERS=N"
+        }
+      }
+    },
+    "nfc_loans_outstanding": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Bank and non-bank loans outstanding to NFCs.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_debt_securities_liability": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Corporate bonds and commercial paper outstanding.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        },
+        "bis": {
+          "status": "mapped_parameterized",
+          "flow_id": "WS_DEBT_SEC2_PUB",
+          "dimension_map": {
+            "FREQ": "Q",
+            "ISSUER_RES": {
+              "parameter": "country",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "ISSUER_BUS_IMM": {
+              "parameter": "issuer_sector",
+              "default": "NFC_or_all_nonfinancial_when_available"
+            },
+            "MEASURE": {
+              "wildcard": true
+            }
+          }
+        }
+      }
+    },
+    "nfc_listed_equity": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Market capitalization of listed non-financial corporations.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_tangible_assets": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "NFC tangible capital stock.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_inventories": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "NFC inventories.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_cash_holdings": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "NFC cash and short-term investments.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_total_assets": {
+      "sector": "FC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Total assets of financial corporations.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_loans_assets": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Loans held as assets by banks.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_securities_assets": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Securities held by banks.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_reserves_at_central_bank": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Bank reserves held at the central bank.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_deposits_liability": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Deposit liabilities of banks.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_uninsured_deposits": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Bank deposits above insurance limits.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_cet1_capital": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Common Equity Tier 1 capital.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_rwa": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Risk-weighted assets.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_total_outstanding_debt": {
+      "sector": "GG",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Gross general government debt outstanding.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        },
+        "bis": {
+          "status": "candidate",
+          "concept_hint": "national_debt_securities_outstanding can proxy securities component"
+        }
+      }
+    },
+    "gg_marketable_debt": {
+      "sector": "GG",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Marketable government securities outstanding.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        },
+        "bis": {
+          "status": "mapped_parameterized",
+          "flow_id": "WS_NA_SEC_DSS",
+          "dimension_map": {
+            "FREQ": "Q",
+            "REF_AREA": {
+              "parameter": "country",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "REF_SECTOR": "government_when_available",
+            "INSTR_ASSET": "debt_securities_when_available"
+          }
+        }
+      }
+    },
+    "gg_held_by_public_debt": {
+      "sector": "GG",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Government debt held by the public, net of intragovernmental holdings.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_nonfinancial_assets": {
+      "sector": "GG",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Public non-financial assets such as infrastructure and land.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "iip_assets": {
+      "sector": "RoW",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Foreign assets owned by domestic residents.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "iip_liabilities": {
+      "sector": "RoW",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Domestic assets owned by foreign residents.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "net_iip": {
+      "sector": "RoW",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "IIP assets minus IIP liabilities.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "foreign_reserves": {
+      "sector": "CB",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Official foreign reserve assets.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "central_bank_balance_sheet": {
+      "sector": "CB",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Central bank total assets.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        },
+        "bis": {
+          "status": "mapped_parameterized",
+          "flow_id": "WS_CBTA",
+          "dimension_map": {
+            "FREQ": "Q",
+            "REF_AREA": {
+              "parameter": "country",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "COMP_METHOD": {
+              "wildcard": true
+            },
+            "UNIT_MEASURE": {
+              "wildcard": true
+            },
+            "CURRENCY": {
+              "wildcard": true
+            },
+            "TRANSFORMATION": {
+              "wildcard": true
+            }
+          }
+        }
+      }
+    },
+    "central_bank_holdings_of_govt_debt": {
+      "sector": "CB",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Central bank holdings of government debt.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "monetary_base_M0": {
+      "sector": "CB",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Currency plus reserves / high-powered money.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "m1": {
+      "sector": "TE",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Narrow money aggregate.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "m2": {
+      "sector": "TE",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Broad money aggregate M2.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "m3": {
+      "sector": "TE",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Broad money aggregate M3 where reported.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "total_domestic_debt": {
+      "sector": "TE",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "HH + NFC + FC + GG domestic debt.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "total_credit_to_nfcs_bis": {
+      "sector": "HH+NFC",
+      "unit_kind": "currency_or_percent",
+      "timing": "end_of_period",
+      "definition": "BIS total credit to the non-financial sector.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_TC",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "TC_BORROWERS": "C",
+            "TC_LENDERS": "A",
+            "VALUATION": "M",
+            "UNIT_TYPE": {
+              "parameter": "unit",
+              "default": "770"
+            },
+            "TC_ADJUST": "A"
+          }
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "bank_credit_to_nfcs_bis": {
+      "sector": "HH+NFC",
+      "unit_kind": "currency_or_percent",
+      "timing": "end_of_period",
+      "definition": "BIS bank credit to private/non-financial sector where available.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_TC",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "TC_BORROWERS": "P",
+            "TC_LENDERS": "B",
+            "VALUATION": "M",
+            "UNIT_TYPE": {
+              "parameter": "unit",
+              "default": "770"
+            },
+            "TC_ADJUST": "A"
+          }
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "productive_capital_stock": {
+      "sector": "TE",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Reproducible productive capital stock.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "total_market_cap": {
+      "sector": "Market",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "All listed equity market capitalization.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "total_bond_market": {
+      "sector": "Market",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Total bond market outstanding.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        },
+        "bis": {
+          "status": "mapped_parameterized",
+          "flow_id": "WS_DEBT_SEC2_PUB",
+          "dimension_map": {
+            "FREQ": "Q",
+            "ISSUER_RES": {
+              "parameter": "country",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "MEASURE": {
+              "wildcard": true
+            }
+          }
+        }
+      }
+    },
+    "fc_banks_cross_border_claims": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Banks' locational cross-border claims.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_LBS_D_PUB",
+          "dimension_map": {
+            "FREQ": "Q",
+            "L_MEASURE": "S",
+            "L_POSITION": "C",
+            "L_INSTR": "A",
+            "L_DENOM": {
+              "parameter": "denomination_currency",
+              "default": "TO1"
+            },
+            "L_CURR_TYPE": {
+              "parameter": "currency_type",
+              "default": "A"
+            },
+            "L_PARENT_CTY": "5J",
+            "L_REP_BANK_TYPE": "A",
+            "L_REP_CTY": {
+              "parameter": "reporter_country",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "L_CP_SECTOR": {
+              "parameter": "counterparty_sector",
+              "default": "A"
+            },
+            "L_CP_COUNTRY": {
+              "parameter": "counterparty_country",
+              "default": "5J"
+            },
+            "L_POS_TYPE": "N"
+          },
+          "example_key": "Q.S.C.A.TO1.A.5J.A.US.A.5J.N"
+        }
+      }
+    },
+    "fc_banks_cross_border_liabilities": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Banks' locational cross-border liabilities.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_LBS_D_PUB",
+          "dimension_map": {
+            "FREQ": "Q",
+            "L_MEASURE": "S",
+            "L_POSITION": "L",
+            "L_INSTR": "A",
+            "L_DENOM": {
+              "parameter": "denomination_currency",
+              "default": "TO1"
+            },
+            "L_CURR_TYPE": {
+              "parameter": "currency_type",
+              "default": "A"
+            },
+            "L_PARENT_CTY": "5J",
+            "L_REP_BANK_TYPE": "A",
+            "L_REP_CTY": {
+              "parameter": "reporter_country",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "L_CP_SECTOR": {
+              "parameter": "counterparty_sector",
+              "default": "A"
+            },
+            "L_CP_COUNTRY": {
+              "parameter": "counterparty_country",
+              "default": "5J"
+            },
+            "L_POS_TYPE": "N"
+          }
+        }
+      }
+    },
+    "fc_banks_international_claims": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "International claims in locational or consolidated banking statistics.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_LBS_D_PUB",
+          "dimension_map": {
+            "FREQ": "Q",
+            "L_MEASURE": "S",
+            "L_POSITION": "I",
+            "L_INSTR": "A",
+            "L_DENOM": "TO1",
+            "L_CURR_TYPE": "A",
+            "L_PARENT_CTY": "5J",
+            "L_REP_BANK_TYPE": "A",
+            "L_REP_CTY": {
+              "parameter": "reporter_country",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "L_CP_SECTOR": "A",
+            "L_CP_COUNTRY": {
+              "parameter": "counterparty_country",
+              "default": "5J"
+            },
+            "L_POS_TYPE": "A"
+          }
+        }
+      }
+    },
+    "fc_banks_foreign_claims_immediate": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Consolidated foreign claims on immediate-counterparty basis.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_CBS_PUB",
+          "dimension_map": {
+            "FREQ": "Q",
+            "L_MEASURE": "S",
+            "L_REP_CTY": {
+              "parameter": "reporter_country",
+              "default": "5A"
+            },
+            "CBS_BANK_TYPE": "4R",
+            "CBS_BASIS": "F",
+            "L_POSITION": "I",
+            "L_INSTR": "A",
+            "REM_MATURITY": "A",
+            "CURR_TYPE_BOOK": "TO1",
+            "L_CP_SECTOR": "A",
+            "L_CP_COUNTRY": {
+              "parameter": "counterparty_country"
+            }
+          },
+          "example_key": "Q.S.5A.4R.F.I.A.A.TO1.A.TR"
+        }
+      }
+    },
+    "fc_banks_foreign_claims_guarantor": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Consolidated foreign claims on guarantor / ultimate-risk basis.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_CBS_PUB",
+          "dimension_map": {
+            "FREQ": "Q",
+            "L_MEASURE": "S",
+            "L_REP_CTY": {
+              "parameter": "reporter_country",
+              "default": "5A"
+            },
+            "CBS_BANK_TYPE": "4R",
+            "CBS_BASIS": "U",
+            "L_POSITION": "C",
+            "L_INSTR": "A",
+            "REM_MATURITY": "A",
+            "CURR_TYPE_BOOK": "TO1",
+            "L_CP_SECTOR": "A",
+            "L_CP_COUNTRY": {
+              "parameter": "counterparty_country"
+            }
+          },
+          "quirk": "CBS_BASIS=U uses L_POSITION=C rather than I."
+        }
+      }
+    },
+    "global_liquidity_credit_usd": {
+      "sector": "FC_banks",
+      "unit_kind": "usd_level",
+      "timing": "end_of_period",
+      "definition": "BIS global USD liquidity credit to selected borrower sectors/regions.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_GLI",
+          "dimension_map": {
+            "FREQ": "Q",
+            "CURR_DENOM": "USD",
+            "BORROWERS_CTY": {
+              "parameter": "borrower_region_or_country",
+              "default": "3P"
+            },
+            "BORROWERS_SECTOR": {
+              "parameter": "borrower_sector",
+              "default": "N"
+            },
+            "LENDERS_SECTOR": "A",
+            "L_POS_TYPE": "I",
+            "L_INSTR": "B",
+            "UNIT_MEASURE": "USD"
+          },
+          "example_key": "Q.USD.3P.N.A.I.B.USD"
+        }
+      }
+    },
+    "otc_derivatives_notional_outstanding": {
+      "sector": "FC",
+      "unit_kind": "notional_currency_level",
+      "timing": "end_of_period",
+      "definition": "OTC derivatives notional outstanding.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_OTC_DERIV2",
+          "dimension_map": {
+            "FREQ": "H",
+            "DER_TYPE": "A",
+            "DER_INSTR": {
+              "parameter": "instrument",
+              "default": "A"
+            },
+            "DER_RISK": {
+              "parameter": "risk",
+              "default": "A"
+            },
+            "DER_REP_CTY": {
+              "wildcard": true
+            },
+            "DER_SECTOR_CPY": {
+              "wildcard": true
+            },
+            "DER_CPC": {
+              "wildcard": true
+            },
+            "DER_SECTOR_UDL": {
+              "wildcard": true
+            },
+            "DER_CURR_LEG1": {
+              "wildcard": true
+            },
+            "DER_CURR_LEG2": {
+              "wildcard": true
+            },
+            "DER_ISSUE_MAT": {
+              "wildcard": true
+            },
+            "DER_RATING": {
+              "wildcard": true
+            },
+            "DER_EX_METHOD": {
+              "wildcard": true
+            },
+            "DER_BASIS": {
+              "wildcard": true
+            }
+          },
+          "example_key": "H.A..A.........."
+        }
+      }
+    },
+    "otc_derivatives_gross_market_value": {
+      "sector": "FC",
+      "unit_kind": "market_value_currency_level",
+      "timing": "end_of_period",
+      "definition": "OTC derivatives gross market value.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_OTC_DERIV2",
+          "dimension_map": {
+            "FREQ": "H",
+            "DER_TYPE": "D",
+            "DER_INSTR": {
+              "parameter": "instrument",
+              "default": "A"
+            },
+            "DER_RISK": {
+              "parameter": "risk",
+              "default": "A"
+            }
+          }
+        }
+      }
+    },
+    "otc_derivatives_gross_credit_exposure": {
+      "sector": "FC",
+      "unit_kind": "credit_exposure_currency_level",
+      "timing": "end_of_period",
+      "definition": "OTC derivatives gross credit exposure.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_OTC_DERIV2",
+          "dimension_map": {
+            "FREQ": "H",
+            "DER_TYPE": "H",
+            "DER_INSTR": {
+              "parameter": "instrument",
+              "default": "A"
+            },
+            "DER_RISK": {
+              "parameter": "risk",
+              "default": "A"
+            }
+          }
+        }
+      }
+    },
+    "international_debt_securities_outstanding": {
+      "sector": "Market",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "International debt securities outstanding by issuer residence/nationality/business/currency.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_DEBT_SEC2_PUB",
+          "dimension_map": {
+            "FREQ": "Q",
+            "ISSUER_RES": {
+              "parameter": "issuer_residence",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "ISSUER_NAT": {
+              "wildcard": true
+            },
+            "ISSUER_BUS_IMM": {
+              "wildcard": true
+            },
+            "ISSUER_BUS_ULT": {
+              "wildcard": true
+            },
+            "MARKET": {
+              "wildcard": true
+            },
+            "ISSUE_TYPE": {
+              "wildcard": true
+            },
+            "ISSUE_CUR_GROUP": {
+              "wildcard": true
+            },
+            "ISSUE_CUR": {
+              "wildcard": true
+            },
+            "ISSUE_OR_MAT": {
+              "wildcard": true
+            },
+            "ISSUE_RE_MAT": {
+              "wildcard": true
+            },
+            "ISSUE_RATE": {
+              "wildcard": true
+            },
+            "ISSUE_RISK": {
+              "wildcard": true
+            },
+            "ISSUE_COL": {
+              "wildcard": true
+            },
+            "MEASURE": {
+              "wildcard": true
+            }
+          },
+          "example_key": "Q.US............."
+        },
+        "haver": {
+          "status": "prism_populate_if_better_country_series_exists"
+        }
+      }
+    },
+    "nfc_net_worth": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Non-financial corporate sector net worth (assets minus liabilities).",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_intangible_assets": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Non-financial corporate intangible assets including intellectual property and goodwill.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_tangible_and_intangible_assets": {
+      "sector": "NFC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Published aggregate of NFC tangible and intangible assets when reported jointly, or constructible sum for Tobin q variants.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_net_worth": {
+      "sector": "FC",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Financial corporate sector net worth.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_repo_assets": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Financial corporation securities resale or repo claims (cash lending collateralized by securities).",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_repo_liabilities": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Financial corporation repo or securities borrowing liabilities.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_money_market_fund_shares": {
+      "sector": "FC_OFIs",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Money market fund shares or units outstanding (liability of MMFs, asset of holders).",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_short_term_debt_outstanding": {
+      "sector": "GG",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "General government debt due within one year or short-term instruments such as bills.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_long_term_debt_outstanding": {
+      "sector": "GG",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "General government long-term debt excluding short-dated bills when separately reported.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "population_total": {
+      "sector": "TE",
+      "unit_kind": "index",
+      "timing": "end_of_period",
+      "definition": "Total resident population level; source units typically persons or thousands of persons as published.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "population_working_age": {
+      "sector": "TE",
+      "unit_kind": "index",
+      "timing": "end_of_period",
+      "definition": "Working-age population per national definition; source units typically persons or thousands of persons as published.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "employment_headcount": {
+      "sector": "TE",
+      "unit_kind": "index",
+      "timing": "end_of_period",
+      "definition": "Total employment or filled jobs headcount as published by labor accounts.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "labor_force_headcount": {
+      "sector": "TE",
+      "unit_kind": "index",
+      "timing": "end_of_period",
+      "definition": "Labor force (employed plus unemployed seeking work) headcount.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "unemployment_headcount": {
+      "sector": "TE",
+      "unit_kind": "index",
+      "timing": "end_of_period",
+      "definition": "Unemployed persons under labor-force survey definition.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "dwelling_count_residential": {
+      "sector": "HH",
+      "unit_kind": "index",
+      "timing": "end_of_period",
+      "definition": "Stock of residential dwellings or housing units.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "capital_stock_net_fixed_volume": {
+      "sector": "TE",
+      "unit_kind": "real_flow_or_volume_index",
+      "timing": "end_of_period",
+      "definition": "Net fixed capital stock in volume terms or constant prices from perpetual inventory or national balance sheet.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "central_bank_other_deferred_assets": {
+      "sector": "CB",
+      "unit_kind": "currency_level",
+      "timing": "end_of_period",
+      "definition": "Central bank other assets including deferred-asset positions arising from QE-related losses when capturable.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "share_world",
+        "share_region",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    }
+  },
+  "flows": {
+    "nominal_gdp_local": {
+      "sector": "TE",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Headline nominal GDP in local currency.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "currency_converted",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nominal_gdp_usd": {
+      "sector": "TE",
+      "unit_kind": "usd_flow",
+      "timing": "period",
+      "definition": "Nominal GDP converted to USD.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_or_derive_from_nominal_gdp_local_and_fx"
+        }
+      }
+    },
+    "real_gdp_local_chained": {
+      "sector": "TE",
+      "unit_kind": "real_flow_or_volume_index",
+      "timing": "period",
+      "definition": "Real GDP in chained-volume or constant-price terms.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "acceleration",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "private_consumption": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Household/private consumption expenditure.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "government_consumption_G": {
+      "sector": "GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Government consumption and gross investment in GDP accounting.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gross_fixed_capital_formation_I": {
+      "sector": "TE",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Gross fixed capital formation.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "inventory_investment": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Change in inventories / inventory investment.",
+      "modifiers_allowed": [
+        "level",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "exports_X": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Goods and services exports.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "imports_M": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Goods and services imports.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "compensation_of_employees": {
+      "sector": "TE",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Compensation of employees.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "mixed_income": {
+      "sector": "HH+NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Mixed income of unincorporated business.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gross_operating_surplus": {
+      "sector": "NFC+FC+GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Gross operating surplus.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "net_operating_surplus": {
+      "sector": "NFC+FC+GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Net operating surplus after depreciation.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "consumption_of_fixed_capital": {
+      "sector": "TE",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Depreciation / consumption of fixed capital.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "taxes_on_production_and_imports": {
+      "sector": "GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Taxes on production and imports.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_disposable_income": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Household disposable income.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_gross_saving": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Household gross saving.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_residential_investment": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Household residential investment.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_gross_operating_surplus": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "NFC gross operating surplus.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_dividends_paid": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Dividends paid by NFCs.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_buybacks": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Net equity retired through buybacks.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_retained_earnings": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "NFC retained earnings.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_total_revenue": {
+      "sector": "GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Government total revenue.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_total_outlays": {
+      "sector": "GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Government spending including transfers.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_primary_balance": {
+      "sector": "GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Revenue minus non-interest outlays.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_interest_expense": {
+      "sector": "GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Government net interest payments.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nl_households": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Household net lending / financial balance.",
+      "modifiers_allowed": [
+        "level",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nl_nfc": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "NFC net lending / financial balance.",
+      "modifiers_allowed": [
+        "level",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nl_financial_corps": {
+      "sector": "FC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Financial corporations net lending.",
+      "modifiers_allowed": [
+        "level",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nl_government": {
+      "sector": "GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Government net lending; fiscal balance sign convention.",
+      "modifiers_allowed": [
+        "level",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nl_rest_of_world": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Rest-of-world net lending against domestic economy.",
+      "modifiers_allowed": [
+        "level",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "current_account_balance": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Current-account balance.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "goods_trade_balance": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Goods trade balance.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "services_trade_balance": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Services trade balance.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "primary_income_balance": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Primary income balance.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "secondary_income_balance": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Secondary income balance.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "financial_account_balance": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Financial account balance.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fdi_inflows": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Foreign direct investment inflows.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted",
+        "share_world"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "portfolio_inflows": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Portfolio inflows into equity and debt.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted",
+        "share_world"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "net_interest_income": {
+      "sector": "FC_banks",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Bank interest received minus interest paid.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "net_charge_offs": {
+      "sector": "FC_banks",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Realized bank credit losses.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "provisions_for_credit_losses": {
+      "sector": "FC_banks",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Bank provisions for credit losses.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "net_bank_income": {
+      "sector": "FC_banks",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Headline bank net income.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "bank_dividends": {
+      "sector": "FC_banks",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Bank dividends paid.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "lbs_fx_adjusted_cross_border_flow": {
+      "sector": "FC_banks",
+      "unit_kind": "currency_flow",
+      "timing": "period",
+      "definition": "BIS LBS FX-adjusted cross-border flow.",
+      "modifiers_allowed": [
+        "level",
+        "share_gdp",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_LBS_D_PUB",
+          "dimension_map": {
+            "FREQ": "Q",
+            "L_MEASURE": "F",
+            "L_POSITION": "C",
+            "L_INSTR": "A",
+            "L_DENOM": {
+              "parameter": "denomination_currency",
+              "default": "TO1"
+            },
+            "L_CURR_TYPE": {
+              "parameter": "currency_type",
+              "default": "A"
+            },
+            "L_PARENT_CTY": "5J",
+            "L_REP_BANK_TYPE": "A",
+            "L_REP_CTY": {
+              "parameter": "reporter_country",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "L_CP_SECTOR": {
+              "parameter": "counterparty_sector",
+              "default": "A"
+            },
+            "L_CP_COUNTRY": {
+              "parameter": "counterparty_country",
+              "default": "5J"
+            },
+            "L_POS_TYPE": "N"
+          }
+        }
+      }
+    },
+    "otc_derivatives_turnover": {
+      "sector": "FC",
+      "unit_kind": "currency_flow",
+      "timing": "period",
+      "definition": "OTC derivatives turnover.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_world"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_DER_OTC_TOV",
+          "dimension_map": {
+            "FREQ": "A",
+            "DER_TYPE": {
+              "parameter": "turnover_type",
+              "default": "U"
+            },
+            "DER_INSTR": {
+              "parameter": "instrument",
+              "default": "A"
+            },
+            "DER_RISK": {
+              "parameter": "risk",
+              "default": "B"
+            }
+          }
+        }
+      }
+    },
+    "capital_account_balance": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Balance on the capital account excluding the financial account.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "balance_of_payments_errors_omissions": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Net errors and omissions closing the balance of payments.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "revaluation_hh": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Total household holding gains and other nominal revaluation flows affecting net worth, excluding transactions captured in saving and residential investment.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_revaluation_financial_assets": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and other revaluation on household financial assets.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_revaluation_real_estate": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and other revaluation on household residential real estate.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_ocva_financial_assets": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Other changes in volume of household financial assets not due to transactions or price revaluation.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_revaluation_total": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Aggregate holding gains and revaluation on NFC assets and liabilities from national financial accounts.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_ocva_total": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Other changes in volume for the NFC sector balance sheet.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_revaluation_total": {
+      "sector": "FC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Aggregate holding gains and revaluation on financial corporation balance sheets.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_ocva_total": {
+      "sector": "FC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Other changes in volume for the financial corporation sector.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_revaluation_debt_securities": {
+      "sector": "GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on general government debt securities outstanding.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gg_ocva_total": {
+      "sector": "GG",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Other changes in volume for the general government sector.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "row_iip_revaluation_net": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Net international investment position revaluation from price and exchange-rate changes.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "row_iip_ocva_net": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Net other changes in volume for international investment position assets and liabilities.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gross_national_saving": {
+      "sector": "TE",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Gross national saving from national accounts.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_corporate_profits_after_tax": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Non-financial corporate profits after tax and valuation adjustments, NIPA or SNA-consistent where available.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_property_income_net": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "NFC net property income (interest, distributed income, rent) received minus paid.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_equity_issuance_gross": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Gross equity issuance by non-financial corporations from financial accounts.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_net_equity_issuance": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Net equity issued by non-financial corporations after buybacks and other retirements; national financial accounts aggregate.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_debt_service_payments": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Household debt service including interest and required principal as published for DSR statistics.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "real",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "cb_net_income": {
+      "sector": "CB",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Central bank net income before distribution and remittances to government.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "cb_remittances_to_government": {
+      "sector": "CB",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Central bank profits remitted or distributed to the general government.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "cb_revaluation_of_holdings": {
+      "sector": "CB",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation flows on central bank assets and liabilities from national financial accounts.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "aggregate_hours_worked": {
+      "sector": "TE",
+      "unit_kind": "index",
+      "timing": "period",
+      "definition": "Total hours worked in the economy over the period (or index thereof).",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_revaluation_equity_securities": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on household holdings of listed and unlisted equity.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_revaluation_debt_securities_holdings": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on household debt security positions.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_revaluation_investment_funds_shares": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on household investment fund shares excluding direct equity when separately reported.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_revaluation_other_financial_assets": {
+      "sector": "HH",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on other household financial assets not classified as equity, debt securities, or fund shares.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_revaluation_equity_securities": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on NFC listed and unlisted equity positions.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_revaluation_debt_securities_holdings": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on NFC debt securities held as assets.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_revaluation_tangible_nonfinancial_assets": {
+      "sector": "NFC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on NFC tangible non-financial assets including inventories when price-driven.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_revaluation_equity_securities": {
+      "sector": "FC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on financial corporation equity security holdings.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fc_revaluation_debt_securities_holdings": {
+      "sector": "FC",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Holding gains and revaluation on financial corporation debt security holdings.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "manufacturing_or_industrial_output_volume": {
+      "sector": "TE",
+      "unit_kind": "real_flow_or_volume_index",
+      "timing": "period",
+      "definition": "Industrial or manufacturing production in volume terms.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "acceleration",
+        "share_world",
+        "share_region"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fdi_outflows": {
+      "sector": "RoW",
+      "unit_kind": "local_currency_flow",
+      "timing": "period",
+      "definition": "Foreign direct investment outflows by resident investors.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "share_gdp",
+        "currency_converted",
+        "share_world"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    }
+  },
+  "prices_rates_fx": {
+    "policy_rate_target": {
+      "primitive": "rate",
+      "sector": "CB",
+      "unit_kind": "percent",
+      "definition": "Official central-bank policy rate.",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_CBPOL",
+          "dimension_map": {
+            "FREQ": "M",
+            "REF_AREA": {
+              "parameter": "country",
+              "country_code_field": "bis.gl_ref_area"
+            }
+          },
+          "example_key": "M.US"
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "policy_rate_effective": {
+      "primitive": "rate",
+      "sector": "CB",
+      "unit_kind": "percent",
+      "definition": "Effective overnight policy rate or local equivalent.",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "secured_overnight_rate": {
+      "primitive": "rate",
+      "sector": "Market",
+      "unit_kind": "percent",
+      "definition": "Secured overnight risk-free rate such as SOFR.",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "treasury_yield_curve": {
+      "primitive": "rate",
+      "sector": "GG",
+      "unit_kind": "percent",
+      "definition": "Sovereign yield curve by tenor.",
+      "parameters": {
+        "tenor": [
+          "2Y",
+          "5Y",
+          "10Y",
+          "30Y"
+        ]
+      },
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "real_yield_curve_tips": {
+      "primitive": "rate",
+      "sector": "GG",
+      "unit_kind": "percent",
+      "definition": "Inflation-linked or real sovereign yield by tenor.",
+      "parameters": {
+        "tenor": [
+          "2Y",
+          "5Y",
+          "10Y",
+          "30Y"
+        ]
+      },
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "breakeven_inflation_curve": {
+      "primitive": "rate",
+      "sector": "Market",
+      "unit_kind": "percent",
+      "definition": "Nominal minus real sovereign yield by tenor.",
+      "parameters": {
+        "tenor": [
+          "2Y",
+          "5Y",
+          "10Y",
+          "30Y"
+        ]
+      },
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "bank_lending_rate_avg": {
+      "primitive": "rate",
+      "sector": "FC_banks",
+      "unit_kind": "percent",
+      "definition": "Average bank lending rate.",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "bank_deposit_rate_avg": {
+      "primitive": "rate",
+      "sector": "FC_banks",
+      "unit_kind": "percent",
+      "definition": "Average bank deposit rate.",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "equity_index_level": {
+      "primitive": "price",
+      "sector": "Market",
+      "unit_kind": "index",
+      "definition": "Broad local equity index level.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "real",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "house_price_index": {
+      "primitive": "index",
+      "sector": "HH",
+      "unit_kind": "index",
+      "definition": "Residential property price index.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "real",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_SPP",
+          "dimension_map": {
+            "FREQ": "Q",
+            "REF_AREA": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "VALUE": "N",
+            "UNIT_MEASURE": {
+              "wildcard": true
+            }
+          },
+          "example_key": "Q.US.N."
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "commercial_real_estate_index": {
+      "primitive": "index",
+      "sector": "Market",
+      "unit_kind": "index",
+      "definition": "Commercial property price index.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "real",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped_parameterized",
+          "flow_id": "WS_CPP",
+          "dimension_map": {
+            "FREQ": "Q",
+            "REF_AREA": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "RE_TYPE": {
+              "parameter": "property_type"
+            }
+          }
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "commodity_price_oil": {
+      "primitive": "price",
+      "sector": "Market",
+      "unit_kind": "usd_price",
+      "definition": "Oil benchmark price.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "commodity_price_gold": {
+      "primitive": "price",
+      "sector": "Market",
+      "unit_kind": "usd_price",
+      "definition": "Gold price.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "commodity_index": {
+      "primitive": "index",
+      "sector": "Market",
+      "unit_kind": "index",
+      "definition": "Broad commodity index.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "fx_spot_bilateral": {
+      "primitive": "price",
+      "sector": "TE",
+      "unit_kind": "fx_rate",
+      "definition": "Local currency per USD or configured bilateral spot rate.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "country_diff"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_XRU",
+          "dimension_map": {
+            "FREQ": "M",
+            "REF_AREA": {
+              "parameter": "country",
+              "country_code_field": "bis.if_ref_area"
+            },
+            "CURRENCY": {
+              "parameter": "base_currency",
+              "default": "USD"
+            },
+            "COLLECTION": {
+              "wildcard": true
+            }
+          },
+          "example_key": "M.US.."
+        },
+        "haver": {
+          "status": "prism_populate_for_conversion_series"
+        }
+      }
+    },
+    "nominal_effective_exchange_rate": {
+      "primitive": "index",
+      "sector": "TE",
+      "unit_kind": "index",
+      "definition": "Nominal effective exchange rate.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_EER",
+          "dimension_map": {
+            "FREQ": "M",
+            "EER_TYPE": "N",
+            "EER_BASKET": "B",
+            "REF_AREA": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            }
+          }
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "real_effective_exchange_rate": {
+      "primitive": "index",
+      "sector": "TE",
+      "unit_kind": "index",
+      "definition": "Real effective exchange rate.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_EER",
+          "dimension_map": {
+            "FREQ": "M",
+            "EER_TYPE": "R",
+            "EER_BASKET": "B",
+            "REF_AREA": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            }
+          },
+          "example_key": "M.R.B.US"
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "purchasing_power_parity_fx": {
+      "primitive": "price",
+      "sector": "TE",
+      "unit_kind": "fx_rate",
+      "definition": "Purchasing-power-parity exchange rate anchor.",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "cpi_headline": {
+      "primitive": "index",
+      "sector": "TE",
+      "unit_kind": "index",
+      "definition": "Headline CPI.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change"
+      ],
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_LONG_CPI",
+          "dimension_map": {
+            "FREQ": "M",
+            "REF_AREA": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "UNIT_MEASURE": {
+              "wildcard": true
+            }
+          },
+          "example_key": "M.US."
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "cpi_core": {
+      "primitive": "index",
+      "sector": "TE",
+      "unit_kind": "index",
+      "definition": "Core CPI excluding volatile components.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "pce_headline": {
+      "primitive": "index",
+      "sector": "TE",
+      "unit_kind": "index",
+      "definition": "Headline PCE deflator.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "pce_core": {
+      "primitive": "index",
+      "sector": "TE",
+      "unit_kind": "index",
+      "definition": "Core PCE deflator.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "gdp_deflator": {
+      "primitive": "index",
+      "sector": "TE",
+      "unit_kind": "index",
+      "definition": "GDP price deflator.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "wage_index_ahc": {
+      "primitive": "index",
+      "sector": "HH",
+      "unit_kind": "index",
+      "definition": "Average hourly earnings or similar wage index.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "real"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "inflation_expectation_or_core_inflation": {
+      "primitive": "rate",
+      "sector": "Market",
+      "unit_kind": "percent",
+      "definition": "Expected or core inflation rate used to form ex-ante real policy and market rates.",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "investment_grade_corporate_spread": {
+      "primitive": "rate",
+      "sector": "Market",
+      "unit_kind": "percentage_points",
+      "definition": "Investment-grade corporate bond yield spread over comparable-maturity government debt.",
+      "parameters": {
+        "tenor": [
+          "5Y",
+          "10Y"
+        ]
+      },
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nominal_interest_rate": {
+      "primitive": "rate",
+      "sector": "GG",
+      "unit_kind": "percent",
+      "definition": "Benchmark nominal long-term government yield used for fiscal r-g and equity risk premium scaffolding; align to sovereign 10Y when available.",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "corporate_bond_total_return_index": {
+      "primitive": "price",
+      "sector": "Market",
+      "unit_kind": "index",
+      "definition": "Investment-grade or aggregate corporate bond total return index.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "real",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "equity_implied_volatility_index": {
+      "primitive": "rate",
+      "sector": "Market",
+      "unit_kind": "percent",
+      "definition": "Implied volatility index for broad local equity market.",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "reit_index_level": {
+      "primitive": "price",
+      "sector": "Market",
+      "unit_kind": "index",
+      "definition": "Listed real estate or REIT price index.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "real",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "forward_earnings_yield_equity_market": {
+      "primitive": "rate",
+      "sector": "Market",
+      "unit_kind": "percent",
+      "definition": "Forward-looking earnings yield for broad equity market (inverse of forward P/E).",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "employment_cost_index": {
+      "primitive": "index",
+      "sector": "TE",
+      "unit_kind": "index",
+      "definition": "Employment cost index or equivalent measure of labor compensation per unit labor.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "real",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "consumer_rent_price_index": {
+      "primitive": "index",
+      "sector": "HH",
+      "unit_kind": "index",
+      "definition": "Consumer price index rent of primary residence or equivalent tenant rent sub-index.",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "real",
+        "country_diff",
+        "region_diff"
+      ],
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    }
+  },
+  "ratios": {
+    "investment_rate_gross": {
+      "theme": "aggregate_output_composition",
+      "type": "flow_flow",
+      "formula": "gross_fixed_capital_formation_I / nominal_gdp_local",
+      "sector": "TE",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "gross_national_saving_rate": {
+      "theme": "aggregate_output_composition",
+      "type": "flow_flow",
+      "formula": "gross_national_saving / nominal_gdp_local",
+      "sector": "TE",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "personal_saving_rate": {
+      "theme": "aggregate_output_composition",
+      "type": "flow_flow",
+      "formula": "hh_gross_saving / hh_disposable_income",
+      "sector": "HH",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "personal_consumption_share": {
+      "theme": "aggregate_output_composition",
+      "type": "flow_flow",
+      "formula": "private_consumption / nominal_gdp_local",
+      "sector": "HH",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "government_spending_share": {
+      "theme": "aggregate_output_composition",
+      "type": "flow_flow",
+      "formula": "government_consumption_G / nominal_gdp_local",
+      "sector": "GG",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "net_exports_share": {
+      "theme": "aggregate_output_composition",
+      "type": "flow_flow",
+      "formula": "(exports_X - imports_M) / nominal_gdp_local",
+      "sector": "RoW",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "imports_share": {
+      "theme": "aggregate_output_composition",
+      "type": "flow_flow",
+      "formula": "imports_M / nominal_gdp_local",
+      "sector": "RoW",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "exports_share": {
+      "theme": "aggregate_output_composition",
+      "type": "flow_flow",
+      "formula": "exports_X / nominal_gdp_local",
+      "sector": "RoW",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "inventory_investment_gdp": {
+      "theme": "aggregate_output_composition",
+      "type": "flow_flow",
+      "formula": "inventory_investment / nominal_gdp_local",
+      "sector": "NFC",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "hh_financial_balance_gdp": {
+      "theme": "sectoral_balances",
+      "type": "flow_flow",
+      "formula": "nl_households / nominal_gdp_local",
+      "sector": "HH",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "nfc_financial_balance_gdp": {
+      "theme": "sectoral_balances",
+      "type": "flow_flow",
+      "formula": "nl_nfc / nominal_gdp_local",
+      "sector": "NFC",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "government_balance_gdp": {
+      "theme": "sectoral_balances",
+      "type": "flow_flow",
+      "formula": "nl_government / nominal_gdp_local",
+      "sector": "GG",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "current_account_gdp": {
+      "theme": "sectoral_balances",
+      "type": "flow_flow",
+      "formula": "current_account_balance / nominal_gdp_local",
+      "sector": "RoW",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "priv_debt_gdp": {
+      "theme": "leverage",
+      "type": "stock_flow",
+      "formula": "(hh_loans_liabilities_total + nfc_outstanding_debt) / nominal_gdp_local",
+      "sector": "HH+NFC",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "source_native_percent_of_gdp_or_common_currency",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_TC",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "TC_BORROWERS": "P",
+            "TC_LENDERS": "A",
+            "VALUATION": "M",
+            "UNIT_TYPE": "770",
+            "TC_ADJUST": "A"
+          },
+          "example_key": "Q.US.P.A.M.770.A"
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "hh_debt_gdp": {
+      "theme": "leverage",
+      "type": "stock_flow",
+      "formula": "hh_loans_liabilities_total / nominal_gdp_local",
+      "sector": "HH",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "source_native_percent_of_gdp_or_common_currency",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_TC",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "TC_BORROWERS": "H",
+            "TC_LENDERS": "A",
+            "VALUATION": "M",
+            "UNIT_TYPE": "770",
+            "TC_ADJUST": "A"
+          }
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "nfc_debt_gdp": {
+      "theme": "leverage",
+      "type": "stock_flow",
+      "formula": "nfc_outstanding_debt / nominal_gdp_local",
+      "sector": "NFC",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "source_native_percent_of_gdp_or_common_currency",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_TC",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "TC_BORROWERS": "N",
+            "TC_LENDERS": "A",
+            "VALUATION": "M",
+            "UNIT_TYPE": "770",
+            "TC_ADJUST": "A"
+          }
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "govt_debt_gdp": {
+      "theme": "leverage",
+      "type": "stock_flow",
+      "formula": "gg_total_outstanding_debt / nominal_gdp_local",
+      "sector": "GG",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "bank_credit_gdp": {
+      "theme": "leverage",
+      "type": "stock_flow",
+      "formula": "bank_credit_to_nfcs_bis / nominal_gdp_local",
+      "sector": "FC_banks",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "source_native_percent_of_gdp_or_common_currency",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_TC",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "TC_BORROWERS": "P",
+            "TC_LENDERS": "B",
+            "VALUATION": "M",
+            "UNIT_TYPE": "770",
+            "TC_ADJUST": "A"
+          }
+        },
+        "haver": {
+          "status": "prism_populate"
+        }
+      }
+    },
+    "m2_gdp": {
+      "theme": "money_credit_aggregates",
+      "type": "stock_flow",
+      "formula": "m2 / nominal_gdp_local",
+      "sector": "TE",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "cb_bs_gdp": {
+      "theme": "money_credit_aggregates",
+      "type": "stock_flow",
+      "formula": "central_bank_balance_sheet / nominal_gdp_local",
+      "sector": "CB",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped_parameterized",
+          "flow_id": "WS_CBTA"
+        },
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "bis_credit_gap": {
+      "theme": "fragility",
+      "type": "constructed_gap",
+      "formula": "credit_to_gdp - one_sided_hp_trend_credit_to_gdp",
+      "sector": "HH+NFC",
+      "unit_kind": "percentage_points",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_CREDIT_GAP",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.gl_ref_area"
+            },
+            "TC_BORROWERS": "P",
+            "TC_LENDERS": "A",
+            "CG_DTYPE": "C"
+          },
+          "example_key": "Q.US.P.A.C"
+        },
+        "haver": {
+          "status": "prism_populate_if_equivalent_exists"
+        }
+      }
+    },
+    "debt_service_ratio_private": {
+      "theme": "fragility",
+      "type": "flow_flow",
+      "formula": "private_sector_debt_service / private_sector_income",
+      "sector": "HH+NFC",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_DSR",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "DSR_BORROWERS": "P"
+          },
+          "example_key": "Q.US.P"
+        },
+        "haver": {
+          "status": "prism_populate_if_available"
+        }
+      }
+    },
+    "debt_service_ratio_hh": {
+      "theme": "fragility",
+      "type": "flow_flow",
+      "formula": "household_debt_service / household_income",
+      "sector": "HH",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_DSR",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "DSR_BORROWERS": "H"
+          }
+        },
+        "haver": {
+          "status": "prism_populate_if_available"
+        }
+      }
+    },
+    "debt_service_ratio_nfc": {
+      "theme": "fragility",
+      "type": "flow_flow",
+      "formula": "nfc_debt_service / nfc_income",
+      "sector": "NFC",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped",
+          "flow_id": "WS_DSR",
+          "dimension_map": {
+            "FREQ": "Q",
+            "BORROWERS_CTY": {
+              "parameter": "country",
+              "country_code_field": "bis.area"
+            },
+            "DSR_BORROWERS": "N"
+          }
+        },
+        "haver": {
+          "status": "prism_populate_if_available"
+        }
+      }
+    },
+    "lbs_fcy_share": {
+      "theme": "fragility",
+      "type": "stock_stock",
+      "formula": "foreign_currency_lbs_claims / all_currency_lbs_claims",
+      "sector": "FC_banks",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "instrument_denomination",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped_recipe",
+          "flow_id": "WS_LBS_D_PUB",
+          "recipe_ref": "recipe_fcy_mismatch"
+        }
+      }
+    },
+    "lbs_usd_funding_share": {
+      "theme": "fragility",
+      "type": "stock_stock",
+      "formula": "usd_lbs_liabilities / all_currency_lbs_liabilities",
+      "sector": "FC_banks",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "instrument_denomination",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped_recipe",
+          "flow_id": "WS_LBS_D_PUB",
+          "recipe_ref": "recipe_usd_funding"
+        }
+      }
+    },
+    "cbs_guarantor_minus_immediate_claims": {
+      "theme": "cross_border_risk_transfer",
+      "type": "stock_stock_difference",
+      "formula": "fc_banks_foreign_claims_guarantor - fc_banks_foreign_claims_immediate",
+      "sector": "FC_banks",
+      "unit_kind": "currency_level_difference",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "share_gdp",
+        "country_diff"
+      ],
+      "fx_conversion": "instrument_denomination",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped_recipe",
+          "flow_id": "WS_CBS_PUB",
+          "recipe_ref": "recipe_cbs_guarantor_diff"
+        }
+      }
+    },
+    "cbs_short_term_claims_share": {
+      "theme": "maturity_mismatch",
+      "type": "stock_stock",
+      "formula": "cbs_claims_maturity_up_to_1y / total_cbs_claims",
+      "sector": "FC_banks",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped_recipe",
+          "flow_id": "WS_CBS_PUB",
+          "recipe_ref": "recipe_cbs_maturity"
+        }
+      }
+    },
+    "nbfi_claims_share": {
+      "theme": "shadow_banking",
+      "type": "stock_stock",
+      "formula": "lbs_claims_on_nbfi / total_lbs_claims",
+      "sector": "FC_OFIs",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "bis": {
+          "status": "mapped_recipe",
+          "flow_id": "WS_LBS_D_PUB",
+          "recipe_ref": "recipe_nbfi"
+        }
+      }
+    },
+    "eq_mkt_cap_gdp": {
+      "theme": "wealth_asset",
+      "type": "stock_flow",
+      "formula": "total_market_cap / nominal_gdp_local",
+      "sector": "Market",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "re_value_gdp": {
+      "theme": "wealth_asset",
+      "type": "stock_flow",
+      "formula": "hh_real_estate / nominal_gdp_local",
+      "sector": "HH",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "niip_gdp": {
+      "theme": "external",
+      "type": "stock_flow",
+      "formula": "net_iip / nominal_gdp_local",
+      "sector": "RoW",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "real_house_price_index": {
+      "theme": "wealth_asset",
+      "type": "index_deflated",
+      "formula": "house_price_index / cpi_headline",
+      "sector": "HH",
+      "unit_kind": "index",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "country_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "bis": {
+          "status": "construct_from_bis_property_and_cpi"
+        },
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "hpi_income": {
+      "theme": "wealth_asset",
+      "type": "price_income",
+      "formula": "house_price_index / hh_disposable_income",
+      "sector": "HH",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "income_component_common_currency_if_level_based",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "term_spread": {
+      "theme": "rates",
+      "type": "rate_rate",
+      "formula": "treasury_yield_curve_10y - treasury_yield_curve_2y",
+      "sector": "GG",
+      "unit_kind": "percentage_points",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "tobin_q_nfc": {
+      "theme": "valuation",
+      "type": "stock_stock",
+      "formula": "nfc_listed_equity / nfc_tangible_assets",
+      "sector": "NFC",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "hh_net_worth_to_disposable_income": {
+      "theme": "wealth_asset",
+      "type": "stock_flow",
+      "formula": "hh_net_worth / hh_disposable_income",
+      "sector": "HH",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "income_component_common_currency_if_level_based",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "revaluation_hh_to_net_lending_hh": {
+      "theme": "wealth_asset",
+      "type": "flow_flow",
+      "formula": "revaluation_hh / nl_households",
+      "sector": "HH",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "r_minus_g_real": {
+      "theme": "fiscal_sustainability",
+      "type": "rate_growth",
+      "formula": "real_yield_curve_tips_10y - yoy(real_gdp_local_chained)",
+      "sector": "TE",
+      "unit_kind": "percentage_points",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "real_policy_rate": {
+      "theme": "rates",
+      "type": "rate_inflation",
+      "formula": "policy_rate_effective - inflation_expectation_or_core_inflation",
+      "sector": "CB",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "employment_to_working_age_ratio": {
+      "theme": "labor_demographics",
+      "type": "stock_stock",
+      "formula": "employment_headcount / population_working_age",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "labor_force_participation_ratio": {
+      "theme": "labor_demographics",
+      "type": "stock_stock",
+      "formula": "labor_force_headcount / population_working_age",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "unemployment_rate_survey": {
+      "theme": "labor_demographics",
+      "type": "stock_stock",
+      "formula": "unemployment_headcount / labor_force_headcount",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "demographic_dependency_ratio": {
+      "theme": "labor_demographics",
+      "type": "stock_stock",
+      "formula": "(population_total - population_working_age) / population_working_age",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "working_age_share_of_population": {
+      "theme": "labor_demographics",
+      "type": "stock_stock",
+      "formula": "population_working_age / population_total",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "dwellings_per_capita": {
+      "theme": "housing_demographics",
+      "type": "stock_stock",
+      "formula": "dwelling_count_residential / population_total",
+      "sector": "HH",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "real_gdp_per_worker": {
+      "theme": "productivity",
+      "type": "stock_flow",
+      "formula": "real_gdp_local_chained / employment_headcount",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "real_gdp_per_hour_worked": {
+      "theme": "productivity",
+      "type": "flow_flow",
+      "formula": "real_gdp_local_chained / aggregate_hours_worked",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "productive_capital_to_real_gdp": {
+      "theme": "capital_intensity",
+      "type": "stock_flow",
+      "formula": "productive_capital_stock / real_gdp_local_chained",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "hh_debt_service_to_disposable_income": {
+      "theme": "fragility",
+      "type": "flow_flow",
+      "formula": "hh_debt_service_payments / hh_disposable_income",
+      "sector": "HH",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "trailing_corporate_profits_to_market_cap": {
+      "theme": "valuation",
+      "type": "stock_flow",
+      "formula": "nfc_corporate_profits_after_tax / total_market_cap",
+      "sector": "Market",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "equity_risk_premium_forward": {
+      "theme": "valuation",
+      "type": "rate_rate",
+      "formula": "forward_earnings_yield_equity_market - nominal_interest_rate",
+      "sector": "Market",
+      "unit_kind": "percentage_points",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "tobin_q_nfc_net_worth_basis": {
+      "theme": "valuation",
+      "type": "stock_stock",
+      "formula": "nfc_listed_equity / nfc_net_worth",
+      "sector": "NFC",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "listed_equity_to_tangible_plus_intangible": {
+      "theme": "valuation",
+      "type": "stock_stock",
+      "formula": "nfc_listed_equity / nfc_tangible_and_intangible_assets",
+      "sector": "NFC",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "fc_loan_to_deposit_ratio": {
+      "theme": "banking",
+      "type": "stock_stock",
+      "formula": "fc_loans_assets / fc_deposits_liability",
+      "sector": "FC_banks",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "m2_velocity_nominal_gdp": {
+      "theme": "money",
+      "type": "stock_flow",
+      "formula": "nominal_gdp_local / m2",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "real_wage_index": {
+      "theme": "labor_income",
+      "type": "index_deflated",
+      "formula": "wage_index_ahc / cpi_headline",
+      "sector": "HH",
+      "unit_kind": "index",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "country_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "real_rent_price_index": {
+      "theme": "housing_real",
+      "type": "index_deflated",
+      "formula": "consumer_rent_price_index / cpi_headline",
+      "sector": "HH",
+      "unit_kind": "index",
+      "modifiers_allowed": [
+        "level",
+        "yoy",
+        "change",
+        "country_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "nfc_net_equity_issuance_to_gdp": {
+      "theme": "capital_markets",
+      "type": "flow_flow",
+      "formula": "nfc_net_equity_issuance / nominal_gdp_local",
+      "sector": "NFC",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "government_short_term_debt_share": {
+      "theme": "fiscal_structure",
+      "type": "stock_stock",
+      "formula": "gg_short_term_debt_outstanding / gg_total_outstanding_debt",
+      "sector": "GG",
+      "unit_kind": "percent",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "acceleration",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "fc_repo_liabilities_to_assets": {
+      "theme": "shadow_banking",
+      "type": "stock_stock",
+      "formula": "fc_repo_liabilities / fc_total_assets",
+      "sector": "FC_banks",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "common_currency_if_constructed_from_levels",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "manufacturing_output_to_real_gdp": {
+      "theme": "production_structure",
+      "type": "flow_flow",
+      "formula": "manufacturing_or_industrial_output_volume / real_gdp_local_chained",
+      "sector": "TE",
+      "unit_kind": "ratio",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "ratio_or_percent",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    },
+    "r_minus_g_nominal": {
+      "theme": "fiscal_sustainability",
+      "type": "rate_growth",
+      "formula": "nominal_interest_rate - yoy(nominal_gdp_local)",
+      "sector": "GG",
+      "unit_kind": "percentage_points",
+      "modifiers_allowed": [
+        "level",
+        "change",
+        "country_diff",
+        "us_diff",
+        "global_diff",
+        "region_diff"
+      ],
+      "fx_conversion": "none",
+      "source_bindings": {
+        "haver": {
+          "status": "prism_populate_components"
+        }
+      }
+    }
+  },
+  "identities": {
+    "net_lending_closure": {
+      "formula": "nl_households + nl_nfc + nl_financial_corps + nl_government + nl_rest_of_world = 0",
+      "concepts": [
+        "nl_households",
+        "nl_nfc",
+        "nl_financial_corps",
+        "nl_government",
+        "nl_rest_of_world"
+      ],
+      "chartable_residual": true
+    },
+    "three_balance_identity": {
+      "formula": "private_balance + government_balance + external_balance = 0",
+      "concepts": [
+        "hh_financial_balance_gdp",
+        "nfc_financial_balance_gdp",
+        "government_balance_gdp",
+        "current_account_gdp"
+      ],
+      "chartable_residual": true
+    },
+    "stock_flow_consistency": {
+      "formula": "delta_stock = flow + revaluation + other_changes",
+      "concepts": [
+        "stocks",
+        "flows",
+        "prices_rates_fx",
+        "revaluation_hh",
+        "hh_revaluation_financial_assets",
+        "hh_revaluation_real_estate",
+        "hh_revaluation_equity_securities",
+        "hh_revaluation_debt_securities_holdings",
+        "hh_revaluation_investment_funds_shares",
+        "hh_revaluation_other_financial_assets",
+        "hh_ocva_financial_assets",
+        "nfc_revaluation_total",
+        "nfc_revaluation_equity_securities",
+        "nfc_revaluation_debt_securities_holdings",
+        "nfc_revaluation_tangible_nonfinancial_assets",
+        "nfc_ocva_total",
+        "fc_revaluation_total",
+        "fc_revaluation_equity_securities",
+        "fc_revaluation_debt_securities_holdings",
+        "fc_ocva_total",
+        "cb_revaluation_of_holdings",
+        "gg_revaluation_debt_securities",
+        "gg_ocva_total",
+        "row_iip_revaluation_net",
+        "row_iip_ocva_net"
+      ],
+      "chartable_residual": true
+    },
+    "gdp_equivalence": {
+      "formula": "GDP_expenditure = GDP_income = GDP_output",
+      "concepts": [
+        "nominal_gdp_local",
+        "private_consumption",
+        "gross_fixed_capital_formation_I",
+        "government_consumption_G",
+        "exports_X",
+        "imports_M",
+        "compensation_of_employees",
+        "gross_operating_surplus",
+        "mixed_income"
+      ],
+      "chartable_residual": true
+    },
+    "money_credit_identity": {
+      "formula": "delta_loans = delta_deposits + delta_reserves - delta_bank_capital",
+      "concepts": [
+        "fc_loans_assets",
+        "fc_deposits_liability",
+        "fc_reserves_at_central_bank",
+        "fc_cet1_capital"
+      ],
+      "chartable_residual": true
+    },
+    "balance_of_payments_closure": {
+      "formula": "current_account_balance + capital_account_balance + financial_account_balance + balance_of_payments_errors_omissions = 0",
+      "concepts": [
+        "current_account_balance",
+        "capital_account_balance",
+        "financial_account_balance",
+        "balance_of_payments_errors_omissions"
+      ],
+      "chartable_residual": true
+    },
+    "household_wealth_flow_consistency": {
+      "formula": "hh_net_worth_t = hh_net_worth_t_minus_1 + nl_households + hh_residential_investment + revaluation_hh",
+      "concepts": [
+        "hh_net_worth",
+        "nl_households",
+        "hh_residential_investment",
+        "revaluation_hh",
+        "hh_revaluation_financial_assets",
+        "hh_revaluation_equity_securities",
+        "hh_revaluation_debt_securities_holdings",
+        "hh_revaluation_investment_funds_shares",
+        "hh_revaluation_other_financial_assets",
+        "hh_revaluation_real_estate",
+        "house_price_index",
+        "equity_index_level"
+      ],
+      "chartable_residual": true
+    },
+    "nfc_net_worth_flow_consistency": {
+      "formula": "nfc_net_worth_t = nfc_net_worth_t_minus_1 + nl_nfc + nfc_revaluation_total + nfc_ocva_total",
+      "concepts": [
+        "nfc_net_worth",
+        "nl_nfc",
+        "nfc_revaluation_total",
+        "nfc_ocva_total"
+      ],
+      "chartable_residual": true
+    },
+    "fc_net_worth_flow_consistency": {
+      "formula": "fc_net_worth_t = fc_net_worth_t_minus_1 + nl_financial_corps + fc_revaluation_total + fc_ocva_total",
+      "concepts": [
+        "fc_net_worth",
+        "nl_financial_corps",
+        "fc_revaluation_total",
+        "fc_ocva_total"
+      ],
+      "chartable_residual": true
+    },
+    "central_bank_income_and_revaluation": {
+      "formula": "cb_net_income distributes via cb_remittances_to_government with cb_revaluation_of_holdings in flow of funds",
+      "concepts": [
+        "cb_net_income",
+        "cb_remittances_to_government",
+        "cb_revaluation_of_holdings",
+        "central_bank_balance_sheet"
+      ],
+      "chartable_residual": true
+    }
+  },
+  "chart_recipes": {
+    "country_stock_grid": {
+      "description": "One stock concept across countries.",
+      "required_concept_kind": "stock",
+      "allowed_modifiers": [
+        "level",
+        "share_gdp",
+        "yoy",
+        "real"
+      ],
+      "compatible_country_sets": [
+        "SFC31",
+        "FX21",
+        "DM",
+        "EM"
+      ],
+      "fx_conversion_required": "for cross-country levels and shares"
+    },
+    "sectoral_balance_deck": {
+      "description": "SFC net-lending deck for one country.",
+      "required_concepts": [
+        "nl_households",
+        "nl_nfc",
+        "nl_financial_corps",
+        "nl_government",
+        "nl_rest_of_world"
+      ],
+      "required_modifier": "share_gdp",
+      "compatible_country_sets": [
+        "SFC31"
+      ],
+      "fx_conversion_required": false
+    },
+    "leverage_heatmap": {
+      "description": "Leverage ratios across countries with levels, changes, and acceleration.",
+      "required_ratio_themes": [
+        "leverage",
+        "fragility"
+      ],
+      "allowed_modifiers": [
+        "level",
+        "change",
+        "acceleration"
+      ],
+      "compatible_country_sets": [
+        "SFC31",
+        "FX21",
+        "DM",
+        "EM"
+      ],
+      "fx_conversion_required": "only for constructed level ratios"
+    },
+    "cross_border_claims_map": {
+      "description": "Reporter-counterparty BIS claims map expressed as FC bank stock concepts.",
+      "required_concepts": [
+        "fc_banks_cross_border_claims",
+        "fc_banks_foreign_claims_immediate",
+        "fc_banks_foreign_claims_guarantor"
+      ],
+      "allowed_modifiers": [
+        "level",
+        "share_world"
+      ],
+      "compatible_country_sets": [
+        "BIS_reporters_and_counterparties"
+      ],
+      "fx_conversion_required": "instrument_denomination_not_conversion"
+    },
+    "country_region_ratio_bar": {
+      "description": "Country ratio versus regional/global benchmark.",
+      "required_concept_kind": "ratio",
+      "allowed_modifiers": [
+        "region_diff",
+        "global_diff",
+        "us_diff"
+      ],
+      "compatible_country_sets": [
+        "FX21",
+        "SFC31"
+      ],
+      "fx_conversion_required": "weights_must_be_common_currency"
+    },
+    "flow_of_funds_identity_check": {
+      "description": "Identity residual chart.",
+      "required_section": "identities",
+      "allowed_modifiers": [
+        "level",
+        "share_gdp"
+      ],
+      "compatible_country_sets": [
+        "SFC31"
+      ],
+      "fx_conversion_required": "if residual is computed from levels across currencies"
+    }
+  },
+  "population_contract": {
+    "concept_first_rule": "PRISM and local scripts must traverse stocks, flows, prices_rates_fx, ratios, identities, and chart_recipes. They must not traverse provider datasets as ontology roots.",
+    "bis_here": {
+      "status": "populated_inside_source_bindings",
+      "fields": [
+        "flow_id",
+        "dimension_map",
+        "example_key",
+        "recipe_ref",
+        "quirks"
+      ],
+      "note": "BIS mappings are intentionally leaf metadata under SFC concepts."
+    },
+    "haver_for_prism": {
+      "status": "prism_populate",
+      "fields_to_fill": [
+        "haver_code",
+        "haver_dataset",
+        "frequency",
+        "units",
+        "country",
+        "coverage_start",
+        "coverage_end",
+        "confidence",
+        "notes"
+      ],
+      "where_to_fill": "source_bindings.haver under each stock, flow, price/rate/FX concept, or ratio component. Provider series that are transforms of a flow (e.g. headline GDP YoY) attach as the modifier realization on that flow, not as a separate prices_rates_fx concept."
+    },
+    "no_raw_observations": true,
+    "data_gap_fields": [
+      "status",
+      "data_gap_reason",
+      "recommended_unblock"
+    ]
+  }
+}
