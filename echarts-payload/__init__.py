@@ -85,7 +85,7 @@ from __future__ import annotations
 
 __version__ = "0.4.0"
 
-from echart_dashboard import (  # noqa: E402,F401
+from ai_development.dashboards.echart_dashboard import (  # noqa: E402,F401
     run_pull,
     build_dashboard,
     refresh_dashboard,
