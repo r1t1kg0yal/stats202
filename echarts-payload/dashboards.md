@@ -194,7 +194,7 @@ from ai_development.dashboards import (
     compile_dashboard,    # JSON manifest -> dashboard HTML + JSON
     validate_manifest,    # dry-run structural validator
     manifest_template,    # strip data -> reusable template
-    populate_template,    # template + fresh DataFrames -> manifest
+    populate_template,    # template + datasets -> manifest (sources normalized)
     df_to_source,         # DataFrame -> canonical list-of-lists
     chart_data_diagnostics,  # post-compile linting
     load_manifest, save_manifest,

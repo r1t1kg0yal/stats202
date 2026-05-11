@@ -3054,25 +3054,60 @@ def _is_dataframe(obj: Any) -> bool:
         return False
 
 
+def _is_series(obj: Any) -> bool:
+    try:
+        import pandas as pd
+        return isinstance(obj, pd.Series)
+    except Exception:
+        return False
+
+
+def _is_ndarray(obj: Any) -> bool:
+    try:
+        import numpy as np
+        return isinstance(obj, np.ndarray)
+    except Exception:
+        return False
+
+
 def _normalize_manifest_datasets(manifest: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert DataFrames in manifest.datasets.{name} / .source to source
-    arrays IN PLACE and return the manifest.
+    """Convert dataset entries in ``manifest.datasets`` to the canonical
+    list-of-lists source shape IN PLACE and return the manifest.
 
     Accepted shapes per dataset entry:
         {"source": DataFrame}           -> converted to list-of-lists
         {"source": list_of_lists}       -> left alone
         DataFrame                       -> wrapped as {"source": [[...], ...]}
         list_of_lists                   -> wrapped as {"source": [...]}
+        pandas Series                   -> promoted via reset_index() then df_to_source
+        numpy ndarray                   -> promoted via .tolist() then df_to_source
+        pydantic BaseModel              -> promoted via .model_dump() then dict path
+        any object with .to_dict()      -> promoted via .to_dict() then dict path
+
+    The last four (wrapper-class / Series / ndarray) are pre-coerced to one
+    of the four canonical shapes before the main branches run, so PRISM can
+    pass these directly as dataset values from execute_analysis_script and
+    json.dumps on the compiled manifest stays safe regardless of which
+    entry point (compile_dashboard direct, populate_template, manifest
+    construction) the manifest came through.
 
     This runs BEFORE validate_manifest so that validation sees the canonical
-    list-of-lists source shape in every case. PRISM code that builds a
-    manifest in execute_analysis_script can simply pass DataFrames through
-    with zero conversion boilerplate.
+    list-of-lists source shape in every case.
     """
     ds = manifest.get("datasets")
     if not isinstance(ds, dict):
         return manifest
     for name, entry in list(ds.items()):
+        if entry is not None and not isinstance(entry, (list, dict)) and not _is_dataframe(entry):
+            if _is_series(entry):
+                entry = entry.reset_index()
+            elif _is_ndarray(entry):
+                entry = entry.tolist()
+            elif hasattr(entry, "model_dump"):
+                entry = entry.model_dump()
+            elif hasattr(entry, "to_dict"):
+                entry = entry.to_dict()
+            ds[name] = entry
         if _is_dataframe(entry):
             ds[name] = {"source": df_to_source(entry)}
             continue
@@ -4184,10 +4219,26 @@ def populate_template(template: Dict[str, Any],
         A manifest dict, typically produced by :func:`manifest_template`
         and re-loaded from disk via ``json.load``.
     datasets
-        Mapping of dataset name -> DataFrame (or canonical list-of-lists
-        source). Each entry replaces the corresponding slot in the
-        template's ``datasets`` block. Names not already declared in the
-        template are added.
+        Mapping of dataset name -> entry. Each entry replaces the
+        corresponding slot in the template's ``datasets`` block; names
+        not already declared in the template are added. Accepted entry
+        shapes:
+
+            * pandas DataFrame
+            * canonical list-of-lists source ``[[header...], [row...], ...]``
+            * dict (``{"source": ...}`` or a ``compute`` block, etc.)
+            * pandas Series           (promoted via ``reset_index()``)
+            * numpy ndarray           (promoted via ``.tolist()``)
+            * pydantic BaseModel      (promoted via ``.model_dump()``)
+            * any object with a ``.to_dict()`` method
+              (pydantic v1, dataclass wrappers, custom classes)
+
+        The last four are coerced to one of the first three inside
+        :func:`_normalize_manifest_datasets`, so PRISM can pass
+        wrapper-class / Series / ndarray entries directly without a
+        manual conversion step. The same guarantee holds when calling
+        :func:`compile_dashboard` directly with a hand-built manifest --
+        the coercion lives in the shared normalizer.
     metadata
         Optional ``manifest.metadata`` merge (e.g. ``{"data_as_of": "..."}``).
         Existing metadata keys are preserved; passed keys override them.
@@ -4199,8 +4250,11 @@ def populate_template(template: Dict[str, Any],
     Returns
     -------
     dict
-        A new manifest ready to pass to ``compile_dashboard``. The input
-        template is NOT mutated.
+        A new manifest ready to pass to ``compile_dashboard``. Every
+        ``datasets`` entry is normalized in place to the canonical
+        ``{"source": [[header...], ...]}`` shape with JSON-serializable
+        scalars (:func:`_normalize_manifest_datasets` / :func:`df_to_source`).
+        The input template is NOT mutated.
     """
     import copy
     if not isinstance(template, dict):
@@ -4230,7 +4284,7 @@ def populate_template(template: Dict[str, Any],
             )
 
     for name, df in datasets.items():
-        out_ds[name] = df  # compile_dashboard normalizes DataFrames -> source
+        out_ds[name] = df
 
     if metadata:
         md = out.setdefault("metadata", {})
@@ -4240,6 +4294,8 @@ def populate_template(template: Dict[str, Any],
                 f"got {type(md).__name__}"
             )
         md.update(metadata)
+
+    _normalize_manifest_datasets(out)
     return out
 
 
