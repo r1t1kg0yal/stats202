@@ -13,7 +13,7 @@ HTML editor with:
     - ~140 editable knobs covering every vega-lite config path
     - editable text fields: title, subtitle, source, axis titles, legend title
     - full axes control: rotation, format, domain, zero-start, log scale,
-      grid/domain toggles, tick count
+      domain toggles, tick count
     - per-side padding, stroke dash, point shape, bar orientation
     - per-series color override (detected dynamically from the spec)
     - theme presets (gs_clean matches PRISM exactly)
@@ -322,9 +322,6 @@ UNIVERSAL_KNOBS: List[Dict[str, Any]] = [
      "options": ["", ",", ".2f", ".1%", "%Y", "%b %Y", "%b %d", "%Y-%m-%d", "$,.0f"],
      "default": "",
      "apply": "setXAxisFormat", "group": "X-Axis"},
-    {"name": "xGridShow", "label": "X grid", "type": "checkbox",
-     "default": True,
-     "apply": "setXGridShow", "group": "X-Axis"},
     {"name": "xDomainShow", "label": "X axis line", "type": "checkbox",
      "default": True,
      "apply": "setXDomainShow", "group": "X-Axis"},
@@ -358,9 +355,6 @@ UNIVERSAL_KNOBS: List[Dict[str, Any]] = [
      "options": ["", ",", ".2f", ".1%", "%Y", "$,.0f", ".0f"],
      "default": "",
      "apply": "setYAxisFormat", "group": "Y-Axis"},
-    {"name": "yGridShow", "label": "Y grid", "type": "checkbox",
-     "default": True,
-     "apply": "setYGridShow", "group": "Y-Axis"},
     {"name": "yDomainShow", "label": "Y axis line", "type": "checkbox",
      "default": True,
      "apply": "setYDomainShow", "group": "Y-Axis"},
@@ -384,12 +378,6 @@ UNIVERSAL_KNOBS: List[Dict[str, Any]] = [
      "apply": "setYInvert", "group": "Y-Axis"},
 
     # --- Axes shared styling ---
-    {"name": "gridColor", "label": "Grid color", "type": "color",
-     "default": "#E6E6E6",
-     "path": "config.axis.gridColor", "group": "Axes"},
-    {"name": "gridOpacity", "label": "Grid opacity", "type": "range",
-     "min": 0, "max": 1, "step": 0.05, "default": 1.0,
-     "path": "config.axis.gridOpacity", "group": "Axes", "essential": True},
     {"name": "domainColor", "label": "Axis line color", "type": "color",
      "default": "#000000",
      "path": "config.axis.domainColor", "group": "Axes"},
@@ -702,15 +690,11 @@ GS_CLEAN: Dict[str, Any] = {
         "legendLabelSize": 14,
         "legendTitleSize": 14,
         # Axes
-        "gridColor": "#E6E6E6",
-        "gridOpacity": 1.0,
         "domainColor": "#000000",
         "tickColor": "#000000",
         "labelColor": "#000000",
         "domainWidth": 1,
         "tickSize": 5,
-        "xGridShow": True,
-        "yGridShow": True,
         "xDomainShow": True,
         "yDomainShow": True,
         "xLabelAngle": 0,
@@ -767,15 +751,13 @@ GS_CLEAN: Dict[str, Any] = {
 MINIMAL: Dict[str, Any] = {
     "name": "minimal",
     "label": "Minimal",
-    "description": "Ultra-clean, no grid, tiny labels, press-ready",
+    "description": "Ultra-clean, tiny labels, press-ready",
     "values": {
         "background": "#ffffff",
         "fontFamily": "Helvetica",
         "titleSize": 14, "titleColor": "#111111", "titleWeight": "normal",
         "labelSize": 10, "axisTitleSize": 11,
         "legendLabelSize": 10,
-        "gridColor": "#ffffff", "gridOpacity": 0.0,
-        "xGridShow": False, "yGridShow": False,
         "domainColor": "#000000", "tickColor": "#000000", "labelColor": "#000000",
         "domainWidth": 0.5, "tickSize": 3,
         "legendOrient": "none",
@@ -798,7 +780,6 @@ DARK: Dict[str, Any] = {
         "titleSize": 16, "titleColor": "#eaeaea", "titleWeight": "bold",
         "labelSize": 12, "axisTitleSize": 13,
         "legendLabelSize": 11, "legendTitleSize": 12,
-        "gridColor": "#333333", "gridOpacity": 0.6,
         "domainColor": "#888888", "tickColor": "#888888", "labelColor": "#cccccc",
         "domainWidth": 1, "tickSize": 5,
         "legendOrient": "right",
@@ -822,7 +803,6 @@ PRINT: Dict[str, Any] = {
         "titleSize": 18, "titleColor": "#000000", "titleWeight": "bold",
         "labelSize": 14, "axisTitleSize": 15,
         "legendLabelSize": 13, "legendTitleSize": 14,
-        "gridColor": "#dddddd", "gridOpacity": 0.7,
         "domainColor": "#000000", "tickColor": "#000000", "labelColor": "#000000",
         "domainWidth": 1.5, "tickSize": 6,
         "legendOrient": "right",
@@ -1445,10 +1425,6 @@ const APPLY_FUNCTIONS = {
     setBothAxisProperty(spec, "x", "axisX", "tickCount", value),
   setYTickCount: (spec, value) =>
     setBothAxisProperty(spec, "y", "axisY", "tickCount", value),
-  setXGridShow: (spec, value) =>
-    setBothAxisProperty(spec, "x", "axisX", "grid", !!value),
-  setYGridShow: (spec, value) =>
-    setBothAxisProperty(spec, "y", "axisY", "grid", !!value),
   setXDomainShow: (spec, value) =>
     setBothAxisProperty(spec, "x", "axisX", "domain", !!value),
   setYDomainShow: (spec, value) =>
@@ -3215,8 +3191,6 @@ function extractApplyKnobValue(knob) {
     case "setYLabelAngle":  return _extractAxisProp(currentSpec, "y", "axisY", "labelAngle");
     case "setXTickCount":   return _extractAxisProp(currentSpec, "x", "axisX", "tickCount");
     case "setYTickCount":   return _extractAxisProp(currentSpec, "y", "axisY", "tickCount");
-    case "setXGridShow":    return _extractAxisProp(currentSpec, "x", "axisX", "grid");
-    case "setYGridShow":    return _extractAxisProp(currentSpec, "y", "axisY", "grid");
     case "setXDomainShow":  return _extractAxisProp(currentSpec, "x", "axisX", "domain");
     case "setYDomainShow":  return _extractAxisProp(currentSpec, "y", "axisY", "domain");
     case "setXTickShow":    return _extractAxisProp(currentSpec, "x", "axisX", "ticks");

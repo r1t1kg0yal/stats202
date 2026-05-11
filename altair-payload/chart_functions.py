@@ -1792,9 +1792,9 @@ class PointLabel(Annotation):
     """Floating text label anchored to a single (x, y) data coordinate.
 
     Renders with a white halo behind the text so the label stays legible
-    when it sits on top of a chart line, gridline, or dense scatter cloud.
-    Set ``halo=False`` to opt out (e.g. when placing labels in clearly
-    empty space).
+    when it sits on top of a chart line or dense scatter cloud. Set
+    ``halo=False`` to opt out (e.g. when placing labels in clearly empty
+    space).
 
     On a dual-axis chart, ``axis='right'`` interprets ``y`` in
     right-axis units (default ``'left'``).
@@ -2395,8 +2395,8 @@ class PointHighlight(Annotation):
 class Callout(Annotation):
     """Text annotation with a halo or filled box behind it for legibility.
 
-    ``PointLabel`` text disappears against gridlines, axis ticks, or
-    dense data. ``Callout`` solves that with one of two backgrounds:
+    ``PointLabel`` text can disappear against axis ticks or dense data.
+    ``Callout`` solves that with one of two backgrounds:
 
     * ``background='halo'`` (default): a thicker, lighter-colored copy
       of the text rendered behind the foreground text -- the
@@ -2442,15 +2442,33 @@ class Callout(Annotation):
         if not self.label:
             return alt.Chart(pd.DataFrame({"_": []})).mark_point()
 
-        if abs(self.dx) > 80:
+        # Class 9 absorption (per dev/scratch/_collision_audit_*/inventory.md):
+        # clamp dx so the label stays inside the plot frame. Without this a
+        # caller passing dx=200 would render the label far off-canvas (D4
+        # of demo 21 was the canonical repro). The published 0-60 range
+        # is the safe-default cited in chart_context.md; cap absolute dx
+        # at 80 (the existing warning threshold) for chart widths >= 600
+        # and tighter for smaller charts. Smaller charts (compact /
+        # thumbnail) can't afford the same offset because the plot region
+        # itself is narrower.
+        chart_width_px = int(mapping.get("_chart_width_px") or 700)
+        if chart_width_px >= 800:
+            max_dx = 90
+        elif chart_width_px >= 500:
+            max_dx = 80
+        elif chart_width_px >= 350:
+            max_dx = 60
+        else:
+            max_dx = 40
+        if abs(self.dx) > max_dx:
+            clamped_dx = max_dx if self.dx > 0 else -max_dx
             logger.warning(
-                "[Callout] dx=%d exceeds typical 80px budget; label "
-                "may extend off-canvas when the data point sits near "
-                "the chart edge. Typical range is 0-60. Engine has no "
-                "chart-width context here to clamp safely; reduce dx "
-                "or place the Callout further from the edge.",
-                self.dx,
+                "[Callout] dx=%d clamped to %d (max=+/-%d for %dpx chart "
+                "width). Reduce dx or place the Callout further from the "
+                "edge to avoid losing the offset.",
+                self.dx, clamped_dx, max_dx, chart_width_px,
             )
+            self.dx = clamped_dx  # mutate so downstream layers see the clamp
 
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
@@ -2939,195 +2957,172 @@ class LastValueLabel(Annotation):
         return alt.layer(*layers)
 
 
-_AUTO_ANCHOR_PRIORITY: List[str] = [
-    "top-right",
-    "top-left",
-    "bottom-right",
-    "bottom-left",
-]
+# PlotText panel-slot priority for ``position='auto'``. Right wins
+# first because narrative panels conventionally sit on the right
+# (FT / Bloomberg side-rail style) and a side panel preserves the
+# chart's vertical real estate; bottom takes second priority (caption
+# slot) because it doesn't compete with legends; left takes third
+# (less common but supported when both right + bottom are taken).
+_PLOTTEXT_AUTO_PRIORITY: List[str] = ["right", "bottom", "left"]
+
+# Valid ``PlotText.position`` values after the 2026-05-10 outside-only
+# rewire. Inside-corner anchors (top-* / middle-* / bottom-* with
+# left|center|right suffix) and the bare ``"top"`` value are no
+# longer supported -- PlotText now renders OUTSIDE the plot region
+# only, routed through the existing text-panel system
+# (``caption`` / ``side_left`` / ``side_right`` on ``make_chart`` /
+# ``ChartSpec``).
+_PLOTTEXT_VALID_POSITIONS: frozenset = frozenset({
+    "auto", "left", "right", "bottom",
+})
+
+_PLOTTEXT_LEGACY_POSITIONS: frozenset = frozenset({
+    "top", "top-left", "top-center", "top-right",
+    "middle-left", "middle-center", "middle-right",
+    "bottom-left", "bottom-center", "bottom-right",
+})
+
+# Hard word cap on ``PlotText.text``. Engine raises above this; the
+# skill (``chart_context.md`` §8.3) advertises a tighter SOFT limit
+# of 8 words so PRISM has a 2-word safety buffer before the engine
+# refuses to render. The intent is "one-line takeaway", not "full
+# sentence" -- a side panel that wraps to 6+ lines crowds the chart
+# and undermines the visual hierarchy.
+PLOTTEXT_HARD_WORD_CAP: int = 10
+PLOTTEXT_SOFT_WORD_CAP: int = 8
 
 
-def _pick_plottext_anchor(
-    df: Optional[pd.DataFrame],
-    mapping: Dict[str, Any],
-    chart_type: Optional[str],
-    edge_fraction: float = 0.20,
-) -> str:
-    """Pick the corner that collides least with the data.
+def _validate_plottext_position(pos: str) -> None:
+    """Raise a clear ``ValidationError`` for legacy inside-anchor positions.
 
-    Strategy: a ``PlotText`` placed at corner ``C`` only collides with
-    points whose pixel position lands in ``C``'s box. For typical
-    text geometry that's the ``edge_fraction`` strip closest to the
-    relevant x-edge and the y-edge. Score each corner by how far the
-    data inside that strip reaches into it.
-
-    Score range:
-      - 0.0 -> data stays away from this corner (safe)
-      - 1.0 -> data reaches the corner (collides)
-
-    Definitions, with the x-window taken from the first / last
-    ``edge_fraction`` of x-rows:
-      - top-left      = (max(y) in left edge - y_min) / y_range
-      - top-right     = (max(y) in right edge - y_min) / y_range
-      - bottom-left   = (y_max - min(y) in left edge) / y_range
-      - bottom-right  = (y_max - min(y) in right edge) / y_range
-
-    Bar / waterfall charts: the bars themselves fill the area from
-    ``y=0`` to ``y=bar_height``, so bottom corners overlap the bars'
-    interior even when the bar tops are short. Disqualify them.
-
-    Falls back to ``"top-right"`` when df / mapping aren't usable
-    (composite root, missing columns, etc.).
+    PlotText was repositioned (2026-05-10) from inside-the-plot corner
+    anchors to outside-the-plot panels. The four valid values are
+    ``"auto"`` (default; first free side, right-first priority),
+    ``"left"``, ``"right"``, and ``"bottom"`` -- each maps to the
+    existing text-panel system (``side_left`` / ``side_right`` /
+    ``caption``).
     """
-    fallback = _AUTO_ANCHOR_PRIORITY[0]
-    if df is None or len(df) < 2:
-        return fallback
-
-    x_field = mapping.get("x") if isinstance(mapping.get("x"), str) else None
-    y_fields_raw = mapping.get("y")
-    if isinstance(y_fields_raw, list):
-        y_fields = [yf for yf in y_fields_raw if yf in df.columns]
-    elif isinstance(y_fields_raw, str) and y_fields_raw in df.columns:
-        y_fields = [y_fields_raw]
-    else:
-        y_fields = []
-
-    if not x_field or x_field not in df.columns or not y_fields:
-        return fallback
-
-    y_combined = pd.concat(
-        [pd.to_numeric(df[yf], errors="coerce") for yf in y_fields]
-    ).dropna()
-    if len(y_combined) < 2:
-        return fallback
-
-    y_min = float(y_combined.min())
-    y_max = float(y_combined.max())
-    y_range = y_max - y_min
-    if y_range <= 0:
-        return fallback
-
-    # Sort by x so "first edge_fraction rows" actually lines up with the
-    # leftmost x values (data may arrive unsorted, especially for
-    # multi-series long-format DataFrames).
-    x_data = df[x_field]
-    if pd.api.types.is_datetime64_any_dtype(x_data) or pd.api.types.is_numeric_dtype(x_data):
-        ordered_idx = x_data.sort_values().index
-    else:
-        # Nominal x renders in row order (or the resolved sort), so
-        # row order is the visual order. Don't sort.
-        ordered_idx = df.index
-
-    n = len(ordered_idx)
-    edge_n = max(1, int(round(n * max(0.05, min(0.5, edge_fraction)))))
-    left_idx = ordered_idx[:edge_n]
-    right_idx = ordered_idx[-edge_n:]
-
-    left_max = -float("inf")
-    left_min = float("inf")
-    right_max = -float("inf")
-    right_min = float("inf")
-    for yf in y_fields:
-        y_data = pd.to_numeric(df[yf], errors="coerce")
-        ly = y_data.loc[left_idx].dropna()
-        ry = y_data.loc[right_idx].dropna()
-        if len(ly):
-            left_max = max(left_max, float(ly.max()))
-            left_min = min(left_min, float(ly.min()))
-        if len(ry):
-            right_max = max(right_max, float(ry.max()))
-            right_min = min(right_min, float(ry.min()))
-
-    # If one edge has no data (extremely rare), treat it as fully
-    # occupied so the populated edge wins.
-    if left_max == -float("inf"):
-        left_max, left_min = y_max, y_min
-    if right_max == -float("inf"):
-        right_max, right_min = y_max, y_min
-
-    scores: Dict[str, float] = {
-        "top-left": (left_max - y_min) / y_range,
-        "top-right": (right_max - y_min) / y_range,
-        "bottom-left": (y_max - left_min) / y_range,
-        "bottom-right": (y_max - right_min) / y_range,
-    }
-
-    # Bar / waterfall with positive bars: bars fill from y=0 upward,
-    # so the bottom corners are inside the bars' opaque fill. Disqualify
-    # them so the picker only chooses among the top corners.
-    if chart_type in {"bar", "bar_horizontal", "waterfall"} and y_min >= 0:
-        scores["bottom-left"] = 1.0
-        scores["bottom-right"] = 1.0
-
-    # Quantize to 3 decimals so floating-point dust doesn't decide
-    # ties between visually-indistinguishable corners. Priority order
-    # (top-right > top-left > bottom-right > bottom-left) breaks the
-    # tie -- top edges read first, right edge avoids the y-axis labels.
-    return min(
-        _AUTO_ANCHOR_PRIORITY,
-        key=lambda corner: (
-            round(scores[corner], 3),
-            _AUTO_ANCHOR_PRIORITY.index(corner),
-        ),
+    if pos in _PLOTTEXT_VALID_POSITIONS:
+        return
+    if pos in _PLOTTEXT_LEGACY_POSITIONS:
+        raise ValidationError(
+            f"PlotText.position={pos!r} is no longer supported. "
+            "PlotText now renders OUTSIDE the plot region only; the "
+            "9 inside-corner anchors (top-*/middle-*/bottom-*) and "
+            "the bare 'top' value were removed in the 2026-05-10 "
+            "outside-only rewire so narrative text can never collide "
+            "with bars / lines / data labels. Valid positions: "
+            f"{sorted(_PLOTTEXT_VALID_POSITIONS)}. Migration: any "
+            "top-* / middle-* -> use 'right' (default) for a side "
+            "panel; bottom-* -> use 'bottom' for a caption."
+        )
+    raise ValidationError(
+        f"PlotText.position={pos!r} is not a recognised value. "
+        f"Valid: {sorted(_PLOTTEXT_VALID_POSITIONS)}."
     )
+
+
+def _count_words(text: str) -> int:
+    """Whitespace-split word count (no punctuation stripping)."""
+    if not text:
+        return 0
+    return len([w for w in text.split() if w.strip()])
+
+
+def _validate_plottext_text(text: str) -> None:
+    """Raise ``ValidationError`` when ``PlotText.text`` exceeds the engine
+    hard word cap (``PLOTTEXT_HARD_WORD_CAP``).
+
+    The skill (``chart_context.md`` §8.3) advertises a tighter soft
+    cap (``PLOTTEXT_SOFT_WORD_CAP``) so PRISM has a 2-word buffer.
+    Anything past the hard cap raises with a message naming both
+    limits so the LLM can fix the call site without guessing.
+    """
+    if not text:
+        return
+    n_words = _count_words(text)
+    if n_words > PLOTTEXT_HARD_WORD_CAP:
+        raise ValidationError(
+            f"PlotText.text has {n_words} words; engine hard cap "
+            f"is {PLOTTEXT_HARD_WORD_CAP} words. The skill "
+            f"(chart_context.md §8.3) recommends a "
+            f"{PLOTTEXT_SOFT_WORD_CAP}-word SOFT limit so the "
+            f"narrative panel stays one-line tight and doesn't crowd "
+            f"the chart. Tighten the takeaway -- PlotText is for "
+            f"a single insight, not a full sentence. If you need "
+            f"more, route via "
+            f"`make_chart(caption=..., side_right=..., side_left=...)` "
+            f"directly (those kwargs have no word cap). Got: {text!r}"
+        )
 
 
 @dataclass
 class PlotText(Annotation):
-    """Free-form text anchored to a corner of the plot region.
+    """Free-form narrative text rendered OUTSIDE the plot region.
 
-    Unlike ``Callout`` and ``PointLabel`` which anchor to ``(x, y)`` data
-    coordinates, ``PlotText`` anchors to the plot box itself (top-left,
-    top-right, bottom-left, etc.). Use it for narrative text that should
-    sit in the white space *inside* the plot frame regardless of where
-    the data happens to be.
+    PlotText panels are routed through the existing text-panel system
+    (``side_left`` / ``side_right`` / ``caption``) and live to the
+    side or below the chart -- they never sit inside the plot area.
+    Because the panel is OUTSIDE the plot box by construction,
+    PlotText cannot collide with bars, lines, axis labels, or data
+    annotations.
 
-    The position is one of nine corner / edge anchors. Padding controls
-    the inset from the plot edge. Multi-line text is supported via
-    explicit ``\\n`` characters or by passing a longer string and letting
-    ``max_width_pct`` auto-wrap to a fraction of the plot width.
+    Position enum maps to slot:
 
-    Implementation: a layered ``mark_text`` chart whose ``x`` and ``y``
-    channels use ``alt.value(px)`` for absolute pixel positioning
-    relative to the inner plot region. Because positioning is plot-region
-    relative (not data-coordinate relative), ``PlotText`` works on every
-    chart type without knowing the data domain.
+    | position    | resolves to                                        |
+    |-------------|----------------------------------------------------|
+    | ``"right"`` | ``side_right``  (auto-fit width, default)          |
+    | ``"left"``  | ``side_left``   (auto-fit width)                   |
+    | ``"bottom"``| ``caption``     (full chart width, below)          |
+    | ``"auto"``  | first free slot in priority right -> bottom -> left |
 
-    The base ``label`` field is unused -- the text is carried in
-    ``text``. ``label_color`` is honored as an alias for ``color``.
+    Conflicts: an explicit ``make_chart(side_right=..., side_left=..., 
+    caption=...)`` kwarg always wins. A PlotText that targets the
+    same slot is rerouted to the next available position with a
+    warning. If all 3 slots are occupied, the PlotText is dropped
+    with a warning.
+
+    Word cap: ``text`` MUST be at most ``PLOTTEXT_HARD_WORD_CAP``
+    words (currently 10). Past that the engine raises
+    ``ValidationError`` at construction. The skill
+    (``chart_context.md`` §8.3) advertises a tighter SOFT limit of
+    ``PLOTTEXT_SOFT_WORD_CAP`` words (currently 8) so PRISM has a
+    2-word safety buffer. The intent is "one-line takeaway", not
+    "full sentence" -- for longer narratives use the
+    ``make_chart(caption=..., side_right=..., side_left=...)`` kwargs
+    directly (they have no word cap).
+
+    The 2026-05-10 rewire removed the 9 inside-corner anchors that
+    PlotText used to support (``top-*`` / ``middle-*`` / ``bottom-*``).
+    Passing any legacy position raises a ``ValidationError`` with a
+    migration hint.
+
+    The base ``label`` / ``label_color`` fields are unused -- the
+    payload is in ``text`` and the colour is in ``color``.
     """
 
     text: str = ""
-    position: Literal[
-        "auto",
-        "top-left", "top-center", "top-right",
-        "middle-left", "middle-center", "middle-right",
-        "bottom-left", "bottom-center", "bottom-right",
-    ] = "auto"
-    padding_x: int = 12
-    padding_y: int = 12
-    font_size: int = 10
-    color: str = "#444444"
+    position: Literal["auto", "left", "right", "bottom"] = "auto"
+    # Defaults mirror ``_TEXT_PANEL_DEFAULTS`` so a bare
+    # ``PlotText(text="...")`` produces the same visual as a bare
+    # ``make_chart(side_right="...")``. See the readability tuning
+    # block on _TEXT_PANEL_DEFAULTS for the rationale on the 12 / #555
+    # values.
+    font_size: int = 12
+    color: str = "#555555"
     italic: bool = False
     align: Optional[Literal["left", "center", "right"]] = None
-    max_width_pct: float = 0.5
+    width_pct: Optional[float] = None
 
-    def _resolve_align(self, resolved_position: str) -> Literal["left", "center", "right"]:
-        if self.align is not None:
-            return self.align
-        if resolved_position.endswith("-left"):
-            return "left"
-        if resolved_position.endswith("-right"):
-            return "right"
-        return "center"
-
-    def _resolve_baseline(self, resolved_position: str) -> Literal["top", "middle", "bottom"]:
-        head = resolved_position.split("-")[0]
-        if head == "top":
-            return "top"
-        if head == "bottom":
-            return "bottom"
-        return "middle"
+    def __post_init__(self) -> None:
+        # Validate eagerly so legacy position values + over-cap text
+        # raise at construction time rather than at render time.
+        # Catches the canonical migration mistake
+        # (``position='top-right'``) and the canonical word-budget
+        # violation (paragraph-length ``text``) before the
+        # annotations list is even passed to make_chart.
+        _validate_plottext_position(self.position)
+        _validate_plottext_text(self.text)
 
     def to_layer(
         self,
@@ -3136,97 +3131,177 @@ class PlotText(Annotation):
         mapping: Dict[str, Any],
         skin: Dict[str, Any],
     ) -> alt.Chart:
-        # Default path when chart_width / chart_height aren't available.
-        # ``render_annotations`` special-cases ``PlotText`` and provides
-        # the dimensions, so this path is mostly defensive.
-        return self.build_layer(
-            chart_width=400, chart_height=300, skin=skin,
-            df=df, mapping=mapping,
+        # Defensive: PlotText is routed to side panels via
+        # ``_route_plottext_to_panels`` BEFORE ``render_annotations``
+        # runs, so this method should never be reached. If it is, the
+        # routing helper was bypassed -- raise so the caller sees it.
+        raise RuntimeError(
+            "PlotText.to_layer() should never be called; PlotText is "
+            "routed to outside text panels via "
+            "_route_plottext_to_panels before the annotation layer "
+            "pass. If you see this, the routing helper was bypassed."
         )
 
-    def build_layer(
-        self,
-        *,
-        chart_width: int,
-        chart_height: int,
-        skin: Dict[str, Any],
-        df: Optional[pd.DataFrame] = None,
-        mapping: Optional[Dict[str, Any]] = None,
-        chart_type: Optional[str] = None,
-    ) -> alt.Chart:
-        """Build the text layer using the plot region's pixel dimensions.
 
-        Called by ``render_annotations`` which threads through the rendered
-        chart's width / height plus (optionally) the df / mapping / chart
-        type so ``position='auto'`` can pick the least-occupied corner.
-        """
-        if not self.text:
-            return alt.Chart(pd.DataFrame({"_": []})).mark_point()
+# ---------------------------------------------------------------------------
+# PlotText -> outside-panel routing
+# ---------------------------------------------------------------------------
 
-        # Auto-pick a corner that doesn't collide with the data. Falls
-        # back to "top-right" when df / mapping / chart_type aren't
-        # available (keeps the API stable on legacy call paths).
-        if self.position == "auto":
-            resolved_position = _pick_plottext_anchor(
-                df=df,
-                mapping=mapping or {},
-                chart_type=chart_type,
-            )
-        else:
-            resolved_position = self.position
-            if resolved_position.startswith("middle-"):
-                logger.warning(
-                    "[PlotText] position=%r anchors INSIDE the plot "
-                    "region; no collision detection vs data, axes, "
-                    "or legend. Use 'auto' or a corner anchor "
-                    "(top-*/bottom-*) when the chart's middle is "
-                    "occupied.",
-                    resolved_position,
-                )
+# Map a PlotText.position value to the text-panel slot key used by
+# _apply_text_panels_to_spec / _wrap_with_text_panels. Slots are
+# left/right/caption (no top slot exists in the panel system today).
+_PLOTTEXT_POSITION_TO_SLOT: Dict[str, str] = {
+    "right": "right",
+    "left": "left",
+    "bottom": "caption",
+}
 
-        align = self._resolve_align(resolved_position)
-        baseline = self._resolve_baseline(resolved_position)
 
-        max_text_w_px = int(chart_width * max(0.05, min(1.0, self.max_width_pct)))
-        wrapped = _wrap_text_to_width(self.text, max_text_w_px, self.font_size)
+def _route_plottext_to_panels(
+    annotations: Optional[List["Annotation"]],
+    *,
+    explicit_caption: Union[str, Dict[str, Any], None],
+    explicit_side_left: Union[str, Dict[str, Any], None],
+    explicit_side_right: Union[str, Dict[str, Any], None],
+) -> Tuple[
+    List["Annotation"],
+    Union[str, Dict[str, Any], None],
+    Union[str, Dict[str, Any], None],
+    Union[str, Dict[str, Any], None],
+    List[str],
+]:
+    """Pull ``PlotText`` annotations out of the annotation list and
+    route them to the existing outside-the-plot text-panel system.
 
-        head = resolved_position.split("-")[0]
-        tail = resolved_position.split("-")[1]
+    Returns a 5-tuple:
+      ``(filtered_annotations, caption, side_left, side_right, warnings)``
 
-        if tail == "left":
-            x_px = self.padding_x
-        elif tail == "right":
-            x_px = chart_width - self.padding_x
-        else:
-            x_px = chart_width // 2
+    The filtered annotation list has every ``PlotText`` removed.
+    ``caption`` / ``side_left`` / ``side_right`` reflect any explicit
+    kwargs passed in PLUS any new panels routed in from PlotText
+    instances. ``warnings`` is a list of human-readable warning strings
+    that the caller should append to its ``result.warnings`` so PRISM
+    sees the routing decisions.
 
-        if head == "top":
-            y_px = self.padding_y
-        elif head == "bottom":
-            y_px = chart_height - self.padding_y
-        else:
-            y_px = chart_height // 2
+    Resolution rules (per the 2026-05-10 design decision):
 
-        font_family = skin.get("font_family", "Liberation Sans, Arial, sans-serif")
-        text_color = self.label_color or self.color
-
+    * Explicit kwargs always win. A ``PlotText(position='right')``
+      whose target slot is already filled by ``side_right=`` is
+      rerouted to the next available slot in priority order
+      (right -> bottom -> left).
+    * ``position='auto'`` resolves to the first free slot in the same
+      priority order.
+    * If all 3 slots are occupied (by explicit kwargs and earlier
+      routed PlotTexts), the PlotText is dropped silently except for
+      a warning surfaced to the caller.
+    * Empty-text PlotTexts are dropped silently (no warning).
+    """
+    if not annotations:
         return (
-            alt.Chart(pd.DataFrame({"_": [0]}))
-            .mark_text(
-                align=align,
-                baseline=baseline,
-                fontSize=self.font_size,
-                font=font_family,
-                fontStyle="italic" if self.italic else "normal",
-                color=text_color,
-                lineBreak="\n",
-                text=wrapped,
-            )
-            .encode(
-                x=alt.value(x_px),
-                y=alt.value(y_px),
-            )
+            list(annotations) if annotations else [],
+            explicit_caption, explicit_side_left, explicit_side_right,
+            [],
         )
+
+    keep: List[Annotation] = []
+    plottexts: List[PlotText] = []
+    for a in annotations:
+        if isinstance(a, PlotText):
+            plottexts.append(a)
+        else:
+            keep.append(a)
+
+    if not plottexts:
+        return (
+            keep, explicit_caption, explicit_side_left,
+            explicit_side_right, [],
+        )
+
+    slot_to_value: Dict[str, Any] = {
+        "caption": explicit_caption,
+        "left": explicit_side_left,
+        "right": explicit_side_right,
+    }
+    slot_source: Dict[str, str] = {}
+    if explicit_caption is not None:
+        slot_source["caption"] = "make_chart(caption=...) kwarg"
+    if explicit_side_left is not None:
+        slot_source["left"] = "make_chart(side_left=...) kwarg"
+    if explicit_side_right is not None:
+        slot_source["right"] = "make_chart(side_right=...) kwarg"
+
+    warnings_out: List[str] = []
+
+    def _build_cfg_from_plottext(pt: PlotText) -> Dict[str, Any]:
+        cfg = dict(_TEXT_PANEL_DEFAULTS)
+        cfg["text"] = pt.text
+        cfg["font_size"] = int(pt.font_size)
+        cfg["color"] = pt.color
+        cfg["italic"] = bool(pt.italic)
+        if pt.align is not None:
+            cfg["align"] = pt.align
+        if pt.width_pct is not None:
+            cfg["width_pct"] = pt.width_pct
+        return cfg
+
+    for pt in plottexts:
+        if not pt.text or not pt.text.strip():
+            continue
+
+        if pt.position == "auto":
+            try_order = list(_PLOTTEXT_AUTO_PRIORITY)
+        else:
+            # Explicit position; try requested first, then walk the
+            # priority order skipping the requested slot for the
+            # conflict-fallback path.
+            try_order = [pt.position] + [
+                p for p in _PLOTTEXT_AUTO_PRIORITY if p != pt.position
+            ]
+
+        landed: Optional[str] = None
+        for pos in try_order:
+            slot = _PLOTTEXT_POSITION_TO_SLOT[pos]
+            if slot_to_value[slot] is None:
+                cfg = _build_cfg_from_plottext(pt)
+                slot_to_value[slot] = cfg
+                preview = pt.text[:30].replace("\n", " ")
+                if len(pt.text) > 30:
+                    preview = preview + "..."
+                slot_source[slot] = (
+                    f"PlotText(position={pos!r}, text={preview!r})"
+                )
+                if pt.position not in {"auto", pos}:
+                    occupant = slot_source.get(
+                        _PLOTTEXT_POSITION_TO_SLOT[pt.position],
+                        "another caller",
+                    )
+                    warnings_out.append(
+                        f"[PlotText] requested position="
+                        f"{pt.position!r} already taken by {occupant}; "
+                        f"rerouted to position={pos!r}."
+                    )
+                landed = pos
+                break
+
+        if landed is None:
+            preview = pt.text[:50].replace("\n", " ")
+            if len(pt.text) > 50:
+                preview = preview + "..."
+            warnings_out.append(
+                f"[PlotText] all 3 panel slots (right/bottom/left) "
+                f"occupied; dropped PlotText(text={preview!r}). "
+                "Slot occupants: " + ", ".join(
+                    f"{k}={v}" for k, v in sorted(slot_source.items())
+                )
+            )
+
+    return (
+        keep,
+        slot_to_value["caption"],
+        slot_to_value["left"],
+        slot_to_value["right"],
+        warnings_out,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3368,6 +3443,224 @@ def _auto_stagger_band_labels(
             )
         )
 
+    return new_annotations
+
+
+def _compute_bar_value_suppression(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    annotations: Optional[List["Annotation"]],
+) -> Tuple[set, Optional[Tuple[float, float]]]:
+    """Decide which bar value labels should be suppressed.
+
+    Class-1 (Bar_value_label_vs_Callout) and class-4
+    (Stacked_bar_value_label_in_Band) of the 2026-05-10 collision
+    audit (`projects/altair/dev/scratch/_collision_audit_2026-05-10_1955`).
+
+    Returns ``(x_set_to_suppress, y_range_to_suppress)``:
+      - ``x_set_to_suppress`` -- x-values where bar value labels should
+        not be emitted because a Callout / PointLabel / Arrow is
+        anchored to the same x. The annotation's text takes priority;
+        the redundant numeric bar value would just collide.
+      - ``y_range_to_suppress`` -- ``(y_lo, y_hi)`` band of the union
+        of all labelled Bands. Stacked-bar TOTAL value labels whose y
+        falls in this range are suppressed (they would render inside
+        the Band's coloured fill and fight with the Band's own label).
+
+    The per-bar single-series value labels DO NOT use the y-range
+    filter -- a non-stacked bar's value label sits at the bar's apex
+    and is intentionally above the Band's y range when the bar is
+    taller than the Band. Class-4 specifically targets the stacked-
+    total layer.
+    """
+    x_set: set = set()
+    y_range: Optional[Tuple[float, float]] = None
+    if not annotations:
+        return x_set, y_range
+
+    x_field = mapping.get("x")
+    if not isinstance(x_field, str) or x_field not in df.columns:
+        return x_set, y_range
+
+    # Class 1: collect x positions of label-bearing Callout / PointLabel /
+    # Arrow / PointHighlight annotations. Arrow uses x2 (head) for the
+    # label anchor; the others use x.
+    for ann in annotations:
+        ann_x: Any = None
+        if isinstance(ann, (Callout, PointLabel, PointHighlight)):
+            ann_x = getattr(ann, "x", None)
+        elif isinstance(ann, Arrow):
+            ann_x = getattr(ann, "x2", None) or getattr(ann, "x", None)
+        else:
+            continue
+        if ann_x is None:
+            continue
+        # Coerce datetime-like to pandas Timestamp so it matches the
+        # bar's x_field values when we filter df later. Strings stay as
+        # strings; numerics stay numeric.
+        try:
+            if hasattr(ann_x, "timestamp") or isinstance(ann_x, str):
+                # Try datetime conversion; fall back to raw string.
+                try:
+                    ts = pd.Timestamp(ann_x)
+                    if pd.api.types.is_datetime64_any_dtype(df[x_field]):
+                        ann_x = ts
+                except (TypeError, ValueError):
+                    pass
+        except Exception:  # noqa: BLE001
+            pass
+        x_set.add(ann_x)
+
+    # Class 4: union of labelled Band y-ranges.
+    for ann in annotations:
+        if not isinstance(ann, Band):
+            continue
+        if not ann.label:
+            continue
+        if ann.y1 is None or ann.y2 is None:
+            continue
+        try:
+            y_lo = float(min(ann.y1, ann.y2))
+            y_hi = float(max(ann.y1, ann.y2))
+        except (TypeError, ValueError):
+            continue
+        if y_range is None:
+            y_range = (y_lo, y_hi)
+        else:
+            y_range = (min(y_range[0], y_lo), max(y_range[1], y_hi))
+
+    return x_set, y_range
+
+
+def _dedup_vlines_by_x(
+    annotations: List[Annotation],
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+) -> List[Annotation]:
+    """Dedup VLines that share an x within a small tolerance.
+
+    Two or more VLines anchored to the same date / numeric x render as a
+    single rule (because the dashes overlap pixel-perfectly), but the
+    engine renders BOTH rule layers. The result reads as one line with
+    the existing ``_auto_stagger_vline_labels`` ladder of stacked
+    labels, but the duplication is silent -- the LLM never knows two
+    events were collapsed into one.
+
+    Algorithm: group VLines by x with tolerance:
+      - datetime: 1 day,
+      - numeric: 0.5%% of x-range,
+      - other: exact-string equality.
+    For each group of 2+, keep the first VLine, concat its label with
+    the others (" / " separator), drop the rest. ``logger.info`` echoes
+    the merge so QC traces show the dedup clearly. Surface the dedup in
+    ``mapping['_warnings']`` for the LLM if a warnings collector is
+    present.
+
+    This pass MUST run before ``_drop_right_edge_vlines`` and
+    ``_auto_stagger_vline_labels`` so survivors of the dedup get the
+    same downstream treatment a single user-supplied VLine would.
+    """
+    if not annotations:
+        return annotations
+    vlines = [
+        (i, ann) for i, ann in enumerate(annotations) if isinstance(ann, VLine)
+    ]
+    if len(vlines) < 2:
+        return annotations
+
+    x_col = mapping.get("x", "x")
+    is_dt = (
+        x_col in df.columns
+        and pd.api.types.is_datetime64_any_dtype(df[x_col])
+    )
+    is_num = (
+        x_col in df.columns
+        and pd.api.types.is_numeric_dtype(df[x_col])
+    )
+
+    # Tolerance: 1 day for datetime; 0.5%% of x-range for numeric.
+    if is_dt:
+        try:
+            tol = pd.Timedelta(days=1)
+        except Exception:  # noqa: BLE001
+            tol = pd.Timedelta(0)
+    elif is_num and len(df) > 0:
+        try:
+            x_range = float(df[x_col].max()) - float(df[x_col].min())
+            tol = max(x_range * 0.005, 1e-9)
+        except Exception:  # noqa: BLE001
+            tol = 0.0
+    else:
+        tol = None
+
+    def _close(a: Any, b: Any) -> bool:
+        if tol is None:
+            return str(a) == str(b)
+        try:
+            if is_dt:
+                return abs(pd.Timestamp(a) - pd.Timestamp(b)) <= tol
+            if is_num:
+                return abs(float(a) - float(b)) <= tol
+        except (TypeError, ValueError):
+            return str(a) == str(b)
+        return False
+
+    # Greedy single-pass clustering. Keep the FIRST occurrence as the
+    # cluster representative; subsequent duplicates merge into it.
+    cluster_rep: Dict[int, int] = {}  # idx -> rep_idx
+    for i, (_, vi) in enumerate(vlines):
+        rep = None
+        for j in range(i):
+            rep_idx = cluster_rep[vlines[j][0]]
+            rep_ann = annotations[rep_idx]
+            if isinstance(rep_ann, VLine) and _close(rep_ann.x, vi.x):
+                rep = rep_idx
+                break
+        cluster_rep[vlines[i][0]] = rep if rep is not None else vlines[i][0]
+
+    # Collect duplicates per representative.
+    dup_labels_by_rep: Dict[int, List[str]] = {}
+    indices_to_drop: set = set()
+    for orig_idx, rep_idx in cluster_rep.items():
+        if rep_idx == orig_idx:
+            continue
+        ann = annotations[orig_idx]
+        if isinstance(ann, VLine) and ann.label:
+            dup_labels_by_rep.setdefault(rep_idx, []).append(ann.label)
+        indices_to_drop.add(orig_idx)
+
+    if not indices_to_drop:
+        return annotations
+
+    new_annotations: List[Annotation] = []
+    for i, ann in enumerate(annotations):
+        if i in indices_to_drop:
+            continue
+        if i in dup_labels_by_rep and isinstance(ann, VLine):
+            existing = ann.label or ""
+            extra = dup_labels_by_rep[i]
+            merged_parts = [s for s in [existing, *extra] if s]
+            merged = " / ".join(merged_parts)
+            logger.info(
+                "[_dedup_vlines_by_x] Merged %d VLines at x=%s into one "
+                "rule with label %r",
+                len(extra) + 1, ann.x, merged,
+            )
+            # VLine is a dataclass with label inherited from Annotation.
+            # Build a copy of the rep with the merged label.
+            new_annotations.append(
+                VLine(
+                    x=ann.x,
+                    label=merged,
+                    color=ann.color,
+                    label_color=ann.label_color,
+                    style=ann.style,
+                    stroke_dash=list(ann.stroke_dash),
+                    stroke_width=ann.stroke_width,
+                )
+            )
+        else:
+            new_annotations.append(ann)
     return new_annotations
 
 
@@ -4420,6 +4713,11 @@ def render_annotations(
 
     layers: List[alt.Chart] = [chart]
 
+    # ---- VLine same-x dedup (runs BEFORE right-edge reject + stagger so
+    # ----  duplicates collapse to a single rule before downstream passes
+    # ----  treat the survivors) ------------------------------------------
+    annotations = _dedup_vlines_by_x(annotations, df, mapping)
+
     # ---- right-edge VLine reject (runs BEFORE staggering so a clustered
     # ----  labeled VLine in the right-edge zone doesn't have its label
     # ----  extracted into a surviving PointLabel) -----------------------
@@ -4434,13 +4732,12 @@ def render_annotations(
 
     for annotation in annotations:
         # ---- drop universally-obvious HLines (context-aware) ----------
-        # The thresholds in ``_OBVIOUS_HLINE_THRESHOLDS`` (e.g. y=50 for
-        # PMI / y=2.0 for Fed inflation target) are only "obvious" when
-        # the chart's y-axis is actually plotting PMI / inflation / etc.
-        # Without that context check we kill legitimate y=50 lines on a
-        # revenue chart or y=2 lines on a yield chart. Gate the
-        # suppression on y_title keywords + zero is the only always-on
-        # threshold worth dropping (it overlaps the x-axis baseline).
+        # Only the canonical regime thresholds (y=50 for PMI / ISM /
+        # diffusion, y=2.0 for Fed inflation target) are "obvious" --
+        # and only when the chart's y-axis is actually plotting that
+        # series. Gate every suppression on y_title keywords so a
+        # legitimate y=50 line on a revenue chart or a y=2 line on a
+        # yield chart passes through unchanged.
         if isinstance(annotation, HLine):
             try:
                 hline_val = float(annotation.y)
@@ -4448,20 +4745,6 @@ def render_annotations(
                 hline_val = None
             label_lower = (annotation.label or "").lower()
             y_title_lower = (mapping.get("y_title") or "").lower()
-            if hline_val == 0.0:
-                # The y-axis grid line at zero is the implicit baseline on
-                # every chart whose data crosses (or touches) zero. An
-                # explicit HLine(y=0) -- with or without a label -- is
-                # always redundant; drop the rule AND any label silently
-                # so the chart reads cleanly. If zero matters narratively,
-                # call it out in the title / subtitle, not as a duplicate
-                # rule on top of the axis grid line.
-                logger.warning(
-                    "Suppressed HLine(y=0)%s: zero line is already implicit "
-                    "on a y-axis crossing zero (label dropped with the rule).",
-                    f" with label {annotation.label!r}" if annotation.label else "",
-                )
-                continue
             # y=50 + PMI/ISM context -- but only suppress when the label
             # references the canonical expansion-contraction concept.
             # A user passing label='Q1 capacity threshold' on a PMI
@@ -4508,26 +4791,6 @@ def render_annotations(
                 logger.warning(
                     "Suppressed HLine(y=2) on inflation chart: "
                     "Fed 2%% target is universally known."
-                )
-                continue
-
-        # ---- drop horizontal Segment at y=0 (mirrors the HLine y=0 rule)
-        # A horizontal Segment with y1 == y2 == 0 is the windowed form of
-        # HLine(y=0) -- still redundant against the y-axis grid line at
-        # zero. Drop the segment AND any label silently for the same
-        # reason: the implicit zero baseline already conveys it.
-        if isinstance(annotation, Segment):
-            try:
-                seg_y1 = float(annotation.y1)
-                seg_y2 = float(annotation.y2)
-            except (TypeError, ValueError):
-                seg_y1 = seg_y2 = None
-            if seg_y1 == 0.0 and seg_y2 == 0.0:
-                logger.warning(
-                    "Suppressed horizontal Segment at y=0 (y1=y2=0)%s: "
-                    "zero baseline is already implicit on a y-axis crossing "
-                    "zero (label dropped with the segment).",
-                    f" with label {annotation.label!r}" if annotation.label else "",
                 )
                 continue
 
@@ -5403,25 +5666,22 @@ def render_annotations(
                     layers.append(sub_layers[0] if len(sub_layers) == 1 else alt.layer(*sub_layers))
                     continue
 
-        # ---- PlotText: corner-anchored via absolute pixel positioning ---
+        # ---- PlotText: routed to OUTSIDE text panels (defensive skip) ---
+        # Per the 2026-05-10 outside-only rewire, every PlotText is
+        # pulled out of the annotations list by
+        # ``_route_plottext_to_panels`` BEFORE this layer pass runs
+        # (see the call sites in ``make_chart`` and
+        # ``_build_single_chart``). If a PlotText slips through to
+        # here, the routing helper was bypassed -- log and skip
+        # silently so we don't attempt to render the now-removed
+        # inside-anchor layer.
         if isinstance(annotation, PlotText):
-            if chart_width is None or chart_height is None:
-                logger.warning(
-                    "[render_annotations] PlotText skipped: "
-                    "chart_width / chart_height not provided."
-                )
-                continue
-            try:
-                layers.append(annotation.build_layer(
-                    chart_width=chart_width,
-                    chart_height=chart_height,
-                    skin=skin_config,
-                    df=df,
-                    mapping=mapping,
-                    chart_type=chart_type,
-                ))
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[render_annotations] PlotText failed: %s", exc)
+            logger.warning(
+                "[render_annotations] PlotText reached the layer pass; "
+                "should have been routed to outside text panels by "
+                "_route_plottext_to_panels. Dropping silently. text=%r",
+                annotation.text[:50],
+            )
             continue
 
         # ---- default: delegate to the annotation's own to_layer() -------
@@ -5529,7 +5789,6 @@ class AxisConfig:
     # ticks on a multi-day intraday axis). See ``determine_date_format``.
     label_expr: Optional[str] = None
     title: Optional[str] = None
-    grid: bool = True
     domain_min: Optional[float] = None
     domain_max: Optional[float] = None
     scale_type: str = "linear"  # 'linear', 'log', 'sqrt'
@@ -7352,7 +7611,6 @@ GS_CLEAN: Dict[str, Any] = {
     "secondary_color":    GS_PRIMARY["colors"][1],   # #94C7DD light blue
     "accent_color":       GS_PRIMARY["colors"][4],   # #C00000 red (alert)
     "background_color":   "#FFFFFF",
-    "grid_color":         "#E6E6E6",
     "trendline_color":    "#999999",
     "color_scheme":       list(GS_PRIMARY["colors"]),
     "label_color_scheme": list(GS_PRIMARY["label_colors"]),
@@ -7376,9 +7634,7 @@ GS_CLEAN: Dict[str, Any] = {
     "config": {
         "view": {"strokeWidth": 0},
         "axis": {
-            "grid": True,
-            "gridColor": "#E6E6E6",
-            "gridOpacity": 1.0,
+            "grid": False,
             "domainColor": "#000000",
             "tickColor": "#000000",
             "labelColor": "#000000",
@@ -7882,20 +8138,17 @@ def _get_y_axis(
     skin_config: Dict[str, Any],
     title: Optional[str] = None,
     orient: Optional[str] = None,
-    grid: Optional[bool] = None,
 ) -> alt.Axis:
     """Build a y-axis ``alt.Axis`` with skin-derived defaults.
 
     Pulls ``orient`` from the skin's ``config.axis.orient`` (defaults
-    to ``'left'``). ``grid=None`` lets Vega-Lite use the skin's grid
-    setting; pass ``False`` to suppress.
+    to ``'left'``).
     """
     axis_config = skin_config.get("config", {}).get("axis", {})
     resolved_orient = orient or axis_config.get("orient", "left")
     return alt.Axis(
         orient=resolved_orient,
         title=title,
-        grid=grid,
     )
 
 
@@ -8142,10 +8395,11 @@ def _validate_spec_has_data(
 def _apply_heatmap_config(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Apply heatmap-specific configuration overrides.
 
-    Heatmaps need axis grid suppression to avoid white-line artifacts
-    showing through cells. This patches the ``config.axis`` block of
-    the Vega-Lite spec to override any global config that would
-    otherwise draw grid lines through heatmap cells.
+    Belt-and-suspenders ``grid``/``domain``/``ticks`` suppression on the
+    ``config.axis`` block. The skin already disables grid globally, but
+    heatmaps are the one chart type where any axis chrome bleeding
+    through cells produces white-line artifacts, so we patch the spec
+    directly to make the suppression unconditional.
 
     Returns a deep-copied spec; the input is not mutated.
     """
@@ -9678,9 +9932,27 @@ def _build_bar(
         # *inside* the dark-blue bar (same anchor lands above the
         # y_value point, which for negatives is the bar's far edge), so
         # white reads cleanly there. Mirrors the heatmap-cell pattern.
+        #
+        # Class 1 absorption (collision sweep 2026-05-10): suppress the
+        # value label on bars whose x-position is anchored by a Callout /
+        # PointLabel / Arrow annotation. The annotation's text takes
+        # priority; the redundant numeric label would just collide.
+        suppress_x_set = mapping.get("_suppress_bar_value_at_x") or set()
         if not color_field and df[x_field].nunique() <= 15:
+            df_for_labels = df
+            if suppress_x_set:
+                # Coerce the comparison values to a set of strings so we
+                # match across datetime / numeric / string variants.
+                str_suppress = {str(x) for x in suppress_x_set}
+                df_for_labels = df[~df[x_field].astype(str).isin(str_suppress)]
+                n_dropped = len(df) - len(df_for_labels)
+                if n_dropped > 0:
+                    logger.info(
+                        "[_build_bar] Suppressed %d bar value label(s) at "
+                        "annotation-anchored x-position(s).", n_dropped,
+                    )
             text_labels = (
-                alt.Chart(df)
+                alt.Chart(df_for_labels)
                 .mark_text(
                     align="center",
                     baseline="bottom",
@@ -9720,6 +9992,36 @@ def _build_bar(
             if not has_negative and pd.api.types.is_numeric_dtype(df[y_field]):
                 # Stacked text labels at the top of each stacked total.
                 stack_totals = df.groupby(x_field)[y_field].sum().reset_index()
+
+                # Class 1 absorption (annotation-anchored x suppression).
+                if suppress_x_set:
+                    str_suppress = {str(x) for x in suppress_x_set}
+                    stack_totals = stack_totals[
+                        ~stack_totals[x_field].astype(str).isin(str_suppress)
+                    ]
+
+                # Class 4 absorption (collision sweep 2026-05-10):
+                # suppress the stacked-total value label when the total
+                # falls inside a labelled Band's y-range. Both labels
+                # would render in the same pixel band; the Band's label
+                # (the named regime) wins.
+                y_range_suppress = mapping.get("_suppress_bar_total_in_y_range")
+                if y_range_suppress is not None and len(stack_totals) > 0:
+                    y_lo, y_hi = y_range_suppress
+                    n_pre = len(stack_totals)
+                    stack_totals = stack_totals[
+                        (stack_totals[y_field] < y_lo)
+                        | (stack_totals[y_field] > y_hi)
+                    ]
+                    n_dropped = n_pre - len(stack_totals)
+                    if n_dropped > 0:
+                        logger.info(
+                            "[_build_bar] Suppressed %d stacked-bar TOTAL "
+                            "value label(s) inside Band y-range "
+                            "[%.3f, %.3f].",
+                            n_dropped, y_lo, y_hi,
+                        )
+
                 stack_text = (
                     alt.Chart(stack_totals)
                     .mark_text(
@@ -11232,7 +11534,7 @@ def _build_waterfall(
             y=alt.Y(
                 "_wf_y_start:Q",
                 title=y_title,
-                axis=alt.Axis(titleFontWeight="normal", grid=True),
+                axis=alt.Axis(titleFontWeight="normal"),
             ),
             y2=alt.Y2("_wf_y_end:Q"),
             color=alt.Color("_wf_color:N", scale=None, legend=None),
@@ -12509,8 +12811,8 @@ def make_chart(
         edge_only_ticks: When ``mapping['facet']`` is set, suppress
             tick labels on inner panels -- only the bottom row keeps
             x-tick labels and only the leftmost column keeps y-tick
-            labels. Tick MARKS still render so grid lines stay
-            aligned. Default False.
+            labels. Tick MARKS still render so panel boundaries stay
+            aligned across the grid. Default False.
         edge_only_axis_titles: Same as ``edge_only_ticks`` but for
             axis titles. Default False.
 
@@ -12763,6 +13065,75 @@ def make_chart(
         width = skin_config.get("width", 600)
         height = skin_config.get("height", 400)
 
+    # ---- Pre-dispatch annotation absorption (Phase 1 of collision sweep)
+    # ---- See dev/scratch/_collision_audit_2026-05-10_1955/inventory.md
+    #
+    # Three engine-side absorptions happen here BEFORE dispatch so the
+    # bar builders + Callout layer see the cleaned state:
+    #
+    # (a) Class 9 -- thread chart_width into mapping for Callout dx clamp.
+    #     Without this Callout.to_layer falls back to the 700px wide
+    #     default; the threaded value lets the clamp respect the active
+    #     dimension preset.
+    #
+    # (b) Class 11 -- grouped bar (color + stack=False) silently drops
+    #     annotations because Vega-Lite column faceting doesn't support
+    #     layered annotations. Surface a warning so the LLM knows; drop
+    #     the annotations explicitly so render_annotations doesn't try.
+    #
+    # (c) Classes 1+4 -- compute bar value label suppression. Bar charts
+    #     auto-emit numeric value labels above each bar. When a Callout /
+    #     PointLabel / Arrow is anchored to the same bar (class 1), or
+    #     when a labelled Band's y-range overlaps a stacked-bar total
+    #     (class 4), the engine should suppress the redundant bar value
+    #     label. Stash the suppression sets in mapping for the bar
+    #     builders to consume.
+    mapping["_chart_width_px"] = width
+
+    if (
+        chart_type in {"bar", "bar_horizontal"}
+        and mapping.get("color")
+        and mapping.get("stack") is False
+        and annotations
+    ):
+        dropped_names = [
+            type(a).__name__ for a in annotations if a is not None
+        ]
+        logger.warning(
+            "[make_chart] Annotations not supported on grouped bar "
+            "(stack=False with a color column); dropping %d annotation(s) "
+            "(%s). Switch to stack=True or remove the color column to "
+            "render annotations.",
+            len(dropped_names), ", ".join(dropped_names),
+        )
+        warnings.append(
+            f"Annotations dropped on grouped bar ({len(dropped_names)} "
+            f"annotation(s): {', '.join(dropped_names)}). Vega-Lite column "
+            f"faceting doesn't support layered annotations. Switch to "
+            f"stack=True (stacked bars) or render the chart without color "
+            f"to see the annotations."
+        )
+        annotations = []
+
+    if chart_type in {"bar", "bar_horizontal"}:
+        x_set_suppress, y_range_suppress = _compute_bar_value_suppression(
+            df, mapping, annotations,
+        )
+        if x_set_suppress:
+            mapping["_suppress_bar_value_at_x"] = x_set_suppress
+            logger.info(
+                "[make_chart] Suppressing bar value labels at %d x-position(s) "
+                "due to anchored Callout / PointLabel / Arrow annotations.",
+                len(x_set_suppress),
+            )
+        if y_range_suppress is not None:
+            mapping["_suppress_bar_total_in_y_range"] = y_range_suppress
+            logger.info(
+                "[make_chart] Suppressing stacked-bar TOTAL value labels "
+                "in y-range [%.3f, %.3f] (overlapped by labelled Band).",
+                y_range_suppress[0], y_range_suppress[1],
+            )
+
     # ---- Build the chart ------------------------------------------------
     try:
         chart = _dispatch_builder(
@@ -12826,6 +13197,30 @@ def make_chart(
             annotations = [
                 a for a in annotations if not isinstance(a, LastValueLabel)
             ]
+
+    # ---- PlotText -> outside text panels (route BEFORE layer pass) -----
+    # PlotText renders OUTSIDE the plot region only (per the 2026-05-10
+    # outside-only rewire). Pull every PlotText out of the annotations
+    # list here and convert it into the appropriate text-panel slot
+    # (caption / side_left / side_right). Explicit panel kwargs win;
+    # PlotTexts that target an occupied slot are rerouted to the next
+    # available position (warning surfaced). The downstream
+    # ``_apply_text_panels_to_spec`` call (~70 lines below) picks up
+    # the resolved panel values without knowing PlotText was the source.
+    if annotations:
+        (
+            annotations,
+            caption,
+            side_left,
+            side_right,
+            _plottext_warnings,
+        ) = _route_plottext_to_panels(
+            annotations,
+            explicit_caption=caption,
+            explicit_side_left=side_left,
+            explicit_side_right=side_right,
+        )
+        warnings.extend(_plottext_warnings)
 
     # ---- Annotations (layer first; configure must be applied AFTER ------
     # because altair rejects ``alt.layer(...)`` of charts that already
@@ -13417,11 +13812,39 @@ def _build_single_chart(
                 )
             )
 
+    # Per-cell PlotText routing: pull PlotText annotations out and
+    # promote them to per-cell text-panel slots BEFORE the layer pass.
+    # ``ChartSpec.caption`` / ``side_left`` / ``side_right`` (set by
+    # the composite caller) win against PlotText that targets the
+    # same slot -- next-available fallback per
+    # ``_route_plottext_to_panels`` semantics.
+    cell_annotations = spec.annotations
+    cell_caption = spec.caption
+    cell_side_left = spec.side_left
+    cell_side_right = spec.side_right
+    if cell_annotations:
+        (
+            cell_annotations,
+            cell_caption,
+            cell_side_left,
+            cell_side_right,
+            _cell_pt_warnings,
+        ) = _route_plottext_to_panels(
+            cell_annotations,
+            explicit_caption=cell_caption,
+            explicit_side_left=cell_side_left,
+            explicit_side_right=cell_side_right,
+        )
+        for _w in _cell_pt_warnings:
+            logger.warning(
+                "[_build_single_chart] %r: %s", spec.title, _w,
+            )
+
     # Annotations.
-    if spec.annotations:
+    if cell_annotations:
         try:
             chart = render_annotations(
-                chart, spec.annotations, df, mapping, skin_config,
+                chart, cell_annotations, df, mapping, skin_config,
                 chart_type=spec.chart_type,
                 chart_width=width, chart_height=height,
             )
@@ -13517,15 +13940,19 @@ def _build_single_chart(
     # downstream reconstruction switch handles it via
     # ``alt.HConcatChart.from_dict`` / ``alt.VConcatChart.from_dict``.
     #
+    # Uses the routed values (cell_caption / cell_side_left /
+    # cell_side_right) which include any PlotText annotations that
+    # promoted into these slots above.
+    #
     # Reserve dimensions (forwarded by ``make_composite``) force every
     # sub-chart cell to reserve the SAME caption-row height and side-
     # panel widths. Without them, a 4-pack where one panel has a
     # caption and another has a side panel would render with
     # mismatched chart sizes and the chart plots would not align.
     has_own_text = (
-        spec.caption is not None
-        or spec.side_left is not None
-        or spec.side_right is not None
+        cell_caption is not None
+        or cell_side_left is not None
+        or cell_side_right is not None
     )
     has_reserve = (
         (reserve_caption_h or 0) > 0
@@ -13537,9 +13964,9 @@ def _build_single_chart(
             chart_spec_dict = _apply_text_panels_to_spec(
                 chart_spec_dict,
                 chart_width=width, chart_height=height,
-                caption=spec.caption,
-                side_left=spec.side_left,
-                side_right=spec.side_right,
+                caption=cell_caption,
+                side_left=cell_side_left,
+                side_right=cell_side_right,
                 skin_config=skin_config,
                 reserve_caption_h=reserve_caption_h,
                 reserve_side_left_w=reserve_side_left_w,
@@ -13598,15 +14025,25 @@ def _isolate(chart: alt.Chart) -> alt.Chart:
 
 # Default style for caption / side-panel text. Override per-call by
 # passing a dict instead of a bare string.
+#
+# 2026-05-10 readability tuning (per user feedback on the new
+# outside-only PlotText surface): bumped font_size 11 -> 12 (clearly
+# larger), color #666 -> #555 (slightly darker, better contrast),
+# padding 8 -> 5 (text starts closer to the chart edge -- combined
+# with the hconcat spacing reduction in _wrap_with_text_panels /
+# _apply_text_panels_to_spec the visible chart-to-text gap drops
+# from ~12px to ~5px). Tighter visual coupling makes the panel
+# feel like an integrated part of the chart instead of a detached
+# annotation.
 _TEXT_PANEL_DEFAULTS: Dict[str, Any] = {
-    "font_size": 11,
-    "color": "#666666",
+    "font_size": 12,
+    "color": "#555555",
     "italic": False,
     "align": "left",
     # Inner padding inside the text panel itself. The OUTER (chart-edge)
     # padding is killed asymmetrically by ``_build_text_panel`` so the
     # panel's chart-facing edge sits flush against the chart's border.
-    "padding": 8,
+    "padding": 5,
     "width_pct": None,  # side panels: fraction of chart width (default 0.22)
 }
 
@@ -13660,13 +14097,20 @@ def _build_text_panel(
     ``chart_edge`` controls asymmetric padding so the panel-side edge
     that abuts the chart has no outer gap (kills ~10px of dead space
     that Vega-Lite's default per-chart padding adds between concatenated
-    sub-charts):
+    sub-charts) AND collapses the inner text padding on that edge so
+    the text sits flush against the chart:
 
       - ``"right"`` -- this panel sits to the LEFT of the chart, so its
-        right edge abuts the chart; right outer padding -> 0.
+        right edge abuts the chart; right outer padding -> 0 AND the
+        text's right alignment uses ``padding_chart`` (1px) so the
+        last character lands right against the chart's left edge.
       - ``"left"``  -- this panel sits to the RIGHT of the chart;
-        left outer padding -> 0.
-      - ``"top"``   -- caption below the chart; top outer padding -> 0.
+        left outer padding -> 0 AND the text's left alignment uses
+        ``padding_chart`` (1px) so the first character lands right
+        against the chart's right edge.
+      - ``"top"``   -- caption below the chart; top outer padding -> 0
+        AND the text top inset uses ``padding_chart`` (1px) so the
+        caption's first line sits just below the chart's bottom edge.
       - ``None``    -- standalone, symmetric padding.
 
     Args:
@@ -13688,6 +14132,12 @@ def _build_text_panel(
     align = cfg["align"]
     padding = int(cfg["padding"])
 
+    # Asymmetric inner padding: tight on the chart-facing edge so the
+    # text sits flush against the chart, normal padding on the other
+    # edges so the panel doesn't feel cramped against the page edge.
+    # See ``chart_edge`` semantics in the docstring.
+    padding_chart = 1
+
     content_w = max(1, width - 2 * padding)
     wrapped = _wrap_text_to_width(text, content_w, font_size)
     n_lines = max(1, wrapped.count("\n") + 1)
@@ -13695,12 +14145,27 @@ def _build_text_panel(
     auto_h = n_lines * line_height + 2 * padding
     h = int(height) if height is not None else auto_h
 
-    if align == "left":
+    # X anchor: tight against the chart-facing edge when applicable,
+    # else honour the requested align.
+    if chart_edge == "left" and align == "left":
+        # side_right panel: text should sit at the panel's LEFT edge
+        # (which abuts the chart's right edge).
+        x_px = padding_chart
+    elif chart_edge == "right" and align == "right":
+        # side_left panel: text should sit at the panel's RIGHT edge
+        # (which abuts the chart's left edge).
+        x_px = width - padding_chart
+    elif align == "left":
         x_px = padding
     elif align == "right":
         x_px = width - padding
     else:
         x_px = width // 2
+
+    # Y anchor: caption text should sit just below the chart for
+    # ``chart_edge="top"`` (the caption-below-chart layout); side
+    # panels just use the normal top inset.
+    y_px = padding_chart if chart_edge == "top" else padding
 
     font_family = skin_config.get(
         "font_family", "Liberation Sans, Arial, sans-serif",
@@ -13735,7 +14200,7 @@ def _build_text_panel(
         )
         .encode(
             x=alt.value(x_px),
-            y=alt.value(padding),
+            y=alt.value(y_px),
         )
         .properties(width=width, height=h, padding=outer_pad)
     )
@@ -13867,7 +14332,7 @@ def _wrap_with_text_panels(
             right_cfg, width=right_w, height=chart_height,
             skin_config=skin_config, chart_edge="left",
         ))
-    return alt.hconcat(*h_parts, spacing=4).resolve_scale(
+    return alt.hconcat(*h_parts, spacing=0).resolve_scale(
         color="independent", x="independent", y="independent",
     ).resolve_legend(color="independent")
 
@@ -13935,18 +14400,36 @@ def _scan_text_panel_reserves(
     These reserves drive uniform per-cell wrapping in composite layouts
     so the chart plot regions align even when individual sub-charts
     carry different combinations of caption / side panels.
+
+    Treats PlotText annotations as text-panel sources too: each
+    ChartSpec's annotations are previewed through
+    ``_route_plottext_to_panels`` so a PlotText that promotes into
+    side_right contributes to the right-panel reserve width even
+    though the spec itself has ``side_right=None``. Without this the
+    composite would forget to reserve the right-side slot and the
+    PlotText panel would distort the per-cell width during the wrap.
     """
     max_cap_h = 0
     max_left_w = 0
     max_right_w = 0
     for spec in charts:
-        cap_cfg = _normalize_text_panel(getattr(spec, "caption", None))
+        # Preview PlotText routing to see which slots it would fill
+        # in this cell. Discards the filtered annotation list -- we
+        # only care about the resolved (caption / side_left /
+        # side_right) values for reserve sizing.
+        _ann, cell_cap, cell_left, cell_right, _w = _route_plottext_to_panels(
+            getattr(spec, "annotations", None),
+            explicit_caption=getattr(spec, "caption", None),
+            explicit_side_left=getattr(spec, "side_left", None),
+            explicit_side_right=getattr(spec, "side_right", None),
+        )
+        cap_cfg = _normalize_text_panel(cell_cap)
         if cap_cfg is not None:
             max_cap_h = max(max_cap_h, _estimate_caption_height(cap_cfg, chart_width))
-        left_cfg = _normalize_text_panel(getattr(spec, "side_left", None))
+        left_cfg = _normalize_text_panel(cell_left)
         if left_cfg is not None:
             max_left_w = max(max_left_w, _resolve_side_width(left_cfg, chart_width))
-        right_cfg = _normalize_text_panel(getattr(spec, "side_right", None))
+        right_cfg = _normalize_text_panel(cell_right)
         if right_cfg is not None:
             max_right_w = max(max_right_w, _resolve_side_width(right_cfg, chart_width))
     return max_cap_h, max_left_w, max_right_w
@@ -14012,6 +14495,24 @@ def _apply_text_panels_to_spec(
     # inner data chart keeps it aligned with the chart's plot region
     # regardless of which side panels are wrapped around it.
     datasets = inner.pop("datasets", None)
+    # Strip ``padding`` from the inner sub-spec: Vega-Lite ignores
+    # top-level padding on sub-views inside hconcat / vconcat (Altair
+    # actually rejects it at the validator with the message
+    # "Objects with 'padding' attribute cannot be used within
+    # HConcatChart"). We bypass Altair by emitting raw spec dicts via
+    # vl_convert, but the underlying behaviour is the same -- the
+    # padding key has no effect here. Strip it so the spec stays
+    # canonical and so future tightening attempts don't waste cycles
+    # on this dead lever. The actual chart-to-panel gap is killed by
+    # (a) the panel's chart-facing inner padding (``padding_chart=1``
+    # in ``_build_text_panel``), (b) the panel's chart-facing outer
+    # padding (``chart_edge`` -> 0 in ``_build_text_panel``), and
+    # (c) hconcat ``spacing=0``. The remaining gap is Vega-Lite's
+    # intrinsic axis-tick-label clearance (the rightmost tick label
+    # like "18" extends past the bar's right edge to stay
+    # readable) which is structural and not overridable from the
+    # spec without clipping labels.
+    inner.pop("padding", None)
 
     def _panel_spec(
         cfg: Dict[str, Any],
@@ -14084,7 +14585,7 @@ def _apply_text_panels_to_spec(
             h_parts.append(
                 _panel_spec(cfg_to_use, right_w, chart_height, chart_edge="left")
             )
-        wrapped: Dict[str, Any] = {"hconcat": h_parts, "spacing": 4}
+        wrapped: Dict[str, Any] = {"hconcat": h_parts, "spacing": 0}
     else:
         wrapped = body
 
@@ -14425,8 +14926,8 @@ def _strip_axis_labels_from_spec(
 ) -> None:
     """Drop tick-label rendering from ``encoding[encoding_key].axis``.
 
-    The tick MARKS still render (so the grid lines stay aligned across
-    panels); only the label text is suppressed. Used to implement
+    The tick MARKS still render (so panel boundaries stay aligned across
+    the grid); only the label text is suppressed. Used to implement
     ``edge_only_ticks=True``: outer panels keep labels, inner panels
     pass through this helper.
     """

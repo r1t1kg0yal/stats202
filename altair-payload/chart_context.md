@@ -372,7 +372,6 @@ annotations = [
 
 | Anti-pattern | Why trivial / engine behaviour |
 |---|---|
-| `HLine(y=0, ...)` (with/without label) | y-axis grid at zero is the implicit baseline. Engine drops rule AND label silently. Same for `Segment(y1=0, y2=0)`. If zero matters, put in title/subtitle |
 | `Segment(x1=v, y1=v, x2=w, y2=w)` "y=x / 45-deg / identity" on scatter | Macro/rates axes are different units (bp vs %, $ vs index pts) -- y=x has no analytical meaning AND endpoints stretch frame. Engine drops silently on `scatter`/`scatter_multi`. Use `Trendline` (or `mapping['trendline']=True`) |
 | Any annotation outside the visible plot domain (`Band` edge above data; `Segment`/`Arrow` endpoint off-data; `PointLabel`/`PointHighlight`/`Callout` off-data coord) | Vega-Lite's shared scale expands to include the coord, stretching frame and pushing title up. Engine drops silently. Keep coords inside data; for narrative thresholds outside use title/subtitle. For "highlight above X" clamp: `Band(y1=X, y2=df['value'].max())`. `HLine` drops if y outside but doesn't stretch |
 | `HLine(y=2.0, label='Fed 2% Target')` on inflation | Every reader knows it. Use title: "Core PCE Still 80bp Above Target" |
@@ -397,10 +396,10 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 | `Arrow` | `x1`/`y1`, `x2`/`y2`, `stroke_width`, `stroke_dash`, `head_size`, `head_type` (`'triangle'`/`'none'`), `label_position`. Same aliases as Segment |
 | `PointLabel` | `x`, `y`, `dx`/`dy` (pixel offsets), `font_size`, `align`. Plain floating text. Use sparingly |
 | `PointHighlight` | `x`, `y`, `size` (default `100`), `opacity`, `shape` (`'circle'`/`'square'`/`'diamond'`/`'triangle'`/`'cross'`/`'stroke'`), `filled`, `stroke_color`, `stroke_width`. Default color `"#C00000"`. Often combined with Callout/PointLabel |
-| `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. Default `'halo'` solves "PointLabel fights gridlines". `dx` 0-60; `abs(dx)>80` risks off-canvas (warns) |
+| `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. Default `'halo'` keeps the label legible against chart lines and dense data. `dx` 0-60; `abs(dx)>80` risks off-canvas (warns) |
 | `LastValueLabel` | `dx`, `font_size` (default 15), `font_weight`. FT/Bloomberg end-of-line labels for `multi_line` (replaces legend). Auto-derives from color column. `label` ignored on multi-series; for single-series overrides y-field name. Labels whose endpoints would overlap in pixel space are auto-staggered vertically. Suppressed on dual-axis (§9.4). Text-only — no endpoint dot |
 | `Trendline` | `method` (`'linear'`/`'exp'`/`'log'`/`'pow'`/`'poly'`/`'quad'`), `stroke_width`, `stroke_dash`. Regression overlay on scatter |
-| `PlotText` | `text`, `position` (default `'auto'`; or 9 corner/edge anchors), `padding_x`/`_y`, `font_size`, `italic`, `align`, `max_width_pct`. In-plot narrative anchored to a corner. `'auto'` picks corner colliding least with data; bar/waterfall disqualify bottom corners. `middle-*` anchors are INSIDE plot region, no auto-collision (warns) |
+| `PlotText` | `text`, `position` (`'auto'` default, or `'right'`/`'left'`/`'bottom'`), `font_size`, `italic`, `color`, `align`, `width_pct`. Narrative text rendered OUTSIDE the plot region only -- routes through the existing text-panel system (`side_right`/`side_left`/`caption` slots), so it cannot collide with bars/lines/data labels. **`text` MUST be ≤8 words** (one-line takeaway, not a sentence; engine hard-caps at 10 with a 2-word buffer). For longer narratives, pass `make_chart(caption=..., side_right=..., side_left=...)` directly (no word cap on those kwargs). `'auto'` resolves to the first free slot in priority order: `right` -> `bottom` -> `left`. Explicit `make_chart(side_right=..., side_left=..., caption=...)` kwargs win against PlotText targeting the same slot (PlotText reroutes to next available; warning logged). All 9 inside-corner anchors (`top-*`/`middle-*`/`bottom-*`) and the bare `'top'` value were removed in the 2026-05-10 outside-only rewire and now raise `ValidationError` with a migration hint |
 
 ### 8.4 Chart-type compatibility
 
@@ -638,7 +637,7 @@ Every successful render produces TWO artifacts on the same `ChartResult`: a stat
 
 ### 11.2 Styling delegation strategy (CRITICAL)
 
-PRISM does NOT iterate on chart styling. For ANY aesthetic request (line thickness, colors, fonts, legend, dimensions, palette, padding, gridlines, "make it bigger", "make lines thicker"), hand the user the Chart Center link -- do not regenerate. Re-run `make_chart()` ONLY when the request changes the **data** (series / range / metric / filter), the **structure** (chart type, mapping, annotations, composite layout), or the **narrative** (title, subtitle).
+PRISM does NOT iterate on chart styling. For ANY aesthetic request (line thickness, colors, fonts, legend, dimensions, palette, padding, "make it bigger", "make lines thicker"), hand the user the Chart Center link -- do not regenerate. Re-run `make_chart()` ONLY when the request changes the **data** (series / range / metric / filter), the **structure** (chart type, mapping, annotations, composite layout), or the **narrative** (title, subtitle).
 
 ### 11.3 Delivering links to the end user (MANDATORY)
 
