@@ -83,14 +83,17 @@ Every chart passes through `check_charts_quality()`. Fail-open: if Gemini is una
 results = [r1, r2]
 qc_results = check_charts_quality(results)
 for r, qc in zip(results, qc_results):
+    if not r.success:                       # render itself failed -- nothing to QC
+        print(f"BUILD FAIL: {r.error_message}")
+        continue
     if not qc['passed']:
-        print(f"FAIL: {r.png_path} -- {qc['reason']}")
+        print(f"QC FAIL: {r.png_path} -- {qc['reason']}")
         s3_manager.delete(r.png_path)
-    elif r.success:
+    else:
         print(f"PASS PNG: {r.download_url}")
 ```
 
-Session folders must contain only QC-passed charts. On QC fail, `s3_manager.delete()` the PNG, then fix or remove the offending call. Saying PRISM could not generate a chart is acceptable; showing a failed one is not.
+Session folders must contain only QC-passed charts. On QC fail, `s3_manager.delete()` the PNG, then fix or remove the offending call. Saying PRISM could not generate a chart is acceptable; showing a failed one is not. **Always check `r.success` before accessing `r.png_path` / `r.download_url`** -- on render failure both are `None` and the engine never wrote a file (no orphan to delete).
 
 ---
 
@@ -229,7 +232,16 @@ For datetime x prefer `multi_line`/`area`. If using `bar` + datetime, engine han
 
 ### 6.3 Heatmap
 
-`value` column renders as cell color. `MAX_COLOR_CARDINALITY=12` -- continuous values MUST be binned to <=12 categories BEFORE `make_chart()`, else QC rejects. Bin via `pd.cut()` (equal-width) or `np.digitize()` (custom edges); set `mapping['color_scheme']` to a sequential scheme.
+`value` column renders as cell color. Two recipes, dispatched by dtype:
+
+| `value` dtype | Color scale | Cell label | Cap |
+|---|---|---|---|
+| numeric | quantitative; sequential, OR diverging-at-zero when min<0<max (correlation matrix, P&L matrix) | `_smart_number_format` (magnitude-aware) | grid size warned >500 cells |
+| categorical / string | nominal sequential ramp indexed by sort order; `'blues'` default | the bin label itself | <=12 distinct bins (engine rejects above) |
+
+For BOTH paths `mapping['color_scheme']` overrides the default palette (named Vega-Lite ramps: `blues`, `greens`, `reds`, `oranges`, `purples`, `greys`, `viridis`, `plasma`, `magma`, `redblue`, `redyellowblue`, `redyellowgreen`, `spectral`, `browngreen`).
+
+For the categorical recipe (continuous data binned into labelled buckets), bin via `pd.cut()` or `np.digitize()` and pass the bin column as `mapping['value']`. Override sort order with `mapping['value_sort']=[...]`.
 
 ```python
 df['prob_bucket'] = pd.cut(df['Probability'], bins=10,
@@ -439,15 +451,18 @@ result = make_chart(
 | **Flatness** | any single series's data span < 10% of visible y-axis | `Y-AXIS SCALE MISMATCH` | gold ($2000) + WTI ($70) -- WTI ~2% of span; equity index + 2Y yield |
 | **Level disparity** | every series has visible variation, but gap between two series's means > 3x the largest individual span | `Y-AXIS LEVEL DISPARITY` | corporate saving (~2.5%) vs investment (~9.9%) of GDP -- each spans ~0.8 pp, gap ~7.4 |
 
-Both route to the same three reshape options:
+**2-series cases auto-recover.** When exactly two series trigger either gate, the engine routes the smaller-|mean| series to a right axis (`dual_axis_series=[smallest]` + `y_title_right=<smallest>`), re-renders, and emits an `AUTO-RECOVERED:` warning in `result.warnings`. PRISM doesn't have to do anything; override by setting `dual_axis_series` explicitly or switching shape (`make_2pack_*`).
+
+**3+ series cases stay rejected.** The choice between the four reshape options below is editorial -- the engine refuses to silently transform 3+ series. Pick one:
 
 | Fix | Best when |
 |---|---|
-| **2-panel composite** (`make_2pack_horizontal` / `_vertical`) | 2 series with disparate magnitudes/levels; each panel gets its own y-axis. Canonical fix for gold + WTI, saving + investment |
-| **Dual-axis** -- route smallest-scale/lowest-level series to right via `mapping['dual_axis_series']=['<name>']` + `mapping['y_title_right']='...'` | 2-3 series where the argument is co-movement of differently-scaled/-levelled shapes |
-| **Normalize** -- z-score, rebase-to-100, or pct-change every series before plotting | 3+ series; loses absolute level but preserves co-movement on one comparable scale |
+| **2-panel composite** (`make_2pack_horizontal` / `_vertical`) | Each panel gets its own y-axis. Canonical for 2 series; for 3+ split into a 2-panel where each panel's content shares a scale |
+| **Dual-axis** -- `mapping['dual_axis_series']=['<name>']` + `mapping['y_title_right']='...'` | 2-3 series, argument is co-movement of differently-scaled/-levelled shapes |
+| **Normalize** -- z-score, rebase-to-100, or pct-change every series before plotting | 3+ series; loses absolute level but preserves co-movement |
+| **Small-multiples / facet** -- `mapping['facet']='<color_col>'` (drop `color`) | 3+ series with their own y-axis per panel; argument is the SHAPE of each component, not co-movement. See `chart_context_grids.md` |
 
-The error message names the offending series and provides the exact `dual_axis_series=[...]` payload to drop in.
+The error message names the offending series and provides the exact `dual_axis_series=[...]` / `facet=...` payload to drop in.
 
 ### 9.2 Series-name discipline
 

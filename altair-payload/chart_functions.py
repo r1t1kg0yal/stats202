@@ -1204,7 +1204,7 @@ def _validate_y_scale_homogeneity(
         f"y-axis span (would read as flat horizontal rails at different "
         f"levels). Flat: {flat_desc}. All series: {full_desc}. Global "
         f"y-axis span: {global_span:.4g} [{global_min:.4g} .. "
-        f"{global_max:.4g}]. Three reshape options:\n"
+        f"{global_max:.4g}]. Four reshape options:\n"
         f"  (a) Split into a 2-panel composite -- "
         f"`make_2pack_horizontal(...)` or `make_2pack_vertical(...)` -- "
         f"so each series gets its own y-axis (canonical fix for "
@@ -1215,7 +1215,13 @@ def _validate_y_scale_homogeneity(
         f"co-movement of two series with different magnitudes.\n"
         f"  (c) Z-score-normalize or rebase-to-100 every series before "
         f"plotting so all variations share a dimensional scale (loses "
-        f"absolute level but preserves co-movement; best for 3+ series)."
+        f"absolute level but preserves co-movement; best for 3+ series).\n"
+        f"  (d) Small-multiples / facet -- one panel per series, each "
+        f"with its own y-axis: `mapping['facet']='{color_field}'` (and "
+        f"drop `color`). Best when the argument is the SHAPE of each "
+        f"series (component decomposition, regional comparison) rather "
+        f"than co-movement. See `chart_context_grids.md` for the full "
+        f"facet surface."
     )
 
 
@@ -1320,7 +1326,7 @@ def _validate_y_level_disparity(
         f"gap={max_gap:.4g}, largest individual span={largest_span:.4g}, "
         f"ratio={ratio:.2f}x (rejection threshold: "
         f"{_LEVEL_DISPARITY_RATIO_THRESHOLD:.0f}x). All series: "
-        f"{full_desc}. Three reshape options:\n"
+        f"{full_desc}. Four reshape options:\n"
         f"  (a) Split into a 2-panel composite -- "
         f"`make_2pack_horizontal(...)` or `make_2pack_vertical(...)` -- "
         f"so each series gets its own y-axis (canonical fix for "
@@ -1331,8 +1337,108 @@ def _validate_y_level_disparity(
         f"co-movement of two series with different levels.\n"
         f"  (c) Z-score-normalize or rebase-to-100 every series before "
         f"plotting so all variations share a dimensional scale (loses "
-        f"absolute level but preserves co-movement; best for 3+ series)."
+        f"absolute level but preserves co-movement; best for 3+ series).\n"
+        f"  (d) Small-multiples / facet -- one panel per series, each "
+        f"with its own y-axis: `mapping['facet']='{color_field}'` (and "
+        f"drop `color`). Best when the argument is the SHAPE of each "
+        f"series (component decomposition, regional comparison) rather "
+        f"than co-movement. See `chart_context_grids.md` for the full "
+        f"facet surface."
     )
+
+
+def _maybe_auto_recover_y_scale(
+    exc: "ValidationError",
+    df: pd.DataFrame,
+    chart_type: str,
+    mapping: Dict[str, Any],
+    *,
+    depth: int,
+) -> Optional[Tuple[Dict[str, Any], str]]:
+    """Detect a y-scale rejection and propose a 2-series dual-axis fix.
+
+    The two y-scale gates (``_validate_y_scale_homogeneity``,
+    ``_validate_y_level_disparity``) reject single-axis multi-series
+    time-series charts whose level / range mix would compress one or
+    more series into flat horizontal rails. For the 2-series case the
+    canonical fix is unambiguous: route the smaller-magnitude series to
+    a right axis. The engine does this transformation in-line so PRISM
+    isn't punished for a deterministic shape problem -- but for 3+
+    series the editorial choice (2-pack / dual / z-score / facet)
+    belongs to PRISM. The error message itself names all four options.
+
+    Returns:
+        ``(new_mapping, recovery_message)`` if the rejection qualifies for
+        auto-recovery, otherwise ``None``. The caller is responsible for
+        re-invoking ``make_chart`` with the new mapping and incrementing
+        ``_auto_recover_depth`` to break the cycle.
+    """
+    if depth > 0:
+        return None
+    if chart_type not in {"multi_line", "timeseries"}:
+        return None
+    if mapping.get("dual_axis_series"):
+        return None
+    msg = str(exc)
+    if not (
+        msg.startswith("Y-AXIS SCALE MISMATCH")
+        or msg.startswith("Y-AXIS LEVEL DISPARITY")
+    ):
+        return None
+
+    color_field = _get_field(mapping, "color")
+    y_field = _get_field(mapping, "y")
+    if not (color_field and y_field):
+        return None
+    if color_field not in df.columns or y_field not in df.columns:
+        return None
+    if not pd.api.types.is_numeric_dtype(df[y_field]):
+        return None
+
+    series_names = [
+        str(name) for name in df[color_field].dropna().unique()
+    ]
+    if len(series_names) != 2:
+        return None
+
+    # Compute |mean| + span per series. Skip auto-recovery when EITHER
+    # series is constant (span == 0); a constant series is a horizontal
+    # threshold semantically, and the better fix is `HLine(y=<const>)`
+    # not a dual-axis chart with one perfectly-flat right-axis line.
+    # The rejection message already routes the LLM toward HLine via
+    # the standard "(b) dual-axis" suggestion -- we just don't take
+    # that path silently.
+    means: Dict[str, float] = {}
+    for name in series_names:
+        s = pd.to_numeric(
+            df.loc[df[color_field].astype(str) == name, y_field],
+            errors="coerce",
+        ).dropna()
+        if len(s) == 0:
+            return None
+        if float(s.max() - s.min()) <= 0:
+            return None  # one series is constant -- defer to caller
+        means[name] = float(abs(s.mean()))
+    smallest = min(means, key=lambda n: means[n])
+
+    new_mapping = dict(mapping)
+    new_mapping["dual_axis_series"] = [smallest]
+    if not new_mapping.get("y_title_right"):
+        new_mapping["y_title_right"] = smallest
+
+    gate = (
+        "scale-mismatch" if msg.startswith("Y-AXIS SCALE MISMATCH")
+        else "level-disparity"
+    )
+    recovery_message = (
+        f"AUTO-RECOVERED: y-axis {gate} gate rejected the 2-series "
+        f"single-axis chart. Engine routed '{smallest}' to the right "
+        f"axis (dual_axis_series=['{smallest}'], y_title_right="
+        f"'{smallest}') and re-rendered. Override by setting "
+        f"dual_axis_series explicitly or switching chart shape "
+        f"(e.g. make_2pack_horizontal)."
+    )
+    return new_mapping, recovery_message
 
 
 # ===========================================================================
@@ -7112,6 +7218,145 @@ def wrap_label(label: str, words_per_line: int = 3) -> str:
 # NUMBER FORMATTING (catch-all for label/text rounding)
 # ---------------------------------------------------------------------------
 
+def _natural_sort_key(value: Any) -> Tuple[Any, ...]:
+    """Generate a key that sorts strings with embedded numbers naturally.
+
+    Used by the categorical heatmap path so bin labels like
+    ``'0-10%'`` / ``'10-20%'`` / ... / ``'90-100%'`` order numerically
+    instead of lexicographically (which would put ``'10-20%'`` before
+    ``'2-10%'``). Splits the string into alternating literal / numeric
+    chunks; numeric chunks compare as floats, literals as lowercased
+    strings. Robust to leading negative numbers, decimals, scientific
+    notation, and mixed-case literals.
+    """
+    s = str(value)
+    parts: List[Tuple[int, Any]] = []
+    for token in re.split(r"(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)", s):
+        if not token:
+            continue
+        try:
+            parts.append((0, float(token)))
+        except ValueError:
+            parts.append((1, token.lower()))
+    return tuple(parts)
+
+
+# Per-scheme color anchors used by ``_sample_named_scheme`` to synthesize
+# an N-step ramp without depending on Vega-Lite's runtime scheme tables.
+# Each value is a small list of hex stops sampled uniformly from the
+# scheme; we linearly interpolate to land on N colors. The list is
+# intentionally small (5-7 stops) because higher resolution adds bytes
+# without changing visible output for the typical 5-12 bin range that
+# the categorical heatmap path serves.
+_SCHEME_ANCHORS: Dict[str, List[str]] = {
+    "blues": [
+        "#f7fbff", "#deebf7", "#c6dbef", "#9ecae1",
+        "#6baed6", "#4292c6", "#2171b5", "#08519c", "#08306b",
+    ],
+    "greens": [
+        "#f7fcf5", "#e5f5e0", "#c7e9c0", "#a1d99b",
+        "#74c476", "#41ab5d", "#238b45", "#006d2c", "#00441b",
+    ],
+    "reds": [
+        "#fff5f0", "#fee0d2", "#fcbba1", "#fc9272",
+        "#fb6a4a", "#ef3b2c", "#cb181d", "#a50f15", "#67000d",
+    ],
+    "oranges": [
+        "#fff5eb", "#fee6ce", "#fdd0a2", "#fdae6b",
+        "#fd8d3c", "#f16913", "#d94801", "#a63603", "#7f2704",
+    ],
+    "purples": [
+        "#fcfbfd", "#efedf5", "#dadaeb", "#bcbddc",
+        "#9e9ac8", "#807dba", "#6a51a3", "#54278f", "#3f007d",
+    ],
+    "greys": [
+        "#ffffff", "#f0f0f0", "#d9d9d9", "#bdbdbd",
+        "#969696", "#737373", "#525252", "#252525", "#000000",
+    ],
+    "viridis": [
+        "#440154", "#482878", "#3e4a89", "#31688e",
+        "#26828e", "#1f9e89", "#35b779", "#6dcd59",
+        "#b4de2c", "#fde725",
+    ],
+    "plasma": [
+        "#0d0887", "#46039f", "#7201a8", "#9c179e",
+        "#bd3786", "#d8576b", "#ed7953", "#fb9f3a",
+        "#fdca26", "#f0f921",
+    ],
+    "magma": [
+        "#000004", "#1c1044", "#4f127b", "#812581",
+        "#b5367a", "#e55063", "#fb8761", "#fec287", "#fcfdbf",
+    ],
+    "redblue": [
+        "#67001f", "#b2182b", "#d6604d", "#f4a582",
+        "#fddbc7", "#f7f7f7", "#d1e5f0", "#92c5de",
+        "#4393c3", "#2166ac", "#053061",
+    ],
+    "redyellowblue": [
+        "#a50026", "#d73027", "#f46d43", "#fdae61",
+        "#fee090", "#ffffbf", "#e0f3f8", "#abd9e9",
+        "#74add1", "#4575b4", "#313695",
+    ],
+    "redyellowgreen": [
+        "#a50026", "#d73027", "#f46d43", "#fdae61",
+        "#fee08b", "#ffffbf", "#d9ef8b", "#a6d96a",
+        "#66bd63", "#1a9850", "#006837",
+    ],
+    "spectral": [
+        "#9e0142", "#d53e4f", "#f46d43", "#fdae61",
+        "#fee08b", "#ffffbf", "#e6f598", "#abdda4",
+        "#66c2a5", "#3288bd", "#5e4fa2",
+    ],
+    "browngreen": [
+        "#8c510a", "#bf812d", "#dfc27d", "#f6e8c3",
+        "#f5f5f5", "#c7eae5", "#80cdc1", "#35978f", "#01665e",
+    ],
+}
+
+
+def _hex_to_rgb(h: str) -> Tuple[int, int, int]:
+    h = h.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16))
+
+
+def _rgb_to_hex(r: int, g: int, b: int) -> str:
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _sample_named_scheme(scheme_name: str, n: int) -> List[str]:
+    """Return ``n`` hex colors uniformly sampled from a named ramp.
+
+    Used by the categorical heatmap path so a string-binned value column
+    (e.g. ``pd.cut(..., labels=['0-10%', ..., '90-100%'])``) renders
+    with the same low->high intensity gradient that the numeric path
+    produces for a sequential scheme. Falls back to ``'blues'`` when
+    ``scheme_name`` isn't in ``_SCHEME_ANCHORS``.
+
+    Sampling is linear interpolation between adjacent anchor stops --
+    visually indistinguishable from Vega-Lite's runtime evaluation at
+    the bin counts this code path serves (typically 5-12).
+    """
+    anchors = _SCHEME_ANCHORS.get(scheme_name) or _SCHEME_ANCHORS["blues"]
+    if n <= 0:
+        return []
+    if n == 1:
+        return [anchors[len(anchors) // 2]]
+    stops = [_hex_to_rgb(h) for h in anchors]
+    out: List[str] = []
+    last_idx = len(stops) - 1
+    for i in range(n):
+        t = i / (n - 1)
+        pos = t * last_idx
+        lo = int(np.floor(pos))
+        hi = min(lo + 1, last_idx)
+        frac = pos - lo
+        r = int(round(stops[lo][0] + (stops[hi][0] - stops[lo][0]) * frac))
+        g = int(round(stops[lo][1] + (stops[hi][1] - stops[lo][1]) * frac))
+        b = int(round(stops[lo][2] + (stops[hi][2] - stops[lo][2]) * frac))
+        out.append(_rgb_to_hex(r, g, b))
+    return out
+
+
 def _smart_number_format(series_or_value: Any) -> str:
     """Pick a Vega-Lite number format string based on magnitude.
 
@@ -7450,6 +7695,15 @@ def get_axis_beautification(
     the padded domain dips into zero/negative territory.
     """
     configs: Dict[str, AxisConfig] = {}
+
+    # Heatmaps own their axis label-angle decision entirely (the
+    # builder clamps to {0, -45} via ``_heatmap_label_angle`` and the
+    # spec is patched late by ``_apply_heatmap_config``). Skipping the
+    # plan here prevents ``apply_beautification_to_spec`` from
+    # overwriting the builder's clamp with the generic
+    # ``calculate_optimal_label_angle`` answer (which can return -90).
+    if chart_type == "heatmap":
+        return configs
 
     x_field = mapping.get("x") if isinstance(mapping.get("x"), str) else None
     if x_field and x_field in df.columns:
@@ -8325,9 +8579,17 @@ def _build_tooltip(
     elif chart_type == "heatmap":
         value_field = _get_field(mapping, "value") or _get_field(mapping, "z")
         if value_field and value_field in df.columns:
-            tooltips.append(
-                alt.Tooltip(value_field, type="quantitative", format=".2f", title="Value")
-            )
+            if pd.api.types.is_numeric_dtype(df[value_field]):
+                tooltips.append(
+                    alt.Tooltip(
+                        value_field, type="quantitative",
+                        format=".2f", title="Value",
+                    )
+                )
+            else:
+                tooltips.append(
+                    alt.Tooltip(value_field, type="nominal", title="Value")
+                )
     elif chart_type == "donut":
         theta_field = (
             _get_field(mapping, "theta")
@@ -10945,6 +11207,58 @@ def _build_area(
     return chart
 
 
+def _heatmap_label_angle(
+    df: pd.DataFrame,
+    field: Optional[str],
+    sort_order: Optional[List[Any]],
+    *,
+    axis_pixels: int,
+) -> int:
+    """Pick a heatmap axis label angle: 0 (flat) or -45.
+
+    Vertical (90 deg) labels are forbidden on heatmaps -- Vega-Lite
+    auto-rotates straight to 90 when nominal labels can't fit
+    horizontally, and the result reads as a wall of stacked text.
+    This helper enforces a binary choice: stay flat when the longest
+    label fits the per-cell pixel budget plus breathing room,
+    otherwise -45.
+
+    Args:
+        df: Source DataFrame; used to enumerate the field's distinct
+            label values when ``sort_order`` isn't supplied.
+        field: Column name whose unique values populate the axis.
+            Returns 0 when ``None`` or when the column is missing.
+        sort_order: Explicit axis ordering (typically what the caller
+            passes via ``mapping['x_sort']`` / ``y_sort'``). Wins over
+            the df-derived order when present so the budget reflects
+            the actual rendered labels.
+        axis_pixels: Total length of the axis in screen pixels (chart
+            width for x, chart height for y). Drives the per-cell
+            budget.
+    """
+    if not field or (df is not None and field not in getattr(df, "columns", [])):
+        return 0
+
+    if sort_order:
+        labels = [str(v) for v in sort_order]
+    else:
+        labels = [str(v) for v in df[field].dropna().unique().tolist()]
+    if not labels:
+        return 0
+
+    max_label_len = max(len(s) for s in labels)
+    n_cells = max(len(labels), 1)
+    cell_pixels = axis_pixels / n_cells
+
+    # ~7 px per character at the GS skin's default axis font size, plus
+    # 4 px breathing room on either side of the label. If the longest
+    # label fits inside one cell that way, stay flat; otherwise -45.
+    horizontal_budget_per_label = max_label_len * 7 + 8
+    if horizontal_budget_per_label <= cell_pixels:
+        return 0
+    return -45
+
+
 def _build_heatmap(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -11029,6 +11343,21 @@ def _build_heatmap(
     x_sort_order = mapping.get("x_sort")
     y_sort_order = mapping.get("y_sort")
 
+    # ---- label-angle clamp ----------------------------------------------
+    # Heatmap axis labels NEVER render vertical (90 deg). Vega-Lite's
+    # default for nominal axes auto-rotates when labels won't fit
+    # horizontally and overshoots straight to 90 (verbatim "wall of
+    # vertical text" failure mode). The fix is binary: 0 if labels fit
+    # horizontally given the cell width budget, else -45. The clamp
+    # applies to both axes -- matrix-style heatmaps with long row
+    # labels (e.g. ticker names) hit the same Vega-Lite quirk on y.
+    x_label_angle = _heatmap_label_angle(
+        df, x_field, x_sort_order, axis_pixels=width,
+    )
+    y_label_angle = _heatmap_label_angle(
+        df, y_field, y_sort_order, axis_pixels=height,
+    )
+
     # Grid-suppressed axes prevent white-line artifacts on cells.
     # ``labelPadding`` adds breathing room so row labels (e.g. "Tech",
     # "Financials") don't kiss the first column of cells; default
@@ -11036,92 +11365,215 @@ def _build_heatmap(
     # heatmap grid.
     x_axis = alt.Axis(
         grid=False, domain=False, ticks=False, title=x_title,
-        labelPadding=8,
+        labelPadding=8, labelAngle=x_label_angle,
     )
     y_axis = alt.Axis(
         grid=False, domain=False, ticks=False, title=y_title,
-        labelPadding=8,
+        labelPadding=8, labelAngle=y_label_angle,
     )
 
-    # ---- color scheme selection ----------------------------------------
-    # If the value column crosses zero (correlation matrix, P&L matrix,
-    # z-scores), a sequential scheme like "blues" can't distinguish -0.6
-    # from +0.4 because they share a hue family. Detect mixed-sign data
-    # and switch to a diverging scheme centered at zero. The skin can
-    # override via ``heatmap_scheme`` / ``heatmap_diverging_scheme``, and
-    # the caller can force a specific scheme via ``mapping['color_scheme']``.
-    v_min_full = float(df[value_field].min())
-    v_max_full = float(df[value_field].max())
-    is_mixed_sign = v_min_full < 0 and v_max_full > 0
-    forced_scheme = mapping.get("color_scheme")
-    if forced_scheme:
-        scheme = forced_scheme
-        scale_kwargs: Dict[str, Any] = {"scheme": scheme}
-    elif is_mixed_sign:
-        scheme = skin_config.get("heatmap_diverging_scheme", "redblue")
-        # Center the diverging scheme on zero with a symmetric domain so
-        # +0.4 and -0.4 render at equal saturation on opposite sides.
-        sym = max(abs(v_min_full), abs(v_max_full))
-        scale_kwargs = {
-            "scheme": scheme,
-            "domain": [-sym, sym],
-            "domainMid": 0.0,
-        }
-    else:
-        scheme = skin_config.get("heatmap_scheme", "blues")
-        scale_kwargs = {"scheme": scheme}
+    # ---- value-column dtype dispatch ------------------------------------
+    # Two recipes are supported, dispatched by the value column's dtype:
+    #
+    #   NUMERIC  -> quantitative color scale (sequential or diverging-
+    #               at-zero), labels formatted via _smart_number_format.
+    #               Canonical use: correlation matrix, P&L matrix, raw
+    #               z-scores.
+    #
+    #   CATEGORICAL / STRING  -> ordinal color scale indexed by the
+    #               column's natural sort order (or `mapping['value_sort']`
+    #               override), label is the bin label itself. Canonical
+    #               use: pre-binned probability buckets ('0-10%' .. '90-100%')
+    #               from `pd.cut(..., labels=str_list)`. The chart_context.md
+    #               §6.3 recipe was previously broken because the engine
+    #               assumed quantitative; both shapes now work end-to-end.
+    value_is_numeric = pd.api.types.is_numeric_dtype(df[value_field])
 
-    chart = (
-        alt.Chart(df)
-        .mark_rect(stroke=None, strokeWidth=0)
-        .encode(
-            x=alt.X(x_field, type="nominal", axis=x_axis, sort=x_sort_order),
-            y=alt.Y(y_field, type="nominal", axis=y_axis, sort=y_sort_order),
-            color=alt.Color(
-                value_field,
-                type="quantitative",
-                scale=alt.Scale(**scale_kwargs),
-                legend=alt.Legend(title=None),
-            ),
-            tooltip=_build_tooltip(mapping, "heatmap", df),
-        )
-        .properties(width=width, height=height)
-    )
-
-    # Cell labels with contrast-aware text color (white on dark cells).
-    if skin_config.get("heatmap_labels", True):
-        # For diverging schemes, dark cells are at *both* extremes (deep red
-        # and deep blue), so the contrast trigger is |value| not value.
-        v_min = v_min_full
-        v_max = v_max_full
-        if is_mixed_sign and not forced_scheme:
-            sym_threshold = max(abs(v_min), abs(v_max)) * 0.6
-            color_condition = alt.condition(
-                f"abs(datum['{value_field}']) > {sym_threshold}",
-                alt.value("white"),
-                alt.value("#222222"),
-            )
+    if value_is_numeric:
+        # ---- color scheme selection (numeric path) ----------------------
+        # If the value column crosses zero (correlation matrix, P&L
+        # matrix, z-scores), a sequential scheme like "blues" can't
+        # distinguish -0.6 from +0.4 because they share a hue family.
+        # Detect mixed-sign data and switch to a diverging scheme
+        # centered at zero. The skin can override via
+        # ``heatmap_scheme`` / ``heatmap_diverging_scheme``, and the
+        # caller can force a specific scheme via
+        # ``mapping['color_scheme']``.
+        v_min_full = float(df[value_field].min())
+        v_max_full = float(df[value_field].max())
+        is_mixed_sign = v_min_full < 0 and v_max_full > 0
+        forced_scheme = mapping.get("color_scheme")
+        if forced_scheme:
+            scheme = forced_scheme
+            scale_kwargs: Dict[str, Any] = {"scheme": scheme}
+        elif is_mixed_sign:
+            scheme = skin_config.get("heatmap_diverging_scheme", "redblue")
+            sym = max(abs(v_min_full), abs(v_max_full))
+            scale_kwargs = {
+                "scheme": scheme,
+                "domain": [-sym, sym],
+                "domainMid": 0.0,
+            }
         else:
-            v_threshold = (v_min + v_max) / 2.0 if v_max != v_min else v_max
-            color_condition = alt.condition(
-                alt.datum[value_field] > v_threshold,
-                alt.value("white"),
-                alt.value("#222222"),
-            )
-        text = (
-            alt.Chart(df)
-            .mark_text(baseline="middle", fontSize=10)
-            .encode(
-                x=alt.X(x_field, type="nominal", sort=x_sort_order),
-                y=alt.Y(y_field, type="nominal", sort=y_sort_order),
-                text=alt.Text(
-                    value_field, type="quantitative",
-                    format=_smart_number_format(df[value_field]),
-                ),
-                color=color_condition,
-            )
+            scheme = skin_config.get("heatmap_scheme", "blues")
+            scale_kwargs = {"scheme": scheme}
+
+        color_enc = alt.Color(
+            value_field,
+            type="quantitative",
+            scale=alt.Scale(**scale_kwargs),
+            legend=alt.Legend(title=None),
         )
-        chart = alt.layer(chart, text).properties(width=width, height=height)
+
+        chart = (
+            alt.Chart(df)
+            .mark_rect(stroke=None, strokeWidth=0)
+            .encode(
+                x=alt.X(x_field, type="nominal", axis=x_axis, sort=x_sort_order),
+                y=alt.Y(y_field, type="nominal", axis=y_axis, sort=y_sort_order),
+                color=color_enc,
+                tooltip=_build_tooltip(mapping, "heatmap", df),
+            )
+            .properties(width=width, height=height)
+        )
+
+        if skin_config.get("heatmap_labels", True):
+            v_min = v_min_full
+            v_max = v_max_full
+            if is_mixed_sign and not forced_scheme:
+                sym_threshold = max(abs(v_min), abs(v_max)) * 0.6
+                color_condition = alt.condition(
+                    f"abs(datum['{value_field}']) > {sym_threshold}",
+                    alt.value("white"),
+                    alt.value("#222222"),
+                )
+            else:
+                v_threshold = (v_min + v_max) / 2.0 if v_max != v_min else v_max
+                color_condition = alt.condition(
+                    alt.datum[value_field] > v_threshold,
+                    alt.value("white"),
+                    alt.value("#222222"),
+                )
+            text = (
+                alt.Chart(df)
+                .mark_text(baseline="middle", fontSize=10)
+                .encode(
+                    x=alt.X(x_field, type="nominal", sort=x_sort_order),
+                    y=alt.Y(y_field, type="nominal", sort=y_sort_order),
+                    text=alt.Text(
+                        value_field, type="quantitative",
+                        format=_smart_number_format(df[value_field]),
+                    ),
+                    color=color_condition,
+                )
+            )
+            chart = alt.layer(chart, text).properties(width=width, height=height)
+    else:
+        # ---- categorical / string path ----------------------------------
+        # Treat the value column as ordered bins. Sort order respects an
+        # explicit ``mapping['value_sort']`` override; otherwise:
+        #   - pandas Categorical with ordered categories -> use them
+        #   - everything else -> natural sort by string repr
+        # The color scale becomes a SEQUENTIAL palette indexed by the
+        # bin order so the visual reads as low->high left-to-right (e.g.
+        # the canonical pd.cut '0-10%' .. '90-100%' recipe).
+        explicit_sort = mapping.get("value_sort")
+        if explicit_sort is not None:
+            value_order: List[Any] = [str(v) for v in explicit_sort]
+        elif (
+            isinstance(df[value_field].dtype, pd.CategoricalDtype)
+            and df[value_field].cat.ordered
+        ):
+            value_order = [str(v) for v in df[value_field].cat.categories]
+        else:
+            unique_vals = df[value_field].dropna().unique().tolist()
+            value_order = sorted(
+                {str(v) for v in unique_vals},
+                key=_natural_sort_key,
+            )
+
+        if len(value_order) > MAX_COLOR_CARDINALITY:
+            raise ValidationError(
+                f"Heatmap value column '{value_field}' has "
+                f"{len(value_order)} distinct categorical bins, exceeding "
+                f"MAX_COLOR_CARDINALITY={MAX_COLOR_CARDINALITY}. The "
+                f"sequential color ramp loses readability beyond ~12 bins. "
+                f"Bin to <=12 categories first, e.g. "
+                f"`pd.cut(df['{value_field}'], bins={MAX_COLOR_CARDINALITY}, "
+                f"labels=[...])`."
+            )
+
+        # Coerce to string so Vega-Lite's nominal scale lines up with
+        # the explicit sort domain. Categorical dtype with non-string
+        # categories would otherwise mismatch the sort list.
+        df = df.copy()
+        df[value_field] = df[value_field].astype(str)
+
+        # Build a sequential range of N hex colors out of a vega-lite
+        # named scheme. ``mapping['color_scheme']`` overrides; otherwise
+        # 'blues' for monotonic bin labels.
+        scheme = mapping.get("color_scheme") or skin_config.get(
+            "heatmap_scheme", "blues"
+        )
+        n_bins = max(1, len(value_order))
+        bin_colors = _sample_named_scheme(scheme, n_bins)
+
+        color_enc = alt.Color(
+            value_field,
+            type="nominal",
+            scale=alt.Scale(domain=value_order, range=bin_colors),
+            sort=value_order,
+            legend=alt.Legend(title=None),
+        )
+
+        chart = (
+            alt.Chart(df)
+            .mark_rect(stroke=None, strokeWidth=0)
+            .encode(
+                x=alt.X(x_field, type="nominal", axis=x_axis, sort=x_sort_order),
+                y=alt.Y(y_field, type="nominal", axis=y_axis, sort=y_sort_order),
+                color=color_enc,
+                tooltip=_build_tooltip(mapping, "heatmap", df),
+            )
+            .properties(width=width, height=height)
+        )
+
+        if skin_config.get("heatmap_labels", True):
+            # Dark cells (top half of the sequential ramp) get white
+            # text; light cells get near-black. Build an OR-chain of
+            # equality checks against the dark-bin labels -- vega-
+            # expression supports ``||`` and ``==`` natively without
+            # the MemberExpression-style ``[...].indexOf(...)`` that
+            # vega-expression's parser rejects as illegal callee type.
+            dark_bins = [
+                v for i, v in enumerate(value_order)
+                if (i + 1) / n_bins > 0.5
+            ]
+            if dark_bins:
+                # Escape any single-quotes inside bin labels so the
+                # generated expression stays valid.
+                escaped_bins = [v.replace("'", "\\'") for v in dark_bins]
+                dark_predicate = " || ".join(
+                    f"datum['{value_field}'] == '{v}'" for v in escaped_bins
+                )
+                color_condition = alt.condition(
+                    dark_predicate,
+                    alt.value("white"),
+                    alt.value("#222222"),
+                )
+            else:
+                color_condition = alt.value("#222222")
+            text = (
+                alt.Chart(df)
+                .mark_text(baseline="middle", fontSize=10)
+                .encode(
+                    x=alt.X(x_field, type="nominal", sort=x_sort_order),
+                    y=alt.Y(y_field, type="nominal", sort=y_sort_order),
+                    text=alt.Text(value_field, type="nominal"),
+                    color=color_condition,
+                )
+            )
+            chart = alt.layer(chart, text).properties(width=width, height=height)
 
     chart = _force_data_embedding(chart, df)
     logger.debug("[_build_heatmap] DONE")
@@ -13146,6 +13598,7 @@ def make_chart(
     same_scale: bool = False,
     edge_only_ticks: bool = False,
     edge_only_axis_titles: bool = False,
+    _auto_recover_depth: int = 0,
 ) -> ChartResult:
     """Create a single chart from a DataFrame.
 
@@ -13439,6 +13892,49 @@ def make_chart(
         warnings.extend(_validate_encoding_data(df, mapping, chart_type))
         _validate_chart_data_integrity(df, mapping, chart_type)
     except ValidationError as exc:
+        # ---- Y-axis 2-series auto-recovery (Principle #7 absorption) ----
+        # When the y-scale flatness gate or level-disparity gate rejects
+        # a 2-series multi_line / timeseries chart, the canonical fix is
+        # routing the smaller-magnitude series to a dual right axis.
+        # Inject ``mapping['dual_axis_series']=[<smallest>]`` +
+        # ``y_title_right=<smallest>`` and recurse once with
+        # ``_auto_recover_depth=1`` to prevent infinite loops.
+        # 3+ series cases stay rejected -- the editorial choice between
+        # 2-pack / dual / z-score / facet belongs to PRISM, not the
+        # engine.
+        recovered = _maybe_auto_recover_y_scale(
+            exc, df, chart_type, mapping, depth=_auto_recover_depth,
+        )
+        if recovered is not None:
+            new_mapping, recovery_msg = recovered
+            warnings.append(recovery_msg)
+            recovered_result = make_chart(
+                df=df, chart_type=chart_type, mapping=new_mapping,
+                title=title, subtitle=subtitle, skin=skin, intent=intent,
+                dimensions=dimensions, annotations=annotations,
+                output_dir=output_dir,
+                filename_prefix=filename_prefix,
+                filename_suffix=filename_suffix,
+                session_path=session_path,
+                s3_manager=s3_manager, save_as=save_as,
+                interactive=interactive, auto_beautify=auto_beautify,
+                layers=layers, x_label=x_label, y_label=y_label,
+                user_id=user_id, caption=caption,
+                side_left=side_left, side_right=side_right,
+                facet_cols=facet_cols,
+                share_x=share_x, share_y=share_y, share_color=share_color,
+                same_scale=same_scale,
+                edge_only_ticks=edge_only_ticks,
+                edge_only_axis_titles=edge_only_axis_titles,
+                _auto_recover_depth=_auto_recover_depth + 1,
+            )
+            # Merge accumulated warnings (recovery message + any soft
+            # warnings raised before the rejection) ahead of the warnings
+            # the recursive call surfaced.
+            recovered_result.warnings = (
+                warnings + list(recovered_result.warnings or [])
+            )
+            return recovered_result
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
             error_message=str(exc), warnings=warnings,
@@ -15153,6 +15649,70 @@ def _composite_consensus_x_angle(
     return max(angles, key=lambda a: abs(a))
 
 
+# Map: original layout -> {survivor_count: downgraded_layout}.
+# Survivor count of 1 always becomes ``None`` (single-chart fallback,
+# handled by the caller).
+#
+# Orientation is preserved where the original expressed one
+# (``4_horizontal`` -> ``3_horizontal`` -> ``2_horizontal``); grid
+# layouts (``4_grid``, ``6_grid``) downgrade to ``N_grid`` for 4 then
+# the same triangle / horizontal sequence below 4. ``3_triangle`` and
+# ``3_inverted`` downgrade to ``2_horizontal`` (their bottom row is the
+# only natural pair).
+_LAYOUT_DOWNGRADE: Dict[str, Dict[int, Optional[str]]] = {
+    "2_horizontal": {1: None},
+    "2_vertical": {1: None},
+    "3_triangle": {2: "2_horizontal", 1: None},
+    "3_inverted": {2: "2_horizontal", 1: None},
+    "3_horizontal": {2: "2_horizontal", 1: None},
+    "3_vertical": {2: "2_vertical", 1: None},
+    "4_grid": {3: "3_triangle", 2: "2_horizontal", 1: None},
+    "4_horizontal": {3: "3_horizontal", 2: "2_horizontal", 1: None},
+    "4_vertical": {3: "3_vertical", 2: "2_vertical", 1: None},
+    "6_grid": {
+        5: "4_grid",  # we only have 4 valid built; 5th cell not addressable
+        4: "4_grid",
+        3: "3_triangle",
+        2: "2_horizontal",
+        1: None,
+    },
+}
+
+
+# Slot count per layout name. Used by the make_composite survivor
+# trim path to bound ``built`` to the downgraded layout's expected size.
+_LAYOUT_SLOT_COUNT: Dict[str, int] = {
+    "2_horizontal": 2, "2_vertical": 2,
+    "3_triangle": 3, "3_inverted": 3,
+    "3_horizontal": 3, "3_vertical": 3,
+    "4_grid": 4, "4_horizontal": 4, "4_vertical": 4,
+    "6_grid": 6,
+}
+
+
+def _downgrade_layout_for_survivors(
+    layout: str, n_survivors: int,
+) -> Optional[str]:
+    """Map a (layout, survivor count) to the layout that survivors fit.
+
+    Returns ``None`` when survivor count == 1 (caller renders the lone
+    survivor directly). Falls back to the original layout when the
+    survivor count matches the layout's expected count or the table
+    has no entry (which shouldn't happen for any layout the engine
+    publishes today).
+    """
+    if n_survivors <= 0:
+        return None
+    if n_survivors == 1:
+        return None
+    table = _LAYOUT_DOWNGRADE.get(layout)
+    if table is None:
+        return layout
+    if n_survivors in table:
+        return table[n_survivors]
+    return layout
+
+
 def _compose_charts(
     charts: List[alt.Chart],
     layout: str,
@@ -16380,18 +16940,45 @@ def make_composite(
         )
 
     # Survivors-only handling.
+    #
+    # Layout indexing in ``_compose_charts`` is positional (``charts[0]``,
+    # ``charts[1]``, ...) and assumes the slot count matches the
+    # original layout name. With partial survivors we have to downgrade
+    # to a smaller layout that the survivor count can fill, otherwise
+    # ``_compose_charts`` raises ``IndexError: list index out of range``
+    # at ``charts[3]`` on a 4-grid with 3 survivors. Map by survivor
+    # count, preserving horizontal-vs-vertical orientation where the
+    # original layout expressed one. When the downgrade lands on a
+    # smaller layout than survivor count (e.g. 5 of 6 -> 4_grid), trim
+    # ``built`` to fit -- one extra survivor goes unrendered, but the
+    # composite stays sound.
     composite_layout: Optional[str] = layout
     if len(built) < n_charts:
-        if len(built) == 1:
-            composite_layout = None
+        composite_layout = _downgrade_layout_for_survivors(
+            layout, len(built),
+        )
+        if composite_layout is None:
             warnings_list.append(
                 f"Downgraded from {layout} composite to single chart "
                 f"({len(built)} of {n_charts} sub-charts succeeded)."
             )
         else:
-            warnings_list.append(
-                f"Removed {n_charts - len(built)} failed sub-chart(s) from composite."
-            )
+            slot_count = _LAYOUT_SLOT_COUNT.get(composite_layout, len(built))
+            if slot_count < len(built):
+                dropped = len(built) - slot_count
+                built = built[:slot_count]
+                warnings_list.append(
+                    f"Removed {n_charts - len(built) - dropped} failed "
+                    f"sub-chart(s) from composite ({layout} -> "
+                    f"{composite_layout}) plus {dropped} successful "
+                    f"sub-chart(s) trimmed to fit the downgraded "
+                    f"layout's slot count."
+                )
+            else:
+                warnings_list.append(
+                    f"Removed {n_charts - len(built)} failed sub-chart(s) "
+                    f"from composite ({layout} -> {composite_layout})."
+                )
 
     has_dual_axis = any(
         isinstance(s, ChartSpec) and s.mapping.get("dual_axis_series")
