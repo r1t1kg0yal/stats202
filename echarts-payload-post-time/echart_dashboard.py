@@ -1750,7 +1750,7 @@ def _validate_metadata(manifest: Dict[str, Any],
         return
     for k in ("kerberos", "dashboard_id", "data_as_of",
                 "generated_at", "version", "api_url", "status_url",
-                "data_url"):
+                "data_url", "pill_text"):
         v = metadata.get(k)
         if v is not None and not isinstance(v, str):
             errs.append(_err(f"metadata.{k}",
@@ -1819,25 +1819,10 @@ def _validate_metadata(manifest: Dict[str, Any],
     # ``dashboards_registry.json`` per-dashboard entry is a separate
     # field and continues to gate the hourly runner.
     rf = metadata.get("refresh_frequency")
-    if rf is not None:
-        # Accept (a) legacy enum (back-compat: existing registry entries),
-        # (b) explicit "manual" opt-out, (c) duration strings parseable by
-        # dashboards_time.parse_freq ("60s" / "5m" / "1h" / "1d" / "1w"),
-        # (d) positive integer seconds. parse_freq returns timedelta for
-        # any valid cadence and None for "manual" / unknown -- so the
-        # validator branches on the "manual" string explicitly to keep
-        # the explicit opt-out distinguishable from a typo.
-        from dashboards_time import parse_freq
-        rf_lower = rf.strip().lower() if isinstance(rf, str) else rf
-        is_manual = isinstance(rf, str) and rf_lower == "manual"
-        if not is_manual and parse_freq(rf) is None:
-            errs.append(_err(
-                "metadata.refresh_frequency",
-                f"'{rf}' is not a valid refresh frequency. "
-                f"Expected legacy enum (hourly/daily/weekly/manual) "
-                f"OR duration string (60s/5m/15m/1h/6h/1d/7d/1w) "
-                f"OR positive integer seconds."
-            ))
+    if rf is not None and rf not in VALID_REFRESH_FREQUENCIES:
+        errs.append(_err("metadata.refresh_frequency",
+                            f"'{rf}' not in "
+                            f"{sorted(VALID_REFRESH_FREQUENCIES)}"))
     # methodology: markdown string OR {title?, body} dict.
     # Drives the header "Methodology" popup button.
     meth = metadata.get("methodology")
@@ -9218,32 +9203,8 @@ def _derive_domain_end(datasets: Dict[str, Any]) -> Optional[str]:
     Date-typed columns are detected via either pandas' ``datetime64``
     dtype OR a column literally named ``date`` / ``Date`` that
     ``pd.to_datetime`` can coerce. Stamped into
-    ``metadata.time.data_domain_end`` by ``build_dashboard``.
-
-    Cross-dataset tz normalisation: pulls do not promise a uniform
-    timezone convention -- ``pull_market_data(mode='iday')`` emits
-    tz-aware timestamps in US/Eastern, while ``pull_market_data(mode='eod')``
-    emits tz-naive dates. The cross-dataset ``max()`` would crash with
-    ``TypeError: Cannot compare tz-naive and tz-aware timestamps``. The
-    engine absorbs the friction here: every per-dataset max Timestamp
-    is normalised to a tz-naive UTC wall-clock before the cross-dataset
-    comparison. The output is still a bare ``YYYY-MM-DD`` so the chrome
-    pill renders identically regardless of source tz.
-    """
+    ``metadata.time.data_domain_end`` by ``build_dashboard``."""
     import pandas as pd
-
-    def _strip_tz(ts):
-        """Coerce a single ``pd.Timestamp`` to tz-naive UTC wall-clock.
-        Returns the timestamp unchanged if already tz-naive."""
-        if ts is None or pd.isna(ts):
-            return ts
-        if getattr(ts, "tzinfo", None) is not None or \
-                getattr(ts, "tz", None) is not None:
-            try:
-                return ts.tz_convert("UTC").tz_localize(None)
-            except (AttributeError, TypeError):
-                return ts
-        return ts
 
     max_date = None
     for df in datasets.values():
@@ -9263,7 +9224,6 @@ def _derive_domain_end(datasets: Dict[str, Any]) -> Optional[str]:
             this_max = date_col.dropna().max()
             if this_max is None or pd.isna(this_max):
                 continue
-            this_max = _strip_tz(this_max)
             if max_date is None or this_max > max_date:
                 max_date = this_max
 
@@ -9408,7 +9368,7 @@ def build_dashboard(folder: str, *, s3_manager=None,
     """
     import io
     import pandas as pd
-    from dashboards_time import utcnow, format_iso
+    from dashboards_time import utcnow, format_iso, format_pill
 
     s3 = _resolve_s3_manager(s3_manager)
 
@@ -9482,6 +9442,10 @@ def build_dashboard(folder: str, *, s3_manager=None,
     if time_block.get("data_domain_end"):
         meta["data_as_of"] = time_block["data_domain_end"]
     meta["generated_at"] = time_block["build_completed_at"]
+
+    # Server-baked pill text — JS reads MD.pill_text first; falls back
+    # to MD.time.* readers; falls back to legacy aliases.
+    meta["pill_text"] = format_pill(time_block)
 
     manifest = populate_template(template, datasets)
 

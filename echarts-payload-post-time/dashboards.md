@@ -330,7 +330,7 @@ The remaining fields are optional but every persistent dashboard should at least
 |----------------|------|---------|
 | `sources` | list[str] | Source names (`["GS Market Data", "Haver"]`) |
 | `summary` | str \| `{title, body}` | Always-visible markdown banner above row 1 (today's read) |
-| `refresh_frequency` | str / int | Server-side cron cadence. Accepts duration strings (`60s` / `5m` / `15m` / `1h` / `6h` / `1d` / `7d` / `1w`), the legacy enum (`hourly` / `daily` / `weekly` / `manual` — back-compat, no migration needed), or positive integer seconds. `manual` opts out of auto-refresh (only `[Refresh]` button triggers). Pair with `--interval N` on the daemon. See §2.3a |
+| `refresh_frequency` | str | `hourly` / `daily` / `weekly` / `manual`; controls the hourly runner — manual means `Refresh` is button-driven only |
 | `live_refresh_seconds` | int | Browser-side live-poll cadence; default `60`, `0` disables, soft floor `15`. See §2.3a |
 | `time.data_domain_freq` | str | `daily` / `weekly` / `monthly` / `quarterly` / `annual`; cadence override. Auto-inferred from CSV inter-row spacing — set only when auto-inference picks wrong (mixed-frequency datasets). See §2.3a |
 | `tags` / `version` | list[str] / str | Echoed into the registry; manifest version string |
@@ -348,7 +348,8 @@ The engine auto-stamps these on every build — PRISM does NOT author them:
 | `metadata.time.data_domain_freq` | Auto-inferred cadence (override in template if wrong) |
 | `metadata.time.pull_completed_at` | Max `pull_completed_at` across `data/<stem>_metadata.json` sidecars |
 | `metadata.time.build_completed_at` | When `build_dashboard()` compiled the HTML |
-| `metadata.time.refresh_cycle_at` | When the cron / `[Refresh]` runner finished (matches registry `last_refreshed` byte-for-byte) — drives the "Refreshed HH:MM:SS ET" pill |
+| `metadata.time.refresh_cycle_at` | When the cron / `[Refresh]` runner finished (matches registry `last_refreshed` byte-for-byte) |
+| `metadata.pill_text` | Server-baked "Data through Q1 2026 — refreshed 12 May 2026 09:25 ET" string |
 | `data_as_of` / `generated_at` | Back-compat aliases (deprecated; `metadata.time.*` is canonical) |
 
 ```python
@@ -369,53 +370,9 @@ metadata = {
 
 Every served dashboard polls `GET /api/dashboard/data/` every 60 seconds (override via `metadata.live_refresh_seconds`; set to `0` to disable). The endpoint is ETag-gated on the registry's `last_refreshed` — most polls return 304 with no body. On a 200 (cron just wrote a fresh manifest, or the user clicked `[Refresh]`), the chrome swaps datasets + chart specs + metadata IN PLACE: filter state, dataZoom slider position, dark-mode toggle, table sort, and tab position all survive. The user does not need to take any action.
 
-The header strip carries two pills the chrome renders in ET: a live now-clock that ticks every second (`12 May 2026  02:03:47 ET`) and a refresh stamp that updates on every successful poll (`Refreshed 02:00:35 ET` same-day; full date on prior days). Both are JS-rendered via `Intl.DateTimeFormat`; the refresh pill flashes briefly when fresh data lands.
-
 `[Refresh]` button success path no longer reloads the page — it kicks the same in-place swap loop. The error modal + `[Reload anyway]` partial-recovery button still trigger full reloads (intentional UX).
 
 Structural changes (new widget / new tab / new filter — anything that edits `manifest_template.json`) bump the template hash and trigger one clean `location.reload()` via the chrome's `applyLiveData` path — the right semantic since in-place swap can't reconcile a structural change.
-
-#### 2.3a.1 Per-dashboard refresh cadence
-
-`metadata.refresh_frequency` is a **per-dashboard** knob — PRISM picks the cadence at authoring time based on what the data actually moves at. The vocabulary:
-
-| Cadence              | Author as              | When to use                                                                |
-|----------------------|------------------------|----------------------------------------------------------------------------|
-| sub-minute           | `"30s"` / `"60s"`      | intraday tape (1-second bars, live yields, FX). Most aggressive.           |
-| 1-15 min             | `"2m"` / `"5m"` / `"15m"` | intraday bars at coarser granularity, OAS / spread monitors                |
-| hourly-ish           | `"30m"` / `"1h"` / `"6h"` | EOD-driven curves, vol surfaces, positioning aggregates                    |
-| daily                | `"1d"` / `"daily"`     | macro indicators (CPI, NFP, retail sales). `"1d"` = 24h; `"daily"` = 20h (legacy enum, kept for back-compat) |
-| weekly+              | `"1w"` / `"weekly"`    | quarterly GDP, structural views                                            |
-| no auto-refresh      | `"manual"`             | one-shot exhibits, snapshot reports                                        |
-
-Duration strings (`60s` / `5m` / `1h` / `1d` / `1w`) are the recommended authoring path because they're expressive and unambiguous. The legacy 4-value enum (`hourly` / `daily` / `weekly` / `manual`) still parses identically to the pre-2026-05-12 behaviour — no migration of existing registry entries. Positive integer seconds (`60` is a synonym for `"60s"`) is also accepted.
-
-**Two places to set it (both required):**
-
-1. `manifest_template.json` → `metadata.refresh_frequency` — drives the validator and `refresh_runner`'s `next_refresh_at` stamp.
-2. `dashboards_registry.json` → per-dashboard entry's `refresh_frequency` — read by the cron's `_is_due()` to decide whether to spawn a refresh.
-
-Both must agree. The registry entry is authored verbatim in Tool 3 (§6); set the same value as `metadata.refresh_frequency` in the same authoring pass.
-
-**Effective cadence floor:** the daemon walks the registry every `--interval N` seconds (default one-shot mode = single walk per invocation). For sub-`N` cadences, the cron physically cannot fire faster than the walk. The effective per-dashboard refresh interval is `max(walk_interval, refresh_frequency) + run_time`. For intraday dashboards (`refresh_frequency = "60s"`), pair with `--interval 30` on the daemon so the walk granularity doesn't dominate.
-
-#### 2.3a.2 Daemon mode for sub-5-minute cadences
-
-`refresh_dashboards.py` has two modes:
-
-```bash
-python -m ai_development.jobs.hourly.refresh_dashboards
-```
-
-One-shot: walk the registry once, spawn `refresh_runner.py` per due dashboard, exit. This is the legacy contract — PRISM's `entrypoint.py::fifteen_minute_context_generator` calls `refresh_dashboards.main()` with no args and this is what it gets.
-
-```bash
-python -m ai_development.jobs.hourly.refresh_dashboards --interval 30
-```
-
-Daemon: loop forever, walking every 30 seconds. Walk-time exceptions are caught and logged but the daemon survives; KeyboardInterrupt exits cleanly with rc=0. Use this when the registry contains sub-5-minute `refresh_frequency` dashboards that the legacy 5-min cron cycle would starve.
-
-Pick `--interval N` to match the SHORTEST `refresh_frequency` in the registry. Walking faster than that just wastes CPU; walking slower starves the fastest dashboards. For a registry with both `"60s"` intraday + `"1d"` macro dashboards, `--interval 30` is the sweet spot — 60s cadences land within ~60-90s; daily cadences fire ~30s after their hourly tick.
 
 #### 2.3.1 Always-on header chrome
 
@@ -742,9 +699,7 @@ print("[Tool 2] complete; ready for Tool 3 (register)")
 
 ### Tool 3 — register
 
-There is no `register_dashboard()` helper. The hourly refresh runner iterates `registry["dashboards"]`; a top-level-keyed entry (`registry[DASHBOARD_NAME] = {...}`) is invisible to it, returns 404 on every refresh, and never produces a `refresh_status.json`. The shape is verbatim PRISM-authored.
-
-**Critical:** `new_entry["refresh_frequency"]` MUST match `metadata.refresh_frequency` in the manifest. The cron's `_is_due()` reads the registry entry; the engine's validator + `refresh_runner.next_refresh_at` read the manifest. Set both to the same value in this same authoring pass. Intraday dashboards (1-second yields, FX tape) want `"60s"` / `"2m"`; macro indicators (CPI, GDP) want `"1d"` / `"1w"`; structural exhibits want `"manual"`. Full vocabulary at §2.3a.1.
+There is no `register_dashboard()` helper. The hourly refresh runner iterates `registry["dashboards"]`; a top-level-keyed entry (`registry[DASHBOARD_NAME] = {...}`) is invisible to it, returns 404 on every refresh, and never produces a `refresh_status.json`. The shape is verbatim PRISM-authored:
 
 ```python
 REGISTRY_PATH = f"users/{KERBEROS}/dashboards/dashboards_registry.json"

@@ -1,13 +1,12 @@
 """dashboards_time -- canonical time helpers for the dashboard pipeline.
 
 Single source of truth for ISO parsing, ISO emit, refresh-frequency
-deltas, stale-lock detection, and the user-facing "Data as of" pill
-string. Every consumer (``echart_dashboard.build_dashboard``,
-``refresh_runner``, ``refresh_dashboards``, PRISM-side
-``mysite/news/views.py``) routes through this module so the pipeline
-has one parser/formatter pair instead of ad-hoc
-``.replace("Z", "+00:00")`` + ``datetime.fromisoformat`` calls scattered
-across files.
+deltas, and stale-lock detection. Every consumer
+(``echart_dashboard.build_dashboard``, ``refresh_runner``,
+``refresh_dashboards``, PRISM-side ``mysite/news/views.py``) routes
+through this module so the pipeline has one parser/formatter pair
+instead of ad-hoc ``.replace("Z", "+00:00")`` +
+``datetime.fromisoformat`` calls scattered across files.
 
 The module name is ``dashboards_time`` (not ``time``) because a bare
 ``time.py`` inside any package shadows the stdlib ``time`` module --
@@ -26,15 +25,20 @@ design walkthrough at ``scans/prism/2026-05-11_dashboard_live_refresh_and_time.m
     refresh_cycle_at    when the cron / [Refresh] runner finished.
                         Stamped by refresh_runner.py.
 
-The user-facing pill collapses (data_domain_end, refresh_cycle_at OR
-build_completed_at) into one human-readable string. pull_completed_at
-is observability-only; no consumer in the chrome.
+User-facing pill rendering happens in the chrome (``rendering.py``
+DASHBOARD_APP_JS): two pills, one with a live-ticking now-clock
+(updates every 1s via setInterval), one with the refresh timestamp
+(updates on every applyLiveData tick). Both formatted in ET via
+``Intl.DateTimeFormat`` — JS owns the rendering because the now-clock
+must tick and that can't be server-baked. ``refresh_cycle_at`` flows
+into the refresh pill as a canonical aware-UTC ISO string.
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Union
 from zoneinfo import ZoneInfo
 
 
@@ -43,15 +47,27 @@ ET = ZoneInfo("America/New_York")
 
 
 # refresh_frequency -> minimum elapsed time before a dashboard is "due"
-# again. Matches the contract in prism/dashboard-refresh.md §5.3 so
-# existing registry entries don't need migration. "daily" intentionally
-# means ">=20h since last refresh", not "calendar-day boundary".
+# again. Legacy enum kept for back-compat: existing registry entries
+# (dashboards built before 2026-05-12) still validate without migration.
+# "daily" intentionally means ">=20h since last refresh", not
+# "calendar-day boundary" -- matches prism/dashboard-refresh.md §5.3.
+# New entries should prefer the duration-string syntax accepted by
+# ``parse_freq`` ("60s", "5m", "1h", "1d", "1w") because it lets PRISM
+# pick the right cadence per-dashboard instead of being boxed into 4 buckets.
 REFRESH_FREQ_DELTAS: dict = {
     "hourly": timedelta(hours=1),
     "daily":  timedelta(hours=20),
     "weekly": timedelta(hours=160),
     "manual": None,
 }
+
+
+# Duration string parser: "60s" / "5m" / "15m" / "1h" / "6h" / "1d" / "7d" / "1w".
+# Case-insensitive, whitespace tolerant. Single positive integer + single unit.
+# Compound durations ("1h30m") are intentionally NOT supported; if PRISM needs
+# 90 minutes, "90m" is the expressive answer.
+_DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
+_UNIT_SECONDS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
 
 
 def utcnow() -> datetime:
@@ -104,13 +120,65 @@ def format_iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat()
 
 
-def freq_delta(freq: Optional[str]) -> Optional[timedelta]:
-    """Return the elapsed-time threshold for ``freq``, or ``None`` for
-    ``"manual"`` / unknown frequencies. Lookup table -- no magic-number
-    branches in callers."""
-    if freq is None:
+def parse_freq(value: Union[None, int, float, str]) -> Optional[timedelta]:
+    """Parse a refresh-frequency value into an elapsed-time threshold.
+
+    Accepts:
+
+    - **Duration string** -- ``"60s"`` / ``"5m"`` / ``"15m"`` / ``"1h"`` /
+      ``"6h"`` / ``"1d"`` / ``"7d"`` / ``"1w"``. Case-insensitive,
+      whitespace tolerant. Single positive integer + single unit.
+      Compound durations (``"1h30m"``) are intentionally not supported;
+      ``"90m"`` is the expressive equivalent.
+    - **Legacy enum (back-compat)** -- ``"hourly"`` -> 1h,
+      ``"daily"`` -> 20h, ``"weekly"`` -> 160h, ``"manual"`` -> None.
+      Existing registry entries continue to parse without migration.
+    - **Numeric** -- ``int`` or ``float`` treated as seconds.
+    - **None / "manual" / unknown** -- returns ``None``. The cron's
+      ``_is_due`` short-circuits "manual" explicitly upstream; ``None``
+      from ``parse_freq`` typically means "fall back to default" for
+      unknown strings.
+
+    PRISM authoring guidance:
+      - intraday tape (1m bars):    ``"60s"`` to ``"2m"``
+      - 5m / 15m bars:              ``"5m"`` to ``"15m"``
+      - end-of-day rates / curves:  ``"1h"`` to ``"6h"``
+      - monthly indicators (CPI):   ``"6h"`` to ``"1d"``
+      - quarterly (GDP):            ``"1d"`` to ``"1w"``
+      - structural views (rarely refreshed): ``"manual"``
+
+    Returns: ``timedelta`` for a valid cadence, ``None`` otherwise.
+    """
+    if value is None:
         return None
-    return REFRESH_FREQ_DELTAS.get(freq)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        if value <= 0:
+            return None
+        return timedelta(seconds=float(value))
+    if not isinstance(value, str):
+        return None
+    s = value.strip().lower()
+    if not s:
+        return None
+    if s in REFRESH_FREQ_DELTAS:
+        return REFRESH_FREQ_DELTAS[s]
+    m = _DURATION_RE.match(s)
+    if not m:
+        return None
+    n = int(m.group(1))
+    if n <= 0:
+        return None
+    return timedelta(seconds=n * _UNIT_SECONDS[m.group(2).lower()])
+
+
+def freq_delta(freq: Optional[str]) -> Optional[timedelta]:
+    """Back-compat alias for ``parse_freq``. New code should call
+    ``parse_freq`` directly -- it accepts both the legacy enum
+    (``"hourly"`` / ``"daily"`` / ``"weekly"`` / ``"manual"``) and
+    duration strings (``"60s"`` / ``"5m"`` / ``"1h"``)."""
+    return parse_freq(freq)
 
 
 def is_stale(started_at: Optional[str],
@@ -129,75 +197,6 @@ def is_stale(started_at: Optional[str],
     return (utcnow() - started).total_seconds() > max_age_seconds
 
 
-def _format_domain(date_str: Optional[str], freq: Optional[str]) -> Optional[str]:
-    """Format the data-domain endpoint for the pill. Cadence-aware:
-
-        quarterly  ->  "Q1 2026"
-        monthly    ->  "Mar 2026"
-        annual     ->  "2026"
-        weekly     ->  "31 Mar 2026"
-        daily      ->  "31 Mar 2026"
-        (other)    ->  "31 Mar 2026"
-
-    Returns ``None`` for empty / unparseable input so callers can chain.
-    """
-    if not date_str:
-        return None
-    dt = parse_iso(date_str)
-    if dt is None:
-        return None
-    if freq == "quarterly":
-        return f"Q{(dt.month - 1) // 3 + 1} {dt.year}"
-    if freq == "monthly":
-        return dt.strftime("%b %Y")
-    if freq == "annual":
-        return str(dt.year)
-    return dt.strftime("%d %b %Y")
-
-
-def format_pill(meta_time: dict) -> str:
-    """Build the user-facing "Data as of" string from a ``metadata.time``
-    block. Examples:
-
-        "Data through Q1 2026 -- refreshed 12 May 2026 09:25 ET"
-        "Data through Mar 2026 -- refreshed 12 May 2026 09:25 ET"
-        "Data through 31 Mar 2026"                       (no cycle yet)
-        "Refreshed 12 May 2026 09:25 ET"                 (no domain)
-        ""                                               (nothing populated)
-
-    The cycle timestamp is taken from ``refresh_cycle_at`` first, falling
-    back to ``build_completed_at`` for in-session PRISM builds that
-    haven't gone through the cron / [Refresh] runner yet. Cycle is
-    rendered in Eastern Time per the trading-floor convention; if a
-    non-NY user friction surfaces later, parametrize ``display_tz`` here
-    instead of baking the override into manifest metadata.
-    """
-    if not isinstance(meta_time, dict):
-        return ""
-    domain_end_str = meta_time.get("data_domain_end")
-    cycle_str_raw = (
-        meta_time.get("refresh_cycle_at")
-        or meta_time.get("build_completed_at")
-    )
-    freq = meta_time.get("data_domain_freq", "daily")
-
-    domain_str = _format_domain(domain_end_str, freq)
-
-    cycle_dt = parse_iso(cycle_str_raw)
-    cycle_str = (
-        cycle_dt.astimezone(ET).strftime("%d %b %Y %H:%M ET")
-        if cycle_dt else None
-    )
-
-    if domain_str and cycle_str:
-        return f"Data through {domain_str} -- refreshed {cycle_str}"
-    if domain_str:
-        return f"Data through {domain_str}"
-    if cycle_str:
-        return f"Refreshed {cycle_str}"
-    return ""
-
-
 __all__ = [
     "UTC",
     "ET",
@@ -205,7 +204,7 @@ __all__ = [
     "utcnow",
     "parse_iso",
     "format_iso",
+    "parse_freq",
     "freq_delta",
     "is_stale",
-    "format_pill",
 ]

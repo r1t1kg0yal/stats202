@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""refresh_dashboards.py -- cron / daemon entry point for dashboard refresh.
+"""refresh_dashboards.py -- hourly cron entry point for dashboard refresh.
 
 Walks ``UserRegistry``, reads each user's ``dashboards_registry.json``,
 and spawns ``refresh_runner.py`` as a subprocess for each dashboard
@@ -9,48 +9,30 @@ dashboard's state -- each refresh runs in its own Python interpreter
 with its own filesystem locks and S3 client. The cron walks dashboards
 SEQUENTIALLY (``proc.wait()`` blocks per dashboard); a slow Haver pull
 on dashboard A delays dashboard B on the same cron tick but does not
-crash it. ``_is_due`` thresholds keep tick volume small in steady
-state -- most ticks are no-ops because few dashboards cross their
-threshold simultaneously.
+crash it. ``_is_due`` thresholds (>=1h hourly / >=20h daily / >=160h
+weekly) keep tick volume small in steady state -- most ticks are no-ops
+because few dashboards cross their threshold simultaneously.
 
 After the subprocess pass, calls ``UserManifestManager.update_dashboard_pointer``
 once per kerberos that had at least one successful refresh, so the
 manifest pointer block (count / active_count / last_refreshed)
-doesn't drift across cron ticks (per
+doesn't drift across hourly ticks (per
 ``prism/dashboard-refresh.md`` \u00a77).
 
-Two operating modes:
+Called from PRISM ``entrypoint.py``'s ``fifteen_minute_context_generator``.
+The function name preserves the legacy entry point so the
+PRISM-side cron loop doesn't need to change.
 
-1. **One-shot** (default): ``main()`` (no args) does a single walk
-   and exits. Preserves the legacy entrypoint.py contract -- PRISM's
-   ``fifteen_minute_context_generator`` calls ``main()`` every 5
-   minutes and the walk takes ~10s for 100 users.
-
-2. **Daemon** (``--interval N``): ``python -m refresh_dashboards
-   --interval 30`` loops forever, walking every ``N`` seconds. Use
-   this when the legacy 5-minute context cycle is too coarse for
-   sub-5-minute dashboard cadences. The walk itself is cheap (~10s
-   for 100 users); the expensive spawns are gated by ``_is_due`` so
-   most ticks are skip-only.
-
-Frequency contract (``dashboards_time.parse_freq``; matches the contract in
+Frequency thresholds (matches the contract in
 ``prism/dashboard-refresh.md`` \u00a75.3 so existing registry entries don't
 need migration):
 
-    refresh_frequency       elapsed required          notes
-    --------------------    ----------------------    --------------------------
-    "60s" / "5m" / "1h"     duration string           PRISM-authored per dash
-    "1d" / "1w"             (case-insensitive)
-    "hourly"                >= 1h                     legacy enum, back-compat
-    "daily"                 >= 20h (default)
-    "weekly"                >= 160h
-    "manual"                never (cron skips)        only [Refresh] triggers
-
-Cadence floor: ``effective_refresh = max(walk_interval, refresh_frequency)``.
-A "60s" dashboard with the daemon walking every 30s lands within ~60-90s
-of every tick; with the legacy one-shot path at 5min, "60s" effectively
-becomes "every 5 minutes". Pick ``--interval`` to match the SHORTEST
-``refresh_frequency`` in the registry.
+    refresh_frequency       elapsed_hours required
+    --------------------    ------------------------
+    "hourly"                >= 1
+    "daily"                 >= 20    (default)
+    "weekly"                >= 160
+    "manual"                never (cron skips; only [Refresh] button triggers)
 
 PRISM-side imports only; no fallbacks. Single canonical resolution
 path for the runner script, the user registry, the user manifest
@@ -59,21 +41,18 @@ manager, and s3_manager.
 
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
 import sys
 import time
 import traceback
 
-from typing import List, Optional
-
 from ai_development.core.common import UserRegistry
 from ai_development.core.s3_bucket_manager import s3_manager
 from ai_development.core.user_manifest import UserManifestManager
 from ai_development.dashboards import refresh_runner as _refresh_runner_module
 from ai_development.dashboards.dashboards_time import (
-    parse_freq, parse_iso, utcnow,
+    freq_delta, parse_iso, utcnow,
 )
 
 
@@ -87,30 +66,24 @@ def _is_due(entry: dict) -> bool:
     """Return ``True`` if ``entry`` (one item from
     ``registry["dashboards"]``) should be refreshed now.
 
-    Routes through the canonical ``dashboards_time.parse_freq`` so the
-    threshold parsing is defined in one place. Accepts the full
-    duration-string vocabulary (``"60s"`` / ``"5m"`` / ``"1h"`` /
-    ``"1d"`` / ``"1w"``) plus the legacy enum (``"hourly"`` /
-    ``"daily"`` / ``"weekly"``). ``"daily"`` means ">=20 hours elapsed
-    since last refresh", not "calendar-day boundary" -- preserved
-    verbatim from the legacy behaviour so existing registry entries
-    don't need migration.
-
+    Routes through the canonical ``freq_delta`` lookup so the threshold
+    set is defined in one place (``dashboards_time.REFRESH_FREQ_DELTAS``).
+    ``daily`` means ">=20 hours elapsed since last refresh", not
+    "calendar-day boundary" — preserved verbatim from the legacy
+    behaviour so existing registry entries don't need migration.
     Unknown frequencies fall back to ``daily`` for back-compat with
-    typo'd entries; ``"manual"`` (case-insensitive) explicitly opts out
-    of auto-refresh.
+    typo'd entries; ``manual`` explicitly opts out of auto-refresh.
     """
     if not entry.get("refresh_enabled", True):
         return False
     freq = entry.get("refresh_frequency", "daily")
-    # Explicit opt-out check BEFORE parse_freq because parse_freq("manual")
-    # returns None which is indistinguishable from "unknown freq" otherwise.
-    # Whitespace + case tolerant.
-    if isinstance(freq, str) and freq.strip().lower() == "manual":
+    if freq == "manual":
         return False
-    # Unknown freqs (typos, dropped strings) fall back to daily to
-    # preserve legacy behaviour.
-    delta = parse_freq(freq) or parse_freq("daily")
+    # Unknown freqs (typos) treated as daily to preserve legacy
+    # behaviour. The freq_delta(None) -> None branch is for "manual"
+    # which we already short-circuited above; this fallback handles
+    # genuinely-unknown strings.
+    delta = freq_delta(freq) or freq_delta("daily")
     last = parse_iso(entry.get("last_refreshed"))
     if last is None:
         return True
@@ -209,10 +182,8 @@ def _update_user_manifests(successful_kerberos: set) -> None:
             )
 
 
-def _walk_once() -> int:
-    """Single walk over every user's registry. Spawn ``refresh_runner.py``
-    per due dashboard. Returns 0 if every spawn succeeded, 1 if any
-    failed.
+def main() -> int:
+    """Walk every user, refresh every due dashboard via subprocess.
 
     Per-dashboard subprocess isolation: each refresh runs in its own
     ``refresh_runner.py`` subprocess so a failure on dashboard A
@@ -263,7 +234,7 @@ def _walk_once() -> int:
     # Refresh user-manifest pointer blocks for users whose registry was
     # mutated by a successful subprocess this tick. The runner only
     # touches the registry; the manifest pointer (aggregate metadata)
-    # update is the cron's responsibility (per dashboard-refresh.md).
+    # update is the cron's responsibility (§7).
     _update_user_manifests(success_kerberos)
 
     completed = utcnow()
@@ -289,107 +260,5 @@ def _walk_once() -> int:
     return 0 if failures == 0 else 1
 
 
-def _daemon(interval_seconds: int) -> int:
-    """Loop forever, walking the registry every ``interval_seconds``.
-
-    Each tick = one ``_walk_once`` pass. Walk time is reckoned into the
-    sleep so the effective wall-clock cadence is constant: a 12s walk
-    followed by an 18s sleep, not 30s of sleep on top of the walk.
-
-    Walk-time exceptions are caught and logged but the daemon survives
-    (subprocess failures inside ``_walk_once`` are already handled by
-    ``_spawn_runner``; this branch covers genuinely-unexpected crashes
-    like an S3 listing failure or a UserRegistry race). KeyboardInterrupt
-    exits cleanly with rc=0.
-
-    Cadence floor: a dashboard with ``refresh_frequency = "60s"`` and
-    a daemon walking every 30s sees effective cadence ~60-90s (60s
-    threshold + up to 30s walk granularity + ~11s spawn). Pick
-    ``--interval`` to match the SHORTEST refresh_frequency you have
-    registered; walking faster than that just wastes CPU.
-    """
-    if interval_seconds <= 0:
-        print(
-            f"[refresh_dashboards] --interval must be > 0; got "
-            f"{interval_seconds}",
-            file=sys.stderr, flush=True,
-        )
-        return 2
-    print(
-        f"[refresh_dashboards] daemon mode interval={interval_seconds}s",
-        flush=True,
-    )
-    try:
-        while True:
-            tick_started = time.time()
-            try:
-                _walk_once()
-            except BaseException as exc:
-                print(
-                    f"[refresh_dashboards] WALK CRASHED: "
-                    f"{type(exc).__name__}: {exc}",
-                    file=sys.stderr, flush=True,
-                )
-                print(traceback.format_exc(),
-                      file=sys.stderr, flush=True)
-            tick_elapsed = time.time() - tick_started
-            sleep_for = max(0.0, float(interval_seconds) - tick_elapsed)
-            if sleep_for > 0:
-                time.sleep(sleep_for)
-    except KeyboardInterrupt:
-        print(
-            "[refresh_dashboards] daemon interrupted, exiting",
-            flush=True,
-        )
-        return 0
-
-
-def _parse_args(argv: List[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="refresh_dashboards",
-        description=(
-            "Walk the dashboards registry and refresh every due "
-            "dashboard via per-dashboard subprocess. Default: one walk + "
-            "exit (legacy entrypoint.py contract). With --interval N: "
-            "run as a daemon, walking every N seconds forever."
-        ),
-    )
-    parser.add_argument(
-        "--interval",
-        type=int,
-        default=None,
-        metavar="N",
-        help=(
-            "Daemon mode: walk the registry every N seconds. "
-            "Recommended N=30 for registries containing sub-minute "
-            "refresh_frequency dashboards. Effective per-dashboard "
-            "cadence = max(N, refresh_frequency); pick N <= the "
-            "shortest refresh_frequency in the registry."
-        ),
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: Optional[List[str]] = None) -> int:
-    """Entry point. Two callable shapes:
-
-    1. ``main()`` (no args) -- single walk and exit. Preserves the
-       legacy ``entrypoint.py`` contract; PRISM's
-       ``fifteen_minute_context_generator`` calls this with no args.
-    2. ``main(argv)`` (CLI args list) -- argparse-driven. With
-       ``--interval N`` runs as a daemon, otherwise one-shot.
-
-    Splitting on ``argv is None`` instead of ``sys.argv`` so the
-    Python-level call from entrypoint.py never picks up stray CLI args
-    intended for the parent process.
-    """
-    if argv is None:
-        return _walk_once()
-    args = _parse_args(argv)
-    if args.interval is None:
-        return _walk_once()
-    return _daemon(args.interval)
-
-
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    sys.exit(main())
