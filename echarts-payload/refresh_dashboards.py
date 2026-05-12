@@ -66,6 +66,7 @@ import sys
 import time
 import traceback
 
+from datetime import timedelta
 from typing import List, Optional
 
 from ai_development.core.common import UserRegistry
@@ -77,13 +78,62 @@ from ai_development.dashboards.dashboards_time import (
 )
 
 
+# Failure cooldown bounds. A failing dashboard waits at least
+# _COOLDOWN_FLOOR after each error before retry; the cooldown grows
+# exponentially with consecutive failures and is capped at _COOLDOWN_CEIL.
+# These are operational knobs (engineering judgement, not user config) --
+# tuned so a 60s intraday dashboard backs off to 5/10/20/40/60min after
+# successive failures rather than spamming the daemon every 30s.
+_COOLDOWN_FLOOR = timedelta(seconds=60)
+_COOLDOWN_CEIL = timedelta(hours=1)
+_COOLDOWN_BASE_MULTIPLIER = 5
+
+
 # Path on disk of the single-dashboard runner. Spawned per due
 # dashboard. Resolved once via the canonical Python import (no
 # repo-root walking, no fallback paths).
 _REFRESH_RUNNER_PATH = _refresh_runner_module.__file__
 
 
-def _is_due(entry: dict) -> bool:
+def _read_refresh_status(folder: str) -> Optional[dict]:
+    """Read ``<folder>/refresh_status.json``. Returns ``None`` on missing
+    / unreadable / malformed input -- callers treat None as "no prior
+    status known" (no cooldown applied). Used by ``_is_due`` to back off
+    failing dashboards instead of hot-spinning every tick."""
+    try:
+        raw = s3_manager.get(f"{folder}/refresh_status.json")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.rstrip(b"\x00").decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+def _failure_cooldown(refresh_delta: timedelta,
+                       consecutive_failures: int) -> timedelta:
+    """Return the cooldown a failing dashboard must wait before retry.
+
+    Exponential backoff keyed off ``consecutive_failures``. Base cooldown
+    is ``max(refresh_delta * 5, 60s)`` (so an "hourly" dashboard gets
+    a 5h-floored base which immediately caps at 1h). Each additional
+    consecutive failure doubles the cooldown, up to the 1-hour ceiling.
+
+    For ``refresh_frequency = "60s"`` (base = 5min):
+        n=1: 5min, n=2: 10min, n=3: 20min, n=4: 40min, n>=5: 1h (cap)
+
+    For ``refresh_frequency = "1h"`` or longer: always 1h (cap).
+    """
+    n = max(1, int(consecutive_failures))
+    base = max(refresh_delta * _COOLDOWN_BASE_MULTIPLIER, _COOLDOWN_FLOOR)
+    factor = 2 ** min(n - 1, 8)
+    cooldown = base * factor
+    return min(cooldown, _COOLDOWN_CEIL)
+
+
+def _is_due(entry: dict, *, status: Optional[dict] = None) -> bool:
     """Return ``True`` if ``entry`` (one item from
     ``registry["dashboards"]``) should be refreshed now.
 
@@ -99,18 +149,34 @@ def _is_due(entry: dict) -> bool:
     Unknown frequencies fall back to ``daily`` for back-compat with
     typo'd entries; ``"manual"`` (case-insensitive) explicitly opts out
     of auto-refresh.
+
+    Failure cooldown: if ``status`` (refresh_status.json contents) shows
+    a recent error / partial outcome, the dashboard is held off for an
+    exponential backoff window keyed off ``consecutive_failures``. This
+    is what stops a chronically-failing dashboard from spawning a
+    failing subprocess every cron tick (which would spam logs and starve
+    healthy dashboards' refresh windows). The cooldown applies BEFORE
+    the normal due-check.
     """
     if not entry.get("refresh_enabled", True):
         return False
     freq = entry.get("refresh_frequency", "daily")
-    # Explicit opt-out check BEFORE parse_freq because parse_freq("manual")
-    # returns None which is indistinguishable from "unknown freq" otherwise.
-    # Whitespace + case tolerant.
     if isinstance(freq, str) and freq.strip().lower() == "manual":
         return False
-    # Unknown freqs (typos, dropped strings) fall back to daily to
-    # preserve legacy behaviour.
     delta = parse_freq(freq) or parse_freq("daily")
+
+    # Failure cooldown: if the prior run failed, wait out the backoff
+    # before retrying. consecutive_failures is stamped by refresh_runner
+    # on every error / partial outcome and reset to 0 on success.
+    if status and status.get("status") in ("error", "partial"):
+        completed = parse_iso(status.get("completed_at"))
+        if completed is not None:
+            n = status.get("consecutive_failures", 1) or 1
+            cooldown = _failure_cooldown(delta, n)
+            elapsed = utcnow() - completed
+            if elapsed < cooldown:
+                return False
+
     last = parse_iso(entry.get("last_refreshed"))
     if last is None:
         return True
@@ -238,6 +304,7 @@ def _walk_once() -> int:
     success_kerberos: set = set()
     disabled_count = 0
     not_due_count = 0
+    cooldown_count = 0
     for kerberos in all_kerberos:
         entries = _user_registry_entries(kerberos)
         for entry in entries:
@@ -248,7 +315,29 @@ def _walk_once() -> int:
             if not entry.get("refresh_enabled", True):
                 disabled_count += 1
                 continue
-            if not _is_due(entry):
+            status = _read_refresh_status(folder)
+            if not _is_due(entry, status=status):
+                # Differentiate cooldown skips from ordinary not-due so
+                # operators can tell at a glance whether a dashboard is
+                # healthy-but-not-due vs failing-and-backed-off.
+                if status and status.get("status") in ("error", "partial"):
+                    completed = parse_iso(status.get("completed_at"))
+                    delta = (parse_freq(entry.get("refresh_frequency", "daily"))
+                              or parse_freq("daily"))
+                    n = status.get("consecutive_failures", 1) or 1
+                    cooldown = _failure_cooldown(delta, n)
+                    if completed is not None and (utcnow() - completed) < cooldown:
+                        elapsed = (utcnow() - completed).total_seconds()
+                        remaining = max(0, cooldown.total_seconds() - elapsed)
+                        print(
+                            f"[refresh_dashboards] COOLDOWN {folder} "
+                            f"(consecutive_failures={n}, "
+                            f"last_error={int(elapsed)}s ago, "
+                            f"retry_in={int(remaining)}s)",
+                            flush=True,
+                        )
+                        cooldown_count += 1
+                        continue
                 not_due_count += 1
                 continue
             print(
@@ -273,8 +362,9 @@ def _walk_once() -> int:
     print(
         f"[refresh_dashboards] done elapsed={elapsed:.1f}s "
         f"refreshed={len(results)} (success={successes} fail={failures}) "
-        f"skipped={disabled_count + not_due_count} "
-        f"(disabled={disabled_count} not_due={not_due_count}) "
+        f"skipped={disabled_count + not_due_count + cooldown_count} "
+        f"(disabled={disabled_count} not_due={not_due_count} "
+        f"cooldown={cooldown_count}) "
         f"manifests_refreshed={len(success_kerberos)}",
         flush=True,
     )

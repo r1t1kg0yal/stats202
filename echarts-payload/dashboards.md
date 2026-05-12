@@ -417,6 +417,57 @@ Daemon: loop forever, walking every 30 seconds. Walk-time exceptions are caught 
 
 Pick `--interval N` to match the SHORTEST `refresh_frequency` in the registry. Walking faster than that just wastes CPU; walking slower starves the fastest dashboards. For a registry with both `"60s"` intraday + `"1d"` macro dashboards, `--interval 30` is the sweet spot — 60s cadences land within ~60-90s; daily cadences fire ~30s after their hourly tick.
 
+#### 2.3a.3 Failure cooldown (try-skip, not retry-loop)
+
+When a dashboard's subprocess refresh fails, the cron does NOT keep hammering it every tick. Instead the runner stamps `consecutive_failures` in `refresh_status.json`, and the cron applies an exponential-backoff cooldown before the next attempt. The cooldown is engine-managed; no PRISM-side knob to author.
+
+Cooldown formula:
+
+```
+cooldown(refresh_freq, n_failures) =
+   min(  1 hour                                                # ceiling
+       , max( refresh_freq * 5,  60 seconds )                  # base
+         * 2 ** min(n_failures - 1, 8) )                       # backoff
+```
+
+For `refresh_frequency = "60s"` (base = 5min):
+
+| Consecutive failures | Cooldown until next attempt |
+|----------------------|-----------------------------|
+| 1                    | 5 min                       |
+| 2                    | 10 min                      |
+| 3                    | 20 min                      |
+| 4                    | 40 min                      |
+| 5+                   | 1 h (ceiling)               |
+
+For `refresh_frequency = "1h"` or longer: always 1 h (the base immediately exceeds the ceiling).
+
+On a successful refresh, `consecutive_failures` resets to 0 in `refresh_status.json` and the dashboard returns to its normal cadence. A `status == "partial"` outcome (some pulls succeeded, others failed) also triggers the cooldown — the dashboard isn't healthy.
+
+Cron output during cooldown:
+
+```
+[refresh_dashboards] COOLDOWN users/<kerb>/dashboards/<id> \
+    (consecutive_failures=3, last_error=900s ago, retry_in=300s)
+```
+
+The summary line breaks `skipped=` into three buckets so operators can tell at a glance what the cron is doing:
+
+```
+[refresh_dashboards] done elapsed=8.4s refreshed=2 (success=2 fail=0) \
+    skipped=58 (disabled=2 not_due=54 cooldown=2) manifests_refreshed=2
+```
+
+`refresh_status.json` schema additions (consumed by the cron, also surfaced to PRISM-side diagnostics):
+
+| Field                  | Type | Semantics                                                   |
+|------------------------|------|-------------------------------------------------------------|
+| `consecutive_failures` | int  | 0 after success, increments on every error / partial outcome |
+| `status`               | str  | `success` / `error` / `partial` / `running`                  |
+| `completed_at`         | ISO  | When the last attempt finished (regardless of outcome)       |
+
+PRISM should NOT inspect `consecutive_failures` to gate authoring decisions; it's a runtime-only signal for cron backoff. If a dashboard is stuck at high `consecutive_failures`, the log file path in `refresh_status.json.log_path` carries the full subprocess stdout/stderr for diagnosis.
+
 #### 2.3.1 Always-on header chrome
 
 The header's right edge is shell-injected (Methodology / Refresh / Share / Download / theme-toggle / data-as-of pill). PRISM does not author these buttons. The validator hard-rejects any manifest missing the three required metadata fields above (`kerberos` / `dashboard_id` / `methodology`); set them and the chrome is functional. `header_actions[]` (§5) injects custom buttons to the LEFT of this chrome bar; the validator rejects any custom `id` colliding with a reserved chrome id (full list in §5).

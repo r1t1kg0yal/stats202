@@ -74,6 +74,24 @@ def _put_status(folder: str, payload: dict) -> None:
     )
 
 
+def _read_status(folder: str) -> Optional[dict]:
+    """Read ``refresh_status.json`` for ``folder``. Returns ``None`` if
+    the file is missing, unreadable, or malformed. Used at the start of
+    ``run()`` to capture the previous ``consecutive_failures`` count so
+    the cooldown logic in ``refresh_dashboards`` can back off failing
+    dashboards instead of hot-spinning every tick."""
+    try:
+        raw = s3_manager.get(f"{folder}/refresh_status.json")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.rstrip(b"\x00").decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
 def _parse_folder(folder: str) -> tuple:
     """Return (folder, kerberos, dashboard_id) parsed from a canonical
     folder path ``users/<kerberos>/dashboards/<id>``. Raises if the
@@ -197,6 +215,22 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
         flush=True,
     )
 
+    # Capture the prior status BEFORE we overwrite it with "running" --
+    # consecutive_failures is the count of consecutive error / partial
+    # outcomes ending with the PREVIOUS run. Used to extend the failure
+    # cooldown via exponential backoff on the next cron walk
+    # (refresh_dashboards._failure_cooldown reads this field).
+    prior_status = _read_status(folder)
+    prior_failure_count = 0
+    if prior_status and prior_status.get("status") in ("error", "partial"):
+        try:
+            prior_failure_count = int(
+                prior_status.get("consecutive_failures", 0)
+            )
+        except (TypeError, ValueError):
+            prior_failure_count = 0
+        prior_failure_count = max(0, prior_failure_count)
+
     running_payload: dict = {"status": "running", "started_at": started_at,
                               "pid": pid}
     if log_path:
@@ -289,13 +323,23 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
         if started_dt and completed_dt else 0.0
     )
 
+    # consecutive_failures: resets to 0 on success, increments on
+    # error / partial. Consumed by refresh_dashboards._is_due to apply
+    # exponential cooldown so a chronically-failing dashboard stops
+    # spamming the cron every tick.
+    if final_status == "success":
+        consecutive_failures = 0
+    else:
+        consecutive_failures = prior_failure_count + 1
+
     final_payload = {
-        "status":          final_status,
-        "started_at":      started_at,
-        "completed_at":    completed_at,
-        "elapsed_seconds": round(elapsed, 2),
-        "pid":             pid,
-        "errors":          errors,
+        "status":               final_status,
+        "started_at":           started_at,
+        "completed_at":         completed_at,
+        "elapsed_seconds":      round(elapsed, 2),
+        "pid":                  pid,
+        "errors":               errors,
+        "consecutive_failures": consecutive_failures,
     }
     if log_path:
         final_payload["log_path"] = log_path
