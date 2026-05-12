@@ -160,15 +160,6 @@ VALID_SYNC = {"axis", "tooltip", "legend", "dataZoom"}
 VALID_BRUSH_TYPES = {"rect", "polygon", "lineX", "lineY"}
 VALID_REFRESH_FREQUENCIES = {"hourly", "daily", "weekly", "manual"}
 
-# Valid values for ``metadata.time.data_domain_freq`` — describes the
-# CADENCE OF THE DATA (e.g. quarterly CPI prints), distinct from
-# ``metadata.refresh_frequency`` which describes how often the dashboard
-# re-pulls. The data-domain freq drives the ``format_pill`` rendering
-# (Q1 2026 vs Mar 2026 vs 31 Mar 2026 etc.) — see ``dashboards_time.py``.
-VALID_DATA_DOMAIN_FREQS = {
-    "daily", "weekly", "monthly", "quarterly", "annual",
-}
-
 # Supported column format tokens for table widgets.
 # Examples: "number:2" (2 decimals), "percent:1", "currency:2",
 # "bps:0", "integer", "date", "datetime", "text", "link".
@@ -1749,8 +1740,7 @@ def _validate_metadata(manifest: Dict[str, Any],
     if not isinstance(metadata, dict):
         return
     for k in ("kerberos", "dashboard_id", "data_as_of",
-                "generated_at", "version", "api_url", "status_url",
-                "data_url", "pill_text"):
+                "generated_at", "version", "api_url", "status_url"):
         v = metadata.get(k)
         if v is not None and not isinstance(v, str):
             errs.append(_err(f"metadata.{k}",
@@ -1759,56 +1749,6 @@ def _validate_metadata(manifest: Dict[str, Any],
         v = metadata.get(k)
         if v is not None and not isinstance(v, list):
             errs.append(_err(f"metadata.{k}", "must be a list of strings"))
-    # ``metadata.live_refresh_seconds``: optional non-negative int driving
-    # the chrome's pollLiveData() cadence (default 60s; 0 disables live
-    # refresh entirely). Soft floor of 15s enforced here so a runaway
-    # value can't generate gratuitous server traffic.
-    lrs = metadata.get("live_refresh_seconds")
-    if lrs is not None:
-        if not isinstance(lrs, bool) and isinstance(lrs, int):
-            if lrs < 0:
-                errs.append(_err(
-                    "metadata.live_refresh_seconds",
-                    f"must be non-negative (got {lrs})"))
-            elif 0 < lrs < 15:
-                errs.append(_err(
-                    "metadata.live_refresh_seconds",
-                    f"must be 0 (disabled) or >= 15 seconds (got {lrs})"))
-        else:
-            errs.append(_err(
-                "metadata.live_refresh_seconds",
-                f"must be an int, got {type(lrs).__name__}"))
-    # ``metadata.time``: the four-times schema (data_domain_end /
-    # data_domain_freq / pull_completed_at / build_completed_at /
-    # refresh_cycle_at / next_refresh_at). All fields optional; the
-    # engine auto-stamps them during build_dashboard, so PRISM typically
-    # doesn't author them. Override only when auto-inference picks the
-    # wrong cadence (e.g. mixed-frequency datasets).
-    time_block = metadata.get("time")
-    if time_block is not None:
-        if not isinstance(time_block, dict):
-            errs.append(_err("metadata.time",
-                                "must be a dict"))
-        else:
-            for k in ("data_domain_end", "pull_completed_at",
-                       "build_completed_at", "refresh_cycle_at",
-                       "next_refresh_at"):
-                v = time_block.get(k)
-                if v is not None and not isinstance(v, str):
-                    errs.append(_err(
-                        f"metadata.time.{k}",
-                        f"must be a string, got {type(v).__name__}"))
-            ddf = time_block.get("data_domain_freq")
-            if ddf is not None:
-                if not isinstance(ddf, str):
-                    errs.append(_err(
-                        "metadata.time.data_domain_freq",
-                        f"must be a string, got {type(ddf).__name__}"))
-                elif ddf not in VALID_DATA_DOMAIN_FREQS:
-                    errs.append(_err(
-                        "metadata.time.data_domain_freq",
-                        f"'{ddf}' not in "
-                        f"{sorted(VALID_DATA_DOMAIN_FREQS)}"))
     # ``metadata.refresh_enabled`` was an escape hatch that hid the
     # browser Refresh button when set to ``False``; the field is
     # deprecated. The button is non-suppressible from the manifest
@@ -5623,15 +5563,6 @@ def _resolve_chart_specs(manifest: Dict[str, Any],
     return specs
 
 
-# Public alias for the chart-spec resolver. The leading-underscore form
-# signals "internal call within the engine"; this alias is the
-# documented external entry point used by the PRISM-side data endpoint
-# (``mysite/news/views.py::dashboard_data_api``) to lower spec-form chart
-# widgets into ECharts option dicts without re-compiling the entire
-# dashboard. Returns ``{chart_id: ECharts option dict, ...}``.
-resolve_chart_specs = _resolve_chart_specs
-
-
 # =============================================================================
 # DATA DIAGNOSTICS
 #
@@ -9195,139 +9126,7 @@ def run_pull(folder: str, pull_name: str, *, s3_manager=None) -> None:
     pulls[pull_name]()
 
 
-def _derive_domain_end(datasets: Dict[str, Any]) -> Optional[str]:
-    """Walk every dataset DataFrame, return the max date across all
-    date-typed columns as a bare ``YYYY-MM-DD`` ISO string (or ``None``
-    when no dataset carries a usable date column).
-
-    Date-typed columns are detected via either pandas' ``datetime64``
-    dtype OR a column literally named ``date`` / ``Date`` that
-    ``pd.to_datetime`` can coerce. Stamped into
-    ``metadata.time.data_domain_end`` by ``build_dashboard``."""
-    import pandas as pd
-
-    max_date = None
-    for df in datasets.values():
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            continue
-        for col in df.columns:
-            s = df[col]
-            if pd.api.types.is_datetime64_any_dtype(s):
-                date_col = s
-            elif isinstance(col, str) and col.lower() == "date":
-                try:
-                    date_col = pd.to_datetime(s, errors="coerce")
-                except Exception:
-                    continue
-            else:
-                continue
-            this_max = date_col.dropna().max()
-            if this_max is None or pd.isna(this_max):
-                continue
-            if max_date is None or this_max > max_date:
-                max_date = this_max
-
-    if max_date is None:
-        return None
-    try:
-        return max_date.strftime("%Y-%m-%d")
-    except Exception:
-        return None
-
-
-def _derive_domain_freq(datasets: Dict[str, Any]) -> str:
-    """Infer the data cadence from the median inter-row delta across
-    every date-typed column in every dataset. Returns one of
-    ``"daily"`` / ``"weekly"`` / ``"monthly"`` / ``"quarterly"`` /
-    ``"annual"``. Falls back to ``"daily"`` when no usable date column
-    is found (the most conservative default — the chrome pill renders
-    a full date for unknown cadence)."""
-    import pandas as pd
-
-    all_medians = []
-    for df in datasets.values():
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            continue
-        for col in df.columns:
-            s = df[col]
-            if pd.api.types.is_datetime64_any_dtype(s):
-                date_col = s
-            elif isinstance(col, str) and col.lower() == "date":
-                try:
-                    date_col = pd.to_datetime(s, errors="coerce")
-                except Exception:
-                    continue
-            else:
-                continue
-            dates = date_col.dropna().sort_values()
-            if len(dates) < 2:
-                continue
-            deltas = dates.diff().dropna()
-            if len(deltas) == 0:
-                continue
-            try:
-                median_days = float(
-                    deltas.dt.total_seconds().median() / 86400
-                )
-            except Exception:
-                continue
-            all_medians.append(median_days)
-
-    if not all_medians:
-        return "daily"
-    median_days = sum(all_medians) / len(all_medians)
-    # Cadence buckets — generous on the upper end of each band to absorb
-    # holiday gaps (e.g. monthly CPI may have a 35-day gap occasionally;
-    # quarterly may stretch to ~95 days).
-    if median_days <= 2:
-        return "daily"
-    if median_days <= 10:
-        return "weekly"
-    if median_days <= 45:
-        return "monthly"
-    if median_days <= 120:
-        return "quarterly"
-    return "annual"
-
-
-def _max_pull_time(folder: str, s3_manager) -> Optional[str]:
-    """Walk ``<folder>/data/<stem>_metadata.json`` sidecars, return the
-    max ``pull_completed_at`` field as canonical ISO. Returns ``None``
-    when no sidecar carries the field (pull-helper sidecar stamping
-    is a deferred follow-up — see
-    ``staging/prompts/open/2026-05-12_pull_helpers_sidecar.md``)."""
-    from dashboards_time import parse_iso, format_iso
-
-    data_prefix = f"{folder}/data/".replace("//", "/")
-    max_dt = None
-    try:
-        listing = s3_manager.list(data_prefix)
-    except Exception:
-        return None
-    for entry in listing:
-        key = entry.get("Key") if isinstance(entry, dict) else entry
-        if not key or not key.endswith("_metadata.json"):
-            continue
-        try:
-            raw = s3_manager.get(key)
-            sidecar = json.loads(raw.rstrip(b"\x00").decode("utf-8"))
-        except Exception:
-            continue
-        if not isinstance(sidecar, dict):
-            continue
-        ts = sidecar.get("pull_completed_at")
-        dt = parse_iso(ts)
-        if dt is None:
-            continue
-        if max_dt is None or dt > max_dt:
-            max_dt = dt
-    return format_iso(max_dt) if max_dt is not None else None
-
-
-def build_dashboard(folder: str, *, s3_manager=None,
-                     refresh_cycle_at: Optional[str] = None,
-                     next_refresh_at: Optional[str] = None
-                     ) -> Dict[str, Any]:
+def build_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
     """Recompile the dashboard at ``<folder>``.
 
     Steps:
@@ -9335,13 +9134,10 @@ def build_dashboard(folder: str, *, s3_manager=None,
       2. Read every ``<folder>/data/<stem>.csv`` into a ``datasets`` dict
       3. Read ``TRANSFORMS`` from ``<folder>/scripts/build.py`` and chain
          them (each receives + returns the datasets dict)
-      4. Stamp ``metadata.time.*`` (data_domain_end / data_domain_freq /
-         pull_completed_at / build_completed_at, plus refresh_cycle_at +
-         next_refresh_at when supplied by the runner)
-      5. ``populate_template(template, datasets)`` -> manifest
-      6. ``compile_dashboard(manifest, strict=True)`` -> html + manifest
+      4. ``populate_template(template, datasets)`` -> manifest
+      5. ``compile_dashboard(manifest, strict=True)`` -> html + manifest
          (in memory; no filesystem writes)
-      7. Write ``<folder>/manifest.json`` and ``<folder>/dashboard.html``
+      6. Write ``<folder>/manifest.json`` and ``<folder>/dashboard.html``
          back to S3
 
     Returns the populated manifest dict.
@@ -9350,25 +9146,9 @@ def build_dashboard(folder: str, *, s3_manager=None,
     ``manifest_template.json`` edit, a ``build.py`` transforms edit, or
     a manual ``data/<stem>.csv`` edit. Fast -- no fresh pulls. For
     pull+build, use ``refresh_dashboard()``.
-
-    Parameters
-    ----------
-    refresh_cycle_at
-        Optional ISO string to stamp into ``metadata.time.refresh_cycle_at``.
-        ``None`` (the default) means "this is an in-session build, not
-        a refresh-cycle build" — the chrome pill will fall back to
-        ``build_completed_at``. ``refresh_runner.py`` passes
-        ``format_iso(utcnow())`` here so the pill says "refreshed <cron
-        wall time>" once the runner-driven build lands.
-    next_refresh_at
-        Optional ISO string for the predicted next refresh boundary.
-        Computed by ``refresh_runner.py`` from the registry's
-        ``refresh_frequency`` + ``freq_delta()``. Not used by the chrome
-        today; available for future "next refresh in N minutes" UX.
     """
     import io
     import pandas as pd
-    from dashboards_time import utcnow, format_iso, format_pill
 
     s3 = _resolve_s3_manager(s3_manager)
 
@@ -9400,53 +9180,6 @@ def build_dashboard(folder: str, *, s3_manager=None,
             )
         datasets = result
 
-    # Stamp the four-times schema. Engine is the source of truth for
-    # metadata.time.* — PRISM does not author these by hand. Aliases keep
-    # old chrome (data_as_of / generated_at) working on legacy served
-    # HTMLs that haven't refreshed yet. format_pill bakes the user-facing
-    # string so JS does no date math (date math in the browser was the
-    # original bug — see scans/prism/2026-05-11_dashboard_live_refresh_and_time.md).
-    meta = template.setdefault("metadata", {})
-    if not isinstance(meta, dict):
-        raise RuntimeError(
-            f"build_dashboard: {folder}/manifest_template.json metadata "
-            f"block must be a dict (got {type(meta).__name__})"
-        )
-    time_block = meta.setdefault("time", {})
-    if not isinstance(time_block, dict):
-        raise RuntimeError(
-            f"build_dashboard: {folder}/manifest_template.json "
-            f"metadata.time must be a dict (got {type(time_block).__name__})"
-        )
-    domain_end = _derive_domain_end(datasets)
-    domain_freq = _derive_domain_freq(datasets)
-    # Preserve any author-supplied override of data_domain_freq (e.g.
-    # mixed-frequency datasets where auto-inference picks the wrong
-    # cadence). data_domain_end always reflects the data; freq honours
-    # an explicit author value when present.
-    if domain_end is not None:
-        time_block["data_domain_end"] = domain_end
-    time_block.setdefault("data_domain_freq", domain_freq)
-    pull_at = _max_pull_time(folder, s3)
-    if pull_at is not None:
-        time_block["pull_completed_at"] = pull_at
-    time_block["build_completed_at"] = format_iso(utcnow())
-    if refresh_cycle_at is not None:
-        time_block["refresh_cycle_at"] = refresh_cycle_at
-    if next_refresh_at is not None:
-        time_block["next_refresh_at"] = next_refresh_at
-
-    # Back-compat aliases for served HTMLs that still read the legacy
-    # ``data_as_of`` / ``generated_at`` keys. Drop these once one full
-    # refresh cycle has propagated (per design walkthrough §5 phase 5).
-    if time_block.get("data_domain_end"):
-        meta["data_as_of"] = time_block["data_domain_end"]
-    meta["generated_at"] = time_block["build_completed_at"]
-
-    # Server-baked pill text — JS reads MD.pill_text first; falls back
-    # to MD.time.* readers; falls back to legacy aliases.
-    meta["pill_text"] = format_pill(time_block)
-
     manifest = populate_template(template, datasets)
 
     r = compile_dashboard(
@@ -9477,18 +9210,7 @@ def refresh_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
     ``[Refresh]`` button. PRISM can also call this directly from
     in-session when it wants a clean-slate refresh (slow -- every pull
     runs).
-
-    Stamps ``metadata.time.refresh_cycle_at`` with the moment this
-    function dispatched the build, so the chrome pill renders the
-    actual refresh wall time (not the build wall time). The runner
-    additionally stamps ``next_refresh_at`` via ``build_dashboard``'s
-    kwarg from the registry's ``refresh_frequency``; this in-process
-    path doesn't know the frequency without reading the registry, so
-    ``next_refresh_at`` is left unstamped here (the runner is the
-    right caller for that).
     """
-    from dashboards_time import utcnow, format_iso
-
     s3 = _resolve_s3_manager(s3_manager)
     ns = _exec_dashboard_script(folder, "pull_data", s3_manager=s3)
     pulls = ns.get("PULLS")
@@ -9501,10 +9223,7 @@ def refresh_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
     for name, fn in pulls.items():
         print(f"[refresh_dashboard] {folder} :: pull {name}")
         fn()
-    return build_dashboard(
-        folder, s3_manager=s3,
-        refresh_cycle_at=format_iso(utcnow()),
-    )
+    return build_dashboard(folder, s3_manager=s3)
 
 
 __all__ = [
@@ -9518,12 +9237,10 @@ __all__ = [
     "df_to_source", "manifest_template", "populate_template",
     "Diagnostic", "chart_data_diagnostics",
     "run_pull", "build_dashboard", "refresh_dashboard",
-    "resolve_chart_specs",
     "SCHEMA_VERSION", "VALID_WIDGETS", "VALID_FILTERS",
     "VALID_CHART_TYPES", "VALID_FILTER_OPS", "VALID_SYNC",
     "VALID_BRUSH_TYPES", "VALID_TABLE_FORMATS",
-    "VALID_REFRESH_FREQUENCIES", "VALID_DATA_DOMAIN_FREQS",
-    "VALID_NOTE_KINDS",
+    "VALID_REFRESH_FREQUENCIES", "VALID_NOTE_KINDS",
     "VALID_KPI_AGGREGATORS",
     "DATASET_ROWS_WARN", "DATASET_ROWS_ERROR",
     "DATASET_BYTES_WARN", "DATASET_BYTES_ERROR",

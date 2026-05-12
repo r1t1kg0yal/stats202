@@ -1714,19 +1714,6 @@ header.app-header {
   color: var(--text-dim); font-size: 11px;
 }
 .header-meta .meta-dot span { color: var(--gs-ink); font-weight: 600; }
-/* live-flash heartbeat: dims the data-as-of pill for ~1.5s when the
-   live-refresh poll loop swaps in fresh datasets. Subtle enough that
-   it's not distracting; visible enough that a user with the dashboard
-   on a second monitor sees that the numbers underneath the charts
-   just updated. */
-.header-meta .meta-dot.live-flash {
-  animation: prism-live-flash 1500ms ease-in-out 1;
-}
-@keyframes prism-live-flash {
-  0%   { background: var(--gs-grey-05); }
-  35%  { background: rgba(115, 153, 198, 0.30); }  /* GS PMS 652 sky blue */
-  100% { background: var(--gs-grey-05); }
-}
 .header-actions .icon-btn.refreshing {
   background: var(--gs-grey-05); color: var(--text-dim);
   cursor: wait; opacity: 0.9;
@@ -4704,7 +4691,6 @@ DASHBOARD_APP_JS = r"""
     renderKpis();
     renderTables();
     if (typeof renderPivots === 'function') renderPivots();
-    if (typeof renderStatGrids === 'function') renderStatGrids();
     // Cascading filters: a filter change may invalidate the options
     // of any filter whose `depends_on` references it. _refreshDependentFilters
     // walks the dependency graph and re-renders affected filter inputs.
@@ -9403,65 +9389,6 @@ DASHBOARD_APP_JS = r"""
   }
   window.renderPivots = renderPivots;
 
-  // ----- stat_grid client-render (HYBRID) -----
-  //
-  // The server BAKES stat values into the HTML at compile time
-  // (graceful degradation for file://, JS-off, init errors). This
-  // function OVERWRITES those server-baked values from currentDatasets
-  // whenever it runs. Called from:
-  //   - applyLiveData() — fresh cron-driven data lands; values update
-  //     without a page reload
-  //   - broadcast() (filter change) — wired for future filter-aware
-  //     resolveSource; today resolveSource reads unfiltered data so the
-  //     re-render is a no-op when only filters changed
-  // The widget shape is preserved verbatim; only the `.stat-value`
-  // span text is overwritten. Stats without a `source` (author-baked
-  // value) are left alone.
-  function renderStatGrids(){
-    Object.keys(WIDGET_META).forEach(function(wid){
-      var w = WIDGET_META[wid];
-      if (!w || w.widget !== 'stat_grid') return;
-      var container = document.getElementById('stat-grid-' + wid);
-      if (!container) return;
-      var stats = w.stats; if (!Array.isArray(stats)) return;
-      var cells = container.querySelectorAll('.stat-cell');
-      for (var i = 0; i < stats.length && i < cells.length; i++){
-        var st = stats[i] || {};
-        if (!st.source) continue;  // author-baked value: leave alone
-        var resolved = resolveSource(st.source);
-        var formatted;
-        if (typeof resolved === 'number'){
-          formatted = formatNumber(resolved, {
-            decimals: st.decimals,
-            format:   st.format,
-            prefix:   st.prefix || '',
-            suffix:   st.suffix || '',
-          });
-        } else if (resolved == null){
-          // Source didn't resolve (column missing, empty dataset, etc.).
-          // Leave the server-baked value in place rather than blanking
-          // out — graceful degradation: stale-but-visible beats blank.
-          continue;
-        } else {
-          formatted = String(resolved);
-        }
-        var vNode = cells[i].querySelector('.stat-value');
-        if (!vNode) continue;
-        // Preserve the trend arrow span (`.stat-trend`) when overwriting
-        // the value text — it's a sibling element inside `.stat-value`
-        // that the server emitted.
-        var trendNode = vNode.querySelector('.stat-trend');
-        var trendHTML = trendNode ? trendNode.outerHTML : '';
-        vNode.innerHTML = trendHTML + formatted;
-      }
-    });
-  }
-  window.renderStatGrids = renderStatGrids;
-  // First client-render pass: server values become client-resolved on
-  // initial load too, so the value pipeline is exercised every time
-  // the dashboard mounts (smoke-checks the resolveSource path).
-  try { renderStatGrids(); } catch(e){ console.warn('[stat_grid] initial render failed:', e); }
-
   function renderTables(){
     Object.keys(WIDGET_META).forEach(function(id){
       var w = WIDGET_META[id]; if (w.widget !== 'table') return;
@@ -10997,221 +10924,26 @@ DASHBOARD_APP_JS = r"""
 
   // ----- data freshness badge -----
   //
-  // Renders the "Data as of <stamp>" pill. JS does no date math: the
-  // Python engine bakes ``metadata.pill_text`` via dashboards_time.
-  // format_pill() so the chrome reads a fully-formed user-facing string
-  // ("Data through Q1 2026 -- refreshed 12 May 2026 09:25 ET"). Fallbacks:
-  //   1. ``metadata.pill_text`` (canonical; baked by build_dashboard)
-  //   2. ``metadata.time.{data_domain_end, refresh_cycle_at}`` (parts)
-  //   3. legacy ``metadata.{data_as_of, generated_at}`` aliases
-  // Anything more elaborate (locale-specific rendering, "refreshed N
-  // minutes ago" relative time) is the engine's job — not the
-  // browser's — so we don't resurrect the timezone-math-in-JS bug.
+  // Renders the "Data as of <stamp>" pill. Input is an ISO-8601 string
+  // from `metadata.data_as_of` (preferred) or `metadata.generated_at`
+  // (fallback). Output is "YYYY-MM-DD HH:MM:SS UTC" -- full second
+  // precision, explicit timezone label. Strings the JS Date parser
+  // can't handle pass through verbatim so the user still sees something.
   var MD = MANIFEST.metadata || {};
-  function renderDataAsOfPill(){
+  (function(){
     var el = document.getElementById('data-as-of');
     var val = document.getElementById('data-as-of-val');
     if (!el || !val) return;
-    var rendered = MD.pill_text || null;
-    if (!rendered){
-      var T = MD.time || {};
-      var domain = T.data_domain_end || MD.data_as_of;
-      var cycle  = T.refresh_cycle_at || T.build_completed_at || MD.generated_at;
-      if (!domain && !cycle){ el.style.display = 'none'; return; }
-      var parts = [];
-      if (domain) parts.push('Data through ' + domain);
-      // Bare ISO formatting only -- no Date() arithmetic, no toISOString
-      // re-emit that would manufacture a fake 00:00:00 suffix.
-      if (cycle) parts.push('refreshed ' + String(cycle).slice(0, 19).replace('T', ' ') + ' UTC');
-      rendered = parts.join(' -- ');
+    var stamp = MD.data_as_of || MD.generated_at;
+    if (!stamp) return;
+    var s = String(stamp);
+    var d = new Date(s);
+    if (!isNaN(d.getTime())){
+      s = d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
     }
-    val.textContent = rendered;
+    val.textContent = s;
     el.style.display = 'inline-flex';
-  }
-  renderDataAsOfPill();
-
-  // ----- live data refresh (no page reload) -----
-  //
-  // On dashboard load, kick off a polling loop that GETs the data
-  // endpoint at the configured cadence. If the server returns 200
-  // (data changed since last_refreshed), apply the new datasets +
-  // specs + metadata in place. If it returns 304, no-op.
-  //
-  // Cadence comes from ``manifest.metadata.live_refresh_seconds``;
-  // default 60s; 0 disables. ETag is the registry's ``last_refreshed``
-  // (= ``metadata.time.refresh_cycle_at`` after Phase 3 staging-side
-  // refactor), so most polls return 304 with no body.
-  //
-  // Triggers that fire a 200 the next poll picks up:
-  //   1. Hourly cron writes new manifest + bumps registry.last_refreshed
-  //   2. User clicks [Refresh] in another tab on the same dashboard
-  //   3. Background scheduled process writes new data + bumps registry
-  // The user does not need to take any action.
-  //
-  // Structural change detection: ``payload.manifest_template_hash``
-  // differs from the hash baked into the served HTML
-  // (``window.PRISM_TEMPLATE_HASH`` injected by the dashboard-serving
-  // views) -- the structure changed (new widget / tab / filter), so
-  // an in-place data swap can't cover it; fall back to one clean
-  // location.reload(). When the hash matches OR the global isn't
-  // injected (e.g. file:// preview), apply in place.
-
-  var LIVE_KERBEROS    = MD.kerberos || null;
-  var LIVE_DASHBOARD_ID = MD.dashboard_id || MANIFEST.id || null;
-  var LIVE_DATA_URL    = MD.data_url || '/api/dashboard/data/';
-  var LIVE_REFRESH_SEC = (MD.live_refresh_seconds == null)
-                             ? 60 : (+MD.live_refresh_seconds | 0);
-  var LAST_KNOWN_TEMPLATE_HASH = (typeof window.PRISM_TEMPLATE_HASH !== 'undefined')
-                                       ? window.PRISM_TEMPLATE_HASH : null;
-  var LAST_KNOWN_REFRESHED = (MD.time && MD.time.refresh_cycle_at)
-                                 || MD.data_as_of || MD.generated_at || null;
-
-  function _liveFlashPill(){
-    var pill = document.getElementById('data-as-of');
-    if (!pill) return;
-    pill.classList.remove('live-flash');
-    // Force a reflow so re-adding the class restarts the animation
-    // even on rapid back-to-back updates.
-    void pill.offsetWidth;
-    pill.classList.add('live-flash');
-    setTimeout(function(){ pill.classList.remove('live-flash'); }, 1600);
-  }
-
-  function applyLiveData(payload){
-    if (!payload || typeof payload !== 'object') return;
-
-    // Structural-change short-circuit: template hash drift means a
-    // widget / tab / filter was added or removed, which we can't
-    // reconcile in place. One clean reload, then live-refresh resumes
-    // against the new structure.
-    if (LAST_KNOWN_TEMPLATE_HASH &&
-        payload.manifest_template_hash &&
-        payload.manifest_template_hash !== LAST_KNOWN_TEMPLATE_HASH){
-      console.log('[live] template hash changed; reloading for new structure');
-      location.reload();
-      return;
-    }
-
-    // 1. Swap datasets in place. Deep-copy each new source so PAYLOAD
-    //    and currentDatasets stay independent (filter / chart-controls
-    //    code mutates currentDatasets as it derives intermediate views).
-    var newDs = payload.datasets || {};
-    Object.keys(newDs).forEach(function(name){
-      var entry = newDs[name];
-      var src = (entry && entry.source) || entry;
-      try {
-        currentDatasets[name] = JSON.parse(JSON.stringify(src));
-      } catch (e){
-        console.warn('[live] dataset deepcopy failed for', name, e);
-      }
-      DATASETS[name] = entry;
-    });
-    // Drop datasets the new manifest no longer carries.
-    Object.keys(currentDatasets).forEach(function(name){
-      if (!(name in newDs)){
-        delete currentDatasets[name];
-        delete DATASETS[name];
-      }
-    });
-
-    // 2. Swap chart specs (the lowered ECharts option dicts).
-    var newSpecs = payload.specs || {};
-    Object.keys(newSpecs).forEach(function(cid){
-      SPECS[cid] = newSpecs[cid];
-    });
-
-    // 3. Re-render every initialized chart. ECharts setOption(opt, true)
-    //    diffs series under the hood; canvases get reused. preserveZoom
-    //    means the user's in-chart dataZoom slider survives.
-    Object.keys(CHARTS).forEach(function(cid){
-      try {
-        if (typeof rerenderChart === 'function'){
-          rerenderChart(cid, {preserveZoom: true});
-        }
-      } catch (e){
-        console.warn('[live] rerenderChart failed for', cid, e);
-      }
-    });
-
-    // 4. Re-render dataset-derived widget kinds. Each function reads
-    //    from currentDatasets + WIDGET_META; we don't need to pass
-    //    anything in.
-    try { if (typeof renderKpis      === 'function') renderKpis(); } catch(e){}
-    try { if (typeof renderTables    === 'function') renderTables(); } catch(e){}
-    try { if (typeof renderPivots    === 'function') renderPivots(); } catch(e){}
-    try { if (typeof renderStatGrids === 'function') renderStatGrids(); } catch(e){}
-    try { if (typeof _applyShowWhen  === 'function') _applyShowWhen(); } catch(e){}
-
-    // 5. Update header chrome from the new metadata block. The pill
-    //    re-uses the renderDataAsOfPill() helper so the canonical
-    //    "MD.pill_text first" precedence applies on live updates too.
-    var md = payload.metadata || {};
-    if (md.pill_text !== undefined) MD.pill_text = md.pill_text;
-    if (md.time)        MD.time        = md.time;
-    if (md.data_as_of)  MD.data_as_of  = md.data_as_of;
-    if (md.generated_at) MD.generated_at = md.generated_at;
-    renderDataAsOfPill();
-
-    // Methodology + summary (markdown content) live in shared popups;
-    // stash the fresh value on MANIFEST.metadata so the next popup
-    // click sees the latest body.
-    if (md.methodology !== undefined){
-      MANIFEST.metadata = MANIFEST.metadata || {};
-      MANIFEST.metadata.methodology = md.methodology;
-    }
-    if (md.summary !== undefined){
-      MANIFEST.metadata = MANIFEST.metadata || {};
-      MANIFEST.metadata.summary = md.summary;
-    }
-
-    // 6. Visual heartbeat -- the data-as-of pill briefly dims so the
-    //    user notices that the numbers underneath the charts just
-    //    moved. Subtle, no modal.
-    _liveFlashPill();
-
-    // 7. Advance the ETag baseline so the next poll asks "anything new
-    //    since THIS refresh?".
-    LAST_KNOWN_REFRESHED = payload.last_refreshed
-                               || (md.time && md.time.refresh_cycle_at)
-                               || md.data_as_of || md.generated_at
-                               || LAST_KNOWN_REFRESHED;
-  }
-
-  function pollLiveData(){
-    if (LIVE_REFRESH_SEC <= 0) return;
-    if (window.location.protocol === 'file:') return;
-    if (!LIVE_KERBEROS || !LIVE_DASHBOARD_ID) return;
-    var url = LIVE_DATA_URL
-              + '?dashboard_id=' + encodeURIComponent(LIVE_DASHBOARD_ID)
-              + '&kerberos='     + encodeURIComponent(LIVE_KERBEROS);
-    var headers = {};
-    if (LAST_KNOWN_REFRESHED){
-      headers['If-None-Match'] = '"' + LAST_KNOWN_REFRESHED + '"';
-    }
-    fetch(url, {method: 'GET', headers: headers})
-      .then(function(r){
-        if (r.status === 304) return null;
-        if (!r.ok) return null;
-        return r.json();
-      })
-      .then(function(j){
-        if (j && j.ok) applyLiveData(j);
-      })
-      .catch(function(e){
-        // Transient network blip -- log and let the next tick retry.
-        console.warn('[live] poll error:', e);
-      });
-  }
-
-  if (LIVE_REFRESH_SEC > 0){
-    setInterval(pollLiveData, LIVE_REFRESH_SEC * 1000);
-    // Poll immediately when the tab becomes visible again, so a user
-    // returning to a tab they'd backgrounded sees fresh data without
-    // waiting up to LIVE_REFRESH_SEC for the next tick.
-    document.addEventListener('visibilitychange', function(){
-      if (document.visibilityState === 'visible') pollLiveData();
-    });
-  }
+  })();
 
   // ----- methodology popup -----
   //
@@ -11887,13 +11619,9 @@ DASHBOARD_APP_JS = r"""
             var code = pair[0], st = pair[1] || {};
             if (st.status === 'success'){
               clearInterval(timer);
-              setLabel('refresh-success', 'Done');
+              setLabel('refresh-success', 'Done -- reloading...');
               clearErrorPill();
-              // No location.reload(): pull fresh data + apply in place
-              // via the live-refresh loop. Filter state, dataZoom
-              // sliders, table sort, dark mode all survive.
-              pollLiveData();
-              setTimeout(resetLabel, 1500);
+              setTimeout(function(){ location.reload(); }, 900);
             } else if (st.status === 'error'){
               clearInterval(timer);
               setLabel('refresh-error', 'Error');
@@ -11968,13 +11696,9 @@ DASHBOARD_APP_JS = r"""
               setTimeout(resetLabel, 5000);
               return;
             }
-            setLabel('refresh-success', 'Done');
+            setLabel('refresh-success', 'Done -- reloading...');
             clearErrorPill();
-            // No location.reload(): the synchronous-finish branch lands
-            // through the same in-place data swap path as the async
-            // polled-status branch.
-            pollLiveData();
-            setTimeout(resetLabel, 1500);
+            setTimeout(function(){ location.reload(); }, 900);
           } else {
             // 4xx / 5xx / explicit {error: ...} body. The runner never
             // even ran -- usually because the dashboard is not in the

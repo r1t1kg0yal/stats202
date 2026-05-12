@@ -45,24 +45,34 @@ PRISM right now.
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  altair       ████████████████████  mature (drag-and-drop ready)    │
-│  echarts      ████████████████████  mature + v2 ARCHITECTURE LAND   │
-│                                       (2026-05-04): pull_data.py    │
-│                                       PULLS dict + tiny build.py    │
-│                                       TRANSFORMS hook + 3 new       │
-│                                       engine entry points (run_pull │
-│                                       / build_dashboard /           │
-│                                       refresh_dashboard) + runner   │
-│                                       scripts moved INTO payload    │
-│                                       (refresh_runner.py +          │
-│                                       refresh_dashboards.py); hub   │
-│                                       absorbed CRUD recipes A-G     │
-│                                       (CORE not spoke); §2.5 audit  │
-│                                       trimmed to 10 lines + §2.6    │
-│                                       versioning machinery dropped; │
-│                                       PRISM-only-Python rule with   │
-│                                       compute_js carve-out; awaits  │
-│                                       PRISM-side v2 handoff prompts │
-│                                       (3 in staging/prompts/open/)  │
+│  echarts      ████████████████████  mature + TIME / LIVE-REFRESH   │
+│                                       UPLIFT LANDED (2026-05-12):   │
+│                                       new dashboards_time.py        │
+│                                       canonical helpers (parse_iso  │
+│                                       / format_iso / freq_delta /   │
+│                                       is_stale / format_pill);      │
+│                                       build_dashboard stamps        │
+│                                       metadata.time.* four-times    │
+│                                       schema + server-bakes         │
+│                                       pill_text (no JS date math);  │
+│                                       chrome JS pollLiveData loop   │
+│                                       swaps datasets in-place every │
+│                                       60s (ETag-gated); 2x          │
+│                                       location.reload() in refresh  │
+│                                       button replaced with in-place │
+│                                       swap; stat_grid HYBRID        │
+│                                       client-render; resolve_chart_ │
+│                                       specs public alias; new dev/  │
+│                                       live_refresh_harness.py       │
+│                                       mimics views.py endpoints for │
+│                                       local validation; PRISM-side  │
+│                                       prompt paste-ready at         │
+│                                       staging/prompts/open/         │
+│                                       2026-05-11_views_py_time_     │
+│                                       refresh_uplift.md; deferred   │
+│                                       follow-up: pull-helper        │
+│                                       sidecar pull_completed_at     │
+│                                       stamping (own prompt)         │
 │  apis         ████████████████████  3/24 rebuilt (S8 first migration │
 │                                       — bis universe-first 2026-05-09)│
 │  whitepapers  █████████████░░░░░░░  workshop PLAN LOCKED + intake   │
@@ -86,7 +96,7 @@ PRISM right now.
 | Project | Maturity | Repo path (canonical) | Payload source | PRISM destination | Rule | prism/ refs | Active endeavor / spec |
 |---------|----------|-----------------------|----------------|-------------------|------|-------------|------------------------|
 | altair | mature | `projects/altair/` | `projects/altair/altair-payload/` | `mcp/utils/chart_functions.py` + `context/modules/static/chart_context.md` (single-file L2 module) | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md`, `mcp-tools.md` §3+§5 | `projects/altair/dev/specs/composites.md` (next feature build) |
-| echarts | mature + v2 architecture landed (2026-05-04); awaits PRISM-side handoff | `projects/echarts/` | `projects/echarts/echarts-payload/` (now also includes `refresh_runner.py` + `refresh_dashboards.py` — runner files moved INTO payload from PRISM-side `ai_development/jobs/`) | `ai_development/dashboards/*.py` (engine + the two runner files; relocates from `ai_development/jobs/` per the v2 handoff) + `context/modules/static/tools/dashboards.md` (hub) + `dashboards/*.md` (7 spokes incl. template_crud.md) | `.cursor/rules/viz-platforms.mdc` | `dashboard-refresh.md`, `dashboards-portal.md` | `staging/prompts/open/2026-05-04_dashboards_v2_{engine_imports,runner_relocate,handoff}.md` (3-prompt PRISM round-trip for the v2 install) |
+| echarts | mature + time/live-refresh uplift landed (2026-05-12); awaits PRISM-side handoff | `projects/echarts/` | `projects/echarts/echarts-payload/` (engine + runner files + the new `dashboards_time.py` canonical time helpers) | `ai_development/dashboards/*.py` (engine + runner + `dashboards_time`) + `context/modules/static/tools/dashboards.md` (hub) + `dashboards/*.md` (7 spokes incl. template_crud.md) | `.cursor/rules/viz-platforms.mdc` | `dashboard-refresh.md`, `dashboards-portal.md` | `staging/prompts/open/2026-05-11_views_py_time_refresh_uplift.md` (the PRISM-side half: NEW dashboard_data_api endpoint + template_hash injection + refresh_status_api auto-heal rewrite + views.py datetime-parse audit). Follow-up: `staging/prompts/open/2026-05-12_pull_helpers_sidecar.md` (pull_completed_at stamping in mcp/utils/data_functions.py — observability-only). |
 | apis | 3/24 rebuilt (treasury / treasury_direct / bis), rule codified, Session 8 in flight | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `mcp/clients/*_client.py` + `context/modules/static/{data_guides,instruments,tools}/*.md` | `.cursor/rules/api-clients.mdc` | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
 | frontend | MVP RUNNING + FULL REFACTOR + UI UPLIFT IN FLIGHT | `projects/frontend/` | `projects/frontend/frontend-payload/ai_development/` | `ai_development/mysite/` + `ai_development/mysite/news/static/css/{tokens,fonts,base}.css` + settings.py PATCH (STATICFILES_DIRS) + URL-grammar unification (10 legacy URLs 301 to canonical) + filesystem reads from `ai_development/context/white_papers/` (was S3 `secondary/technical_docs/`) + frontmatter-driven `_doc_registry()` pipeline in views.py + enriched `doc_page.html` chrome (TOC, breadcrumbs, related, prev/next) + topic-chip listings + home featured-resources block | — | `dashboards-portal.md`, `architecture.md` §10 | `projects/frontend/dev/specs/ui_uplift.md` (per-surface UI uplift plan; locked 2026-05-03); `projects/frontend/dev/specs/design_system.md` (token + component SSOT); `staging/prompts/open/2026-05-02_frontend_full_context.md` (PRISM-verbatim sync prompt) |
 | whitepapers | intake VERIFIED + workshop PLAN LOCKED + frontmatter on all 5 inherited docs | `projects/whitepapers/` | `projects/whitepapers/whitepapers-payload/*.md` | `ai_development/context/white_papers/{whitepaper_data_integrations,whitepaper_user_personalization,whitepaper_world_state_and_reasoning,faq,email_usage_guide}.md` (filenames change to canonical slugs once workshop pass renames per `dev/specs/whitepaper_workshop.md` §8) | — | sourced from `projects/whitepapers/dev/scans/2026-05-02_whitepapers_intake.md` (OCR) + `2026-05-02_whitepapers_s3_verify_reply.md` (S3 verbatim verify). Plan: `projects/whitepapers/dev/specs/whitepaper_workshop.md`. | All 5 inherited docs now have YAML frontmatter (slug + title + format + topic + audience + last_updated + reading_time + summary + related + sequence + featured). Body workshop pass: collapse to 6-doc target set (3 whitepapers + 3 guides; "What is Prism" + "Getting started" are NEW). Spread across whitepapers turns 2-4 (workshop_spec §7). Dual-surface lock DEFERRED — workshop customer-facing first, L2 alignment is follow-up. |

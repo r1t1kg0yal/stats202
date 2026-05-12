@@ -328,29 +328,16 @@ The remaining fields are optional but every persistent dashboard should at least
 
 | Optional field | Type | Purpose |
 |----------------|------|---------|
+| `data_as_of` / `generated_at` | str (ISO) | Header badge `Data as of YYYY-MM-DD HH:MM:SS UTC`; compile-time fallback |
 | `sources` | list[str] | Source names (`["GS Market Data", "Haver"]`) |
 | `summary` | str \| `{title, body}` | Always-visible markdown banner above row 1 (today's read) |
 | `refresh_frequency` | str | `hourly` / `daily` / `weekly` / `manual`; controls the hourly runner — manual means `Refresh` is button-driven only |
-| `live_refresh_seconds` | int | Browser-side live-poll cadence; default `60`, `0` disables, soft floor `15`. See §2.3a |
-| `time.data_domain_freq` | str | `daily` / `weekly` / `monthly` / `quarterly` / `annual`; cadence override. Auto-inferred from CSV inter-row spacing — set only when auto-inference picks wrong (mixed-frequency datasets). See §2.3a |
 | `tags` / `version` | list[str] / str | Echoed into the registry; manifest version string |
-| `api_url` / `status_url` / `data_url` | str | Refresh / status / live-data endpoint overrides |
+| `api_url` / `status_url` | str | Refresh / status endpoint overrides |
 | `shared` / `shared_at` | bool / str | Compile-time snapshot of community-share state |
 | `share_api_url` | str | Optional override of the share toggle endpoint (default `/api/dashboard/share/`) |
 
 `summary` and `methodology` accept the shared markdown grammar (`dashboards/widgets.md` §9). `summary` is always-visible above row 1 (today's read); `methodology` is click-to-open via the always-on header button (how the data is constructed).
-
-The engine auto-stamps these on every build — PRISM does NOT author them:
-
-| Engine-stamped field | What it holds |
-|----------------------|---------------|
-| `metadata.time.data_domain_end` | Max date across every dataset's date column |
-| `metadata.time.data_domain_freq` | Auto-inferred cadence (override in template if wrong) |
-| `metadata.time.pull_completed_at` | Max `pull_completed_at` across `data/<stem>_metadata.json` sidecars |
-| `metadata.time.build_completed_at` | When `build_dashboard()` compiled the HTML |
-| `metadata.time.refresh_cycle_at` | When the cron / `[Refresh]` runner finished (matches registry `last_refreshed` byte-for-byte) |
-| `metadata.pill_text` | Server-baked "Data through Q1 2026 — refreshed 12 May 2026 09:25 ET" string |
-| `data_as_of` / `generated_at` | Back-compat aliases (deprecated; `metadata.time.*` is canonical) |
 
 ```python
 metadata = {
@@ -365,14 +352,6 @@ metadata = {
                              "**bull-steepened**, 2s10s out of inversion."},
 }
 ```
-
-### 2.3a Live refresh
-
-Every served dashboard polls `GET /api/dashboard/data/` every 60 seconds (override via `metadata.live_refresh_seconds`; set to `0` to disable). The endpoint is ETag-gated on the registry's `last_refreshed` — most polls return 304 with no body. On a 200 (cron just wrote a fresh manifest, or the user clicked `[Refresh]`), the chrome swaps datasets + chart specs + metadata IN PLACE: filter state, dataZoom slider position, dark-mode toggle, table sort, and tab position all survive. The user does not need to take any action.
-
-`[Refresh]` button success path no longer reloads the page — it kicks the same in-place swap loop. The error modal + `[Reload anyway]` partial-recovery button still trigger full reloads (intentional UX).
-
-Structural changes (new widget / new tab / new filter — anything that edits `manifest_template.json`) bump the template hash and trigger one clean `location.reload()` via the chrome's `applyLiveData` path — the right semantic since in-place swap can't reconcile a structural change.
 
 #### 2.3.1 Always-on header chrome
 

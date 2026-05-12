@@ -46,14 +46,12 @@ import subprocess
 import sys
 import time
 import traceback
+from datetime import datetime, timezone
 
 from ai_development.core.common import UserRegistry
 from ai_development.core.s3_bucket_manager import s3_manager
 from ai_development.core.user_manifest import UserManifestManager
 from ai_development.dashboards import refresh_runner as _refresh_runner_module
-from ai_development.dashboards.dashboards_time import (
-    freq_delta, parse_iso, utcnow,
-)
 
 
 # Path on disk of the single-dashboard runner. Spawned per due
@@ -62,32 +60,29 @@ from ai_development.dashboards.dashboards_time import (
 _REFRESH_RUNNER_PATH = _refresh_runner_module.__file__
 
 
-def _is_due(entry: dict) -> bool:
-    """Return ``True`` if ``entry`` (one item from
-    ``registry["dashboards"]``) should be refreshed now.
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
-    Routes through the canonical ``freq_delta`` lookup so the threshold
-    set is defined in one place (``dashboards_time.REFRESH_FREQ_DELTAS``).
-    ``daily`` means ">=20 hours elapsed since last refresh", not
-    "calendar-day boundary" — preserved verbatim from the legacy
-    behaviour so existing registry entries don't need migration.
-    Unknown frequencies fall back to ``daily`` for back-compat with
-    typo'd entries; ``manual`` explicitly opts out of auto-refresh.
-    """
+
+def _is_due(entry: dict) -> bool:
+    """Return True if ``entry`` (one item from registry["dashboards"])
+    should be refreshed now. False for ``refresh_enabled=False`` entries
+    and for any frequency that hasn't elapsed yet."""
     if not entry.get("refresh_enabled", True):
         return False
     freq = entry.get("refresh_frequency", "daily")
     if freq == "manual":
         return False
-    # Unknown freqs (typos) treated as daily to preserve legacy
-    # behaviour. The freq_delta(None) -> None branch is for "manual"
-    # which we already short-circuited above; this fallback handles
-    # genuinely-unknown strings.
-    delta = freq_delta(freq) or freq_delta("daily")
-    last = parse_iso(entry.get("last_refreshed"))
-    if last is None:
+    last = entry.get("last_refreshed")
+    if not last:
         return True
-    return (utcnow() - last) >= delta
+    last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+    elapsed_hours = (_utcnow() - last_dt).total_seconds() / 3600.0
+    if freq == "hourly":
+        return elapsed_hours >= 1
+    if freq == "weekly":
+        return elapsed_hours >= 160
+    return elapsed_hours >= 20
 
 
 def _user_registry_entries(kerberos: str) -> list:
@@ -129,7 +124,7 @@ def _spawn_runner(folder: str, log_root: str = "/tmp/dashboard_refresh") -> dict
         slug = folder.replace("/", "_")
         log_path = (
             f"{log_root}/{slug}_"
-            f"{utcnow().strftime('%Y%m%d_%H%M%S')}.log"
+            f"{_utcnow().strftime('%Y%m%d_%H%M%S')}.log"
         )
         started = time.time()
         with open(log_path, "wb") as log_fh:
@@ -193,7 +188,7 @@ def main() -> int:
     Spawn-time failures on one dashboard are caught and recorded; the
     cron continues to the next dashboard.
     """
-    started = utcnow()
+    started = _utcnow()
     print(
         f"[refresh_dashboards] starting at {started.isoformat()}",
         flush=True,
@@ -237,7 +232,7 @@ def main() -> int:
     # update is the cron's responsibility (§7).
     _update_user_manifests(success_kerberos)
 
-    completed = utcnow()
+    completed = _utcnow()
     elapsed = (completed - started).total_seconds()
     successes = sum(1 for r in results if r["returncode"] == 0)
     failures = sum(1 for r in results if r["returncode"] != 0)
