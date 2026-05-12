@@ -97,4 +97,6 @@ from ai_development.dashboards.echart_dashboard import (  # noqa: E402,F401
     load_manifest,
     save_manifest,
     chart_data_diagnostics,
+    Manifest,
+    DashboardResult,
 )

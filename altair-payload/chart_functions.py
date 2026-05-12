@@ -433,11 +433,59 @@ class YAxisLabelTooLongError(ValidationError):
         )
 
 
+class LvlSeriesNameTooLongError(ValidationError):
+    """Raised when a ``multi_line`` / ``timeseries`` series name exceeds the
+    LastValueLabel character limit.
+
+    Mirrors ``YAxisLabelTooLongError``: rather than silently truncate the
+    end-of-line label with an ellipsis (which produces unreadable output
+    like ``"United S\u2026 4.31"``), the engine fails up-front so PRISM
+    rewrites the series identifier into something that fits the chart.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        offending_names: Optional[List[str]] = None,
+        mapping: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        Exception.__init__(self, message)
+        self.context = {
+            "offending_names": list(offending_names or []),
+            "mapping": mapping,
+        }
+        send_error_email(
+            error_message=f"LvlSeriesNameTooLongError: {message}",
+            traceback_info=traceback.format_exc(),
+            tool_name="chart_functions",
+            metadata={
+                "error_type": "LvlSeriesNameTooLongError",
+                "offending_names": list(offending_names or []),
+                "mapping_keys": list(mapping.keys()) if mapping else None,
+            },
+            context=(
+                "multi_line / timeseries series name exceeded character "
+                "limit. User should rename the series in the DataFrame "
+                "or short-form the categorical labels before make_chart()."
+            ),
+        )
+
+
 # Soft cap on y-axis label length. The PRISM style guide says ~16 chars is
 # the visual sweet spot; we hard-fail past 24 to surface obvious abuses
 # (raw column names, generated tokens) without being too pedantic about
 # borderline-long human labels.
 _Y_AXIS_LABEL_MAX_CHARS = 24
+
+# Hard cap on per-series name length for ``LastValueLabel`` on
+# ``multi_line`` / ``timeseries``. End-of-line labels paint INSIDE the
+# canvas margin reserve; long names either devour the plot region or get
+# silently truncated (the prior 25% cap behaviour, retired 2026-05-12 in
+# favour of loud failure). Cap matches the y-axis sibling (24) plus one
+# char because series names tend to need slightly more room than axis
+# titles (``"S&P 500 Energy"`` 14 vs ``"Energy ($/bbl)"`` 14 -- the
+# series carries the entity, the y-title carries the unit).
+_LVL_SERIES_NAME_MAX_CHARS = 25
 
 # Minimum distinct (x, y) coordinates that fall inside the visible plot
 # region for a scatter to read as a relationship rather than an anecdote.
@@ -3007,21 +3055,10 @@ class LastValueLabel(Annotation):
         last_idx = df_clean.groupby(color_field)[x_col].idxmax()
         last_rows = df_clean.loc[last_idx].reset_index(drop=True)
 
-        # Class 8 absorption (Phase 2 stress probe T5c, 2026-05-10):
-        # if ``_estimate_lvl_right_margin`` capped the reserve and
-        # stashed a per-label char budget, truncate series-name text
-        # with an ellipsis so the label fits the capped margin
-        # instead of overflowing the canvas. The value suffix (if
-        # ``show_value=True``) is always appended in full -- the
-        # truncation budget already accounted for it in the
-        # margin-estimate pass.
-        max_label_chars = mapping.get("_lvl_max_label_chars")
-
-        def _truncate(name: str) -> str:
-            if max_label_chars and len(name) > max_label_chars:
-                return name[: max(1, max_label_chars - 1)] + "\u2026"
-            return name
-
+        # Series names are pre-validated by ``_validate_lvl_series_names``
+        # at the make_chart boundary (cap = ``_LVL_SERIES_NAME_MAX_CHARS``),
+        # so no per-label truncation is needed -- whatever is in the color
+        # column is guaranteed to fit the reserved right margin.
         if self.show_value:
             value_template = (
                 self.value_format
@@ -3029,14 +3066,12 @@ class LastValueLabel(Annotation):
                 else _smart_format_template(last_rows[y_field])
             )
             last_rows["_label"] = (
-                last_rows[color_field].astype(str).map(_truncate)
+                last_rows[color_field].astype(str)
                 + "  "
                 + last_rows[y_field].map(lambda v: value_template.format(v))
             )
         else:
-            last_rows["_label"] = (
-                last_rows[color_field].astype(str).map(_truncate)
-            )
+            last_rows["_label"] = last_rows[color_field].astype(str)
 
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
@@ -3219,12 +3254,8 @@ class LastValueLabel(Annotation):
         else:
             label_root = y_field.replace("_", " ").strip().title()
 
-        # Class 8 absorption: truncate single-series label root when
-        # the right margin was capped (mirror the multi-series path).
-        max_label_chars = mapping.get("_lvl_max_label_chars")
-        if max_label_chars and len(label_root) > max_label_chars:
-            label_root = label_root[: max(1, max_label_chars - 1)] + "\u2026"
-
+        # Series name pre-validated by ``_validate_lvl_series_names``;
+        # no truncation needed here.
         label_text = label_root
         if self.show_value:
             value_template = (
@@ -4466,12 +4497,72 @@ def _auto_stagger_hline_labels(
 # ending at near-identical y values don't paint as a single illegible smudge.
 # ---------------------------------------------------------------------------
 
-_LVL_MAX_RIGHT_MARGIN_FRAC: float = 0.25
-"""Cap LVL right-margin reserve at 25% of canvas width (Phase 2 class 8
-absorption from the 2026-05-10 collision audit + Phase 2 stress probe
-T5c). Without this, 30-50 character series names ("United States Treasury
-10-Year Constant Maturity Yield") consume 40-50% of canvas width and
-squash the plot region into an unreadable strip."""
+def _collect_lvl_series_labels(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+) -> List[str]:
+    """Return the series-name labels that ``LastValueLabel`` will paint.
+
+    Mirrors the resolution order in ``LastValueLabel.to_layer``:
+    * ``mapping['color']`` column values (multi-series with explicit
+      color), OR
+    * wide-format ``mapping['y']`` list entries (auto-melted to long
+      form internally), OR
+    * the single y field name as a fallback.
+
+    Returns an empty list when none of the above applies (e.g. heatmap),
+    in which case the LVL renderer would no-op anyway.
+    """
+    color_field = mapping.get("color")
+    y_field = mapping.get("y")
+    if color_field and color_field in df.columns:
+        return [str(s) for s in df[color_field].dropna().unique()]
+    if isinstance(y_field, list):
+        return [str(c) for c in y_field if c is not None]
+    if isinstance(y_field, str):
+        return [y_field]
+    return []
+
+
+def _validate_lvl_series_names(
+    annotations: Optional[List["Annotation"]],
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+) -> None:
+    """Raise ``LvlSeriesNameTooLongError`` when any series name destined for
+    ``LastValueLabel`` rendering exceeds ``_LVL_SERIES_NAME_MAX_CHARS``.
+
+    Skips silently when no LVL is in the annotation list (no validation
+    needed if the labels aren't going to render).
+    """
+    if not annotations:
+        return
+    if not any(isinstance(a, LastValueLabel) for a in annotations):
+        return
+    labels = _collect_lvl_series_labels(df, mapping)
+    offenders = [s for s in labels if len(s) > _LVL_SERIES_NAME_MAX_CHARS]
+    if not offenders:
+        return
+    sample = ", ".join(f"{s!r} ({len(s)} chars)" for s in offenders[:3])
+    if len(offenders) > 3:
+        sample += f", ... ({len(offenders) - 3} more)"
+    raise LvlSeriesNameTooLongError(
+        (
+            f"LastValueLabel cannot render series names longer than "
+            f"{_LVL_SERIES_NAME_MAX_CHARS} characters: {sample}. "
+            f"multi_line / timeseries charts default to end-of-line "
+            f"labelling (chart_context.md \u00a76.1); long names devour "
+            f"the plot region. Either rename the series in the "
+            f"DataFrame to fit the cap (e.g. "
+            f"'United States Equities Index 500' \u2192 'S&P 500'), or "
+            f"pass mapping['legend']=True to opt back into the color "
+            f"legend (which has its own labelLimit truncation but is "
+            f"the right choice when the entity names are intrinsically "
+            f"long)."
+        ),
+        offending_names=offenders,
+        mapping=mapping,
+    )
 
 
 def _estimate_lvl_right_margin(
@@ -4483,20 +4574,16 @@ def _estimate_lvl_right_margin(
 
     LVL paints the series name (and optionally the latest value) just
     past the last data point. Without explicit canvas-right padding,
-    labels longer than ~20px overflow into negative pixel space and get
-    clipped by the canvas edge -- the most-reported P0 from the vision
-    audit (charts in 14/, 21/, 23/, 24/, 25/).
+    labels overflow into negative pixel space and get clipped by the
+    canvas edge.
 
     Returns 0 when no LVL is present in the annotation list, otherwise a
     pixel value sized to fit the longest "series name [value]" label.
 
-    Class 8 absorption (Phase 2 stress probe T5c, 2026-05-10): cap the
-    reserve at ``_LVL_MAX_RIGHT_MARGIN_FRAC`` (25%%) of canvas width.
-    When the natural margin would exceed the cap, stash the fitted
-    character budget in ``mapping['_lvl_max_label_chars']`` so
-    ``LastValueLabel.to_layer`` can truncate the per-row label text
-    with an ellipsis. Result: long series names get truncated cleanly
-    to fit the cap instead of devouring the plot region.
+    Series names are guaranteed to be <= ``_LVL_SERIES_NAME_MAX_CHARS``
+    by ``_validate_lvl_series_names`` upstream, so this function does no
+    truncation; it just sizes the reserve to whatever the validated
+    names require.
     """
     if not annotations:
         return 0
@@ -4504,29 +4591,15 @@ def _estimate_lvl_right_margin(
     if not lvl_anns:
         return 0
 
-    color_field = mapping.get("color")
-    y_field = mapping.get("y")
-
-    chart_width = int(mapping.get("_chart_width_px") or 600)
-    cap = int(chart_width * _LVL_MAX_RIGHT_MARGIN_FRAC)
+    labels = _collect_lvl_series_labels(df, mapping)
+    if not labels:
+        return 0
 
     margin = 0
-    fitted_chars_for_each: List[int] = []
     for lvl in lvl_anns:
         font_size = lvl.font_size
         # Average sans-serif body-text glyph is ~0.6 * font_size in width.
         char_w = max(1.0, font_size * 0.6)
-
-        labels: List[str] = []
-        if isinstance(y_field, list) and not color_field:
-            labels = [str(c) for c in y_field if c is not None]
-        elif color_field and color_field in df.columns:
-            labels = [str(s) for s in df[color_field].dropna().unique()]
-        elif isinstance(y_field, str):
-            labels = [y_field]
-
-        if not labels:
-            continue
 
         # Adding the latest value typically extends each label by 6-9 chars
         # (e.g. " 4,878.22"). Use 8 as an average reservation.
@@ -4535,34 +4608,49 @@ def _estimate_lvl_right_margin(
 
         # Width = chars * glyph + dx (text offset from data point) + 8 px slack.
         ann_margin = int(max_chars * char_w + lvl.dx + 8)
-
-        if ann_margin > cap:
-            # Class 8: fit chars into the cap budget; keep enough for
-            # ellipsis ("...") visible.
-            fitted_label_px = max(20, cap - lvl.dx - 8)
-            fitted_label_chars = int(fitted_label_px / char_w)
-            # Reserve room for trailing ellipsis (3 chars) + the value
-            # suffix if show_value is on.
-            fitted_chars = max(8, fitted_label_chars - 3 - value_pad)
-            fitted_chars_for_each.append(fitted_chars)
-            margin = max(margin, cap)
-        else:
-            margin = max(margin, ann_margin)
-
-    if fitted_chars_for_each:
-        # All LVL annotations on this chart share a single truncation
-        # budget (LVL renders only one set of labels per chart in
-        # practice). Use the smallest fitted_chars to be safe.
-        mapping["_lvl_max_label_chars"] = min(fitted_chars_for_each)
-        logger.info(
-            "[_estimate_lvl_right_margin] Class 8 cap fired: long series "
-            "names truncated to %d chars + ellipsis to fit %d-px right "
-            "margin (cap = %.0f%% of %dpx canvas).",
-            min(fitted_chars_for_each), cap,
-            _LVL_MAX_RIGHT_MARGIN_FRAC * 100, chart_width,
-        )
+        margin = max(margin, ann_margin)
 
     return margin
+
+
+def _should_auto_inject_lvl(
+    chart_type: str,
+    mapping: Dict[str, Any],
+    annotations: Optional[List["Annotation"]],
+) -> bool:
+    """Decide whether ``make_chart`` should auto-inject a default
+    ``LastValueLabel`` annotation.
+
+    Per the 2026-05-12 default-on migration, ``multi_line`` and
+    ``timeseries`` charts default to end-of-line labelling (FT /
+    Bloomberg house style) instead of a colour legend. The legend
+    forces a lookup-tax between hex swatch and series name; LVL
+    paints the series name (and latest value) right at the line's
+    end, in the line's own colour. The downstream legend-suppression
+    branch inside ``render_annotations`` turns the colour legend off
+    automatically once any ``LastValueLabel`` is in the annotation
+    list.
+
+    Returns True only when ALL of the following hold:
+
+    * ``chart_type`` is line-shaped (``multi_line`` / ``timeseries``).
+    * Not dual-axis -- the dual-axis strip prohibits LVL anyway, so
+      auto-injection is wasted work; the colour legend renders.
+    * Caller has not already added a ``LastValueLabel`` annotation --
+      the explicit annotation always wins.
+    * Caller has not opted into the colour legend via
+      ``mapping['legend'] = True`` -- the explicit opt-in is the
+      single documented escape hatch from the LVL default.
+    """
+    if chart_type not in {"multi_line", "timeseries"}:
+        return False
+    if mapping.get("dual_axis_series"):
+        return False
+    if mapping.get("legend") is True:
+        return False
+    if annotations and any(isinstance(a, LastValueLabel) for a in annotations):
+        return False
+    return True
 
 
 def _stagger_lvl_text_y(
@@ -14194,6 +14282,24 @@ def make_chart(
                 a for a in annotations if not isinstance(a, LastValueLabel)
             ]
 
+    # ---- Auto-default LastValueLabel for multi_line / timeseries -------
+    # Multi-line charts default to end-of-line labelling (FT/Bloomberg
+    # house style) instead of a colour legend. The legend forces a
+    # lookup-tax between hex swatch and series name; LVL paints the
+    # series name + latest value directly at each line's end, in the
+    # line's colour. The downstream legend-suppression branch inside
+    # ``render_annotations`` turns the colour legend off automatically
+    # once an LVL is present.
+    #
+    # Opt back into the legend by passing ``mapping['legend'] = True``.
+    # ``_should_auto_inject_lvl`` also skips auto-injection on dual-axis
+    # (LVL is stripped there anyway), when the caller has already added
+    # their own ``LastValueLabel`` (explicit always wins), and on
+    # non-line chart types.
+    if _should_auto_inject_lvl(chart_type, mapping, annotations):
+        annotations = list(annotations or [])
+        annotations.append(LastValueLabel(show_value=True))
+
     # ---- PlotText -> outside text panels (route BEFORE layer pass) -----
     # PlotText renders OUTSIDE the plot region only (per the 2026-05-10
     # outside-only rewire). Pull every PlotText out of the annotations
@@ -14218,15 +14324,18 @@ def make_chart(
         )
         warnings.extend(_plottext_warnings)
 
-    # ---- LastValueLabel right-margin reserve (pre-pass) -----------------
-    # Compute LVL right-margin BEFORE ``render_annotations`` so the
-    # class-8 truncation budget (stashed in
-    # ``mapping['_lvl_max_label_chars']`` when long series names would
-    # overflow the 25%%-of-canvas cap) is available when
-    # ``LastValueLabel.to_layer`` runs inside render_annotations and
-    # consumes the per-row text labels. Without this ordering the
-    # truncation would only take effect on the NEXT render of the
-    # same chart.
+    # ---- LastValueLabel series-name validation + right-margin reserve ---
+    # Validation runs BEFORE ``render_annotations`` so a long-name failure
+    # is converted into a ChartResult(success=False) instead of bubbling
+    # an exception out of make_chart. The right-margin reserve then sizes
+    # the canvas-right padding to the validated label widths.
+    try:
+        _validate_lvl_series_names(annotations, df, mapping)
+    except ValidationError as exc:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=str(exc), warnings=warnings,
+        )
     lvl_right_pad = _estimate_lvl_right_margin(annotations, df, mapping)
 
     # ---- Annotations (layer first; configure must be applied AFTER ------
@@ -14786,6 +14895,24 @@ def _build_single_chart(
     # same slot -- next-available fallback per
     # ``_route_plottext_to_panels`` semantics.
     cell_annotations = spec.annotations
+
+    # Auto-default LastValueLabel for multi_line / timeseries sub-charts.
+    # Mirrors the standalone branch in ``make_chart`` so a composite
+    # sub-chart inherits the same end-of-line labelling default. The
+    # legend would compete with the sibling cells' axis labels in a
+    # tight hconcat anyway, so the LVL default is even more useful in
+    # composites than standalone. Gating is identical to the standalone
+    # path -- see ``_should_auto_inject_lvl``.
+    if _should_auto_inject_lvl(chart_type, mapping, cell_annotations):
+        cell_annotations = list(cell_annotations or [])
+        cell_annotations.append(LastValueLabel(show_value=True))
+
+    # Mirror the standalone-path validation: long series names raise
+    # loudly so a single composite cell doesn't silently degrade. The
+    # ChartSpec error propagates through ``make_composite``'s per-cell
+    # try/except and lands in ``CompositeResult.chart_errors``.
+    _validate_lvl_series_names(cell_annotations, df, mapping)
+
     cell_caption = spec.caption
     cell_side_left = spec.side_left
     cell_side_right = spec.side_right
@@ -18604,6 +18731,7 @@ __all__ = [
     # ---- Validation / errors --------------------------------------
     "ValidationError",
     "YAxisLabelTooLongError",
+    "LvlSeriesNameTooLongError",
     "validate_plot_ready_df",
     # ---- Static spec utilities ------------------------------------
     "create_static_spec",

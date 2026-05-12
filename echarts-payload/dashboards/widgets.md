@@ -73,6 +73,7 @@ For categorical / summary datasets, source paths still work but the aggregator c
 | `prefix` / `suffix` / `decimals` | Prepended / appended (`$`, `%`, `bp`); precision (default 2 for <1000, else 0; clamped) |
 | `sparkline_source` | Dotted: `<dataset>.<column>` for inline sparkline (no aggregator) |
 | `format` | `"auto"` (default; `2820` → `2,820`), `"compact"` (K/M/B/T), `"comma"`, `"percent"`, `"raw"` |
+| `sense_check` | Bool, default `True`. Compile prints every resolved KPI value and fires a `kpi_value_sense_check` warning when `|value| > 20` so the headline number gets a second look. Set `False` only after confirming the number AND the concept are correct (S&P 4500, VIX 25, probability=68%). Hub §0 Rule 1 has the full discipline. |
 
 ```json
 {"widget": "kpi", "id": "k10y", "label": "10Y", "w": 3,
@@ -262,6 +263,7 @@ Dense grid of label / value stats — for when a row of KPIs would take too much
 | `value` / `source` | Pre-formatted (no number formatting applied) OR dotted `<dataset>.<agg>.<column>` |
 | `info` (alias `description`) / `popup` | Hover tooltip + click modal; `{title, body}` markdown popup |
 | `trend` | Optional numeric delta. Positive = green up, negative = red down |
+| `sense_check` | Bool, default `True`. Per-stat. Same semantics as KPI's `sense_check` — compile prints every resolved stat value and fires `stat_grid_value_sense_check` when `|value| > 20`. Set per-stat (not per-widget) to acknowledge legitimately-large items (HY OAS 285bp, VaR $18m) one at a time. |
 
 ---
 

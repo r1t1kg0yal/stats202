@@ -2480,6 +2480,13 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
   display: flex; flex-direction: column; justify-content: center;
   min-height: 118px; gap: 0;
   border-top: 3px solid var(--gs-navy);
+  /* Container query context (CC5 in 2026-05-11 audit): the KPI
+     value font-size is now responsive to tile width via cqw units
+     so a 12-KPI row at w:1 each (~80px tile) doesn't clip the value
+     mid-digit. Container query support: Safari 16+, Chrome 105+,
+     Firefox 110+. */
+  container-type: inline-size;
+  container-name: kpi;
 }
 .kpi-header {
   display: flex; align-items: flex-start; justify-content: space-between;
@@ -2494,6 +2501,20 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
   text-transform: uppercase; letter-spacing: 0.09em;
   font-weight: 700;
   flex: 1 1 auto; min-width: 0;
+  /* Wrap label cleanly at word boundaries when needed. Avoid
+     `overflow-wrap: anywhere` which char-breaks "BITCOIN" into
+     "BI/TC/OI/N" and similarly fragments underscore-joined
+     ticker codes -- prefer the cleaner two-line word wrap. The
+     letter-spacing + label-size shrink-with-container pair below
+     keeps narrow-tile labels legible. */
+  overflow-wrap: break-word;
+  word-break: normal;
+  line-height: 1.3;
+  /* Shrink label font as the container narrows so a 70px tile
+     doesn't have to wrap "BITCOIN" at all. clamp(min, fluid, max)
+     where fluid is sized in container-query width units. */
+  font-size: clamp(8px, 5cqw, 10px);
+  letter-spacing: clamp(0.02em, 0.4cqw, 0.09em);
 }
 .kpi-value {
   font-family: var(--gs-font-serif);
@@ -2501,8 +2522,18 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
   line-height: 1.02; color: var(--gs-navy);
   font-feature-settings: "tnum";
   letter-spacing: -0.015em;
+  /* Avoid mid-digit clipping at narrow tile widths: shrink the
+     value font as the container narrows. clamp(min, fluid, max)
+     with the fluid component sized in container-query width units
+     (cqw = 1% of container width) so a ~80px tile renders the
+     value at ~14px instead of clipping a 32px font. */
+  font-size: clamp(14px, 11cqw, 32px);
+  /* If the (shrunk) value still overflows, ellipsis instead of
+     mid-digit clipping. */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; max-width: 100%;
 }
-.kpi-value.small { font-size: 24px; }
+.kpi-value.small { font-size: clamp(12px, 8cqw, 24px); }
 .kpi-delta {
   font-family: var(--gs-font-sans);
   font-size: 11px; margin-top: 6px; font-weight: 600;
@@ -13608,6 +13639,18 @@ def _render_divider_widget(w: Dict[str, Any], cols: int,
 def _render_stat_grid_widget(w: Dict[str, Any], cols: int,
                                wid: str, style: str) -> str:
     stats = w.get("stats", [])
+    # CC1 in the 2026-05-11 audit: honor an explicit ``cols`` kwarg
+    # on the widget. The CSS default is auto-fit minmax(140px, 1fr)
+    # which optimizes for visual density. When the author provides a
+    # specific column count (e.g. cols=6 for a 4x6 grid of 24 stats),
+    # the widget should respect it. Inline style overrides the CSS.
+    grid_cols = w.get("cols")
+    grid_style = ""
+    if isinstance(grid_cols, int) and grid_cols > 0:
+        grid_style = (
+            f' style="grid-template-columns: '
+            f'repeat({int(grid_cols)}, minmax(0, 1fr));"'
+        )
     cells: List[str] = []
     for st in stats:
         lbl = _html_escape(st.get("label", ""))
@@ -13657,7 +13700,8 @@ def _render_stat_grid_widget(w: Dict[str, Any], cols: int,
         f"    {_tile_title_html(w)}"
         f"  </div>"
         f"  <div class=\"tile-body\">"
-        f"    <div class=\"stat-grid\" id=\"stat-grid-{_html_escape(wid)}\">"
+        f"    <div class=\"stat-grid\" "
+        f"id=\"stat-grid-{_html_escape(wid)}\"{grid_style}>"
         f"{''.join(cells)}</div>"
         f"  </div>"
         f"  {_tile_footer_html(w)}"

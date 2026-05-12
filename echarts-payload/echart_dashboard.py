@@ -2730,6 +2730,194 @@ class Link:
 # =============================================================================
 
 
+class Manifest(dict):
+    """A drop-in ``dict`` whose ``__repr__`` summarizes a populated dashboard
+    manifest instead of dumping every dataset row inline.
+
+    Why this exists: a populated manifest (the return value of
+    :func:`build_dashboard` / :func:`refresh_dashboard` and the
+    ``.manifest`` field of a :class:`DashboardResult`) carries every
+    dataset row as a list-of-lists. A typical dashboard sits at
+    ~1-5 MB of nested lists; the per-dataset budget allows up to
+    50,000 rows. The default ``dict.__repr__`` dumps every cell when
+    PRISM's code sandbox does ``result = build_dashboard(PATH);
+    print(result)`` -- multi-MB of stdout streamed back to the LLM
+    on every recompile.
+
+    This subclass overrides only ``__repr__`` (and ``__str__`` follows
+    through ``object.__str__``). Everything else is byte-identical to
+    a plain dict:
+
+        * subscripting / ``.get`` / ``.items`` / ``.keys`` / ``in`` /
+          ``** unpacking`` / ``isinstance(m, dict)`` / equality
+          comparisons with plain dicts -- all unchanged.
+        * ``json.dumps(m)`` -- the JSON encoder treats dict subclasses
+          as plain dicts, so the serialized output is byte-identical.
+          This is load-bearing: ``build_dashboard`` writes
+          ``manifest.json`` to S3 via ``json.dumps(r.manifest, indent=2)``
+          BEFORE returning; we must not change those bytes.
+        * ``copy.deepcopy(m)`` -- preserves the ``Manifest`` subclass.
+
+    The escape hatch: drilling past the wrapper falls back to plain
+    dict semantics::
+
+        m = build_dashboard(folder)
+        print(m)                       # Manifest(...) shape summary
+        print(m['datasets'])           # raw dict; full data dump (the
+                                       # caller explicitly asked for it)
+        print(m['datasets']['rates_eod']['source'])   # raw list of rows
+    """
+
+    def __repr__(self) -> str:
+        return _format_manifest_repr(self)
+
+
+def _summarize_dataset_entry(entry: Any, *, max_hdr_cols: int = 4) -> str:
+    """One-line summary of a dataset entry. Returns e.g.
+    ``<504 rows x 10 cols, hdr=[date, 2y, 5y, 10y, ...]>``."""
+    if isinstance(entry, dict):
+        if entry.get("template"):
+            return "<empty (template slot)>"
+        src = entry.get("source")
+    else:
+        src = entry
+    if src is None:
+        return "<no source>"
+    if not isinstance(src, list) or not src:
+        return "<empty>"
+    first = src[0]
+    if isinstance(first, list):
+        hdr = first
+        rows = max(len(src) - 1, 0)
+        cols = len(hdr)
+        if cols > max_hdr_cols:
+            hdr_preview = (", ".join(repr(c) for c in hdr[:max_hdr_cols])
+                            + ", ...")
+        else:
+            hdr_preview = ", ".join(repr(c) for c in hdr)
+        return f"<{rows} rows x {cols} cols, hdr=[{hdr_preview}]>"
+    if isinstance(first, dict):
+        rows = len(src)
+        cols = len(first)
+        return f"<{rows} rows x {cols} cols, list-of-dicts>"
+    return f"<{len(src)} entries>"
+
+
+def _format_manifest_repr(manifest: Dict[str, Any], *,
+                           max_hdr_cols: int = 4) -> str:
+    """Compact summary of a populated manifest. Stays well under 1 KB
+    regardless of dataset size."""
+    parts: List[str] = []
+
+    ident = manifest.get("id")
+    title = manifest.get("title")
+    if ident:
+        parts.append(f"id={ident!r}")
+    if title:
+        parts.append(f"title={title!r}")
+
+    layout = manifest.get("layout") or {}
+    layout_kind = layout.get("kind", "grid")
+    if layout_kind == "tabs":
+        tabs = layout.get("tabs") or []
+        widget_count = sum(
+            len(row or [])
+            for tab in tabs
+            for row in (tab.get("rows") or [])
+        )
+        parts.append(f"tabs={len(tabs)}")
+        parts.append(f"widgets={widget_count}")
+    else:
+        rows = layout.get("rows") or []
+        widget_count = sum(len(row or []) for row in rows)
+        parts.append(f"widgets={widget_count}")
+
+    filters = manifest.get("filters") or []
+    if filters:
+        parts.append(f"filters={len(filters)}")
+
+    datasets = manifest.get("datasets")
+    if isinstance(datasets, dict) and datasets:
+        ds_summaries: List[str] = []
+        for name, entry in datasets.items():
+            ds_summaries.append(
+                f"{name!r}: {_summarize_dataset_entry(entry, max_hdr_cols=max_hdr_cols)}"
+            )
+        parts.append("datasets={" + ", ".join(ds_summaries) + "}")
+
+    # Optional snapshot fields attached by DashboardResult.__post_init__
+    # so a standalone ``Manifest`` (e.g. ``build_dashboard``'s return value)
+    # still surfaces compile warnings / diagnostics when PRISM print()s it.
+    warnings = getattr(manifest, "_warnings", None)
+    diagnostics = getattr(manifest, "_diagnostics", None)
+    if warnings:
+        parts.append(_format_warnings_inline(warnings))
+    if diagnostics:
+        parts.append(_format_diagnostics_inline(diagnostics))
+
+    return "Manifest(" + ", ".join(parts) + ")"
+
+
+def _human_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 ** 2:
+        return f"{n / 1024:.1f} KB"
+    if n < 1024 ** 3:
+        return f"{n / 1024 ** 2:.2f} MB"
+    return f"{n / 1024 ** 3:.2f} GB"
+
+
+def _format_warnings_inline(warnings: List[str], *, max_show: int = 6) -> str:
+    """Render the warnings list, capping at ``max_show`` entries to keep
+    repr output bounded even if a compile emits dozens of warnings."""
+    items = list(warnings)
+    if len(items) <= max_show:
+        return f"warnings={items!r}"
+    shown = items[:max_show]
+    return (f"warnings=[{len(items)} total; first {max_show}: "
+             f"{shown!r}, +{len(items) - max_show} more]")
+
+
+def _format_diagnostics_inline(diagnostics: List[Any]) -> str:
+    """Summarize a Diagnostic list by severity count (the structured form
+    is duck-typed: anything with a ``.severity`` attribute counts)."""
+    counts: Dict[str, int] = {}
+    for d in diagnostics:
+        sev = getattr(d, "severity", "?")
+        counts[sev] = counts.get(sev, 0) + 1
+    summary = ", ".join(f"{sev}={n}" for sev, n in sorted(counts.items()))
+    return f"diagnostics=<{len(diagnostics)} total: {summary}>"
+
+
+def _format_dashboard_result_repr(r: "DashboardResult") -> str:
+    """Compact summary of a DashboardResult. Delegates manifest rendering
+    to ``Manifest.__repr__`` (which surfaces warnings/diagnostics) and
+    suppresses the ``html`` body -- the inlined ~1 MB ECharts payload is
+    never something PRISM wants in stdout."""
+    parts = [f"success={r.success}"]
+    if r.error_message:
+        lines = r.error_message.split("\n")
+        if len(lines) == 1:
+            parts.append(f"error_message={r.error_message!r}")
+        else:
+            parts.append(f"error_message={lines[0]!r} "
+                          f"(+{len(lines) - 1} more line(s))")
+    parts.append(f"manifest={r.manifest!r}")
+    if r.html is None:
+        parts.append("html=None")
+    else:
+        parts.append(f"html=<{_human_bytes(len(r.html))} suppressed>")
+    for label, val in (
+        ("html_path", r.html_path),
+        ("manifest_path", r.manifest_path),
+        ("download_url", r.download_url),
+    ):
+        if val:
+            parts.append(f"{label}={val!r}")
+    return "DashboardResult(" + ", ".join(parts) + ")"
+
+
 @dataclass
 class DashboardResult:
     manifest: Dict[str, Any]
@@ -2744,6 +2932,24 @@ class DashboardResult:
     # is kept as flat strings for backwards compat). PRISM should read
     # these directly when iterating on a manifest.
     diagnostics: List["Diagnostic"] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Auto-wrap a plain-dict manifest in ``Manifest`` so PRISM's
+        # ``print(r)`` / ``print(r.manifest)`` / ``print(build_dashboard(...))``
+        # paths all collapse the dataset payload to a shape summary
+        # instead of dumping every row. The diagnostic snapshot lives on
+        # the wrapped manifest so ``build_dashboard``'s ``return r.manifest``
+        # still surfaces compile warnings/diagnostics for callers that
+        # never see the DashboardResult.
+        if not isinstance(self.manifest, dict):
+            return
+        if not isinstance(self.manifest, Manifest):
+            self.manifest = Manifest(self.manifest)
+        self.manifest._warnings = list(self.warnings or [])
+        self.manifest._diagnostics = list(self.diagnostics or [])
+
+    def __repr__(self) -> str:
+        return _format_dashboard_result_repr(self)
 
 
 # =============================================================================
@@ -4386,6 +4592,7 @@ def _spec_to_option(
     # Lazy imports: keep the manifest module light and avoid import cycles
     from echart_studio import (
         _BUILDER_DISPATCH, _build_context, _apply_annotations,
+        _normalize_annotations, _grow_grid_for_legend,
         _install_default_axis_decimal_cap,
         _install_default_tooltip_decimal_cap,
     )
@@ -4427,12 +4634,12 @@ def _spec_to_option(
     spec_annotations = spec.get("annotations")
     mapping_annotations = mapping.get("annotations")
     combined: List[Dict[str, Any]] = []
-    if mapping_annotations:
-        combined.extend(list(mapping_annotations))
-    if spec_annotations:
-        combined.extend(list(spec_annotations))
+    combined.extend(_normalize_annotations(mapping_annotations))
+    combined.extend(_normalize_annotations(spec_annotations))
     if combined:
         _apply_annotations(opt, combined)
+
+    _grow_grid_for_legend(opt, ctx.width)
 
     # Post-build cosmetic pass: humanize series / legend labels, apply
     # optional legend_position / legend_show overrides, and format
@@ -5405,6 +5612,23 @@ MANIFEST_BYTES_ERROR = 5_242_880     # 5 MB
 # viewport), so very large tables are slow to interact with.
 TABLE_ROWS_WARN = 1_000
 TABLE_ROWS_ERROR = 5_000
+
+# KPI / stat_grid sense-check threshold. Every visible-number widget
+# (kpi tile, stat_grid item) whose resolved RAW value satisfies
+# ``abs(value) > KPI_SENSE_CHECK_THRESHOLD`` fires a non-blocking
+# ``kpi_value_sense_check`` / ``stat_grid_value_sense_check`` warning
+# during compile so PRISM (and the human reader) re-confirms the
+# headline number is real before persisting the dashboard. The
+# threshold is intentionally low: most macro / rates / index KPIs are
+# bounded near 20 (yields, inflation, unemployment, vol indexes,
+# z-scores, spreads in pp), so the false-positive class is dominated
+# by legitimately-large numbers (S&P at 4500, volume at 25M) where
+# acknowledging the warning is cheap. Authors who confirm the value
+# is correct can suppress per-widget / per-stat with
+# ``"sense_check": False`` (KPI widget level; stat_grid stat-item
+# level). The threshold is symmetric: ``-25%`` fires the same as
+# ``+25%``.
+KPI_SENSE_CHECK_THRESHOLD: float = 20.0
 
 # -----------------------------------------------------------------------------
 # Always-blocking error codes.
@@ -7095,6 +7319,182 @@ def _check_kpi_widget(w: Dict[str, Any], path: str,
                                "drop sparkline_source on this KPI or "
                                "point at a column with more "
                                "history.")}))
+
+    # ---- value receipt + sense-check (Principle #7 + dual-purpose) ---
+    # Resolve the headline value the browser will display, emit an
+    # ``info`` receipt diagnostic for every KPI (so PRISM sees every
+    # number it's about to ship), and a ``warning`` sense-check for any
+    # value whose magnitude crosses ``KPI_SENSE_CHECK_THRESHOLD``. Both
+    # flow through ``compile_dashboard``'s stdout receipt block. A
+    # widget-level ``"sense_check": False`` opt-out silences the warning
+    # (used for legit big numbers like S&P 4500 or VIX 25); the receipt
+    # always emits regardless.
+    out.extend(_kpi_value_receipt_and_check(
+        w, path, dfs, widget_kind="kpi",
+    ))
+    return out
+
+
+def _coerce_number(v: Any) -> Optional[float]:
+    """Try to coerce ``v`` to a finite float. Return None if it isn't
+    a number (string, dict, NaN, inf, ...). Used by the sense-check
+    receipts so non-numeric ``value=`` fields fall through silently."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        f = float(v)
+        if f != f:  # NaN
+            return None
+        if f in (float("inf"), float("-inf")):
+            return None
+        return f
+    if isinstance(v, str):
+        try:
+            f = float(v)
+            if f != f or f in (float("inf"), float("-inf")):
+                return None
+            return f
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _format_value_for_receipt(v: float, opts: Dict[str, Any]) -> str:
+    """Render a resolved KPI / stat_grid value the way it'll appear on
+    the dashboard, for the stdout receipt block and warning messages.
+    Reuses ``_format_kpi_number`` so the printed string matches the
+    rendered tile byte-for-byte (prefix, suffix, decimals, format
+    mode all respected)."""
+    try:
+        return _format_kpi_number(v, opts or {})
+    except Exception:  # noqa: BLE001
+        return f"{v:g}"
+
+
+def _kpi_value_receipt_and_check(
+    item: Dict[str, Any], path: str, dfs: Dict[str, Any],
+    *, widget_kind: str,
+    widget_id_override: Optional[str] = None,
+    container_label: Optional[str] = None,
+) -> List[Diagnostic]:
+    """Emit the ``<kind>_value_receipt`` info + the
+    ``<kind>_value_sense_check`` warning (if value crosses threshold
+    and the item hasn't opted out via ``sense_check=False``).
+
+    Resolution order matches the JS runtime: literal ``value`` wins
+    over ``source``. ``widget_kind`` is ``"kpi"`` for KPI widgets and
+    ``"stat_grid"`` for stat_grid items so receipt / warning codes
+    are routable per widget family. The helper is shared so both
+    families fire the same receipt + sense-check shape without
+    duplication.
+
+    For KPI: ``item`` is the widget dict; ``widget_id_override`` and
+    ``container_label`` are not needed (the widget's own ``id`` /
+    ``label`` are used).
+
+    For stat_grid: ``item`` is the per-stat dict (each stat has its
+    own label / value / source / format options but NO ``id`` field).
+    ``widget_id_override`` is the PARENT widget's id (so diagnostics
+    route to the right tile in the dashboard); ``container_label`` is
+    the parent widget's label (rendered as a prefix in the receipt
+    + warning so the human reader sees both pieces of context). The
+    per-stat ``sense_check`` field controls opt-out for that one
+    stat; the widget-level field is intentionally NOT consulted (a
+    stat_grid is a grid of independent numbers, each acknowledged
+    separately).
+
+    ``path`` is the dotted manifest path of the SOURCE OF THE NUMBER
+    (``layout.rows[r][w]`` for KPI;
+    ``layout.rows[r][w].stats[s]`` for stat_grid items).
+    """
+    out: List[Diagnostic] = []
+    wid = widget_id_override if widget_id_override is not None else item.get("id")
+    own_label = item.get("label") or ""
+    if container_label and own_label:
+        label = f"{container_label} / {own_label}"
+    else:
+        label = container_label or own_label
+
+    # Resolution preference: source first, value second. The
+    # stat_grid bake (`_resolve_stat_grid_sources`) runs BEFORE this
+    # helper and overwrites ``value`` with a formatted string like
+    # ``"$8.98%"`` whenever a source resolves; literal ``value=8.98``
+    # would not survive that path. So re-resolving from source is the
+    # canonical receipt path. The literal-``value`` fallback covers
+    # KPIs / stats authored with ``value=`` and no source (rare;
+    # blocked by Rule 1 in production but used in unit fixtures and
+    # build-time pre-resolved scenarios).
+    displayed: Optional[float] = None
+    binding = "value"
+    src_str: Optional[str] = None
+    if isinstance(item.get("source"), str) and item["source"]:
+        src_str = item["source"]
+        binding = "source"
+        resolved, _reason = _resolve_kpi_value(src_str, dfs)
+        if resolved is not None:
+            displayed = float(resolved)
+    if displayed is None and "value" in item and item.get("value") is not None:
+        displayed = _coerce_number(item.get("value"))
+        binding = "value"
+    if displayed is None:
+        return out
+
+    formatted = _format_value_for_receipt(displayed, item)
+    receipt_ctx: Dict[str, Any] = {
+        "label": label, "value": displayed,
+        "displayed": formatted, "binding": binding,
+        "widget_kind": widget_kind,
+    }
+    if src_str:
+        receipt_ctx["source"] = src_str
+
+    receipt_code = f"{widget_kind}_value_receipt"
+    sense_code = f"{widget_kind}_value_sense_check"
+
+    out.append(Diagnostic(
+        severity="info", code=receipt_code,
+        widget_id=wid, path=path,
+        message=(f"{widget_kind} '{wid}' ({label}) -> "
+                 f"{formatted}  (raw={displayed:g}, "
+                 f"binding={binding})"),
+        context=receipt_ctx,
+    ))
+
+    sense_check_enabled = item.get("sense_check", True) is not False
+    if (sense_check_enabled
+            and abs(displayed) > KPI_SENSE_CHECK_THRESHOLD):
+        out.append(Diagnostic(
+            severity="warning", code=sense_code,
+            widget_id=wid, path=path,
+            message=(f"{widget_kind} '{wid}' ({label}) resolves to "
+                     f"{formatted} (raw={displayed:g}); "
+                     f"|value| > {KPI_SENSE_CHECK_THRESHOLD:g}. "
+                     f"are you sure {formatted} for {label!r} looks "
+                     f"correct? Sense-check the NUMBER (right "
+                     f"column? right aggregator? right units?) AND "
+                     f"the CONCEPT (does this {widget_kind} actually "
+                     f"mean something useful to the user, or did the "
+                     f"agg/column pick produce noise?). If the value "
+                     f"is correct, set \"sense_check\": False on "
+                     f"this {('widget' if widget_kind == 'kpi' else 'stat')} "
+                     f"to suppress."),
+            context={"label": label, "value": displayed,
+                       "displayed": formatted, "binding": binding,
+                       "threshold": KPI_SENSE_CHECK_THRESHOLD,
+                       "widget_kind": widget_kind,
+                       "fix_hint": (
+                           "If the number is wrong: pull a different "
+                           "column, change the aggregator, or fix the "
+                           "units in build.py. If the number is right "
+                           "but the concept is uninteresting (e.g. "
+                           "max of a date column, count of arbitrary "
+                           "rows, mean of two unrelated series), "
+                           "redesign the tile. If both number and "
+                           "concept are right (S&P 4500, VIX 25, "
+                           "probability=68%), set \"sense_check\": "
+                           "False here to acknowledge."),
+                       **({"source": src_str} if src_str else {})},
+        ))
     return out
 
 
@@ -7167,6 +7567,22 @@ def _check_stat_grid_widget(w: Dict[str, Any], path: str,
                                "Fix the source to point at a real "
                                "dataset/column with numeric values, "
                                "or set 'value' directly.")}))
+    # Per-stat receipt + sense-check, mirroring the KPI surface so
+    # PRISM sees every visible number it's about to ship and gets a
+    # warning on any item whose magnitude crosses the threshold.
+    # Per-stat ``sense_check=False`` opt-out lets PRISM acknowledge
+    # legitimately-large stats one at a time without disabling the
+    # check for the whole grid.
+    container_label = w.get("title") or w.get("label") or wid or ""
+    for si, st in enumerate(stats):
+        if not isinstance(st, dict):
+            continue
+        out.extend(_kpi_value_receipt_and_check(
+            st, f"{path}.stats[{si}]", dfs,
+            widget_kind="stat_grid",
+            widget_id_override=wid,
+            container_label=container_label,
+        ))
     return out
 
 
@@ -8162,6 +8578,68 @@ def _clone_manifest_for_compile(manifest: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _print_kpi_value_receipts(
+    diags: List[Diagnostic], dashboard_id: Optional[str],
+) -> None:
+    """Print every KPI / stat_grid value receipt to stdout in a
+    PRISM-friendly tabular block. Called from :func:`compile_dashboard`
+    on every compile (validate-success AND validate-fail paths) so
+    PRISM sees every visible-number value the dashboard is about to
+    ship and can sense-check both the NUMBER (units, column, agg) and
+    the CONCEPT (does this KPI mean something useful to the user?).
+
+    The block is also the prerequisite for spotting the
+    ``kpi_value_sense_check`` / ``stat_grid_value_sense_check``
+    warnings firing on the same compile -- a flagged number is far
+    easier to diagnose alongside the receipt block listing every
+    sibling number that did NOT fire.
+
+    Silently no-op when the manifest has zero visible-number widgets
+    (charts-only dashboard).
+    """
+    receipts = [
+        d for d in diags
+        if d.code in ("kpi_value_receipt", "stat_grid_value_receipt")
+    ]
+    if not receipts:
+        return
+    sense_warnings = [
+        d for d in diags
+        if d.code in (
+            "kpi_value_sense_check", "stat_grid_value_sense_check",
+        )
+    ]
+    n_kpi = sum(1 for d in receipts
+                if d.code == "kpi_value_receipt")
+    n_stat = sum(1 for d in receipts
+                  if d.code == "stat_grid_value_receipt")
+    flagged_paths = {d.path for d in sense_warnings}
+    label = f"dashboard '{dashboard_id}'" if dashboard_id else "dashboard"
+    head = (f"[kpi sense-check] {label}: "
+            f"{n_kpi} kpi(s), {n_stat} stat(s)")
+    if sense_warnings:
+        head += f" -- {len(sense_warnings)} sense-check warning(s)"
+    print(head)
+    for d in receipts:
+        ctx = d.context or {}
+        kind = ctx.get("widget_kind") or "kpi"
+        wid = d.widget_id or "?"
+        item_label = ctx.get("label") or ""
+        formatted = ctx.get("displayed", "?")
+        binding = ctx.get("binding", "?")
+        src = ctx.get("source")
+        flag = "  *** SENSE-CHECK" if d.path in flagged_paths else ""
+        bind_repr = f"[src={src}]" if src else f"[{binding}=literal]"
+        print(f"  {kind:<10} {wid:<30} -> {formatted:<14} "
+              f"{item_label}  {bind_repr}{flag}")
+    if sense_warnings:
+        print(f"  see r.warnings (or DashboardResult.diagnostics) "
+              f"for the {len(sense_warnings)} sense-check fire(s) "
+              f"above |value| > {KPI_SENSE_CHECK_THRESHOLD:g}; suppress "
+              f"with \"sense_check\": False on the widget / stat once "
+              f"the value is confirmed correct.")
+
+
 def compile_dashboard(
     manifest: Union[Dict[str, Any], str, Path],
     session_path: Optional[Union[str, Path]] = None,
@@ -8173,6 +8651,7 @@ def compile_dashboard(
     png_scale: int = 2,
     strict: bool = True,
     require_persistence_metadata: bool = True,
+    print_receipts: bool = True,
 ) -> DashboardResult:
     """JSON-first entry point. Compile a manifest to a dashboard.
 
@@ -8331,10 +8810,21 @@ def compile_dashboard(
                          f"this manifest: "
                          f"{type(cdd_exc).__name__}: {cdd_exc}"),
             )]
+        # Print KPI / stat_grid value receipts to stdout BEFORE the
+        # early-return so PRISM still sees every visible-number value
+        # the dashboard would have shipped, even on a validation
+        # failure. Sense-checking is most useful precisely when the
+        # build is broken (the failure may be the column the receipt
+        # also flags as nonsense).
+        if print_receipts:
+            _print_kpi_value_receipts(
+                cdd_diags_pre, manifest_dict.get("id"),
+            )
         agg_warnings = (list(errs)
                          + list(compute_errors)
                          + [str(d) for d in shape_diags]
-                         + [str(d) for d in cdd_diags_pre]
+                         + [str(d) for d in cdd_diags_pre
+                            if d.severity != "info"]
                          + [f"manifest bool coerced: {w}" for w in coerce_warnings]
                          + [f"compute_js sanitized: {w}" for w in sanitize_warnings])
         agg_diags = list(shape_diags) + list(cdd_diags_pre)
@@ -8394,6 +8884,14 @@ def compile_dashboard(
 
     diags: List[Diagnostic] = (list(shape_diags)
                                   + list(chart_data_diagnostics(manifest_dict)))
+
+    # Print KPI / stat_grid value receipts to stdout so PRISM can
+    # sense-check every visible number the dashboard is about to
+    # ship. Receipts always print on a successful CDD pass; the
+    # always-blocking / strict-mode raises below short-circuit
+    # everything that follows but the receipts are already on stdout.
+    if print_receipts:
+        _print_kpi_value_receipts(diags, manifest_dict.get("id"))
 
     # Always-blocking error codes fire regardless of the ``strict`` flag --
     # see ALWAYS_BLOCKING_ERROR_CODES near the data-budget constants for
@@ -8460,7 +8958,14 @@ def compile_dashboard(
         html_path.parent.mkdir(parents=True, exist_ok=True)
         html_path.write_text(html, encoding="utf-8")
 
-    warnings: List[str] = [str(d) for d in diags]
+    # Filter info severity (kpi_value_receipt / stat_grid_value_receipt)
+    # out of the str-warnings list -- they're already printed to stdout
+    # via _print_kpi_value_receipts and remain available structurally
+    # in r.diagnostics. Keeping every receipt in r.warnings would
+    # double-render and dilute the "things to look at" semantics of
+    # the warnings stream.
+    warnings: List[str] = [str(d) for d in diags
+                              if d.severity != "info"]
     # Surface Tier A compute_js sanitization rewrites + manifest boolean
     # coercion rewrites (Principle #7) so each rewrite is observable to
     # the caller (PRISM logs them; the in-browser failure modal never
@@ -8722,7 +9227,7 @@ def refresh_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
 
 
 __all__ = [
-    "Dashboard", "DashboardResult", "Tab",
+    "Dashboard", "DashboardResult", "Manifest", "Tab",
     "ChartRef", "KPIRef", "TableRef", "MarkdownRef", "NoteRef", "DividerRef",
     "GlobalFilter", "Link",
     "compile_dashboard", "render_dashboard",

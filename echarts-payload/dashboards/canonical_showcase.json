@@ -2838,7 +2838,7 @@
               "widget": "markdown",
               "id": "dev_template",
               "w": 6,
-              "content": "## `manifest_template` -> `populate_template`\n\n**Step 1** -- `manifest_template(seed)` strips data rows from every dataset, leaving only the header row. The template's `datasets.rates.source` now holds 1 row with columns: `['date', 'us_2y', 'us_5y', 'us_10y', 'us_30y', '2s10s', '5s30s', '10y_real']`.\n\nTemplates are pure JSON -- safe to persist, diff in source control, hand-edit, and re-feed each refresh.\n\n**Step 2** -- `populate_template(template, {'rates': df})` re-injects fresh data. The populated `datasets.rates` slot now holds a DataFrame with **252 rows**; `compile_dashboard` normalises DataFrames to list-of-lists at compile time. Pass `require_all_slots=True` to fail loudly when the template declares a dataset slot the call doesn't fill."
+              "content": "## `manifest_template` -> `populate_template`\n\n**Step 1** -- `manifest_template(seed)` strips data rows from every dataset, leaving only the header row. The template's `datasets.rates.source` now holds 1 row with columns: `['date', 'us_2y', 'us_5y', 'us_10y', 'us_30y', '2s10s', '5s30s', '10y_real']`.\n\nTemplates are pure JSON -- safe to persist, diff in source control, hand-edit, and re-feed each refresh.\n\n**Step 2** -- `populate_template(template, {'rates': df})` re-injects fresh data. The populated `datasets.rates.source` now holds **252 data rows** (plus header); values are JSON-serialisable scalars. Pass `require_all_slots=True` to fail loudly when the template declares a dataset slot the call doesn't fill."
             },
             {
               "widget": "markdown",

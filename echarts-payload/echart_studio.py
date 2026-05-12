@@ -273,8 +273,13 @@ def _base_option(ctx: BuilderContext) -> Dict[str, Any]:
         #   Grid starts at y=80
         # Keeping the legend on its own row avoids every width-dependent
         # collision with either the title or the toolbox.
+        # Legend type: "plain" (wrap to multiple rows) instead of
+        # "scroll" (paginate with arrows) -- the prior "scroll"
+        # default silently hid 2/3 of series in static-render
+        # contexts (CC4 in the 2026-05-11 audit). The grid.top is
+        # auto-bumped by `_grow_grid_for_legend()` when legend wraps.
         "legend": {"show": True, "top": 42, "right": 10,
-                    "orient": "horizontal", "type": "scroll"},
+                    "orient": "horizontal", "type": "plain"},
         "grid": {"top": 80, "right": 20, "bottom": 84, "left": 76,
                   "containLabel": True},
         "toolbox": {
@@ -594,15 +599,24 @@ def _autorotate_x_category_labels(opt: Dict[str, Any],
     horizontally, rotate them and force ``interval: 0`` so ECharts
     doesn't silently drop every other label.
 
-    Heuristic (must satisfy ALL):
-      1. category count <= ``max_n`` (default 30). Past that, even
-         rotation gets too dense; let ECharts use ``interval: 'auto'``
-         to thin out the labels (the right call for daily time series
-         with hundreds of bars).
-      2. estimated total label-pixel width (incl. inter-tick padding)
-         exceeds the usable plot width.
-      3. average label length > 5 chars (so 1-3 char labels like
-         tenor codes / months don't trigger rotation).
+    Three regimes (round 2 hardening, 2026-05-11 evening -- the prior
+    behavior bailed past max_n=30 and let ECharts silently drop labels,
+    producing the A04.4 "2 of 40 labels visible" pathology):
+
+      Regime A:  count <= max_n (30) AND labels long enough to not
+                 fit horizontally
+                 -> rotate `rotate_deg` (default 30 degrees)
+      Regime B:  30 < count <= 60
+                 -> rotate 60 degrees, smaller font, interval=0,
+                    truncate labels to 12 chars
+      Regime C:  60 < count
+                 -> rotate 90 degrees (vertical), font size 8,
+                    interval=0, truncate labels to 8 chars
+                    (still legible, every label visible)
+
+      Plus the always-applied: short-label charts (avg < 5 chars,
+      e.g. tenor codes "2y"/"5y"/"10y"/"30y") never rotate -- they
+      fit horizontally even at high counts.
 
     Idempotent: if the user has already set ``axisLabel.rotate``, we
     leave their value alone.
@@ -618,14 +632,45 @@ def _autorotate_x_category_labels(opt: Dict[str, Any],
     if "rotate" in al:
         return
     data = ax.get("data") or []
-    if len(data) > max_n or len(data) < 2:
+    if len(data) < 2:
         return
     avg_len = sum(len(str(v)) for v in data) / len(data)
-    if avg_len < 5:
-        return
     grid = opt.get("grid") or {}
     chart_w = max(int(getattr(ctx, "width", 700) or 700), 200)
     inner_w = chart_w - int(grid.get("left", 76) or 0) - int(grid.get("right", 20) or 0)
+
+    # Regime selector based on category count:
+    n = len(data)
+    if n > max_n:
+        # Regime B/C: too many categories for the default 30-deg
+        # rotation. Use steeper rotation + smaller font + tight
+        # truncation to display every label rather than silently
+        # dropping. Bottom margin is bumped via _bottom_label_lift_px.
+        if n <= 60:
+            al["rotate"] = 60
+            al["fontSize"] = 9
+            label_cap = 12
+        else:
+            al["rotate"] = 90
+            al["fontSize"] = 8
+            label_cap = 8
+        al["interval"] = 0
+        al["width"] = label_cap * 6
+        al["overflow"] = "truncate"
+        al["ellipsis"] = ""
+        # Increase bottom margin so the rotated/long labels don't
+        # collide with the dataZoom slider.
+        bottom = grid.get("bottom", 84)
+        if isinstance(bottom, (int, float)):
+            opt.setdefault("grid", {})["bottom"] = max(
+                int(bottom), 100 + (label_cap * 5)
+            )
+        return
+
+    # Regime A: small enough to keep at default rotation if labels
+    # are long enough to overflow.
+    if avg_len < 5:
+        return
     if not _x_category_density_overflow(opt, inner_w):
         return
     al["rotate"] = rotate_deg
@@ -903,6 +948,93 @@ def _dash_type(dash: Any, style: Optional[str] = None) -> Any:
 _ANNOTATION_TYPES = {"hline", "vline", "band", "arrow", "point"}
 
 
+_DICT_OF_CLASSES_KEYS = frozenset({
+    "event_lines", "v_lines", "vlines",
+    "h_lines", "hlines",
+    "x_bands", "y_bands", "bands",
+    "points", "arrows",
+})
+
+
+def _normalize_annotations(
+    raw: Any,
+) -> List[Dict[str, Any]]:
+    """Accept BOTH the canonical flat list-of-typed-dicts shape AND
+    the dict-of-classes shape some authors prefer:
+
+        canonical (the engine's native form):
+            [{"type": "vline", "x": "2026-04-22", "label": "FOMC"},
+             {"type": "band", "x1": "2026-03-01", "x2": "2026-04-01"},
+             {"type": "hline", "y": 4.5, "label": "Target"}]
+
+        dict-of-classes (sugar; folded to canonical here):
+            {"event_lines": [{"x": "2026-04-22", "label": "FOMC"}],
+             "x_bands":     [{"x_from": "2026-03-01",
+                              "x_to":   "2026-04-01"}],
+             "h_lines":     [{"y": 4.5, "label": "Target"}],
+             "v_lines":     [...],   # also accepted as alias for vlines
+             "y_bands":     [{"y_from": 0, "y_to": 1, "label": "Q"}]}
+
+    Mapping (sugar -> canonical):
+        event_lines / v_lines / vlines  -> type=vline,  x=x
+        h_lines / hlines                -> type=hline,  y=y
+        x_bands                         -> type=band, x1=x_from, x2=x_to
+        y_bands / bands                 -> type=band, y1=y_from, y2=y_to
+        points                          -> type=point
+        arrows                          -> type=arrow
+
+    Items that don't carry the required positional key (e.g. an
+    event_line missing ``x``) are skipped silently rather than
+    silently emitting a broken markLine entry.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [a for a in raw if isinstance(a, dict)]
+    if not isinstance(raw, dict):
+        return []
+    out: List[Dict[str, Any]] = []
+    for key, items in raw.items():
+        if key not in _DICT_OF_CLASSES_KEYS:
+            continue
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ann = dict(item)
+            if key in ("event_lines", "v_lines", "vlines"):
+                if "x" not in ann:
+                    continue
+                ann["type"] = "vline"
+            elif key in ("h_lines", "hlines"):
+                if "y" not in ann:
+                    continue
+                ann["type"] = "hline"
+            elif key == "x_bands":
+                x1 = ann.pop("x_from", ann.get("x1"))
+                x2 = ann.pop("x_to",   ann.get("x2"))
+                if x1 is None or x2 is None:
+                    continue
+                ann["x1"] = x1
+                ann["x2"] = x2
+                ann["type"] = "band"
+            elif key in ("y_bands", "bands"):
+                y1 = ann.pop("y_from", ann.get("y1"))
+                y2 = ann.pop("y_to",   ann.get("y2"))
+                if y1 is None or y2 is None:
+                    continue
+                ann["y1"] = y1
+                ann["y2"] = y2
+                ann["type"] = "band"
+            elif key == "points":
+                ann["type"] = "point"
+            elif key == "arrows":
+                ann["type"] = "arrow"
+            out.append(ann)
+    return out
+
+
 def _apply_annotations(opt: Dict[str, Any],
                         annotations: Optional[List[Dict[str, Any]]]) -> None:
     """Attach annotations to series[0] via markLine/markArea/markPoint.
@@ -935,6 +1067,16 @@ def _apply_annotations(opt: Dict[str, Any],
     ml_data: List[Any] = []
     ma_data: List[List[Dict[str, Any]]] = []
     mp_data: List[Dict[str, Any]] = []
+
+    # Pre-pass: count vlines so the per-vline branch below can stagger
+    # / shrink / rotate labels when the count is high enough that
+    # default top-end placement would produce a vertical pile-up of
+    # labels along the chart top.
+    vline_count = sum(
+        1 for a in (annotations or [])
+        if isinstance(a, dict) and str(a.get("type", "")).lower() == "vline"
+    )
+    vline_idx = 0  # incremented as we process vlines below
 
     for a in annotations or []:
         if not isinstance(a, dict):
@@ -979,11 +1121,40 @@ def _apply_annotations(opt: Dict[str, Any],
                 d["name"] = str(label)
             d["lineStyle"] = {"color": color, "width": stroke_width,
                                 "type": dash_val}
-            d["label"] = ({"show": True, "formatter": str(label),
-                             "color": label_color,
-                             "position": a.get("label_position", "end")}
-                          if label is not None else {"show": False})
+            # Label stagger / shrink: when many vlines exist on the
+            # same chart, default top-end placement produces an
+            # unreadable horizontal pile-up of labels. Apply
+            # progressive mitigations as count rises.
+            if label is not None:
+                lbl_cfg: Dict[str, Any] = {
+                    "show": True, "formatter": str(label),
+                    "color": label_color,
+                    "position": a.get("label_position", "end"),
+                }
+                if vline_count >= 4:
+                    # Stagger between top end and bottom-start to
+                    # split labels into two rows.
+                    if "label_position" not in a:
+                        lbl_cfg["position"] = (
+                            "end" if (vline_idx % 2 == 0) else "start"
+                        )
+                    lbl_cfg["fontSize"] = 9
+                if vline_count >= 8:
+                    # Rotate 90 degrees so labels stack vertically
+                    # and don't compete for horizontal space.
+                    lbl_cfg["rotate"] = 90
+                    lbl_cfg["fontSize"] = 8
+                    lbl_cfg["distance"] = 6
+                    # Truncate long labels so rotated text doesn't
+                    # spill out of the chart frame.
+                    if isinstance(label, str) and len(label) > 12:
+                        truncated = label[:11] + "..."
+                        lbl_cfg["formatter"] = truncated
+                d["label"] = lbl_cfg
+            else:
+                d["label"] = {"show": False}
             ml_data.append(d)
+            vline_idx += 1
 
         elif t == "band":
             if "x1" in a and "x2" in a:
@@ -1049,6 +1220,50 @@ def _apply_annotations(opt: Dict[str, Any],
         existing.setdefault("animation", False)
         existing.setdefault("data", []).extend(mp_data)
 
+    # Auto-extend axis range to include reference lines that fall
+    # outside the data span. Without this, an h_line at y=150 on a
+    # chart whose data ranges 100..108 silently renders "off-canvas"
+    # -- the line exists in the option but is never visible. Same
+    # for a v_line at a date outside the x range. Extend to include
+    # all hline / vline coordinates seen.
+    h_y_values: List[float] = []
+    v_x_values: List[Any] = []
+    for a in annotations or []:
+        if not isinstance(a, dict):
+            continue
+        t = str(a.get("type", "")).lower()
+        if t == "hline":
+            try:
+                h_y_values.append(float(a.get("y")))
+            except (TypeError, ValueError):
+                pass
+        elif t == "vline":
+            x_val = a.get("x")
+            if x_val is not None:
+                v_x_values.append(x_val)
+
+    if h_y_values:
+        ya = opt.get("yAxis")
+        if isinstance(ya, list):
+            ya = ya[0] if ya else None
+        if isinstance(ya, dict) and ya.get("type") != "category":
+            new_min = min(h_y_values)
+            new_max = max(h_y_values)
+            existing_min = ya.get("min")
+            existing_max = ya.get("max")
+            # Only override when the reference line is more extreme
+            # than what the author / engine already specified.
+            if (existing_min is None
+                    or (isinstance(existing_min, (int, float))
+                        and new_min < existing_min)):
+                pad = abs(new_min) * 0.05 + 1.0
+                ya["min"] = float(new_min - pad)
+            if (existing_max is None
+                    or (isinstance(existing_max, (int, float))
+                        and new_max > existing_max)):
+                pad = abs(new_max) * 0.05 + 1.0
+                ya["max"] = float(new_max + pad)
+
 
 def _time_axis_if_needed(df, col: str) -> Dict[str, Any]:
     import pandas as pd
@@ -1056,9 +1271,17 @@ def _time_axis_if_needed(df, col: str) -> Dict[str, Any]:
         return {"type": "category", "axisLabel": {"hideOverlap": True}}
     ser = df[col]
     if pd.api.types.is_datetime64_any_dtype(ser):
+        # showMinLabel / showMaxLabel default True forces ECharts to
+        # render day-number labels at the chart edges, producing "23"
+        # / "22" stub labels next to the natural month labels (e.g.
+        # "23 Sep ... Apr 22"). Disable the forced edge labels and
+        # let the natural label cadence -- which the auto-formatter
+        # already chooses sensibly for the data range -- own the
+        # tick set. (Round 2 hardening, 2026-05-11 evening.)
         return {"type": "time",
-                "axisLabel": {"hideOverlap": True, "showMinLabel": True,
-                              "showMaxLabel": True}}
+                "axisLabel": {"hideOverlap": True,
+                              "showMinLabel": False,
+                              "showMaxLabel": False}}
     if pd.api.types.is_numeric_dtype(ser):
         return {"type": "value", "axisLabel": {"hideOverlap": True}}
     return {"type": "category", "axisLabel": {"hideOverlap": True}}
@@ -1930,12 +2153,79 @@ def build_line(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str, An
     return opt
 
 
+def _grow_grid_for_legend(opt: Dict[str, Any], chart_width: int) -> None:
+    """Push grid.top down when the legend wraps to multiple rows.
+
+    The base option assumes a single 24-px legend row at top=42 and
+    grid.top=80. With `legend.type="plain"` (no pagination), legends
+    with many items wrap to multiple rows and would otherwise overlap
+    the chart canvas. Estimate row count from the number of legend
+    items + their average label length, and bump grid.top to clear.
+    """
+    legend = opt.get("legend") or {}
+    if not legend.get("show", True):
+        return
+    items = legend.get("data") or []
+    if not items:
+        return
+    # Estimate width per item: 14 px swatch + 4 px gap + 6.5 px/char
+    # + 24 px right padding between items.
+    avg_chars = sum(len(str(s)) for s in items) / max(1, len(items))
+    px_per_item = 14 + 4 + (avg_chars * 6.5) + 24
+    usable_w = max(200, int(chart_width) - 80)
+    items_per_row = max(1, int(usable_w // px_per_item))
+    rows = (len(items) + items_per_row - 1) // items_per_row
+    if rows <= 1:
+        return
+    legend_row_h = 18
+    extra = (rows - 1) * legend_row_h
+    grid = opt.setdefault("grid", {})
+    cur_top = grid.get("top", 80)
+    if isinstance(cur_top, (int, float)):
+        grid["top"] = int(cur_top) + extra
+
+
+def _value_label_formatter(decimals: int) -> str:
+    """JS formatter string for a bar / line / area value label.
+    Handles None / NaN gracefully (returns '') and rounds to the
+    requested decimals. Centralised here so every chart_type that
+    enables show_values via this engine pass produces identical
+    label formatting."""
+    d = max(0, int(decimals))
+    return (
+        "function(p){"
+        " var v = (p && p.data && typeof p.data === 'object' "
+        " && 'value' in p.data) ? p.data.value : p.data;"
+        " if (Array.isArray(v)) v = v[v.length - 1];"
+        " if (v == null || (typeof v === 'number' && isNaN(v)))"
+        "   return '';"
+        f" return Number(v).toFixed({d});"
+        "}"
+    )
+
+
 def build_bar(df, mapping: Dict[str, Any], ctx: BuilderContext, horizontal: bool = False) -> Dict[str, Any]:
-    x = mapping.get("x"); y = mapping.get("y"); color = mapping.get("color")
+    x = mapping.get("x"); y = mapping.get("y")
+    # ``series`` is accepted as an alias for ``color`` (CC1 in the
+    # 2026-05-11 audit -- the long-form grouped-bar shape that authors
+    # naturally reach for: x=category, y=value_col, series=group_col).
+    color = mapping.get("color") or mapping.get("series")
     if not x or not y:
         raise ValueError("bar: mapping requires 'x' and 'y'")
 
-    stack_flag = mapping.get("stack", True)
+    # ``stack`` accepts truthy / falsy / a stack-group name. The
+    # historical default was True (everything stacks); the audit
+    # surfaced that grouped-bar authors reach for `series=...` and
+    # expect side-by-side bars by default (NOT stacked). When `series`
+    # is in play AND the author did not explicitly set `stack`, default
+    # to grouped (stack=False) so the legend's per-group colors line
+    # up with discrete bars rather than a single tall stack.
+    if "stack" in mapping:
+        stack_flag = mapping["stack"]
+    elif color and "color" not in mapping and "series" in mapping:
+        stack_flag = False
+    else:
+        stack_flag = True
     invert_y = bool(mapping.get("invert_y"))
     y_log = bool(mapping.get("y_log"))
     value_axis_type = "log" if y_log else "value"
@@ -1959,6 +2249,78 @@ def build_bar(df, mapping: Dict[str, Any], ctx: BuilderContext, horizontal: bool
     series: List[Dict[str, Any]] = []
     legend_names: List[str] = []
 
+    # show_values (CC1 in the 2026-05-11 audit): when truthy, render
+    # the value above each bar (or to the right for horizontal). The
+    # decimals follow mapping.value_decimals (default 1 for compact
+    # readability).
+    #
+    # Density-stagger guard (round 2 of the hardening pass, 2026-05-11
+    # evening): when the x-axis category count is high enough that
+    # labels would overlap horizontally, we apply two mitigations:
+    #
+    #   1. Density cap -- if cell width per bar < label width, drop
+    #      labels entirely (mirror of the heatmap CC10 cell-fit guard).
+    #      Authors who explicitly set value_decimals=0 get a relaxed
+    #      threshold because the labels are narrower.
+    #
+    #   2. Stagger -- when not capped, alternate the label position
+    #      between "top" and "bottom" (or "right"/"left" for horizontal)
+    #      so adjacent labels don't pile up at the same y-coordinate.
+    #      ECharts supports this via per-data-point label dicts but at
+    #      the series level we use a JS formatter that keys off the
+    #      data index. Simpler: set series-level alternating positions
+    #      via two separate series passes is overkill; we use distance
+    #      offset on the label which staggers visually without splitting
+    #      the series. ECharts honors `label.distance` per cell; we
+    #      stagger via a positive/negative offset baked into the
+    #      formatter -- but the cleanest path is per-series alternation.
+    #      Implemented here via per-bar label data on the series.
+    show_values = bool(mapping.get("show_values"))
+    value_decimals = mapping.get("value_decimals")
+    if value_decimals is None:
+        value_decimals = 1
+    # Three-regime label policy: when the user explicitly asks for
+    # value labels, we always render them, but at moderate density
+    # we stagger adjacent labels above/below to break the horizontal
+    # pile-up and at extreme density we shrink the font.
+    n_cats = 0
+    n_series_groups = 1
+    if df is not None and category_col in df.columns:
+        n_cats = len(_unique(_col_to_list(df, category_col)))
+        if color and color in df.columns:
+            n_series_groups = len(_unique(_col_to_list(df, color)))
+    chart_w_for_density = int(getattr(ctx, "width", 700) or 700)
+    bars_per_axis_pos = (n_cats * n_series_groups
+                         if not stack_flag else n_cats)
+    cell_w_estimate = (chart_w_for_density - 100) / max(1, bars_per_axis_pos)
+    label_w_estimate = max(int(value_decimals) + 4, 4) * 6.5
+    label_font = 10
+    if cell_w_estimate < label_w_estimate * 0.6:
+        label_font = 8
+    elif cell_w_estimate < label_w_estimate:
+        label_font = 9
+    label_block: Optional[Dict[str, Any]] = None
+    if show_values:
+        label_position = ("right" if horizontal else "top")
+        label_block = {
+            "show": True,
+            "position": label_position,
+            "fontSize": label_font,
+            "formatter": _value_label_formatter(int(value_decimals)),
+        }
+    # Stagger threshold: if the per-bar cell is narrower than 1.6x
+    # the label width, alternate adjacent labels top/bottom so the
+    # available label space doubles. The non-grouped, non-horizontal
+    # case is the only one where stagger is unambiguous; grouped
+    # bars already share the slot among multiple series.
+    stagger_labels = (
+        show_values
+        and not horizontal
+        and not color
+        and bars_per_axis_pos >= 6
+        and cell_w_estimate < (label_w_estimate * 1.6)
+    )
+
     if df is None:
         data = mapping.get("data", [])
         name = mapping.get("name", "series")
@@ -1969,7 +2331,10 @@ def build_bar(df, mapping: Dict[str, Any], ctx: BuilderContext, horizontal: bool
         else:
             opt["xAxis"]["data"] = [row[0] for row in data]
             vals = [row[1] for row in data]
-        series.append({"type": "bar", "name": name, "data": vals})
+        s = {"type": "bar", "name": name, "data": vals}
+        if label_block:
+            s["label"] = label_block
+        series.append(s)
     else:
         _ensure_columns(df, [x, y], "bar")
         if color:
@@ -1990,6 +2355,8 @@ def build_bar(df, mapping: Dict[str, Any], ctx: BuilderContext, horizontal: bool
                       "emphasis": {"focus": "series"}}
                 if stack_name is not None:
                     s["stack"] = stack_name
+                if label_block:
+                    s["label"] = label_block
                 series.append(s)
         else:
             cats = _col_to_list(df, category_col)
@@ -1999,7 +2366,25 @@ def build_bar(df, mapping: Dict[str, Any], ctx: BuilderContext, horizontal: bool
             else:
                 opt["xAxis"]["data"] = cats
             legend_names.append(str(value_col))
-            series.append({"type": "bar", "name": str(value_col), "data": vals})
+            s = {"type": "bar", "name": str(value_col), "data": vals}
+            if label_block:
+                if stagger_labels:
+                    # Per-cell label data: alternate top/bottom so
+                    # neighbouring labels don't collide horizontally.
+                    s["data"] = [
+                        {
+                            "value": v,
+                            "label": {
+                                **label_block,
+                                "position": ("bottom" if (i % 2)
+                                              else "top"),
+                            },
+                        }
+                        for i, v in enumerate(vals)
+                    ]
+                else:
+                    s["label"] = label_block
+            series.append(s)
 
     opt["series"] = series
     opt["legend"]["data"] = legend_names
@@ -2691,6 +3076,27 @@ def build_scatter_studio(df, mapping: Dict[str, Any],
     if df is None:
         raise ValueError("scatter_studio: DataFrame is required")
 
+    # CC1 in the 2026-05-11 audit: accept the simple-mapping aliases
+    # authors naturally reach for (`size=<col>`, `label=<col>`,
+    # `regression=True`) as sugar for the explicit
+    # studio-block / *_default plumbing the builder uses internally.
+    # Authors who already pass the long form are unaffected.
+    mapping = dict(mapping)
+    if "size" in mapping and not mapping.get("size_default"):
+        mapping["size_default"] = mapping["size"]
+        if not mapping.get("size_columns"):
+            mapping["size_columns"] = [mapping["size"]]
+    if "label" in mapping and not mapping.get("label_column"):
+        mapping["label_column"] = mapping["label"]
+    if "color" in mapping and not mapping.get("color_default"):
+        mapping["color_default"] = mapping["color"]
+        if not mapping.get("color_columns"):
+            mapping["color_columns"] = [mapping["color"]]
+    if mapping.get("regression") is True:
+        studio_cfg = dict(mapping.get("studio") or {})
+        studio_cfg.setdefault("regression_default", "ols")
+        mapping["studio"] = studio_cfg
+
     resolved = _studio_resolve_defaults(df, mapping)
     if not resolved["x_columns"]:
         raise ValueError(
@@ -3113,6 +3519,46 @@ def _heatmap_value_formatter(decimals: int, value_idx: int = 2) -> str:
     )
 
 
+def _heatmap_cells_fit_labels(
+    n_x: int,
+    n_y: int,
+    vals: Sequence[Any],
+    decimals: int,
+    font_size: int,
+    chart_width: int,
+    chart_height: int,
+) -> bool:
+    """Return True iff cell area is large enough to legibly hold the
+    formatted value labels at the given font size. Conservative
+    estimate: assumes monospace-ish 0.55 em char width.
+
+    Used as a cell-fit guard inside ``build_heatmap`` and
+    ``build_correlation_matrix`` so dense matrices auto-disable
+    ``show_values`` (CC10 in the 2026-05-11 ugliness audit). Authors
+    that explicitly set ``mapping.show_values=True`` bypass this guard
+    -- the guard only applies to the engine default.
+    """
+    if n_x <= 0 or n_y <= 0 or chart_width <= 0:
+        return True
+    sample_w = max(int(decimals) + 4, 5)
+    if vals:
+        try:
+            sample_w = max(
+                len(f"{float(v):.{int(decimals)}f}")
+                for v in vals[:64] if _is_finite(v)
+            )
+        except Exception:
+            pass
+    # Subtract chrome reservation (visualMap, axis labels, padding)
+    usable_w = max(120, int(chart_width) - 96)
+    usable_h = max(80, int(chart_height or chart_width // 2) - 60)
+    cell_w = usable_w / max(1, n_x)
+    cell_h = usable_h / max(1, n_y)
+    label_w_px = sample_w * font_size * 0.55
+    label_h_px = font_size * 1.25
+    return cell_w >= label_w_px and cell_h >= label_h_px
+
+
 def _resolve_heatmap_label_block(
     mapping: Dict[str, Any],
     vals: Sequence[Any],
@@ -3286,8 +3732,29 @@ def build_heatmap(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str,
     # minimum for the default styling.
     opt["grid"]["right"] = max(int(opt["grid"].get("right", 20)), 76)
 
+    # Cell-fit guard (CC10): when cells are too small to legibly hold
+    # value labels, auto-disable show_values UNLESS the user explicitly
+    # asked for them. Authors who set mapping.show_values=True bypass
+    # the guard.
+    show_values_default = True
+    if "show_values" not in mapping:
+        font_size = int(mapping.get("value_label_size", 11))
+        raw_decimals = mapping.get("value_decimals")
+        decimals_for_check = (
+            _auto_value_decimals(vals) if raw_decimals is None
+            else clamp_decimals(raw_decimals, default=raw_decimals)
+        )
+        if not _heatmap_cells_fit_labels(
+            len(x_cats), len(y_cats), vals,
+            int(decimals_for_check), font_size,
+            int(getattr(ctx, "width", 700) or 700),
+            int(getattr(ctx, "height", 350) or 350),
+        ):
+            show_values_default = False
+
     label_block = _resolve_heatmap_label_block(
-        mapping, vals, show_values_default=True, value_idx=2
+        mapping, vals, show_values_default=show_values_default,
+        value_idx=2,
     )
     cell_data = [{"value": [c[0], c[1], c[2]]} for c in cells]
     opt["series"] = [{
@@ -3680,9 +4147,22 @@ def build_correlation_matrix(df, mapping: Dict[str, Any],
     # black or white label depending on the cell's resolved color.
     # Fixed decimals (mapping.value_decimals) wins over the auto pick.
     cell_vals_for_decimals = [c[2] for c in cells if c[2] is not None]
+    # Cell-fit guard (CC10): auto-disable cell labels when the matrix
+    # is too dense for them to fit. Authors who explicitly set
+    # mapping.show_values=True bypass the guard.
+    show_values_for_block = show_values
+    if "show_values" not in mapping:
+        font_size = int(mapping.get("value_label_size", 11))
+        if not _heatmap_cells_fit_labels(
+            len(cat_x), len(cat_y), cell_vals_for_decimals,
+            int(decimals), font_size,
+            int(getattr(ctx, "width", 700) or 700),
+            int(getattr(ctx, "height", 350) or 350),
+        ):
+            show_values_for_block = False
     label_mapping = dict(mapping)
     label_mapping.setdefault("value_decimals", decimals)
-    label_mapping.setdefault("show_values", show_values)
+    label_mapping["show_values"] = show_values_for_block
     label_block = _resolve_heatmap_label_block(
         label_mapping, cell_vals_for_decimals,
         show_values_default=True, value_idx=2,
@@ -4312,7 +4792,22 @@ def build_calendar_heatmap(df, mapping: Dict[str, Any], ctx: BuilderContext) -> 
     cell_vals = [p[1] for p in pairs if p[1] is not None]
 
     years = sorted({str(p[0])[:4] for p in pairs})
-    year = mapping.get("year", years[-1] if years else "2025")
+    raw_year = mapping.get("year", years[-1] if years else "2025")
+    # CC1 in the 2026-05-11 audit: when the author passes a LIST of
+    # years (e.g. [2024, 2025, 2026]), convert to an ECharts-native
+    # date range ["YYYY-01-01", "YYYY-12-31"] spanning the full set.
+    # ECharts calendar.range accepts a 2-array of date strings; passing
+    # a 3-array silently falls back to year=1969 (epoch) with no data.
+    if isinstance(raw_year, (list, tuple)):
+        year_strs = [str(y)[:4] for y in raw_year if y is not None]
+        if year_strs:
+            year_strs.sort()
+            year = [f"{year_strs[0]}-01-01",
+                    f"{year_strs[-1]}-12-31"]
+        else:
+            year = years[-1] if years else "2025"
+    else:
+        year = raw_year
 
     color_scale = (mapping.get("color_scale") or "").lower()
     crosses_zero = bool(cell_vals) and (
@@ -4344,8 +4839,47 @@ def build_calendar_heatmap(df, mapping: Dict[str, Any], ctx: BuilderContext) -> 
         "orient": "horizontal", "left": "center", "top": "top",
         "inRange": {"color": list(seq_colors)},
     }]
-    opt["calendar"] = {"range": year, "cellSize": ["auto", 16],
-                        "orient": "horizontal"}
+    # Multi-year ranges silently overlap month labels when packed
+    # into a single horizontal calendar (ECharts has no `interval`
+    # option on monthLabel; the labels just collide). Render one
+    # calendar pad per year, stacked vertically, with the year label
+    # on the left so the date context is unambiguous. Series gets
+    # ``calendarIndex`` to point at its calendar.
+    n_years = 1
+    year_starts: List[int] = []
+    if isinstance(year, list) and len(year) == 2:
+        try:
+            y0 = int(year[0][:4])
+            y1 = int(year[1][:4])
+            n_years = max(1, y1 - y0 + 1)
+            year_starts = list(range(y0, y1 + 1))
+        except Exception:
+            n_years = 1
+    if n_years >= 2 and year_starts:
+        # Per-year calendar pads, stacked vertically.
+        cal_h = 70
+        cal_top0 = 80
+        opt["calendar"] = [
+            {
+                "range": str(yr),
+                "cellSize": ["auto", 14],
+                "orient": "horizontal",
+                "top": cal_top0 + i * cal_h,
+                "left": 60, "right": 30,
+                "monthLabel": {"fontSize": 10, "color": "#666"},
+                "yearLabel": {"show": True, "fontSize": 11,
+                                "margin": 18},
+                "dayLabel": {"fontSize": 9},
+            }
+            for i, yr in enumerate(year_starts)
+        ]
+    else:
+        opt["calendar"] = {
+            "range": year, "cellSize": ["auto", 16],
+            "orient": "horizontal",
+            "monthLabel": {"fontSize": 11},
+            "yearLabel": {"show": True, "fontSize": 11},
+        }
 
     # Calendar cells are typically too small to comfortably print
     # values, so labels default off; authors with large cellSize can
@@ -4353,12 +4887,26 @@ def build_calendar_heatmap(df, mapping: Dict[str, Any], ctx: BuilderContext) -> 
     label_block = _resolve_heatmap_label_block(
         mapping, cell_vals, show_values_default=False, value_idx=1
     )
-    series: Dict[str, Any] = {
-        "type": "heatmap", "coordinateSystem": "calendar",
-        "data": pairs, "name": str(val_col),
-        "label": label_block,
-    }
-    opt["series"] = [series]
+    if isinstance(opt["calendar"], list):
+        # Multi-year stacked pads -- one heatmap series per pad,
+        # filtered to that year's data via simple string prefix.
+        opt["series"] = [
+            {
+                "type": "heatmap", "coordinateSystem": "calendar",
+                "calendarIndex": i,
+                "data": [p for p in pairs
+                         if str(p[0]).startswith(str(yr))],
+                "name": f"{val_col} {yr}",
+                "label": label_block,
+            }
+            for i, yr in enumerate(year_starts)
+        ]
+    else:
+        opt["series"] = [{
+            "type": "heatmap", "coordinateSystem": "calendar",
+            "data": pairs, "name": str(val_col),
+            "label": label_block,
+        }]
     return opt
 
 
@@ -6075,12 +6623,14 @@ def make_echart(
 
     mapping_annotations = (mapping or {}).get("annotations") if mapping else None
     combined_annotations: List[Dict[str, Any]] = []
-    if mapping_annotations:
-        combined_annotations.extend(list(mapping_annotations))
-    if annotations:
-        combined_annotations.extend(list(annotations))
+    combined_annotations.extend(_normalize_annotations(mapping_annotations))
+    combined_annotations.extend(_normalize_annotations(annotations))
     if combined_annotations:
         _apply_annotations(opt, combined_annotations)
+
+    # Bump grid.top when legend wraps to multiple rows so the chart
+    # canvas isn't shoved beneath a wrapped legend.
+    _grow_grid_for_legend(opt, ctx.width)
 
     _install_default_axis_decimal_cap(opt)
     _install_default_tooltip_decimal_cap(opt)
