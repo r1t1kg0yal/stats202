@@ -76,7 +76,7 @@ import traceback
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 # ---------------------------------------------------------------------------
 # Third-party
@@ -84,6 +84,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 import altair as alt
 import numpy as np
 import pandas as pd
+from PIL import Image, ImageDraw, ImageFont
 
 # ---------------------------------------------------------------------------
 # PRISM utilities -- imported from ``ai_development.mcp.utils.*``.
@@ -2966,21 +2967,14 @@ class LastValueLabel(Annotation):
       two y-scales, build a single-axis chart per series and combine
       via ``make_2pack_vertical()``.
 
-    The ``label`` field on the base ``Annotation`` is ignored -- labels
-    are derived from the series identity. ``show_value=True`` appends
-    the latest numeric value to each series label, formatted via
-    ``value_format``. When ``value_format=None`` (default), the engine
-    auto-picks a magnitude-aware format so a 2,350 series reads
-    ``"Gold  2,350"`` and a 0.085 series reads ``"USD/EUR  0.085"``
-    instead of both forced to ``"{:.2f}"``. Pass an explicit Python
-    format template (e.g. ``"{:+.2f}"``, ``"{:.0%}"``) to override.
+    Labels are the series identity only -- the numeric value is not
+    rendered. The ``label`` field on the base ``Annotation`` is ignored
+    on multi-series; on single-series it overrides the y-field name.
 
     Text-only: there is no endpoint dot. The line itself extending into
     the label margin plays that anchoring role.
     """
 
-    show_value: bool = False
-    value_format: Optional[str] = None
     dx: int = 6
     font_size: int = 15
     font_weight: Literal["normal", "bold"] = "normal"
@@ -3059,19 +3053,7 @@ class LastValueLabel(Annotation):
         # at the make_chart boundary (cap = ``_LVL_SERIES_NAME_MAX_CHARS``),
         # so no per-label truncation is needed -- whatever is in the color
         # column is guaranteed to fit the reserved right margin.
-        if self.show_value:
-            value_template = (
-                self.value_format
-                if self.value_format is not None
-                else _smart_format_template(last_rows[y_field])
-            )
-            last_rows["_label"] = (
-                last_rows[color_field].astype(str)
-                + "  "
-                + last_rows[y_field].map(lambda v: value_template.format(v))
-            )
-        else:
-            last_rows["_label"] = last_rows[color_field].astype(str)
+        last_rows["_label"] = last_rows[color_field].astype(str)
 
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
@@ -3257,13 +3239,6 @@ class LastValueLabel(Annotation):
         # Series name pre-validated by ``_validate_lvl_series_names``;
         # no truncation needed here.
         label_text = label_root
-        if self.show_value:
-            value_template = (
-                self.value_format
-                if self.value_format is not None
-                else _smart_format_template(last_y)
-            )
-            label_text = f"{label_text}  {value_template.format(last_y)}"
 
         end_df = pd.DataFrame({x_col: [last_x], y_field: [last_y]})
 
@@ -4552,13 +4527,9 @@ def _validate_lvl_series_names(
             f"{_LVL_SERIES_NAME_MAX_CHARS} characters: {sample}. "
             f"multi_line / timeseries charts default to end-of-line "
             f"labelling (chart_context.md \u00a76.1); long names devour "
-            f"the plot region. Either rename the series in the "
-            f"DataFrame to fit the cap (e.g. "
-            f"'United States Equities Index 500' \u2192 'S&P 500'), or "
-            f"pass mapping['legend']=True to opt back into the color "
-            f"legend (which has its own labelLimit truncation but is "
-            f"the right choice when the entity names are intrinsically "
-            f"long)."
+            f"the plot region. Rename the series in the DataFrame to "
+            f"fit the cap (e.g. 'United States Equities Index 500' "
+            f"\u2192 'S&P 500') before calling make_chart()."
         ),
         offending_names=offenders,
         mapping=mapping,
@@ -4601,10 +4572,7 @@ def _estimate_lvl_right_margin(
         # Average sans-serif body-text glyph is ~0.6 * font_size in width.
         char_w = max(1.0, font_size * 0.6)
 
-        # Adding the latest value typically extends each label by 6-9 chars
-        # (e.g. " 4,878.22"). Use 8 as an average reservation.
-        value_pad = 8 if lvl.show_value else 0
-        max_chars = max(len(lbl) for lbl in labels) + value_pad
+        max_chars = max(len(lbl) for lbl in labels)
 
         # Width = chars * glyph + dx (text offset from data point) + 8 px slack.
         ann_margin = int(max_chars * char_w + lvl.dx + 8)
@@ -4621,15 +4589,13 @@ def _should_auto_inject_lvl(
     """Decide whether ``make_chart`` should auto-inject a default
     ``LastValueLabel`` annotation.
 
-    Per the 2026-05-12 default-on migration, ``multi_line`` and
-    ``timeseries`` charts default to end-of-line labelling (FT /
-    Bloomberg house style) instead of a colour legend. The legend
-    forces a lookup-tax between hex swatch and series name; LVL
-    paints the series name (and latest value) right at the line's
-    end, in the line's own colour. The downstream legend-suppression
-    branch inside ``render_annotations`` turns the colour legend off
-    automatically once any ``LastValueLabel`` is in the annotation
-    list.
+    ``multi_line`` and ``timeseries`` charts default to end-of-line
+    labelling (FT / Bloomberg house style) instead of a colour legend.
+    The legend forces a lookup-tax between hex swatch and series name;
+    LVL paints the series name right at the line's end, in the line's
+    own colour. The downstream legend-suppression branch inside
+    ``render_annotations`` turns the colour legend off automatically
+    once any ``LastValueLabel`` is in the annotation list.
 
     Returns True only when ALL of the following hold:
 
@@ -4638,9 +4604,10 @@ def _should_auto_inject_lvl(
       auto-injection is wasted work; the colour legend renders.
     * Caller has not already added a ``LastValueLabel`` annotation --
       the explicit annotation always wins.
-    * Caller has not opted into the colour legend via
-      ``mapping['legend'] = True`` -- the explicit opt-in is the
-      single documented escape hatch from the LVL default.
+    * Caller has not set ``mapping['legend'] = True`` -- this is the
+      internal QC fallback for post-render label-collision cases
+      (NOT part of the PRISM-facing surface; omitted from
+      ``chart_context.md``).
     """
     if chart_type not in {"multi_line", "timeseries"}:
         return False
@@ -7529,7 +7496,7 @@ def _smart_format_template(series_or_value: Any) -> str:
 
     Yields the magnitude-aware spec wrapped in ``"{:" + spec + "}"`` so
     callers can drop it into ``"{:fmt}".format(value)`` -- e.g.
-    ``LastValueLabel.value_format``.
+    the waterfall chart label-template path.
     """
     spec = _smart_number_format(series_or_value)
     return "{:" + spec + "}"
@@ -14286,19 +14253,21 @@ def make_chart(
     # Multi-line charts default to end-of-line labelling (FT/Bloomberg
     # house style) instead of a colour legend. The legend forces a
     # lookup-tax between hex swatch and series name; LVL paints the
-    # series name + latest value directly at each line's end, in the
-    # line's colour. The downstream legend-suppression branch inside
+    # series name directly at each line's end, in the line's colour.
+    # The downstream legend-suppression branch inside
     # ``render_annotations`` turns the colour legend off automatically
     # once an LVL is present.
     #
-    # Opt back into the legend by passing ``mapping['legend'] = True``.
+    # ``mapping['legend'] = True`` is the internal QC-driven escape
+    # hatch (post-render collision fallback); it is NOT part of the
+    # PRISM-facing surface and is omitted from ``chart_context.md``.
     # ``_should_auto_inject_lvl`` also skips auto-injection on dual-axis
     # (LVL is stripped there anyway), when the caller has already added
     # their own ``LastValueLabel`` (explicit always wins), and on
     # non-line chart types.
     if _should_auto_inject_lvl(chart_type, mapping, annotations):
         annotations = list(annotations or [])
-        annotations.append(LastValueLabel(show_value=True))
+        annotations.append(LastValueLabel())
 
     # ---- PlotText -> outside text panels (route BEFORE layer pass) -----
     # PlotText renders OUTSIDE the plot region only (per the 2026-05-10
@@ -14905,7 +14874,7 @@ def _build_single_chart(
     # path -- see ``_should_auto_inject_lvl``.
     if _should_auto_inject_lvl(chart_type, mapping, cell_annotations):
         cell_annotations = list(cell_annotations or [])
-        cell_annotations.append(LastValueLabel(show_value=True))
+        cell_annotations.append(LastValueLabel())
 
     # Mirror the standalone-path validation: long series names raise
     # loudly so a single composite cell doesn't silently degrade. The
@@ -18652,6 +18621,1168 @@ def render_all(
     return out
 
 
+# ===========================================================================
+# MODULE: TABLE ENGINE -- make_table()
+# ===========================================================================
+#
+# Pillow-based static-PNG table renderer. Same DIMENSION_PRESETS, GS_PRIMARY
+# palette, and Liberation Sans font stack as the chart engine, so a table
+# drops into the same UI cell a same-preset chart would.
+#
+# PRISM-facing surface (the only names documented in chart_context_tables.md):
+#   make_table(df=df OR rows=[...], *, ...) — render a single table to PNG
+#   TableResult                            — dataclass returned by make_table
+#
+# PRISM-facing color modes — three strings, no degrees of freedom:
+#   "rwg"  — diverging at zero, red(neg) ↔ white(0) ↔ green(pos)
+#   "bw"   — sequential, white → navy. For values >= 0.
+#   "rag"  — discrete buckets red/amber/green by author thresholds
+#
+# Two data-source paths (mutually exclusive):
+#   df=<DataFrame>   — data-pulled tables (Haver / market / CSV / scraper)
+#   rows=[...]       — hardcoded narrative tables (themes, trade ideas).
+#                       Accepts list-of-dicts (column names from keys) or
+#                       list-of-tuples (requires columns=[...] for headers).
+#
+# Color resolution priority (top wins per cell):
+#   1. cell_colors[(r, c)]      4. heatmap_groups       7. highlight_columns
+#   2. total_rows               5. column_color_modes   8. row_groups (handled separately)
+#   3. subtotal_rows            6. row_colors[r]        9. row_bands
+
+_TABLE_THEME: Dict[str, Any] = {
+    "primary_color":     GS_PRIMARY["colors"][0],
+    "secondary_color":   GS_PRIMARY["colors"][1],
+    "accent_color":      GS_PRIMARY["colors"][4],
+    "background_color":  "#FFFFFF",
+    "row_band_color":    "#F7F7F7",
+    "subtotal_band":     "#EFEFEF",
+    "total_band":        GS_PRIMARY["colors"][0],
+    "border_color":      "#1F1F1F",
+    "muted_text":        "#5B5B5B",
+    "header_text":       "#FFFFFF",
+    "body_text":         "#000000",
+    "positive_text":     "#0E7A28",
+    "negative_text":     "#C00000",
+    "title_font_size":   22,
+    "subtitle_font_size": 13,
+    "header_font_size":  14,
+    "body_font_size":    13,
+    "caption_font_size": 11,
+}
+
+_TABLE_PALETTES: Dict[str, Tuple] = {
+    "bw":       ("sequential", GS_PRIMARY["colors"][2], 0.70),
+    "wb":       ("sequential", GS_PRIMARY["colors"][2], 0.70),
+    "wb_full":  ("sequential", GS_PRIMARY["colors"][0], 0.65),
+    "wg":       ("sequential", "#3C9A4E", 0.65),
+    "wr":       ("sequential", GS_PRIMARY["colors"][4], 0.55),
+    "wo":       ("sequential", GS_PRIMARY["colors"][8], 0.65),
+    "wgrey":    ("sequential", "#5B5B5B", 0.55),
+    "rwg":      ("diverging", GS_PRIMARY["colors"][4], "#3C9A4E", 0.65),
+    "rwb":      ("diverging", GS_PRIMARY["colors"][4], GS_PRIMARY["colors"][0], 0.65),
+    "bwr":      ("diverging", GS_PRIMARY["colors"][0], GS_PRIMARY["colors"][4], 0.65),
+    "owb":      ("diverging", GS_PRIMARY["colors"][8], GS_PRIMARY["colors"][0], 0.65),
+}
+
+_TBL_FONT_SEARCH_PATHS: Dict[str, List[str]] = {
+    "regular": [
+        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ],
+    "bold": [
+        "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ],
+    "italic": [
+        "/usr/share/fonts/liberation/LiberationSans-Italic.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Italic.ttf",
+        "/Library/Fonts/Arial Italic.ttf",
+    ],
+}
+_TBL_FONT_CACHE: Dict[Tuple[str, int], Any] = {}
+
+
+def _tbl_load_font(weight: str, size: int):
+    key = (weight, size)
+    if key in _TBL_FONT_CACHE:
+        return _TBL_FONT_CACHE[key]
+    for path in _TBL_FONT_SEARCH_PATHS.get(weight, _TBL_FONT_SEARCH_PATHS["regular"]):
+        if Path(path).exists():
+            try:
+                font = ImageFont.truetype(path, size=size)
+                _TBL_FONT_CACHE[key] = font
+                return font
+            except OSError:
+                continue
+    font = ImageFont.load_default()
+    _TBL_FONT_CACHE[key] = font
+    return font
+
+
+def _tbl_blend(c1: str, c2: str, t: float) -> str:
+    t = max(0.0, min(1.0, t))
+    r1, g1, b1 = _hex_to_rgb(c1)
+    r2, g2, b2 = _hex_to_rgb(c2)
+    return _rgb_to_hex(
+        int(round(r1 + (r2 - r1) * t)),
+        int(round(g1 + (g2 - g1) * t)),
+        int(round(b1 + (b2 - b1) * t)),
+    )
+
+
+def _tbl_readable_text_color(bg_hex: str) -> str:
+    r, g, b = _hex_to_rgb(bg_hex)
+    luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return "#000000" if luma > 140 else "#FFFFFF"
+
+
+def _tbl_palette_seq(palette: str, value: float, vmin: float, vmax: float) -> Optional[str]:
+    if vmax == vmin:
+        return None
+    t = max(0.0, min(1.0, (float(value) - vmin) / (vmax - vmin)))
+    spec = _TABLE_PALETTES.get(palette, _TABLE_PALETTES["bw"])
+    if spec[0] != "sequential":
+        _, _, end_hex, max_i = spec
+        return _tbl_blend("#FFFFFF", end_hex, t * max_i)
+    _, end_hex, max_i = spec
+    return _tbl_blend("#FFFFFF", end_hex, t * max_i + 0.05 if t > 0 else 0)
+
+
+def _tbl_palette_div(palette: str, value: float, extent: float, center: float = 0.0) -> Optional[str]:
+    if extent == 0:
+        return None
+    t = max(-1.0, min(1.0, (float(value) - center) / extent))
+    spec = _TABLE_PALETTES.get(palette, _TABLE_PALETTES["rwg"])
+    if spec[0] != "diverging":
+        _, end_hex, max_i = spec
+        if t >= 0:
+            return _tbl_blend("#FFFFFF", end_hex, abs(t) * max_i)
+        return _tbl_blend("#FFFFFF", "#5B5B5B", abs(t) * max_i)
+    _, neg_hex, pos_hex, max_i = spec
+    if t >= 0:
+        return _tbl_blend("#FFFFFF", pos_hex, t * max_i)
+    return _tbl_blend("#FFFFFF", neg_hex, abs(t) * max_i)
+
+
+def _tbl_rag_color(value: float, red_max: float, amber_max: float) -> Optional[str]:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    v = float(value)
+    if v < red_max:
+        return "#F4D6D6"
+    if v < amber_max:
+        return "#FCE9CC"
+    return "#D8EED8"
+
+
+@dataclass
+class TableResult:
+    """Result of a ``make_table`` call. Mirror of ``ChartResult`` for tables."""
+    success: bool = False
+    png_path: Optional[str] = None
+    download_url: Optional[str] = None
+    error_message: Optional[str] = None
+    warnings: List[str] = field(default_factory=list)
+    n_rows: int = 0
+    n_cols: int = 0
+    truncated_rows: int = 0
+    canvas_size: Optional[Tuple[int, int]] = None
+
+
+def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, pd.Timestamp):
+        return value.strftime("%Y-%m-%d")
+    if not isinstance(value, (int, float)):
+        return str(value)
+    v = float(value)
+    if hint == "pct" or hint == "percent":
+        return f"{v:.1f}%"
+    if hint == "pct_signed":
+        return f"{v:+.1f}%"
+    if hint == "pct2":
+        return f"{v:.2f}%"
+    if hint == "pct2_signed":
+        return f"{v:+.2f}%"
+    if hint in ("bp", "bps"):
+        return f"{int(round(v))}bp"
+    if hint == "bp_signed":
+        return f"{int(round(v)):+d}bp"
+    if hint == "currency":
+        sign = "-" if v < 0 else ""
+        a = abs(v)
+        if a >= 1e9:
+            return f"{sign}${a/1e9:.2f}B"
+        if a >= 1e6:
+            return f"{sign}${a/1e6:.2f}M"
+        if a >= 1e3:
+            return f"{sign}${a/1e3:,.1f}k"
+        return f"{sign}${a:,.2f}"
+    if hint == "ratio":
+        return f"{v:.2f}x"
+    if hint == "int":
+        return f"{int(round(v)):,}"
+    a = abs(v)
+    if a >= 1e9:
+        return f"{v/1e9:.2f}B"
+    if a >= 1e6:
+        return f"{v/1e6:.2f}M"
+    if a >= 1e3:
+        return f"{v:,.1f}"
+    if a >= 10 or a >= 1:
+        return f"{v:.2f}"
+    if a == 0:
+        return "0.00"
+    return f"{v:.3f}"
+
+
+def _tbl_wrap_text(text: str, font, max_width_px: int) -> List[str]:
+    if text is None:
+        return [""]
+    text = str(text)
+    if not text:
+        return [""]
+    out: List[str] = []
+    for para in text.split("\n"):
+        words = para.split()
+        if not words:
+            out.append("")
+            continue
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if font.getlength(candidate) <= max_width_px or not current:
+                if font.getlength(word) > max_width_px and not current:
+                    pieces = _tbl_hard_break(word, font, max_width_px)
+                    out.extend(pieces[:-1])
+                    current = pieces[-1]
+                else:
+                    current = candidate
+            else:
+                out.append(current)
+                current = word
+        if current:
+            out.append(current)
+    return out
+
+
+def _tbl_hard_break(text: str, font, max_width_px: int) -> List[str]:
+    pieces: List[str] = []
+    current = ""
+    for ch in text:
+        if font.getlength(current + ch) > max_width_px and current:
+            pieces.append(current)
+            current = ch
+        else:
+            current += ch
+    if current:
+        pieces.append(current)
+    return pieces or [text]
+
+
+def _tbl_truncate(text: str, font, max_width_px: int) -> str:
+    text = str(text)
+    if font.getlength(text) <= max_width_px:
+        return text
+    while text and font.getlength(text + "…") > max_width_px:
+        text = text[:-1]
+    return (text + "…") if text else ""
+
+
+def _tbl_normalize_mode(spec: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+    if isinstance(spec, dict):
+        return {**spec}
+    s = str(spec)
+    if s == "rwg":
+        return {"mode": "diverging", "palette": "rwg", "center": 0.0}
+    if s == "bw":
+        return {"mode": "heatmap", "palette": "bw"}
+    if s == "rag":
+        return {"mode": "rag"}
+    if s == "highlight":
+        return {"mode": "highlight"}
+    if s == "none":
+        return {"mode": "none"}
+    if s == "heatmap":
+        return {"mode": "heatmap", "palette": "bw"}
+    if s == "diverging" or s == "diverging_at_zero":
+        return {"mode": "diverging", "palette": "rwg", "center": 0.0}
+    return {"mode": s}
+
+
+@dataclass
+class _TableLayoutGeom:
+    canvas_w: int
+    canvas_h: int
+    title_h: int
+    table_x: int
+    table_w: int
+    body_top_y: int
+    body_avail_h: int
+    header_h: int
+    col_xs: List[int]
+    col_widths: List[int]
+    caption_y: int
+    caption_h: int
+    row_default_h: int
+    group_band_h: int
+
+
+def _tbl_measure_title(title: Optional[str], subtitle: Optional[str], theme: Dict[str, Any]) -> int:
+    if not title and not subtitle:
+        return 0
+    h = 6
+    if title:
+        h += int(theme["title_font_size"] * 1.2)
+    if subtitle:
+        h += int(theme["subtitle_font_size"] * 1.4)
+    h += 8
+    return h
+
+
+def _tbl_measure_caption(caption: Optional[str], canvas_w: int, side_pad: int, theme: Dict[str, Any]) -> int:
+    if not caption:
+        return 0
+    cap_font = _tbl_load_font("italic", theme["caption_font_size"])
+    lines = _tbl_wrap_text(caption, cap_font, canvas_w - 2 * side_pad)
+    return int(len(lines) * theme["caption_font_size"] * 1.4) + 12
+
+
+def _tbl_default_align(col: str, df: pd.DataFrame) -> str:
+    if pd.api.types.is_numeric_dtype(df[col]):
+        return "right"
+    return "left"
+
+
+def _tbl_column_widths(
+    df: pd.DataFrame,
+    column_formats: Dict[str, str], column_widths: Dict[str, Union[int, str]],
+    sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
+    canvas_w: int, side_pad: int, theme: Dict[str, Any],
+    wrap_columns: List[str],
+) -> List[int]:
+    body_font = _tbl_load_font("regular", theme["body_font_size"])
+    header_font = _tbl_load_font("bold", theme["header_font_size"])
+    cell_pad_x = 10
+    total_avail = canvas_w - 2 * side_pad
+
+    natural: List[int] = []
+    for col in df.columns:
+        explicit = column_widths.get(col)
+        if isinstance(explicit, int):
+            natural.append(max(40, explicit))
+            continue
+        if col in sparkline_columns:
+            natural.append(120 + 2 * cell_pad_x)
+            continue
+        if col in minibar_columns:
+            natural.append(110 + 2 * cell_pad_x)
+            continue
+        header_w = int(header_font.getlength(str(col))) + 2 * cell_pad_x
+        if col in wrap_columns:
+            natural.append(max(header_w, 160))
+            continue
+        body_max_w = 0
+        for v in df[col].head(40).tolist():
+            text = _tbl_smart_format(v, column_formats.get(col))
+            w = int(body_font.getlength(text)) + 2 * cell_pad_x
+            if w > body_max_w:
+                body_max_w = w
+        natural.append(max(header_w, body_max_w, 60))
+
+    total_natural = sum(natural)
+    if total_natural <= total_avail:
+        leftover = total_avail - total_natural
+        weights: List[float] = []
+        for i, col in enumerate(df.columns):
+            if col in sparkline_columns or col in minibar_columns:
+                weights.append(0.0)
+            elif isinstance(column_widths.get(col), int):
+                weights.append(0.0)
+            elif col in wrap_columns:
+                weights.append(2.0 * float(natural[i]))
+            else:
+                weights.append(float(natural[i]))
+        sw = sum(weights)
+        if sw > 0:
+            for i, w in enumerate(weights):
+                natural[i] += int(round(leftover * (w / sw)))
+        else:
+            natural[0] += leftover
+    else:
+        protected = sum(
+            natural[i] for i, col in enumerate(df.columns)
+            if col in sparkline_columns or col in minibar_columns
+            or isinstance(column_widths.get(col), int)
+        )
+        flex_total = total_natural - protected
+        flex_avail = max(60 * (len(df.columns) - 1), total_avail - protected)
+        scale = flex_avail / flex_total if flex_total > 0 else 1.0
+        for i, col in enumerate(df.columns):
+            if col in sparkline_columns or col in minibar_columns or isinstance(column_widths.get(col), int):
+                continue
+            natural[i] = max(40, int(round(natural[i] * scale)))
+
+    natural[-1] += total_avail - sum(natural)
+    return natural
+
+
+def _tbl_row_heights(
+    df: pd.DataFrame, col_widths: List[int],
+    column_formats: Dict[str, str], theme: Dict[str, Any],
+    wrap_columns: List[str], max_wrap_lines: int,
+) -> List[int]:
+    body_font = _tbl_load_font("regular", theme["body_font_size"])
+    cell_pad_x = 10
+    base_h = int(theme["body_font_size"] * 1.95)
+    line_h = int(theme["body_font_size"] * 1.45)
+    out: List[int] = []
+    for r_idx, (_, row) in enumerate(df.iterrows()):
+        max_lines = 1
+        for ci, col in enumerate(df.columns):
+            if col not in wrap_columns:
+                continue
+            avail = col_widths[ci] - 2 * cell_pad_x
+            text = _tbl_smart_format(row[col], column_formats.get(col))
+            lines = _tbl_wrap_text(text, body_font, max(20, avail))
+            n = min(len(lines), max_wrap_lines)
+            if n > max_lines:
+                max_lines = n
+        h = max(base_h, max_lines * line_h + 8)
+        out.append(h)
+    return out
+
+
+def _tbl_layout(
+    df: pd.DataFrame, title: Optional[str], subtitle: Optional[str],
+    caption: Optional[str], canvas: Tuple[int, int], side_pad: int,
+    theme: Dict[str, Any],
+    header_levels: Optional[List[List[Tuple[str, int]]]],
+    column_formats: Dict[str, str],
+    column_widths: Dict[str, Union[int, str]],
+    sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
+    row_groups: Optional[List[Tuple[str, int]]], wrap_columns: List[str],
+) -> _TableLayoutGeom:
+    canvas_w, canvas_h = canvas
+    title_h = _tbl_measure_title(title, subtitle, theme)
+    caption_h = _tbl_measure_caption(caption, canvas_w, side_pad, theme)
+    n_super_levels = len(header_levels) if header_levels else 0
+    header_row_h = int(theme["header_font_size"] * 1.7)
+    header_h = header_row_h * (n_super_levels + 1)
+    body_top_y = title_h + header_h + (8 if title_h else 0)
+    body_avail_h = canvas_h - body_top_y - caption_h - 6
+    row_default_h = int(theme["body_font_size"] * 1.95)
+    group_band_h = int(theme["body_font_size"] * 1.85)
+    cw = _tbl_column_widths(
+        df, column_formats, column_widths, sparkline_columns, minibar_columns,
+        canvas_w, side_pad, theme, wrap_columns,
+    )
+    col_xs = [side_pad]
+    acc = side_pad
+    for w in cw:
+        acc += w
+        col_xs.append(acc)
+    return _TableLayoutGeom(
+        canvas_w=canvas_w, canvas_h=canvas_h,
+        title_h=title_h, table_x=side_pad,
+        table_w=canvas_w - 2 * side_pad,
+        body_top_y=body_top_y, body_avail_h=body_avail_h,
+        header_h=header_h, col_xs=col_xs, col_widths=cw,
+        caption_y=canvas_h - caption_h, caption_h=caption_h,
+        row_default_h=row_default_h, group_band_h=group_band_h,
+    )
+
+
+def _tbl_resolve_heatmap_group(
+    r: int, c: int, df: pd.DataFrame,
+    heatmap_groups: List[Dict[str, Any]],
+) -> Optional[str]:
+    col_name = df.columns[c]
+    for grp in heatmap_groups:
+        cols = grp.get("columns", [])
+        if col_name not in cols:
+            continue
+        scope = grp.get("scope", "column")
+        palette = grp.get("palette") or ("rwg" if grp.get("mode") == "diverging" else "bw")
+        mode = grp.get("mode")
+        if mode is None:
+            mode = "diverging" if palette in ("rwg", "rwb", "bwr", "owb") else "sequential"
+        center = float(grp.get("center", 0.0))
+        v = df.iloc[r, c]
+        try:
+            vf = float(v) if pd.notna(v) else None
+        except (TypeError, ValueError):
+            vf = None
+        if vf is None:
+            return None
+        if scope == "column":
+            series = pd.to_numeric(df[col_name], errors="coerce").dropna()
+            if not len(series):
+                return None
+            if mode == "sequential":
+                return _tbl_palette_seq(palette, vf, float(series.min()), float(series.max()))
+            extent = max(abs(float(series.min()) - center), abs(float(series.max()) - center))
+            return _tbl_palette_div(palette, vf, extent, center=center)
+        if scope == "row":
+            row_vals = pd.to_numeric(df.iloc[r][cols], errors="coerce").dropna()
+            if not len(row_vals):
+                return None
+            if mode == "sequential":
+                return _tbl_palette_seq(palette, vf, float(row_vals.min()), float(row_vals.max()))
+            extent = max(abs(float(row_vals.min()) - center), abs(float(row_vals.max()) - center))
+            return _tbl_palette_div(palette, vf, extent, center=center)
+        if scope == "group":
+            block = pd.to_numeric(df[cols].stack(), errors="coerce").dropna()
+            if not len(block):
+                return None
+            if mode == "sequential":
+                return _tbl_palette_seq(palette, vf, float(block.min()), float(block.max()))
+            extent = max(abs(float(block.min()) - center), abs(float(block.max()) - center))
+            return _tbl_palette_div(palette, vf, extent, center=center)
+    return None
+
+
+def _tbl_resolve_column_mode(
+    r: int, c: int, df: pd.DataFrame,
+    column_color_modes: Dict[str, Dict[str, Any]],
+    rag_thresholds: Dict[str, Tuple[float, float]],
+) -> Optional[str]:
+    col_name = df.columns[c]
+    spec = column_color_modes.get(col_name)
+    if not spec:
+        return None
+    mode = spec.get("mode", "none")
+    palette = spec.get("palette",
+                        "bw" if mode in ("heatmap", "sequential") else "rwg")
+    center = float(spec.get("center", 0.0))
+    v = df.iloc[r, c]
+    try:
+        vf = float(v) if pd.notna(v) else None
+    except (TypeError, ValueError):
+        vf = None
+    if mode == "rag":
+        thr = spec.get("thresholds") or rag_thresholds.get(col_name)
+        if thr is None or vf is None:
+            return None
+        return _tbl_rag_color(vf, thr[0], thr[1])
+    if mode == "highlight":
+        return spec.get("color", "#E8F0F7")
+    if vf is None:
+        return None
+    if mode in ("heatmap", "sequential"):
+        series = pd.to_numeric(df[col_name], errors="coerce").dropna()
+        if not len(series):
+            return None
+        return _tbl_palette_seq(palette, vf, float(series.min()), float(series.max()))
+    if mode in ("diverging", "diverging_at_zero"):
+        series = pd.to_numeric(df[col_name], errors="coerce").dropna()
+        if not len(series):
+            return None
+        extent = max(abs(float(series.min()) - center), abs(float(series.max()) - center))
+        return _tbl_palette_div(palette, vf, extent, center=center)
+    return None
+
+
+def _tbl_draw_title(draw, title: Optional[str], subtitle: Optional[str],
+                     geom: _TableLayoutGeom, theme: Dict[str, Any]) -> None:
+    if not title and not subtitle:
+        return
+    title_font = _tbl_load_font("bold", theme["title_font_size"])
+    subtitle_font = _tbl_load_font("regular", theme["subtitle_font_size"])
+    y = 6
+    if title:
+        draw.text((geom.table_x, y), title, fill="#000000", font=title_font)
+        y += int(theme["title_font_size"] * 1.2)
+    if subtitle:
+        draw.text((geom.table_x, y), subtitle, fill=theme["muted_text"], font=subtitle_font)
+
+
+def _tbl_draw_caption(draw, caption: Optional[str],
+                       geom: _TableLayoutGeom, theme: Dict[str, Any]) -> None:
+    if not caption:
+        return
+    cap_font = _tbl_load_font("italic", theme["caption_font_size"])
+    lines = _tbl_wrap_text(caption, cap_font, geom.table_w)
+    y = geom.caption_y + 6
+    for line in lines:
+        draw.text((geom.table_x, y), line, fill=theme["muted_text"], font=cap_font)
+        y += int(theme["caption_font_size"] * 1.4)
+
+
+def _tbl_draw_header(draw, df: pd.DataFrame, geom: _TableLayoutGeom,
+                      theme: Dict[str, Any],
+                      header_levels: Optional[List[List[Tuple[str, int]]]],
+                      column_aligns: Dict[str, str]) -> None:
+    header_font = _tbl_load_font("bold", theme["header_font_size"])
+    header_row_h = int(theme["header_font_size"] * 1.7)
+    band_y0 = geom.title_h
+    band_y1 = band_y0 + geom.header_h
+    draw.rectangle(
+        [geom.table_x, band_y0, geom.table_x + geom.table_w, band_y1],
+        fill=theme["primary_color"],
+    )
+    n_levels = (len(header_levels) if header_levels else 0)
+    if header_levels:
+        for level_idx, level in enumerate(header_levels):
+            y0 = band_y0 + level_idx * header_row_h
+            y1 = y0 + header_row_h
+            col_cursor = 0
+            for label, span in level:
+                x0 = geom.col_xs[col_cursor]
+                x1 = geom.col_xs[col_cursor + span]
+                if col_cursor > 0:
+                    draw.line([(x0, y0), (x0, y1 - 2)], fill="#FFFFFF", width=1)
+                if label:
+                    cx = (x0 + x1) // 2
+                    cy = y0 + header_row_h // 2
+                    tw = header_font.getlength(label)
+                    draw.text(
+                        (cx - tw / 2, cy - theme["header_font_size"] / 2 - 1),
+                        label, fill=theme["header_text"], font=header_font,
+                    )
+                col_cursor += span
+            draw.line(
+                [(geom.table_x, y1 - 1), (geom.table_x + geom.table_w, y1 - 1)],
+                fill="#FFFFFF", width=1,
+            )
+    y0 = band_y0 + n_levels * header_row_h
+    cell_pad_x = 10
+    for i, col in enumerate(df.columns):
+        x0 = geom.col_xs[i]
+        x1 = geom.col_xs[i + 1]
+        align = column_aligns.get(col, _tbl_default_align(col, df))
+        text = _tbl_truncate(str(col), header_font, x1 - x0 - 2 * cell_pad_x)
+        tw = header_font.getlength(text)
+        if align == "right":
+            tx = x1 - cell_pad_x - tw
+        elif align == "center":
+            tx = (x0 + x1) // 2 - tw / 2
+        else:
+            tx = x0 + cell_pad_x
+        ty = y0 + header_row_h // 2 - theme["header_font_size"] / 2 - 1
+        draw.text((tx, ty), text, fill=theme["header_text"], font=header_font)
+
+
+def _tbl_draw_sparkline(draw, x: int, y: int, w: int, h: int,
+                          series: Optional[Sequence[float]],
+                          theme: Dict[str, Any]) -> None:
+    if not series or len(series) < 2:
+        return
+    vals = [float(v) for v in series
+            if v is not None and not (isinstance(v, float) and math.isnan(v))]
+    if len(vals) < 2:
+        return
+    vmin, vmax = min(vals), max(vals)
+    if vmax == vmin:
+        vmax = vmin + 1.0
+    pts = []
+    n = len(vals)
+    for i, v in enumerate(vals):
+        px = x + int(round(i * w / max(1, n - 1)))
+        py = y + h - int(round((v - vmin) / (vmax - vmin) * h))
+        pts.append((px, py))
+    draw.line([(x, y + h), (x + w, y + h)], fill="#DDDDDD", width=1)
+    draw.line(pts, fill=theme["primary_color"], width=2)
+    draw.ellipse(
+        [pts[-1][0] - 3, pts[-1][1] - 3, pts[-1][0] + 3, pts[-1][1] + 3],
+        fill=theme["primary_color"],
+    )
+
+
+def _tbl_draw_minibar(draw, x: int, y: int, w: int, h: int,
+                        value: Any, col_max: Any,
+                        theme: Dict[str, Any]) -> None:
+    if value is None or pd.isna(value) or col_max is None or pd.isna(col_max) or col_max == 0:
+        return
+    vf = float(value)
+    cm = float(col_max)
+    bar_h = max(8, h - 6)
+    by = y + (h - bar_h) // 2
+    draw.rectangle([x, by, x + w, by + bar_h], outline="#E0E0E0", fill="#FAFAFA", width=1)
+    if vf >= 0:
+        bw = int(round(min(1.0, vf / cm) * w))
+        draw.rectangle([x, by, x + bw, by + bar_h], fill=theme["primary_color"])
+    else:
+        bw = int(round(min(1.0, abs(vf) / cm) * w))
+        draw.rectangle([x + w - bw, by, x + w, by + bar_h], fill=theme["negative_text"])
+
+
+def _tbl_draw_body(
+    draw, df: pd.DataFrame, geom: _TableLayoutGeom, theme: Dict[str, Any],
+    column_formats: Dict[str, str], column_aligns: Dict[str, str],
+    column_color_modes: Dict[str, Dict[str, Any]],
+    heatmap_groups: List[Dict[str, Any]],
+    rag_thresholds: Dict[str, Tuple[float, float]],
+    row_bands: bool,
+    row_groups: Optional[List[Tuple[str, int]]],
+    row_indent: Optional[List[int]],
+    row_colors: Dict[int, str],
+    cell_colors: Dict[Tuple[int, int], str],
+    cell_text_colors: Dict[Tuple[int, int], str],
+    highlight_columns: List[str],
+    sparkline_columns: Dict[str, List[List[float]]],
+    minibar_columns: Dict[str, str],
+    signed_columns: List[str],
+    total_rows: List[int],
+    subtotal_rows: List[int],
+    row_heights: List[int],
+    wrap_columns: List[str],
+    max_wrap_lines: int,
+) -> int:
+    body_font = _tbl_load_font("regular", theme["body_font_size"])
+    body_bold = _tbl_load_font("bold", theme["body_font_size"])
+    cell_pad_x = 10
+    group_starts: Dict[int, str] = {}
+    if row_groups:
+        cursor = 0
+        for label, count in row_groups:
+            group_starts[cursor] = label
+            cursor += count
+    col_index = {c: i for i, c in enumerate(df.columns)}
+    n_cols = len(df.columns)
+    body_bottom = geom.body_top_y + geom.body_avail_h
+    y = geom.body_top_y
+    rendered = 0
+    for r_idx, (_, row) in enumerate(df.iterrows()):
+        rh = row_heights[r_idx] if r_idx < len(row_heights) else geom.row_default_h
+        if y + rh > body_bottom:
+            break
+        if r_idx in group_starts:
+            if y + geom.group_band_h + rh > body_bottom:
+                break
+            draw.rectangle(
+                [geom.table_x, y, geom.table_x + geom.table_w, y + geom.group_band_h],
+                fill=theme["primary_color"],
+            )
+            label = group_starts[r_idx]
+            draw.text(
+                (geom.table_x + 12, y + geom.group_band_h // 2 - theme["body_font_size"] / 2 - 1),
+                label, fill=theme["header_text"], font=body_bold,
+            )
+            y += geom.group_band_h
+        is_total = r_idx in total_rows
+        is_subtotal = r_idx in subtotal_rows
+        if is_total:
+            draw.rectangle(
+                [geom.table_x, y, geom.table_x + geom.table_w, y + rh],
+                fill=theme["total_band"],
+            )
+        elif is_subtotal:
+            draw.rectangle(
+                [geom.table_x, y, geom.table_x + geom.table_w, y + rh],
+                fill=theme["subtotal_band"],
+            )
+        else:
+            if row_bands and r_idx % 2 == 1:
+                draw.rectangle(
+                    [geom.table_x, y, geom.table_x + geom.table_w, y + rh],
+                    fill=theme["row_band_color"],
+                )
+            row_tint = row_colors.get(r_idx)
+            if row_tint:
+                draw.rectangle(
+                    [geom.table_x, y, geom.table_x + geom.table_w, y + rh],
+                    fill=row_tint,
+                )
+            for hcol in highlight_columns:
+                if hcol in col_index:
+                    ci = col_index[hcol]
+                    draw.rectangle(
+                        [geom.col_xs[ci], y, geom.col_xs[ci + 1], y + rh],
+                        fill="#E8F0F7",
+                    )
+        cell_bg: Dict[int, Optional[str]] = {}
+        if not is_total:
+            for ci in range(n_cols):
+                color = _tbl_resolve_heatmap_group(r_idx, ci, df, heatmap_groups)
+                if color is None:
+                    color = _tbl_resolve_column_mode(
+                        r_idx, ci, df, column_color_modes, rag_thresholds,
+                    )
+                cell_bg[ci] = color
+                if color:
+                    draw.rectangle(
+                        [geom.col_xs[ci] + 1, y + 1, geom.col_xs[ci + 1] - 1, y + rh - 1],
+                        fill=color,
+                    )
+        for (cell_r, cell_c), col_hex in cell_colors.items():
+            if cell_r == r_idx and 0 <= cell_c < n_cols:
+                draw.rectangle(
+                    [geom.col_xs[cell_c] + 1, y + 1, geom.col_xs[cell_c + 1] - 1, y + rh - 1],
+                    fill=col_hex,
+                )
+                cell_bg[cell_c] = col_hex
+        for ci, col in enumerate(df.columns):
+            x0 = geom.col_xs[ci]
+            x1 = geom.col_xs[ci + 1]
+            align = column_aligns.get(col, _tbl_default_align(col, df))
+            font = body_bold if (is_total or is_subtotal) else body_font
+            if col in sparkline_columns:
+                series = sparkline_columns[col][r_idx] if r_idx < len(sparkline_columns[col]) else None
+                _tbl_draw_sparkline(draw, x0 + 8, y + 6, x1 - x0 - 16, rh - 12, series, theme)
+                continue
+            if col in minibar_columns:
+                src = minibar_columns[col]
+                col_max = pd.to_numeric(df[src], errors="coerce").abs().max()
+                _tbl_draw_minibar(draw, x0 + 8, y + 4, x1 - x0 - 16, rh - 8, row.get(src), col_max, theme)
+                continue
+            indent_px = 0
+            if ci == 0 and row_indent and r_idx < len(row_indent):
+                indent_px = row_indent[r_idx] * 16
+            v = row[col]
+            text_str = _tbl_smart_format(v, column_formats.get(col))
+            text_color = cell_text_colors.get((r_idx, ci))
+            if text_color is None:
+                if is_total:
+                    text_color = "#FFFFFF"
+                elif col in signed_columns and isinstance(v, (int, float)) and not pd.isna(v):
+                    if v > 0:
+                        text_color = theme["positive_text"]
+                    elif v < 0:
+                        text_color = theme["negative_text"]
+                    else:
+                        text_color = theme["body_text"]
+                else:
+                    bg = cell_bg.get(ci)
+                    if bg is not None:
+                        text_color = _tbl_readable_text_color(bg)
+                    else:
+                        text_color = theme["body_text"]
+            avail_w = x1 - x0 - 2 * cell_pad_x - indent_px
+            if col in wrap_columns:
+                lines = _tbl_wrap_text(text_str, font, max(20, avail_w))
+                full_lines = lines
+                lines = lines[:max_wrap_lines]
+                if len(full_lines) > max_wrap_lines:
+                    lines[-1] = _tbl_truncate(lines[-1], font, avail_w)
+                line_h = int(theme["body_font_size"] * 1.45)
+                block_h = len(lines) * line_h
+                ty = y + (rh - block_h) // 2 + 1
+                for line in lines:
+                    tw = font.getlength(line)
+                    if align == "right":
+                        tx = x1 - cell_pad_x - tw
+                    elif align == "center":
+                        tx = (x0 + x1) // 2 - tw / 2
+                    else:
+                        tx = x0 + cell_pad_x + indent_px
+                    draw.text((tx, ty), line, fill=text_color, font=font)
+                    ty += line_h
+            else:
+                text_str = _tbl_truncate(text_str, font, max(20, avail_w))
+                tw = font.getlength(text_str)
+                if align == "right":
+                    tx = x1 - cell_pad_x - tw
+                elif align == "center":
+                    tx = (x0 + x1) // 2 - tw / 2
+                else:
+                    tx = x0 + cell_pad_x + indent_px
+                ty = y + rh // 2 - theme["body_font_size"] / 2 - 1
+                draw.text((tx, ty), text_str, fill=text_color, font=font)
+        if not row_bands and r_idx > 0 and not is_total and not is_subtotal:
+            draw.line(
+                [(geom.table_x, y), (geom.table_x + geom.table_w, y)],
+                fill="#E0E0E0", width=1,
+            )
+        y += rh
+        rendered += 1
+    return rendered
+
+
+def _tbl_groups_before(rendered: int, row_groups: Optional[List[Tuple[str, int]]]) -> int:
+    if not row_groups:
+        return 0
+    cursor = 0
+    n = 0
+    for _, count in row_groups:
+        if cursor < rendered:
+            n += 1
+        cursor += count
+    return n
+
+
+def _tbl_png_bytes(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _tbl_resolve_path(save_as: Optional[str], session_path: Optional[str],
+                       df: pd.DataFrame, title: Optional[str]) -> str:
+    if save_as:
+        rel = save_as
+    else:
+        slug = re.sub(r"[^A-Za-z0-9_-]+", "_", (title or "table").lower()).strip("_") or "table"
+        rel = f"{slug}.png"
+    if session_path:
+        return f"{session_path.rstrip('/')}/{rel}"
+    return rel
+
+
+def make_table(
+    df: Optional[pd.DataFrame] = None,
+    *,
+    rows: Optional[List[Union[Dict[str, Any], Tuple, List]]] = None,
+    columns: Optional[List[str]] = None,
+    title: Optional[str] = None,
+    subtitle: Optional[str] = None,
+    caption: Optional[str] = None,
+    skin: str = "gs_clean",
+    dimensions: Optional[str] = "wide",
+    canvas: Optional[Tuple[int, int]] = None,
+    column_formats: Optional[Dict[str, str]] = None,
+    column_widths: Optional[Dict[str, Union[int, str]]] = None,
+    column_aligns: Optional[Dict[str, str]] = None,
+    header_levels: Optional[List[List[Tuple[str, int]]]] = None,
+    row_groups: Optional[List[Tuple[str, int]]] = None,
+    row_indent: Optional[List[int]] = None,
+    row_bands: bool = True,
+    row_colors: Optional[Dict[int, str]] = None,
+    column_color_modes: Optional[Dict[str, Union[str, Dict[str, Any]]]] = None,
+    heatmap_groups: Optional[List[Dict[str, Any]]] = None,
+    rag_thresholds: Optional[Dict[str, Tuple[float, float]]] = None,
+    highlight_columns: Optional[List[str]] = None,
+    cell_colors: Optional[Dict[Tuple[int, int], str]] = None,
+    cell_text_colors: Optional[Dict[Tuple[int, int], str]] = None,
+    sparkline_columns: Optional[Dict[str, List[List[float]]]] = None,
+    minibar_columns: Optional[Dict[str, str]] = None,
+    signed_columns: Optional[List[str]] = None,
+    total_rows: Optional[List[int]] = None,
+    subtotal_rows: Optional[List[int]] = None,
+    wrap_columns: Optional[List[str]] = None,
+    max_wrap_lines: int = 4,
+    body_font_size: Optional[int] = None,
+    header_font_size: Optional[int] = None,
+    show_index: bool = False,
+    side_pad: int = 12,
+    save_as: Optional[str] = None,
+    session_path: Optional[str] = None,
+    s3_manager: Optional[Any] = None,
+    output_dir: str = "",
+    user_id: Optional[str] = None,
+) -> TableResult:
+    """Render a DataFrame as a beautifully-styled PNG table.
+
+    Two data-source paths (mutually exclusive — pass exactly one):
+        df=<DataFrame>   data-pulled (Haver / market / CSV / scraper /
+                          computed positions).
+        rows=[...]       hardcoded narrative tables. Accepts list-of-dicts
+                          (column names from keys; pass columns=[...] to
+                          reorder) or list-of-tuples/lists (requires
+                          columns=[...] to name the headers).
+
+    PRISM-facing color modes (3 strings): "rwg" / "bw" / "rag".
+
+    Color resolution priority (top wins per cell):
+        1. cell_colors[(r, c)]      4. heatmap_groups       7. highlight_columns
+        2. total_rows               5. column_color_modes   8. row_groups (handled separately)
+        3. subtotal_rows            6. row_colors[r]        9. row_bands
+    """
+    warnings: List[str] = []
+
+    # Resolve df from rows= when df= not passed.
+    if df is None and rows is None:
+        return TableResult(
+            success=False,
+            error_message="Pass either df= (DataFrame) or rows= (list of dicts/tuples)",
+        )
+    if df is not None and rows is not None:
+        return TableResult(
+            success=False,
+            error_message="Pass either df= or rows=, not both",
+        )
+    if df is None:
+        if not rows:
+            return TableResult(
+                success=False,
+                error_message="rows= is empty; pass at least one row",
+            )
+        first = rows[0]
+        if isinstance(first, dict):
+            df = pd.DataFrame(rows)
+            if columns is not None:
+                missing = [c for c in columns if c not in df.columns]
+                if missing:
+                    return TableResult(
+                        success=False,
+                        error_message=f"columns= references keys not in rows: {missing}",
+                    )
+                df = df[columns]
+        elif isinstance(first, (tuple, list)):
+            if columns is None:
+                return TableResult(
+                    success=False,
+                    error_message="rows= as list of tuples/lists requires columns=[...] to name the headers",
+                )
+            df = pd.DataFrame(rows, columns=columns)
+        else:
+            return TableResult(
+                success=False,
+                error_message=f"rows= entries must be dicts or tuples/lists, got {type(first).__name__}",
+            )
+
+    if df is None or len(df.columns) == 0:
+        return TableResult(success=False, error_message="DataFrame has no columns")
+
+    df = df.copy()
+    if show_index:
+        df.insert(0, df.index.name or "index", df.index.values)
+    df = df.reset_index(drop=True)
+
+    column_formats = dict(column_formats or {})
+    column_widths = dict(column_widths or {})
+    column_aligns = dict(column_aligns or {})
+    rag_thresholds = dict(rag_thresholds or {})
+    highlight_columns = list(highlight_columns or [])
+    cell_colors = dict(cell_colors or {})
+    cell_text_colors = dict(cell_text_colors or {})
+    sparkline_columns = dict(sparkline_columns or {})
+    minibar_columns = dict(minibar_columns or {})
+    signed_columns = list(signed_columns or [])
+    total_rows = list(total_rows or [])
+    subtotal_rows = list(subtotal_rows or [])
+    wrap_columns = list(wrap_columns or [])
+    row_colors = dict(row_colors or {})
+    heatmap_groups = list(heatmap_groups or [])
+
+    raw_modes = column_color_modes or {}
+    column_color_modes = {col: _tbl_normalize_mode(spec) for col, spec in raw_modes.items()}
+
+    if canvas is None:
+        if dimensions is None or dimensions not in DIMENSION_PRESETS:
+            return TableResult(
+                success=False,
+                error_message=f"Unknown dimensions preset: {dimensions!r}. "
+                              f"Choose from {list(DIMENSION_PRESETS.keys())}",
+            )
+        canvas = DIMENSION_PRESETS[dimensions]
+
+    theme = dict(_TABLE_THEME)
+    if body_font_size:
+        theme["body_font_size"] = body_font_size
+    if header_font_size:
+        theme["header_font_size"] = header_font_size
+
+    if header_levels:
+        for level_idx, level in enumerate(header_levels):
+            total_span = sum(span for _, span in level)
+            if total_span != len(df.columns):
+                return TableResult(
+                    success=False,
+                    error_message=f"header_levels[{level_idx}] spans sum to "
+                                  f"{total_span}, expected {len(df.columns)}",
+                )
+    if row_groups:
+        total = sum(c for _, c in row_groups)
+        if total != len(df):
+            return TableResult(
+                success=False,
+                error_message=f"row_groups counts sum to {total}, "
+                              f"expected len(df)={len(df)}",
+            )
+
+    geom = _tbl_layout(
+        df, title, subtitle, caption, canvas, side_pad, theme,
+        header_levels, column_formats, column_widths,
+        sparkline_columns, minibar_columns, row_groups, wrap_columns,
+    )
+    row_h = _tbl_row_heights(
+        df, geom.col_widths, column_formats, theme, wrap_columns, max_wrap_lines,
+    )
+
+    img = Image.new("RGB", canvas, theme["background_color"])
+    draw = ImageDraw.Draw(img)
+
+    _tbl_draw_title(draw, title, subtitle, geom, theme)
+    _tbl_draw_header(draw, df, geom, theme, header_levels, column_aligns)
+    rendered = _tbl_draw_body(
+        draw, df, geom, theme,
+        column_formats, column_aligns, column_color_modes, heatmap_groups,
+        rag_thresholds, row_bands, row_groups, row_indent, row_colors,
+        cell_colors, cell_text_colors, highlight_columns,
+        sparkline_columns, minibar_columns, signed_columns,
+        total_rows, subtotal_rows,
+        row_h, wrap_columns, max_wrap_lines,
+    )
+
+    truncated = max(0, len(df) - rendered)
+    if truncated:
+        warnings.append(
+            f"Table truncated to {rendered} of {len(df)} rows for the "
+            f"{canvas[0]}x{canvas[1]} canvas; use a larger preset or split."
+        )
+        cap_font = _tbl_load_font("italic", theme["caption_font_size"])
+        msg = f"+ {truncated} more row{'s' if truncated != 1 else ''}…"
+        y_used = (
+            sum(row_h[:rendered])
+            + _tbl_groups_before(rendered, row_groups) * geom.group_band_h
+        )
+        draw.text(
+            (geom.table_x, geom.body_top_y + y_used + 4),
+            msg, fill=theme["muted_text"], font=cap_font,
+        )
+
+    _tbl_draw_caption(draw, caption, geom, theme)
+
+    draw.line(
+        [(geom.table_x, geom.body_top_y - 1),
+         (geom.table_x + geom.table_w, geom.body_top_y - 1)],
+        fill="#1F1F1F", width=1,
+    )
+
+    buf = _tbl_png_bytes(img)
+    out_path = _tbl_resolve_path(save_as, session_path, df, title)
+
+    written_path: Optional[str] = None
+    presigned_url: Optional[str] = None
+    if s3_manager is not None:
+        try:
+            written_path = s3_manager.put(buf, out_path)
+        except Exception as e:  # noqa: BLE001
+            return TableResult(
+                success=False,
+                error_message=f"s3_manager.put failed: {e}",
+                warnings=warnings,
+            )
+        if hasattr(s3_manager, "local_path"):
+            presigned_url = f"file://{s3_manager.local_path(out_path).resolve()}"
+    else:
+        local_root = Path(output_dir or "./session_output").expanduser().resolve()
+        local_root.mkdir(parents=True, exist_ok=True)
+        full = local_root / out_path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        full.write_bytes(buf)
+        written_path = str(full)
+        presigned_url = f"file://{full}"
+
+    return TableResult(
+        success=True,
+        png_path=written_path,
+        download_url=presigned_url,
+        warnings=warnings,
+        n_rows=len(df),
+        n_cols=len(df.columns),
+        truncated_rows=truncated,
+        canvas_size=canvas,
+    )
+
+
+_ENGINE_NAMESPACE_TABLES: Tuple[str, ...] = (
+    "make_table",
+    "TableResult",
+)
+
+
 # v2 namespace constant -- the names PRISM should auto-inject when
 # the v2 skill (chart_context_v2.md) is loaded. See ``__all__`` for
 # the full module export list (which carries both v1 and v2 names).
@@ -18750,8 +19881,12 @@ __all__ = [
     "check_for_outliers",
     "suggest_chart_type",
     "validate_data",
-    # ---- Engine namespace constant (PRISM-side injection consumer)
+    # ---- Tables (PNG static-table engine; same DIMENSION_PRESETS as charts)
+    "make_table",
+    "TableResult",
+    # ---- Engine namespace constants (PRISM-side injection consumer)
     "_ENGINE_NAMESPACE_V2",
+    "_ENGINE_NAMESPACE_TABLES",
 ]
 
 

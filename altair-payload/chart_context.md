@@ -5,7 +5,7 @@
 - **Tier:** 2 (on-demand)
 - **Scope:** All static-PNG chart authoring (chat / email / report). Composites ship in this same module. Interactive HTML dashboards use `dashboards` (echarts).
 
-`make_chart()`, the composite/annotation/profile helpers are auto-injected. Raw matplotlib is blocked. Do NOT import chart functions. `s3_manager`, `session_path`, `user_id` are auto-injected at call time -- never pass them.
+`make_chart()`, `make_table()`, the composite/annotation/profile helpers are auto-injected. Raw matplotlib is blocked. Do NOT import chart functions. `s3_manager`, `session_path`, `user_id` are auto-injected at call time -- never pass them.
 
 ---
 
@@ -18,6 +18,7 @@
 | Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §8 |
 | Composite functions (5) | `make_2pack_horizontal`, `make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`, `make_6pack_grid` | §10 |
 | Grid mode (small-multiples / facet) | `mapping['facet']`, `facet_cols`, `same_scale`, `share_x` / `share_y` / `share_color`, `dimensions='page_grid'` | spoke `chart_context_grids.md` (Spokes index below) |
+| Static tables (PNG) | `make_table` + `TableResult`; same `dimensions` presets, navy palette, font as `make_chart` | spoke `chart_context_tables.md` (Spokes index below) |
 | Dimension presets (7) | `wide`, `square`, `tall`, `compact`, `presentation`, `thumbnail`, `page_grid` (facet only) | §11 |
 | Skin (only published) | `gs_clean` | §1 |
 | Intent values | `'explore'`, `'publish'`, `'monitor'` | §1 |
@@ -34,8 +35,11 @@ This hub covers the always-needed surface. Deeper specs for narrow topics live i
 | Spoke | Contents | Verbatim tool call (copy-paste) |
 |---|---|---|
 | `chart_context_grids.md` | Grid mode (small-multiples / facet): `mapping['facet']`, `facet_cols`, `same_scale` smart-route, `share_x` / `share_y` / `share_color`, `dimensions='page_grid'`, scatter phase-space gradient (`mapping['color']` + `color_scheme`), 36-panel hard cap | `list_ai_repo(file_paths=["context/modules/static/chart_context_grids.md"], mode="full")` |
+| `chart_context_tables.md` | Static-PNG tables — `make_table()` + `TableResult`; the 3 PRISM-facing color modes (`'rwg'` / `'bw'` / `'rag'`); `heatmap_groups` (column / row / group scope); multi-level `header_levels`; `row_groups` navy bands; `row_indent`, `total_rows`, `subtotal_rows`; sparkline + mini-bar cells; `wrap_columns` for text tables. Same `dimensions` presets and navy palette as charts. | `list_ai_repo(file_paths=["context/modules/static/chart_context_tables.md"], mode="full")` |
 
-Trigger: any cross-sectional dashboard over 8-30 entities sharing the same shape (G20 GDP per country, 12 sector PMIs, 16 FX pairs, country yield curves). Phase-space scatter plots with time-coloured trails also live in this spoke.
+Triggers:
+- **Grids spoke** — any cross-sectional dashboard over 8-30 entities sharing the same shape (G20 GDP per country, 12 sector PMIs, 16 FX pairs, country yield curves). Phase-space scatter plots with time-coloured trails also live in this spoke.
+- **Tables spoke** — any presentation of structured data with ≥2 columns and ≥2 rows where a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, FX cross-rates, sector tapes, calendars, snapshot dashboards, attribution decompositions.
 
 ---
 
@@ -57,7 +61,7 @@ result = make_chart(
 
 `output_dir` is local-mode only; `interactive=True` is reserved.
 
-**Auto-injected names:** `make_chart`, `profile_df` (§5), `ChartResult`/`ChartSpec`, `check_charts_quality` (§2), composite functions (§10), all 11 annotation classes (§8).
+**Auto-injected names:** `make_chart`, `make_table` (tables spoke), `profile_df` (§5), `ChartResult`/`ChartSpec`/`TableResult` (tables spoke), `check_charts_quality` (§2), composite functions (§10), all 11 annotation classes (§8).
 
 ### `ChartResult` (dataclass, NOT dict)
 
@@ -125,7 +129,6 @@ Default-include the annotation that makes the chart's point legible at-a-glance.
 | Threshold (Fed 2%, recession 0%, PMI 50) | `HLine` |
 | Regime / shaded period | `Band` |
 | Point at latest / max / min / event | `Callout` |
-| Force color legend on `multi_line` (overrides default LVL — §6.1) | `mapping['legend']=True` |
 | Event date | `VLine` |
 | Forecast / regime-change segment | `Segment` |
 | Best-fit on scatter | `Trendline` (or `mapping['trendline']=True`) |
@@ -210,11 +213,7 @@ print(profile.numeric_stats)   # {'value': {'mean':..., 'std':..., ...}}
 
 `timeseries` is accepted as an alias inside the `multi_line` builder. `multi_line` auto-detects non-datetime x-axis -> ordinal mode; tenor values (`1M`, `2Y`, `10Y`) auto-sort by maturity.
 
-**`multi_line` / `timeseries` default to end-of-line labels, not a color legend.** Each series's name + latest value is painted at the line's right end in the line's own colour (FT/Bloomberg house style); the colour legend is suppressed. This removes the lookup-tax between hex swatch and series name. The engine auto-injects `LastValueLabel(show_value=True)` when none is passed. **Series names must be <= 25 characters** -- long names raise `LvlSeriesNameTooLongError` (mirrors `YAxisLabelTooLongError`). Rename the series in the DataFrame before `make_chart()` (`'United States Equities Index 500'` -> `'S&P 500'`) or use the legend opt-out. Three opt-outs:
-
-* `mapping['legend'] = True` -> force the colour legend (use when names are intrinsically long, e.g. fund/issuer identifiers).
-* Pass `LastValueLabel(show_value=False, value_format=..., dx=...)` -> your explicit annotation wins; customise via its kwargs (the 25-char cap still applies).
-* `dual_axis_series` set -> LVL is suppressed (the legend renders); see §9.4.
+**`multi_line` / `timeseries` default to end-of-line labels, not a color legend.** Each series's name is painted at the line's right end in the line's own colour (FT/Bloomberg house style); the colour legend is suppressed. This removes the lookup-tax between hex swatch and series name. The engine auto-injects `LastValueLabel()` on every multi-line single panel and every multi-line composite cell. **Series names must be <= 25 characters** -- long names raise `LvlSeriesNameTooLongError` (mirrors `YAxisLabelTooLongError`). Rename the series in the DataFrame before `make_chart()` (`'United States Equities Index 500'` -> `'S&P 500'`). Customise the typography by passing your own `LastValueLabel(dx=..., font_size=..., font_weight=...)` -- your explicit annotation wins. On dual-axis charts LVL is automatically suppressed and the normal colour legend renders (see §9.4).
 
 ### 6.2 Bar family
 
@@ -338,7 +337,6 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',
 | `x_sort` / `y_sort` | list | Explicit ordinal sort (x) / heatmap y-axis sort |
 | `x_type` | str | Force `'ordinal'` on datetime |
 | `dual_axis_series` / `invert_right_axis` | list / bool | Right-axis series / flip right axis (higher = bottom) |
-| `legend` | bool | `multi_line` / `timeseries`: set `True` to force the color legend (overrides the default LVL auto-inject; see §6.1) |
 | `trendline` / `trendlines` | bool | Overall (scatter) / per-group (scatter_multi) |
 | `stack` | bool | Bar+color: `True` stacked (default), `False` grouped |
 | `strokeDash` / `strokeDashScale` / `strokeDashLegend` | str/dict/bool | Line-style col / `{domain, range}` / show legend (default `False`) |
@@ -377,7 +375,7 @@ annotations = [
     Arrow(x1=T('2020-04'), y1=5, x2=T('2021-03'), y2=8, label='Recovery'),
     PointHighlight(x=T('2022-06'), y=9.1, size=120),
     Callout(x=T('2022-06'), y=9.1, label='Peak 9.1%', background='halo'),
-    LastValueLabel(show_value=False),  # customise the default LVL; bare LastValueLabel() is redundant on multi_line
+    LastValueLabel(dx=10, font_weight='bold'),  # customise the default LVL; bare LastValueLabel() is redundant on multi_line
 ]
 ```
 
@@ -410,7 +408,7 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 | `PointLabel` | `x`, `y`, `dx`/`dy` (pixel offsets), `font_size`, `align`. Plain floating text. Use sparingly |
 | `PointHighlight` | `x`, `y`, `size` (default `100`), `opacity`, `shape` (`'circle'`/`'square'`/`'diamond'`/`'triangle'`/`'cross'`/`'stroke'`), `filled`, `stroke_color`, `stroke_width`. Default color `"#C00000"`. Often combined with Callout/PointLabel |
 | `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. Default `'halo'` keeps the label legible against chart lines and dense data. `dx` 0-60; `abs(dx)>80` risks off-canvas (warns) |
-| `LastValueLabel` | `show_value` (default `False`; auto-inject uses `True`), `value_format`, `dx`, `font_size` (default 15), `font_weight`. FT/Bloomberg end-of-line labels for `multi_line` / `timeseries`. **Auto-injected by default** (§6.1); pass an explicit instance to customise (e.g. `show_value=False` for names only, `value_format='{:.2f}%'` for percent suffixes). Auto-derives series names from the color column. `label` ignored on multi-series; for single-series overrides the y-field name. Endpoint-pixel collisions auto-stagger vertically. **Series names > 25 chars raise `LvlSeriesNameTooLongError`** -- rename in the DataFrame or use `mapping['legend']=True`. Suppressed on dual-axis (§9.4). Text-only — no endpoint dot |
+| `LastValueLabel` | `dx`, `font_size` (default 15), `font_weight`. FT/Bloomberg end-of-line labels for `multi_line` / `timeseries` -- the series identity only; no numeric value is rendered. **Auto-injected by default** (§6.1) on every multi-line single panel and every multi-line composite cell; pass an explicit instance to customise typography (e.g. `LastValueLabel(dx=10, font_weight='bold')`). Auto-derives series names from the color column. `label` ignored on multi-series; for single-series overrides the y-field name. Endpoint-pixel collisions auto-stagger vertically. **Series names > 25 chars raise `LvlSeriesNameTooLongError`** -- rename in the DataFrame. Suppressed on dual-axis (§9.4). Text-only — no endpoint dot |
 | `Trendline` | `method` (`'linear'`/`'exp'`/`'log'`/`'pow'`/`'poly'`/`'quad'`), `stroke_width`, `stroke_dash`. Regression overlay on scatter |
 | `PlotText` | `text`, `position` (`'auto'` default, or `'right'`/`'left'`/`'bottom'`), `font_size`, `italic`, `color`, `align`, `width_pct`. Narrative text rendered OUTSIDE the plot region only -- routes through the existing text-panel system (`side_right`/`side_left`/`caption` slots), so it cannot collide with bars/lines/data labels. **`text` MUST be ≤8 words** (one-line takeaway, not a sentence; engine hard-caps at 10 with a 2-word buffer). For longer narratives, pass `make_chart(caption=..., side_right=..., side_left=...)` directly (no word cap on those kwargs). `'auto'` resolves to the first free slot in priority order: `right` -> `bottom` -> `left`. Explicit `make_chart(side_right=..., side_left=..., caption=...)` kwargs win against PlotText targeting the same slot (PlotText reroutes to next available; warning logged). All 9 inside-corner anchors (`top-*`/`middle-*`/`bottom-*`) and the bare `'top'` value were removed in the 2026-05-10 outside-only rewire and now raise `ValidationError` with a migration hint |
 
