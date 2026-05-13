@@ -132,7 +132,7 @@ Default-include the annotation that makes the chart's point legible at-a-glance.
 | Event date | `VLine` |
 | Forecast / regime-change segment | `Segment` |
 | Best-fit on scatter | `Trendline` (or `mapping['trendline']=True`) |
-| Corner caption | `PlotText` |
+| Below-plot note | `PlotText` |
 
 "Is it worth it?" filter + chart-type compatibility: §8. Skip annotations for clean reference plots or exploratory work.
 
@@ -410,7 +410,7 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 | `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. Default `'halo'` keeps the label legible against chart lines and dense data. `dx` 0-60; `abs(dx)>80` risks off-canvas (warns) |
 | `LastValueLabel` | `dx`, `font_size` (default 15), `font_weight`. FT/Bloomberg end-of-line labels for `multi_line` / `timeseries` -- the series identity only; no numeric value is rendered. **Auto-injected by default** (§6.1) on every multi-line single panel and every multi-line composite cell; pass an explicit instance to customise typography (e.g. `LastValueLabel(dx=10, font_weight='bold')`). Auto-derives series names from the color column. `label` ignored on multi-series; for single-series overrides the y-field name. Endpoint-pixel collisions auto-stagger vertically. **Series names > 25 chars raise `LvlSeriesNameTooLongError`** -- rename in the DataFrame. Suppressed on dual-axis (§9.4). Text-only — no endpoint dot |
 | `Trendline` | `method` (`'linear'`/`'exp'`/`'log'`/`'pow'`/`'poly'`/`'quad'`), `stroke_width`, `stroke_dash`. Regression overlay on scatter |
-| `PlotText` | `text`, `position` (`'auto'` default, or `'right'`/`'left'`/`'bottom'`), `font_size`, `italic`, `color`, `align`, `width_pct`. Narrative text rendered OUTSIDE the plot region only -- routes through the existing text-panel system (`side_right`/`side_left`/`caption` slots), so it cannot collide with bars/lines/data labels. **`text` MUST be ≤8 words** (one-line takeaway, not a sentence; engine hard-caps at 10 with a 2-word buffer). For longer narratives, pass `make_chart(caption=..., side_right=..., side_left=...)` directly (no word cap on those kwargs). `'auto'` resolves to the first free slot in priority order: `right` -> `bottom` -> `left`. Explicit `make_chart(side_right=..., side_left=..., caption=...)` kwargs win against PlotText targeting the same slot (PlotText reroutes to next available; warning logged). All 9 inside-corner anchors (`top-*`/`middle-*`/`bottom-*`) and the bare `'top'` value were removed in the 2026-05-10 outside-only rewire and now raise `ValidationError` with a migration hint |
+| `PlotText` | `text`, `position` (`'auto'` or `'bottom'`; both render below the plot in the caption band), `font_size`, `italic`, `color`, `align`, `width_pct`. **`text` MUST be ≤8 words** (one-line takeaway; engine hard-caps at 10 with a 2-word buffer). For longer prose use `make_chart(caption=...)` (no word cap). Explicit `caption=` wins against PlotText on the same band (PlotText reroutes; warning logged). Inside-plot anchor values were removed in the 2026-05-10 outside-only rewire and now raise `ValidationError` with a migration hint |
 
 ### 8.4 Chart-type compatibility
 
@@ -530,7 +530,6 @@ When the question is "does X anticipate Y?" -- ISM PMI ahead of equity returns b
 |---|---|---|
 | Time-shifted dual-axis | "What does X imply for Y over the next N months?" | Shift predictor `+N` months -> dual-axis + `VLine` at "Today" |
 | Scatter `Y_t` vs `X_{t-N}` | "How tight is the lag-N relationship?" | `merged['x_lag'] = x.shift(N)` then `'scatter'` + `mapping['trendline']=True` |
-| Sweep N | "Which lead horizon fits best?" | 4-pack of N=3, 6, 9, 12 via `make_4pack_grid` |
 | Combine | "Strength + path in one frame" | `make_2pack_horizontal(scatter_spec, time_shift_spec)` |
 
 ```python

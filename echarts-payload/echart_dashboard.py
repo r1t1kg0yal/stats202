@@ -1375,6 +1375,20 @@ def _validate_table_widget(w: Dict[str, Any], wbase: str,
             f"{wbase}.ref|dataset_ref",
             "table widget requires 'ref' or 'dataset_ref'"
         ))
+    # Cross-ref: when dataset_ref is set, it must point at a declared
+    # dataset. Without this check, a table with a typo'd or phantom
+    # dataset_ref silently materialises to 0 rows and the post-
+    # materialise pass (``_check_table_widget``) used to silent-return
+    # on the missing key -- so the dashboard compiled with a header-
+    # only table. Mirrors the equivalent gate in
+    # ``_validate_chart_widget``.
+    dsr = w.get("dataset_ref")
+    if dsr and dataset_names is not None and dsr not in dataset_names:
+        errs.append(_err(
+            f"{wbase}.dataset_ref",
+            f"dataset '{dsr}' not declared in manifest.datasets "
+            f"(available: {sorted(dataset_names)})"
+        ))
     cols_def = w.get("columns")
     if cols_def is not None:
         if not isinstance(cols_def, list):
@@ -1469,9 +1483,21 @@ def _validate_table_widget(w: Dict[str, Any], wbase: str,
 def _validate_pivot_widget(w: Dict[str, Any], wbase: str,
                             errs: List[str], dataset_names: Any) -> None:
     """Validate a ``widget: pivot`` entry."""
-    if not w.get("dataset_ref"):
+    dsr = w.get("dataset_ref")
+    if not dsr:
         errs.append(_err(f"{wbase}.dataset_ref",
                           "pivot widget requires 'dataset_ref'"))
+    elif dataset_names is not None and dsr not in dataset_names:
+        # Cross-ref: missing dataset_ref materialises to a 0-row pivot
+        # and the post-materialise pass used to silent-return on the
+        # missing key -- so the dashboard compiled with an empty
+        # pivot grid. Mirrors the equivalent gate in
+        # ``_validate_chart_widget`` and ``_validate_table_widget``.
+        errs.append(_err(
+            f"{wbase}.dataset_ref",
+            f"dataset '{dsr}' not declared in manifest.datasets "
+            f"(available: {sorted(dataset_names)})"
+        ))
     for k in ("row_dim_columns", "col_dim_columns", "value_columns"):
         v = w.get(k)
         if v is None:
@@ -5762,8 +5788,23 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     "stat_grid_source_unresolvable",
     # Table column failures: column header renders but cells are empty.
     "table_column_field_missing",
-    # Filter failures: filter is a no-op (silently filters nothing).
+    # Filter failures: filter is a no-op (UI control renders but applies
+    # to nothing). All three modes ship a visibly-broken artifact (a
+    # filter chip the user can click that doesn't filter anything),
+    # which silently erodes trust in every other interactive control on
+    # the dashboard, so the whole set is always-blocking.
+    #
+    #  * ``filter_no_targets`` -- ``targets`` is missing / empty list.
+    #    The chip renders but applies to no widget.
+    #  * ``filter_targets_no_match`` -- every non-wildcard target is
+    #    a typo / phantom widget id. Identical visual outcome.
+    #  * ``filter_field_missing_in_target`` -- targets resolve, but
+    #    ``field`` is not a column in the resolved dataset, so the
+    #    runtime predicate matches no rows and the filter "silently
+    #    filters nothing".
     "filter_field_missing_in_target",
+    "filter_no_targets",
+    "filter_targets_no_match",
     # Empty-data widget renders: persisted dashboard would visibly
     # render an empty visual (header-only table or empty pivot grid).
     # Per V08 (2026-05-03), every visible-empty case blocks at compile
@@ -6979,7 +7020,38 @@ def _check_table_widget(w: Dict[str, Any], path: str,
     out: List[Diagnostic] = []
     wid = w.get("id")
     ds_name = w.get("dataset_ref")
-    if not ds_name or ds_name not in dfs:
+    if not ds_name:
+        # Widget uses ``ref`` (file path; resolved at render time) or
+        # has no data binding at all. The structural validator already
+        # enforced presence of one; nothing for this pass to do.
+        return out
+    if ds_name not in dfs:
+        # ``dataset_ref`` points at a name not declared in
+        # manifest.datasets. The structural validator gates this too
+        # (``_validate_table_widget`` cross-ref against ctx.dataset_names);
+        # this branch is the belt-and-suspenders post-materialise
+        # version so a manifest that bypasses structural validation
+        # (e.g. fed through ``render_dashboard`` directly, or PRISM
+        # synthesised a phantom dataset_ref AFTER validate) still hits
+        # an ALWAYS_BLOCKING error rather than silently shipping a
+        # header-only table.
+        out.append(Diagnostic(
+            severity="error", code="table_dataset_empty",
+            widget_id=wid, path=f"{path}.dataset_ref",
+            message=(f"table '{wid}' references dataset_ref='{ds_name}' "
+                     f"which is not declared in manifest.datasets "
+                     f"(available: {sorted(dfs.keys())}); table would "
+                     f"render empty (header row only). Persisting an "
+                     f"empty table is a known-broken artifact -- "
+                     f"ALWAYS_BLOCKING."),
+            context={"dataset": ds_name,
+                       "available_datasets": sorted(dfs.keys()),
+                       "fix_hint": (
+                           "Either rename 'dataset_ref' to one of the "
+                           "declared datasets above, or add the missing "
+                           "dataset to manifest.datasets upstream "
+                           "(typically by widening "
+                           "`scripts/pull_data.py` to fetch it).")}))
         return out
     df = dfs[ds_name]
     if df is None or len(df) == 0:
@@ -7141,7 +7213,32 @@ def _check_pivot_widget(w: Dict[str, Any], path: str,
     out: List[Diagnostic] = []
     wid = w.get("id")
     ds_name = w.get("dataset_ref")
-    if not ds_name or ds_name not in dfs:
+    if not ds_name:
+        # Structural validator already flagged ``dataset_ref`` missing.
+        return out
+    if ds_name not in dfs:
+        # ``dataset_ref`` names a dataset not declared in
+        # manifest.datasets. The structural validator gates this too
+        # (``_validate_pivot_widget`` cross-ref); this branch is the
+        # belt-and-suspenders post-materialise version so a manifest
+        # that bypasses structural validation still hits an
+        # ALWAYS_BLOCKING error rather than silently shipping an
+        # empty pivot grid.
+        out.append(Diagnostic(
+            severity="error", code="pivot_dataset_empty",
+            widget_id=wid, path=f"{path}.dataset_ref",
+            message=(f"pivot '{wid}' references dataset_ref='{ds_name}' "
+                     f"which is not declared in manifest.datasets "
+                     f"(available: {sorted(dfs.keys())}); pivot would "
+                     f"render an empty grid (no row dims, no col dims, "
+                     f"no value cells). Persisting an empty pivot is "
+                     f"a known-broken artifact -- ALWAYS_BLOCKING."),
+            context={"dataset": ds_name,
+                       "available_datasets": sorted(dfs.keys()),
+                       "fix_hint": (
+                           "Either rename 'dataset_ref' to one of the "
+                           "declared datasets above, or add the missing "
+                           "dataset to manifest.datasets upstream.")}))
         return out
     df = dfs[ds_name]
     if df is None or len(df) == 0:
@@ -7797,20 +7894,57 @@ def _format_kpi_number(n: float, opts: Dict[str, Any]) -> str:
 
 def _check_filter(f: Dict[str, Any], idx: int, manifest: Dict[str, Any],
                     dfs: Dict[str, Any]) -> List[Diagnostic]:
-    """Filter-level diagnostics. Three failure modes:
+    """Filter-level diagnostics. Four failure modes:
 
-      1. ``filter_field_missing_in_target`` - filter.field is not a
+      1. ``filter_no_targets`` - filter has no ``targets`` declared
+         (missing field or empty list). UI control renders but
+         applies to nothing.
+      2. ``filter_field_missing_in_target`` - filter.field is not a
          column in any of the target widgets' datasets.
-      2. ``filter_default_not_in_options`` - filter.default is not in
+      3. ``filter_default_not_in_options`` - filter.default is not in
          filter.options for select/multiSelect/radio types.
-      3. ``filter_targets_no_match`` - none of the filter.targets
-         patterns matches a real widget id.
+      4. ``filter_targets_no_match`` - every non-wildcard filter.targets
+         pattern resolves to no widget id.
+
+    Modes 1, 2, 4 are ``ALWAYS_BLOCKING``: persisting a no-op filter
+    chip silently erodes user trust in the rest of the dashboard's
+    interactive controls. Mode 3 stays a warning because the runtime
+    falls back to the first option / unselected state -- still
+    interactive, just not the author's intended default.
     """
     out: List[Diagnostic] = []
     fid = f.get("id")
     fld = f.get("field")
     targets = f.get("targets") or []
     layout = manifest.get("layout") or {}
+
+    # 0. No targets at all -> filter chip renders interactive but
+    # applies to no widget. Distinct code from ``filter_targets_no_match``
+    # because the fix is different: missing targets means PRISM never
+    # declared what to filter; mismatched targets means PRISM declared
+    # but typo'd the widget ids.
+    if not targets:
+        out.append(Diagnostic(
+            severity="error",
+            code="filter_no_targets",
+            widget_id=fid,
+            path=f"filters[{idx}].targets",
+            message=(f"filter '{fid}' has no 'targets' declared "
+                     f"(missing field or empty list); the UI control "
+                     f"will render but apply to no widget -- a no-op "
+                     f"filter. Persisting an interactive chip that "
+                     f"does nothing erodes trust in every other "
+                     f"control on the dashboard -- ALWAYS_BLOCKING."),
+            context={
+                "fix_hint": (
+                    "Set 'targets' to a list of widget ids the filter "
+                    "should refresh. Use '*' for all data-bound "
+                    "widgets, or wildcards like 'prefix_*' / "
+                    "'*_suffix'. Every filter must target at least "
+                    "one widget to be functional.")}))
+        # Skip the downstream target-matching / field-existence checks
+        # -- they all reduce to "no targets to match against".
+        return out
 
     # Build the universe of widget ids in the manifest so we can flag
     # filter targets that resolve to nothing.
@@ -7884,13 +8018,22 @@ def _check_filter(f: Dict[str, Any], idx: int, manifest: Dict[str, Any],
             [t for t in targets if t != "*"]
         ):
             # Every non-wildcard target was unmatched -> filter is dead.
+            # ALWAYS_BLOCKING (promoted from warning 2026-05-13): the
+            # rendered chip is interactive but applies to nothing, which
+            # is indistinguishable to the end user from a broken
+            # dashboard control. Persisting an interactive no-op
+            # silently degrades trust in every other filter on the
+            # dashboard, so the whole class fails compile.
             out.append(Diagnostic(
-                severity="warning",
+                severity="error",
                 code="filter_targets_no_match",
                 widget_id=fid,
                 path=f"filters[{idx}].targets",
                 message=(f"filter '{fid}' targets={targets!r} match no "
-                         f"widget ids; the filter will be a no-op."),
+                         f"widget ids; the filter will be a no-op. "
+                         f"Persisting an interactive chip that does "
+                         f"nothing erodes trust in every other control "
+                         f"on the dashboard -- ALWAYS_BLOCKING."),
                 context={"targets": targets,
                            "available_widget_ids": sorted(set(widget_ids)),
                            "fix_hint": (

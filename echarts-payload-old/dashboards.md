@@ -488,32 +488,16 @@ The header's right edge is shell-injected (Methodology / Refresh / Share / Downl
 
 ### 2.5 Folder sanctity audit
 
-Before any edit (or any new build), confirm the canonical 5 are present:
+Before any edit (or any new build), confirm the canonical 5 are present. Imported from `ai_development.dashboards`:
 
 ```python
-import json
+from ai_development.dashboards import _audit_dashboard_layout
 
-REQUIRED = [
-    "manifest_template.json", "manifest.json", "dashboard.html",
-    "scripts/pull_data.py", "scripts/build.py",
-]
-
-def _audit_dashboard_layout(folder, manifest=None):
-    """Confirm the canonical 5 paths exist under <folder>. Raises if any
-    is missing. Anything else under the folder is fine -- this audit
-    intentionally does NOT enforce exclusivity. Use archive/<UTC>/ for
-    rogue files you want to keep around for reference.
-    """
-    folder = folder.rstrip("/")
-    listing = {entry["Key"].replace(f"{folder}/", "", 1).lstrip("/")
-                for entry in s3_manager.list(folder)}
-    missing = [r for r in REQUIRED if r not in listing]
-    if missing:
-        raise ValueError(
-            f"_audit_dashboard_layout: {folder} missing required path(s): "
-            f"{missing}"
-        )
+_audit_dashboard_layout(DASHBOARD_PATH)             # plain check
+_audit_dashboard_layout(DASHBOARD_PATH, manifest)   # forward-compat (manifest currently unused)
 ```
+
+Signature: `_audit_dashboard_layout(folder, manifest=None, *, s3_manager=None) -> True`. Falls back to the `s3_manager` singleton when the kwarg is omitted; tolerates both `List[str]` and `List[{"Key": ...}]` listing shapes. Raises `ValueError` listing any of the 5 canonical paths missing from `<folder>` — `manifest_template.json`, `manifest.json`, `dashboard.html`, `scripts/pull_data.py`, `scripts/build.py`. Does NOT enforce exclusivity; anything else under the folder is fine. Use `archive/<UTC>/` for rogue files you want to keep around for reference.
 
 Run the audit at the START of any inheritance (PRISM picking up an existing dashboard to modify) and at the END of every Recipe 1 build. If it raises, the missing paths are heal targets — re-author whatever's missing per §H Heal before proceeding with the requested edit. The audit pairs with the compile-time `_audit_refresh_attachment` (which fires at the end of every `build_dashboard` and at the start of every `refresh_dashboard`); together they enforce the compile ⇔ refresh-attach invariant in §H.
 

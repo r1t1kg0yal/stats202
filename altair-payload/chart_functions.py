@@ -636,6 +636,70 @@ def _sanitize_column_names(
     return df, mapping
 
 
+def _coerce_string_x_to_datetime(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> pd.DataFrame:
+    """Auto-coerce a string x-axis to datetime for time-series chart types.
+
+    PRISM commonly passes ISO-style date strings (``"2023-01-01"``,
+    ``"Jan 2023"``, ``"2023"``) without first calling ``pd.to_datetime``.
+    Without coercion, ``_dispatch_builder`` routes ``multi_line`` /
+    ``timeseries`` to ``_build_profile_line`` (the ordinal-x builder
+    intended for yield-curve tenors like ``"1Y"`` / ``"10Y"``), which
+    treats the strings as ordinal categories and produces verbose
+    ``2023-01-01`` tick labels rotated -45 degrees.
+
+    The fix is wrapper-side absorption (Principle #7): try to parse the
+    column as datetime; if it succeeds, return a fresh copy with the
+    column converted; otherwise return the input unchanged. The dispatcher
+    then routes correctly to ``_build_multi_line`` / ``_build_timeseries``
+    and the date axis gets the smart format (``"%b %y"``, ``"%Y"``,
+    ``"%d %b"``) and horizontal labels.
+
+    Skipped when:
+      - chart_type is not ``multi_line`` / ``timeseries`` (only these
+        dispatch on x dtype)
+      - ``mapping['x_type'] == 'ordinal'`` (explicit caller override wins;
+        e.g. tenor strings labelled as dates intentionally)
+      - x column is already datetime or numeric
+      - parsing raises (yield-curve tenors, ratings, regions, etc.)
+    """
+    if chart_type not in {"multi_line", "timeseries"}:
+        return df
+    if mapping.get("x_type") == "ordinal":
+        return df
+
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        return df
+
+    x_series = df[x_field]
+    if (
+        pd.api.types.is_datetime64_any_dtype(x_series)
+        or pd.api.types.is_numeric_dtype(x_series)
+    ):
+        return df
+
+    try:
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            converted = pd.to_datetime(x_series, errors="raise")
+    except (ValueError, TypeError):
+        return df
+
+    df = df.copy()
+    df[x_field] = converted
+    logger.info(
+        "[chart_functions] Auto-coerced x_field=%r from %s to datetime "
+        "for chart_type=%s.",
+        x_field, x_series.dtype, chart_type,
+    )
+    return df
+
+
 def validate_plot_ready_df(
     df: pd.DataFrame,
     chart_type: str,
@@ -6330,8 +6394,12 @@ def calculate_optimal_label_angle(
     needed_horizontal = max_label_len * 8 + 12
     if needed_horizontal <= space_per_label:
         return 0
-    if max_label_len * 5.5 + 8 < space_per_label:
+    
+    # At -45 degrees, parallel labels need ~20px of horizontal pitch to avoid
+    # overlapping perpendicularly (assuming ~14px font height).
+    if space_per_label >= 20:
         return -45
+        
     return -90
 
 
@@ -10764,11 +10832,17 @@ def _build_bar(
             orient="bottom",
             labelAngle=facet_label_angle,
             labelPadding=14,
-            labelBaseline="top",
             labelFontSize=skin_config.get("axis_config", {}).get(
                 "labelFontSize", 14,
             ),
         )
+        
+        # When labels are rotated, align them so they don't overlap the chart
+        if facet_label_angle != 0:
+            header_kwargs["labelAlign"] = "right"
+            header_kwargs["labelBaseline"] = "middle"
+        else:
+            header_kwargs["labelBaseline"] = "top"
         if facet_label_expr is not None:
             header_kwargs["labelExpr"] = facet_label_expr
 
@@ -13835,6 +13909,14 @@ def make_chart(
                 error_message=f"Auto-melt failed: {exc}",
             )
 
+    # ---- Auto-coerce string x-axis to datetime (multi_line / timeseries)
+    # PRISM may pass ISO date strings without first calling pd.to_datetime.
+    # Without this, the dispatcher routes string-dated series to
+    # _build_profile_line (the ordinal-x builder) which produces verbose
+    # "2023-01-01" tick labels rotated -45 degrees instead of the smart
+    # date-aware format ("Jan 23", "%Y") and horizontal labels.
+    df = _coerce_string_x_to_datetime(df, mapping, chart_type)
+
     # ---- Heatmap matrix auto-melt ---------------------------------------
     # If both x and y reference non-existent columns and the DataFrame is a
     # numeric matrix (correlation matrix, distance matrix, etc.), melt the
@@ -14790,6 +14872,7 @@ def _build_single_chart(
     if chart_type in {"multi_line", "area"}:
         df, mapping = _auto_melt_for_multiline(df, mapping)
     df, mapping = _sanitize_column_names(df, mapping)
+    df = _coerce_string_x_to_datetime(df, mapping, chart_type)
 
     # Validation.
     validate_plot_ready_df(df, chart_type, mapping)
@@ -17501,16 +17584,43 @@ def _qc_one(
     real BAD verdict from ``check_chart_quality`` propagates through.
     """
     png_path = getattr(r, "png_path", None)
-    if not getattr(r, "success", True) or not png_path:
+    success = getattr(r, "success", True)
+    truncated_rows = getattr(r, "truncated_rows", 0) or 0
+    warnings_list = getattr(r, "warnings", []) or []
+    if not success or not png_path:
+        # Distinguish a real render failure from a render-with-truncation that
+        # somehow lost its png path. This message used to read 'no png_path'
+        # which surfaced to users as 'Chart failed to render: unknown error'
+        # even though the engine had emitted a clear truncation warning.
+        if truncated_rows and warnings_list:
+            reason = (
+                f"rendered with truncation but png_path missing; "
+                f"engine warning: {warnings_list[0]}"
+            )
+        else:
+            reason = getattr(r, "error_message", None) or "no png_path"
         return {
             "passed": False,
-            "reason": getattr(r, "error_message", None) or "no png_path",
+            "reason": reason,
             "png_path": png_path,
+            "truncated_rows": truncated_rows,
         }
     try:
         png_bytes = s3_manager.get(png_path)
         verdict = check_chart_quality(png_bytes)
         verdict.setdefault("png_path", png_path)
+        # Surface truncation as a non-fatal annotation so downstream callers
+        # can distinguish 'rendered cleanly' from 'rendered but N rows dropped'.
+        if truncated_rows:
+            verdict["truncated_rows"] = truncated_rows
+            existing_reason = verdict.get("reason") or ""
+            trunc_note = (
+                f"rendered with {truncated_rows} row(s) truncated -- "
+                f"consider a larger dimensions preset"
+            )
+            verdict["reason"] = (
+                f"{existing_reason}; {trunc_note}" if existing_reason else trunc_note
+            )
         return verdict
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -19644,8 +19754,34 @@ def make_table(
     column_aligns = dict(column_aligns or {})
     rag_thresholds = dict(rag_thresholds or {})
     highlight_columns = list(highlight_columns or [])
-    cell_colors = dict(cell_colors or {})
-    cell_text_colors = dict(cell_text_colors or {})
+    # Normalize cell_colors / cell_text_colors keys: accept (row, col_name) in
+    # addition to (row, col_idx). Mirrors column_color_modes's {col_name: ...}
+    # convention -- a column NAME is the natural key, an integer index is the
+    # fallback. Previously, passing a name silently raised a low-information
+    # TypeError from deep inside _tbl_draw_body.
+    def _normalize_cell_keys(d):
+        if not d:
+            return {}
+        out = {}
+        col_to_idx = {c: i for i, c in enumerate(df.columns)}
+        for k, v in d.items():
+            if not (isinstance(k, tuple) and len(k) == 2):
+                out[k] = v
+                continue
+            r, c = k
+            if isinstance(c, str):
+                if c not in col_to_idx:
+                    warnings.append(
+                        f"cell_colors/cell_text_colors key (r={r}, c={c!r}): "
+                        f"column name not in df.columns; skipping"
+                    )
+                    continue
+                c = col_to_idx[c]
+            out[(r, c)] = v
+        return out
+
+    cell_colors = _normalize_cell_keys(cell_colors)
+    cell_text_colors = _normalize_cell_keys(cell_text_colors)
     sparkline_columns = dict(sparkline_columns or {})
     minibar_columns = dict(minibar_columns or {})
     signed_columns = list(signed_columns or [])
@@ -19715,21 +19851,23 @@ def make_table(
         row_h, wrap_columns, max_wrap_lines,
     )
 
+    # No auto-truncation. If the canvas can't hold every row, fail loudly
+    # so the caller picks a larger preset (or splits the table) rather than
+    # silently dropping data. Tables with hidden rows are a wrong-answer
+    # failure mode -- the reader has no signal that more data exists.
     truncated = max(0, len(df) - rendered)
     if truncated:
-        warnings.append(
-            f"Table truncated to {rendered} of {len(df)} rows for the "
-            f"{canvas[0]}x{canvas[1]} canvas; use a larger preset or split."
-        )
-        cap_font = _tbl_load_font("italic", theme["caption_font_size"])
-        msg = f"+ {truncated} more row{'s' if truncated != 1 else ''}…"
-        y_used = (
-            sum(row_h[:rendered])
-            + _tbl_groups_before(rendered, row_groups) * geom.group_band_h
-        )
-        draw.text(
-            (geom.table_x, geom.body_top_y + y_used + 4),
-            msg, fill=theme["muted_text"], font=cap_font,
+        return TableResult(
+            success=False,
+            error_message=(
+                f"Table has {len(df)} rows but only {rendered} fit the "
+                f"{canvas[0]}x{canvas[1]} canvas ({dimensions!r} preset). "
+                f"Use a larger dimensions preset (e.g. 'presentation' or "
+                f"'tall'), pass an explicit canvas=(W, H), reduce row count, "
+                f"or split the table. Auto-truncation is disabled to prevent "
+                f"silent data loss."
+            ),
+            warnings=warnings,
         )
 
     _tbl_draw_caption(draw, caption, geom, theme)
@@ -19747,15 +19885,25 @@ def make_table(
     presigned_url: Optional[str] = None
     if s3_manager is not None:
         try:
-            written_path = s3_manager.put(buf, out_path)
+            # s3_manager.put() returns None; the canonical path is out_path
+            # itself. (Previously we assigned the return value to written_path,
+            # which silently produced png_path=None on every successful table
+            # render -- see TKT png_path= on success regression.)
+            s3_manager.put(buf, out_path)
+            written_path = out_path
         except Exception as e:  # noqa: BLE001
             return TableResult(
                 success=False,
                 error_message=f"s3_manager.put failed: {e}",
                 warnings=warnings,
             )
-        if hasattr(s3_manager, "local_path"):
-            presigned_url = f"file://{s3_manager.local_path(out_path).resolve()}"
+        # Best-effort presigned URL for download convenience. Falls back to
+        # the local-path shim when the manager exposes one (dev mode).
+        try:
+            presigned_url = generate_presigned_download_url(written_path).presigned_url
+        except Exception:  # noqa: BLE001
+            if hasattr(s3_manager, "local_path"):
+                presigned_url = f"file://{s3_manager.local_path(out_path).resolve()}"
     else:
         local_root = Path(output_dir or "./session_output").expanduser().resolve()
         local_root.mkdir(parents=True, exist_ok=True)

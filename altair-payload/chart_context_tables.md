@@ -123,8 +123,8 @@ auto-injected — do NOT import. `s3_manager`, `session_path`,
 | `heatmap_groups` | list | Multi-column shared scale — see §4 |
 | `rag_thresholds` | dict | `{col: (red_max, amber_max)}` for `'rag'` mode |
 | `highlight_columns` | list | Tint full column light blue — see §6 |
-| `cell_colors` | dict | `{(row, col): hex}` per-cell background — wins over everything |
-| `cell_text_colors` | dict | `{(row, col): hex}` per-cell text override |
+| `cell_colors` | dict | `{(row, col): hex}` per-cell background — wins over everything. `col` accepts name (preferred) or integer index. |
+| `cell_text_colors` | dict | `{(row, col): hex}` per-cell text override. Same key shape as `cell_colors`. |
 | `sparkline_columns` | dict | `{col: [list_per_row]}` — see §7.1 |
 | `minibar_columns` | dict | `{display_col: source_col}` — see §7.2 |
 | `signed_columns` | list | Auto green-positive / red-negative TEXT colour |
@@ -141,9 +141,9 @@ auto-injected — do NOT import. `s3_manager`, `session_path`,
 | `success` | bool | True on render success |
 | `png_path` / `download_url` | str | PNG S3 path / presigned URL |
 | `error_message` | str-None | Failure reason |
-| `warnings` | list | Truncation, drift, etc. |
+| `warnings` | list | Drift / non-fatal annotations (canvas overflow is fatal — see §13) |
 | `n_rows` / `n_cols` | int | Shape after `show_index` adjustment |
-| `truncated_rows` | int | 0 unless rows > canvas budget |
+| `truncated_rows` | int | Always 0 from `make_table` (overflow returns `success=False`); field kept for parity with chart result types |
 | `canvas_size` | tuple | (width, height) actually used |
 
 Access via dot notation only. Always check `r.success` before reading
@@ -261,8 +261,8 @@ totals into the DataFrame; engine handles the styling.
 | Kwarg | Purpose |
 |---|---|
 | `row_colors={r: hex}` | Per-row tint (flag outliers, sector-code rows). Loses to `heatmap_groups` / `column_color_modes` / `cell_colors` / `total_rows` / `subtotal_rows`; wins over `row_bands`. |
-| `cell_colors={(r, c): hex}` | Per-cell background. Wins over EVERYTHING else. |
-| `cell_text_colors={(r, c): hex}` | Per-cell text colour. |
+| `cell_colors={(r, c): hex}` | Per-cell background. Wins over EVERYTHING else. `c` is a column name (preferred) or integer index. |
+| `cell_text_colors={(r, c): hex}` | Per-cell text colour. Same key shape as `cell_colors`. |
 | `highlight_columns=[col, ...]` | Light-blue tint on entire column ("the answer" column). |
 | `signed_columns=[col, ...]` | Auto green text for positive values, red for negative (text colour only — independent of cell background). |
 | `row_bands=True` (default) | Subtle alt-row stripe. Set False for plain look. |
@@ -357,9 +357,13 @@ Pass via `column_formats` as `{col: hint}`:
   context.
 - **Mini-bar source can be the display column itself** (`minibar_columns={'X': 'X'}`)
   — then both number and bar render in the same cell.
-- **Tables don't auto-grow vertically.** If rows exceed canvas, engine
-  truncates and emits an italic `+N more rows…` footer + a warning in
-  `result.warnings`. Pick a larger `dimensions` or split.
+- **Tables don't auto-grow vertically.** If rows exceed the canvas
+  budget, `make_table` returns `success=False` with an actionable
+  `error_message` — pick a larger `dimensions` preset (e.g.
+  `'presentation'` / `'tall'`), pass an explicit `canvas=(W, H)`, or
+  split the table. Auto-truncation is disabled because hidden rows
+  are a wrong-answer failure mode — the reader has no signal that
+  more data exists.
 
 ---
 
@@ -407,6 +411,4 @@ and `download_url` are `None`. Common failure modes:
 | `Unknown dimensions preset: 'foo'` | Bad `dimensions` value | Use one of `wide` / `square` / `tall` / `compact` / `presentation` / `thumbnail` / `teams` |
 | `DataFrame has no columns` | Empty DataFrame | Filter upstream |
 | `s3_manager.put failed: ...` | Underlying S3 / FS write failed | Check `session_path`; verify the manager is alive |
-
-Truncation is a WARNING, not a failure — `success=True` with
-`truncated_rows > 0` and a `warnings[0]` entry.
+| `Table has X rows but only Y fit the WxH canvas (...) Auto-truncation is disabled...` | Row count exceeds canvas budget | Pick a larger `dimensions` preset, pass explicit `canvas=(W, H)`, reduce row count, or split the table |
