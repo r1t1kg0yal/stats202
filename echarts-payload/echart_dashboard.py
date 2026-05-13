@@ -8588,6 +8588,152 @@ def _check_dataset_size(
     return out
 
 
+def _check_duplicate_kpi_values_per_scope(
+    manifest: Dict[str, Any], dfs: Dict[str, Any]
+) -> List[Diagnostic]:
+    """Per-scope duplicate-KPI-value sense-check (NEW 2026-05-13).
+
+    Walks each visible scope (one tab in tabbed layouts, the whole
+    layout in grid layouts) and groups every KPI widget by its
+    resolved float value. Any group of 2+ KPI tiles sharing the same
+    value emits ONE warning so PRISM sense-checks the tile sources.
+
+    Common failure modes this catches:
+
+      * Copy-paste error: the same ``source`` string pasted into
+        multiple KPI tiles (the highest-leverage case -- 3 KPIs
+        showing the same number is almost always this).
+      * Degenerate aggregation: a column with one unique value
+        returns the same number for every aggregator that hits it
+        (``min`` / ``max`` / ``mean`` / ``latest`` all collapse).
+      * Coincidental collision on a tiny / static dataset where two
+        legitimately-different sources happen to resolve to the
+        same float.
+
+    Skipped (deliberately):
+      * KPIs whose value is unresolvable (``--`` render). Those
+        already fire ``kpi_no_value_no_source`` /
+        ``kpi_source_unresolvable`` / etc. -- adding another
+        diagnostic on top would dilute the actionable error.
+      * NaN values. ``float('nan') == float('nan')`` is False by
+        IEEE-754 semantics, so two NaN KPIs would not group; they
+        also typically reflect a different broken-source mode that
+        the existing per-widget checks handle.
+
+    Severity: warning. The runtime renders normally; this is a
+    sense-check that surfaces a likely-bug pattern without blocking
+    compile. Deliberate same-value tiles (e.g. "current 10Y rate"
+    and "spot 10Y rate" deliberately showing the same number) are
+    a known false-positive class; the author can ignore the warning.
+    """
+    out: List[Diagnostic] = []
+    layout = manifest.get("layout") or {}
+
+    def _gather_kpi_values(rows: Any) -> List[Tuple[float, str, str]]:
+        """Return [(resolved_value, widget_id, origin), ...] for every
+        KPI widget in ``rows`` whose value resolves to a number."""
+        entries: List[Tuple[float, str, str]] = []
+        for row in rows or []:
+            if not isinstance(row, list):
+                continue
+            for w in row:
+                if not isinstance(w, dict):
+                    continue
+                if w.get("widget") != "kpi":
+                    continue
+                wid = w.get("id")
+                if not isinstance(wid, str):
+                    continue
+                value: Optional[float] = None
+                origin = ""
+                if "value" in w and w.get("value") is not None:
+                    try:
+                        value = float(w["value"])
+                        origin = f"value={w['value']!r}"
+                    except (TypeError, ValueError):
+                        value = None
+                elif w.get("source"):
+                    src = w["source"]
+                    resolved, _err = _resolve_kpi_value(src, dfs)
+                    if resolved is not None:
+                        value = resolved
+                        origin = f"source={src!r}"
+                if value is None:
+                    continue
+                # NaN never equals itself; drop early so groups stay
+                # clean.
+                if value != value:
+                    continue
+                entries.append((value, wid, origin))
+        return entries
+
+    def _emit_duplicates(entries: List[Tuple[float, str, str]],
+                          scope_path: str,
+                          scope_label: str) -> None:
+        if len(entries) < 2:
+            return
+        # Group by exact float equality. Python's dict-key float
+        # equality handles 0.0 == -0.0 the same as the IEEE rules.
+        groups: Dict[float, List[Tuple[str, str]]] = {}
+        for value, wid, origin in entries:
+            groups.setdefault(value, []).append((wid, origin))
+        for value, members in groups.items():
+            if len(members) < 2:
+                continue
+            widget_ids = [wid for wid, _ in members]
+            origins = [o for _, o in members]
+            qualifier = (
+                "ALL KPIs" if len(members) == len(entries)
+                else f"{len(members)} of {len(entries)} KPIs"
+            )
+            out.append(Diagnostic(
+                severity="warning",
+                code="kpi_duplicate_values_in_scope",
+                widget_id=widget_ids[0],
+                path=scope_path,
+                message=(f"{qualifier} in {scope_label} resolve to "
+                         f"the same value {value!r}: {widget_ids!r}. "
+                         f"Almost always a copy-paste in the KPI "
+                         f"`source` strings or a degenerate "
+                         f"aggregation collapsing to one number. "
+                         f"PRISM should sense-check each tile -- "
+                         f"verify the source dataset, aggregator, "
+                         f"and column are the ones each tile is "
+                         f"supposed to show."),
+                context={
+                    "value": value,
+                    "duplicate_count": len(members),
+                    "scope_kpi_count": len(entries),
+                    "widget_ids": widget_ids,
+                    "origins": origins,
+                    "scope": scope_label,
+                    "fix_hint": (
+                        "For each duplicate KPI, confirm the "
+                        "`source` string (`<dataset>.<aggregator>."
+                        "<column>`) points at the metric the tile "
+                        "is labelled for. If the duplication is "
+                        "intentional -- two tiles deliberately "
+                        "displaying the same number -- this "
+                        "warning is safe to ignore.")}))
+
+    if layout.get("kind") == "tabs":
+        for ti, tab in enumerate(layout.get("tabs", []) or []):
+            if not isinstance(tab, dict):
+                continue
+            tab_id = tab.get("id") or f"tab[{ti}]"
+            entries = _gather_kpi_values(tab.get("rows", []))
+            _emit_duplicates(
+                entries,
+                f"layout.tabs[{ti}]",
+                f"tab '{tab_id}'",
+            )
+    else:
+        entries = _gather_kpi_values(layout.get("rows", []))
+        _emit_duplicates(entries, "layout", "dashboard")
+
+    return out
+
+
 def _table_dataset_refs(manifest: Dict[str, Any]) -> set:
     """Set of dataset names consumed by any table widget. Used by
     _check_dataset_size to apply the stricter table-rows thresholds.
@@ -8677,6 +8823,13 @@ def chart_data_diagnostics(
     for fi, f in enumerate(manifest.get("filters") or []):
         if isinstance(f, dict):
             diags.extend(_check_filter(f, fi, manifest, dfs))
+
+    # Per-tab (or per-dashboard in grid layouts) KPI duplicate-value
+    # sense-check. Fires WARNINGS only -- the runtime renders fine, the
+    # author may have intentionally duplicated, and the false-positive
+    # class is non-trivial. Catches the copy-paste-source bug that
+    # produces N KPI tiles all showing the same number.
+    diags.extend(_check_duplicate_kpi_values_per_scope(manifest, dfs))
 
     diags.extend(_check_dataset_size(manifest, _table_dataset_refs(manifest)))
 
