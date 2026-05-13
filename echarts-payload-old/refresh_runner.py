@@ -41,11 +41,13 @@ import json
 import os
 import sys
 import traceback
-from datetime import datetime, timezone
 from typing import Optional
 
 from ai_development.core.s3_bucket_manager import s3_manager
 from ai_development.dashboards import build_dashboard, run_pull
+from ai_development.dashboards.dashboards_time import (
+    format_iso, freq_delta, parse_iso, utcnow,
+)
 
 
 # Phase tags used in the per-error `script` field so the §8.1 modal +
@@ -58,9 +60,11 @@ _PHASE_PARSE       = "<argparse>"
 
 
 def _utcnow_iso() -> str:
-    """ISO-8601 UTC with `Z` suffix to match existing registry entries
-    (per `prism/dashboard-refresh.md` \u00a76.2). Sub-microsecond precision."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    """ISO-8601 UTC for status / registry stamps. Routes through the
+    canonical ``dashboards_time`` module (``+00:00`` emit; ``parse_iso``
+    accepts both ``+00:00`` and legacy ``Z``-suffix registry entries
+    transparently)."""
+    return format_iso(utcnow())
 
 
 def _put_status(folder: str, payload: dict) -> None:
@@ -68,6 +72,24 @@ def _put_status(folder: str, payload: dict) -> None:
         json.dumps(payload, indent=2).encode("utf-8"),
         f"{folder}/refresh_status.json",
     )
+
+
+def _read_status(folder: str) -> Optional[dict]:
+    """Read ``refresh_status.json`` for ``folder``. Returns ``None`` if
+    the file is missing, unreadable, or malformed. Used at the start of
+    ``run()`` to capture the previous ``consecutive_failures`` count so
+    the cooldown logic in ``refresh_dashboards`` can back off failing
+    dashboards instead of hot-spinning every tick."""
+    try:
+        raw = s3_manager.get(f"{folder}/refresh_status.json")
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw.rstrip(b"\x00").decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
 
 
 def _parse_folder(folder: str) -> tuple:
@@ -108,19 +130,40 @@ def _classify_exception(exc: BaseException) -> str:
     return name or "unknown"
 
 
-def _update_registry(kerberos: str, dashboard_id: str, status: str) -> None:
+def _read_registry_entry(kerberos: str, dashboard_id: str) -> dict:
+    """Read the dashboard entry from
+    ``users/<kerberos>/dashboards/dashboards_registry.json``. Raises if
+    the entry isn't there -- a missing registry entry means Django
+    allowed a refresh on an unregistered dashboard (a bug upstream that
+    should surface, not be papered over). Used at the start of
+    ``run()`` to fetch ``refresh_frequency`` for ``next_refresh_at``
+    computation."""
+    registry_path = f"users/{kerberos}/dashboards/dashboards_registry.json"
+    raw = s3_manager.get(registry_path)
+    registry = json.loads(raw.rstrip(b"\x00").decode("utf-8"))
+    for dash in registry.get("dashboards", []):
+        if dash.get("id") == dashboard_id:
+            return dash
+    raise RuntimeError(
+        f"refresh_runner: dashboard {dashboard_id!r} not in "
+        f"{registry_path}; runner cannot read entry"
+    )
+
+
+def _update_registry(kerberos: str, dashboard_id: str, status: str,
+                       *, refreshed_at: str) -> None:
     """Stamp ``last_refreshed`` + ``last_refresh_status`` on the dashboard
-    entry in ``users/<kerberos>/dashboards/dashboards_registry.json``.
-    Raises if the entry isn't there -- a missing registry entry means
-    Django allowed a refresh on an unregistered dashboard (a bug
-    upstream that should surface, not be papered over)."""
+    entry. ``refreshed_at`` is supplied by ``run()`` so the registry's
+    ``last_refreshed`` matches ``metadata.time.refresh_cycle_at`` byte-for-
+    byte (single source of truth for "when did this cycle start").
+    Raises if the entry isn't there."""
     registry_path = f"users/{kerberos}/dashboards/dashboards_registry.json"
     raw = s3_manager.get(registry_path)
     registry = json.loads(raw.rstrip(b"\x00").decode("utf-8"))
     matched = False
     for dash in registry.get("dashboards", []):
         if dash.get("id") == dashboard_id:
-            dash["last_refreshed"] = _utcnow_iso()
+            dash["last_refreshed"] = refreshed_at
             dash["last_refresh_status"] = status
             matched = True
             break
@@ -172,6 +215,22 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
         flush=True,
     )
 
+    # Capture the prior status BEFORE we overwrite it with "running" --
+    # consecutive_failures is the count of consecutive error / partial
+    # outcomes ending with the PREVIOUS run. Used to extend the failure
+    # cooldown via exponential backoff on the next cron walk
+    # (refresh_dashboards._failure_cooldown reads this field).
+    prior_status = _read_status(folder)
+    prior_failure_count = 0
+    if prior_status and prior_status.get("status") in ("error", "partial"):
+        try:
+            prior_failure_count = int(
+                prior_status.get("consecutive_failures", 0)
+            )
+        except (TypeError, ValueError):
+            prior_failure_count = 0
+        prior_failure_count = max(0, prior_failure_count)
+
     running_payload: dict = {"status": "running", "started_at": started_at,
                               "pid": pid}
     if log_path:
@@ -181,6 +240,34 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
     final_status = "error"
     errors: list = []
     failing_phase = _PHASE_PULL_LOAD  # default attribution if module-level load blows up
+
+    # Cycle anchor — single utcnow() that flows into:
+    #   - metadata.time.refresh_cycle_at (via build_dashboard kwarg)
+    #   - registry.dashboards[].last_refreshed (via _update_registry)
+    # so the chrome pill and the registry agree on "when did this
+    # cycle's data land" to the same byte. Captured here, not inside
+    # build_dashboard, so the value survives a build-phase failure
+    # (we still want the cycle anchor stamped on the status row).
+    cycle_dt = utcnow()
+    cycle_iso = format_iso(cycle_dt)
+
+    # next_refresh_at is best-effort: requires the registry entry's
+    # refresh_frequency. If the registry read fails (deleted entry,
+    # corrupt JSON), proceed without it -- the build still runs, the
+    # pill just won't carry a "next refresh in N minutes" hint.
+    next_refresh_iso: Optional[str] = None
+    try:
+        entry = _read_registry_entry(kerberos, dashboard_id)
+        delta = freq_delta(entry.get("refresh_frequency", "daily"))
+        if delta is not None:
+            next_refresh_iso = format_iso(cycle_dt + delta)
+    except Exception as exc:
+        # Non-fatal: log and continue with next_refresh_at=None.
+        print(
+            f"[refresh_runner] registry read FAILED (non-fatal): "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr, flush=True,
+        )
 
     try:
         # Phase 1: enumerate pulls + run each via the engine entry point.
@@ -194,13 +281,24 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
             failing_phase = f"{_PHASE_PULL_PREFIX}::{name}"
             run_pull(folder, name, s3_manager=s3_manager)
 
-        # Phase 2: build (template + CSVs + transforms -> compile + write)
+        # Phase 2: build (template + CSVs + transforms -> compile + write).
+        # Pass cycle_iso so build_dashboard stamps metadata.time.refresh_
+        # cycle_at; the chrome pill renders "refreshed <ET wall time>"
+        # off this value. next_refresh_iso is optional ("next refresh
+        # in N minutes" UX is future; the field is observability-only
+        # today).
         failing_phase = _PHASE_BUILD
-        build_dashboard(folder, s3_manager=s3_manager)
+        build_dashboard(
+            folder, s3_manager=s3_manager,
+            refresh_cycle_at=cycle_iso,
+            next_refresh_at=next_refresh_iso,
+        )
 
-        # Phase 3: registry stamp
+        # Phase 3: registry stamp -- last_refreshed matches the cycle
+        # anchor passed into build_dashboard byte-for-byte.
         failing_phase = "<registry>"
-        _update_registry(kerberos, dashboard_id, "success")
+        _update_registry(kerberos, dashboard_id, "success",
+                          refreshed_at=cycle_iso)
         final_status = "success"
     except BaseException as exc:
         tb = traceback.format_exc()
@@ -218,17 +316,30 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
         print(tb, file=sys.stderr, flush=True)
 
     completed_at = _utcnow_iso()
-    started_dt = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
-    completed_dt = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
-    elapsed = (completed_dt - started_dt).total_seconds()
+    started_dt = parse_iso(started_at)
+    completed_dt = parse_iso(completed_at)
+    elapsed = (
+        (completed_dt - started_dt).total_seconds()
+        if started_dt and completed_dt else 0.0
+    )
+
+    # consecutive_failures: resets to 0 on success, increments on
+    # error / partial. Consumed by refresh_dashboards._is_due to apply
+    # exponential cooldown so a chronically-failing dashboard stops
+    # spamming the cron every tick.
+    if final_status == "success":
+        consecutive_failures = 0
+    else:
+        consecutive_failures = prior_failure_count + 1
 
     final_payload = {
-        "status":          final_status,
-        "started_at":      started_at,
-        "completed_at":    completed_at,
-        "elapsed_seconds": round(elapsed, 2),
-        "pid":             pid,
-        "errors":          errors,
+        "status":               final_status,
+        "started_at":           started_at,
+        "completed_at":         completed_at,
+        "elapsed_seconds":      round(elapsed, 2),
+        "pid":                  pid,
+        "errors":               errors,
+        "consecutive_failures": consecutive_failures,
     }
     if log_path:
         final_payload["log_path"] = log_path

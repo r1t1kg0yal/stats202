@@ -100,3 +100,78 @@ from ai_development.dashboards.echart_dashboard import (  # noqa: E402,F401
     Manifest,
     DashboardResult,
 )
+
+
+# -------------------------------------------------------------
+# Folder sanctity audit (canonical 5-path check)
+#
+# The L2 dashboards module (context/modules/static/tools/dashboards.md
+# section 2.5) documents this helper as the canonical pre-edit /
+# post-build audit. It must be importable from
+# ``ai_development.dashboards`` so PRISM ephemeral scripts (Tool 2
+# build wrap-up, Recipe 2 section C step 1, Recipe 3 section D step 1)
+# can call it without inlining the body each time.
+
+_AUDIT_REQUIRED_PATHS = [
+    "manifest_template.json",
+    "manifest.json",
+    "dashboard.html",
+    "scripts/pull_data.py",
+    "scripts/build.py",
+]
+
+
+def _audit_dashboard_layout(folder, manifest=None, *, s3_manager=None):  # noqa: F401
+    """Confirm the canonical 5 paths exist under ``<folder>``.
+
+    Raises ``ValueError`` listing the missing path(s) if any are
+    absent. Does NOT enforce exclusivity -- anything else under the
+    folder is fine; use ``archive/<UTC>/`` for rogue files you want to
+    keep around for reference.
+
+    Parameters
+    ----------
+    folder : str
+        Dashboard folder path on S3
+        (e.g. ``users/<kerberos>/dashboards/<name>``).
+    manifest : dict, optional
+        Loaded manifest dict. Currently unused but accepted for
+        forward-compat with the documented call signature
+        ``_audit_dashboard_layout(folder, m)``.
+    s3_manager : optional
+        S3 manager instance. If omitted, falls back to the singleton
+        from ``ai_development.core.s3_bucket_manager``.
+
+    Raises
+    ------
+    ValueError
+        If one or more of the canonical 5 paths is missing from
+        ``<folder>``.
+    """
+    if s3_manager is None:
+        from ai_development.core.s3_bucket_manager import s3_manager as _s3
+        s3_manager = _s3
+
+    folder = folder.rstrip("/")
+    listing_raw = s3_manager.list(folder)
+
+    # ``s3_manager.list()`` returns ``List[str]`` (full keys) in the
+    # PRISM sandbox. Tolerate the AWS-SDK ``List[dict]`` shape too in
+    # case a caller passes a custom client (the staging stub at
+    # ``projects/echarts/ai_development/core/s3_bucket_manager.py``
+    # returns ``[{"Key": ...}]`` for parity with the boto3 surface).
+    listing = set()
+    for entry in listing_raw:
+        key = entry["Key"] if isinstance(entry, dict) else entry
+        if not key:
+            continue
+        rel = key.replace(f"{folder}/", "", 1).lstrip("/")
+        listing.add(rel)
+
+    missing = [r for r in _AUDIT_REQUIRED_PATHS if r not in listing]
+    if missing:
+        raise ValueError(
+            f"_audit_dashboard_layout: {folder} missing required path(s): "
+            f"{missing}"
+        )
+    return True

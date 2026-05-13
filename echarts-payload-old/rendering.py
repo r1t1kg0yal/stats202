@@ -3619,8 +3619,11 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
         </button>
       </div>
       <div class="header-meta">
-        <span class="meta-dot" id="data-as-of" style="display:none">
-          Data as of <span id="data-as-of-val"></span>
+        <span class="meta-dot" id="now-pill" style="display:none">
+          <span id="now-pill-val"></span>
+        </span>
+        <span class="meta-dot" id="refresh-pill" style="display:none">
+          <span id="refresh-pill-val"></span>
         </span>
       </div>
     </div>
@@ -10995,40 +10998,109 @@ DASHBOARD_APP_JS = r"""
     });
   }
 
-  // ----- data freshness badge -----
+  // ----- data freshness badges -----
   //
-  // Renders the "Data as of <stamp>" pill. JS does no date math: the
-  // Python engine bakes ``metadata.pill_text`` via dashboards_time.
-  // format_pill() so the chrome reads a fully-formed user-facing string
-  // ("Data through Q1 2026 -- refreshed 12 May 2026 09:25 ET"). Fallbacks:
-  //   1. ``metadata.pill_text`` (canonical; baked by build_dashboard)
-  //   2. ``metadata.time.{data_domain_end, refresh_cycle_at}`` (parts)
-  //   3. legacy ``metadata.{data_as_of, generated_at}`` aliases
-  // Anything more elaborate (locale-specific rendering, "refreshed N
-  // minutes ago" relative time) is the engine's job — not the
-  // browser's — so we don't resurrect the timezone-math-in-JS bug.
+  // Two pills in the header-meta strip:
+  //
+  //   #now-pill      "12 May 2026  02:03:47 ET"   (live; ticks every 1s)
+  //   #refresh-pill  "Refreshed 02:00:35 ET"      (static until next poll)
+  //
+  // JS owns the rendering here intentionally:
+  //   - The live clock CAN'T be server-baked (it ticks every second);
+  //     this is the one exception to anti-pattern #4 ("date math in
+  //     the browser is the bug"). We use Intl.DateTimeFormat with the
+  //     ET timezone so the rendering is deterministic; no `new Date()
+  //     .toISOString()` shenanigans.
+  //   - The refresh pill IS read from `metadata.time.refresh_cycle_at`
+  //     (canonical ISO emit; `+00:00` since the Phase 3 staging-side
+  //     refactor; `parse_iso` accepts legacy Z-suffix entries too).
+  //     applyLiveData() updates it on every successful poll.
+  //
+  // ET is hardcoded (trading-floor convention). If a non-NY user
+  // friction shows up later, parametrize via metadata.display_tz.
   var MD = MANIFEST.metadata || {};
-  function renderDataAsOfPill(){
-    var el = document.getElementById('data-as-of');
-    var val = document.getElementById('data-as-of-val');
-    if (!el || !val) return;
-    var rendered = MD.pill_text || null;
-    if (!rendered){
-      var T = MD.time || {};
-      var domain = T.data_domain_end || MD.data_as_of;
-      var cycle  = T.refresh_cycle_at || T.build_completed_at || MD.generated_at;
-      if (!domain && !cycle){ el.style.display = 'none'; return; }
-      var parts = [];
-      if (domain) parts.push('Data through ' + domain);
-      // Bare ISO formatting only -- no Date() arithmetic, no toISOString
-      // re-emit that would manufacture a fake 00:00:00 suffix.
-      if (cycle) parts.push('refreshed ' + String(cycle).slice(0, 19).replace('T', ' ') + ' UTC');
-      rendered = parts.join(' -- ');
+
+  // Format any Date object's wall-clock as an ET-broken-out parts dict.
+  // Cached formatter -- creating Intl.DateTimeFormat is cheap but
+  // creating it 50,000 times (once per tick over a day) is wasteful.
+  var _ET_FMT = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  });
+  function _toETParts(d){
+    if (!(d instanceof Date) || isNaN(d.getTime())) return null;
+    var parts = _ET_FMT.formatToParts(d).reduce(function(acc, p){
+      if (p.type !== 'literal') acc[p.type] = p.value;
+      return acc;
+    }, {});
+    // Intl emits "24" for midnight in hour12:false on some engines;
+    // normalize to "00" so the pill never reads "24:03:47 ET".
+    if (parts.hour === '24') parts.hour = '00';
+    return parts;
+  }
+
+  function _formatNowPill(now){
+    var p = _toETParts(now);
+    if (!p) return '';
+    return p.day + ' ' + p.month + ' ' + p.year + '  '
+            + p.hour + ':' + p.minute + ':' + p.second + ' ET';
+  }
+
+  function _formatRefreshPill(refreshAtISO, now){
+    if (!refreshAtISO) return null;
+    // parse_iso parity in JS: handle Z / +00:00 / naive transparently.
+    // new Date() accepts both Z and +00:00; naive is ambiguous but
+    // rare on this path (all our emit sites are aware).
+    var rd = new Date(refreshAtISO);
+    if (isNaN(rd.getTime())) return null;
+    var r = _toETParts(rd);
+    var n = _toETParts(now);
+    if (!r || !n) return null;
+    var sameDay  = r.year === n.year && r.month === n.month && r.day === n.day;
+    var sameYear = r.year === n.year;
+    if (sameDay){
+      return 'Refreshed ' + r.hour + ':' + r.minute + ':' + r.second + ' ET';
     }
-    val.textContent = rendered;
+    if (sameYear){
+      return 'Refreshed ' + r.day + ' ' + r.month + '  ' + r.hour + ':' + r.minute + ' ET';
+    }
+    return 'Refreshed ' + r.day + ' ' + r.month + ' ' + r.year
+            + '  ' + r.hour + ':' + r.minute + ' ET';
+  }
+
+  function updateNowPill(){
+    var el  = document.getElementById('now-pill');
+    var val = document.getElementById('now-pill-val');
+    if (!el || !val) return;
+    var s = _formatNowPill(new Date());
+    if (!s){ el.style.display = 'none'; return; }
+    val.textContent = s;
     el.style.display = 'inline-flex';
   }
-  renderDataAsOfPill();
+
+  function updateRefreshPill(refreshAtISO){
+    var el  = document.getElementById('refresh-pill');
+    var val = document.getElementById('refresh-pill-val');
+    if (!el || !val) return;
+    var iso = refreshAtISO
+              || (MD.time && MD.time.refresh_cycle_at)
+              || (MD.time && MD.time.build_completed_at)
+              || MD.generated_at
+              || null;
+    var s = _formatRefreshPill(iso, new Date());
+    if (!s){ el.style.display = 'none'; return; }
+    val.textContent = s;
+    el.style.display = 'inline-flex';
+  }
+
+  // Initial paint + tick every second. The interval is cheap (one
+  // textContent write); pause-when-hidden is handled by the browser
+  // (background tabs throttle setInterval automatically).
+  updateNowPill();
+  updateRefreshPill();
+  setInterval(updateNowPill, 1000);
 
   // ----- live data refresh (no page reload) -----
   //
@@ -11067,7 +11139,10 @@ DASHBOARD_APP_JS = r"""
                                  || MD.data_as_of || MD.generated_at || null;
 
   function _liveFlashPill(){
-    var pill = document.getElementById('data-as-of');
+    // Flash the refresh pill specifically -- it's the one whose
+    // displayed text actually changed. The now-pill ticks every
+    // second so a flash on it would be visual noise.
+    var pill = document.getElementById('refresh-pill');
     if (!pill) return;
     pill.classList.remove('live-flash');
     // Force a reflow so re-adding the class restarts the animation
@@ -11142,15 +11217,14 @@ DASHBOARD_APP_JS = r"""
     try { if (typeof renderStatGrids === 'function') renderStatGrids(); } catch(e){}
     try { if (typeof _applyShowWhen  === 'function') _applyShowWhen(); } catch(e){}
 
-    // 5. Update header chrome from the new metadata block. The pill
-    //    re-uses the renderDataAsOfPill() helper so the canonical
-    //    "MD.pill_text first" precedence applies on live updates too.
+    // 5. Update header chrome from the new metadata block. The
+    //    now-pill ticks on its own setInterval; only the refresh-pill
+    //    needs to react to the new metadata.time.refresh_cycle_at.
     var md = payload.metadata || {};
-    if (md.pill_text !== undefined) MD.pill_text = md.pill_text;
     if (md.time)        MD.time        = md.time;
     if (md.data_as_of)  MD.data_as_of  = md.data_as_of;
     if (md.generated_at) MD.generated_at = md.generated_at;
-    renderDataAsOfPill();
+    updateRefreshPill();
 
     // Methodology + summary (markdown content) live in shared popups;
     // stash the fresh value on MANIFEST.metadata so the next popup

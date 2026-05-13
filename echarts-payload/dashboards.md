@@ -139,6 +139,7 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 - Cardinality is exact: one `manifest_template.json`, one `manifest.json`, one `dashboard.html`, one `scripts/pull_data.py`, one `scripts/build.py`. No second copies, no `_v2` / `_old` / `_backup` siblings.
 - The two LIVE `.py` files under `scripts/` are exactly what the refresh runner re-executes on schedule. Missing live scripts → the [Refresh] button fails immediately with `FileNotFoundError`.
 - `history/<UTC>/` and `archive/<UTC>/` are permitted; both are ignored by the runner and the audit. Use `archive/` to quarantine old artefacts you want to keep around for reference.
+- A picked-up dashboard that violates this layout is a heal target, not a stop-and-ask. §H Recipe 7 covers re-authoring the missing canonical files before proceeding with the user's actual ask. Surface only when intent cannot be reconstructed.
 
 ### Rule 5 — every CSV at `{folder}/data/<dataset>.csv`
 
@@ -487,34 +488,18 @@ The header's right edge is shell-injected (Methodology / Refresh / Share / Downl
 
 ### 2.5 Folder sanctity audit
 
-Before any edit (or any new build), confirm the canonical 5 are present:
+Before any edit (or any new build), confirm the canonical 5 are present. Imported from `ai_development.dashboards`:
 
 ```python
-import json
+from ai_development.dashboards import _audit_dashboard_layout
 
-REQUIRED = [
-    "manifest_template.json", "manifest.json", "dashboard.html",
-    "scripts/pull_data.py", "scripts/build.py",
-]
-
-def _audit_dashboard_layout(folder, manifest=None):
-    """Confirm the canonical 5 paths exist under <folder>. Raises if any
-    is missing. Anything else under the folder is fine -- this audit
-    intentionally does NOT enforce exclusivity. Use archive/<UTC>/ for
-    rogue files you want to keep around for reference.
-    """
-    folder = folder.rstrip("/")
-    listing = {entry["Key"].replace(f"{folder}/", "", 1).lstrip("/")
-                for entry in s3_manager.list(folder)}
-    missing = [r for r in REQUIRED if r not in listing]
-    if missing:
-        raise ValueError(
-            f"_audit_dashboard_layout: {folder} missing required path(s): "
-            f"{missing}"
-        )
+_audit_dashboard_layout(DASHBOARD_PATH)             # plain check
+_audit_dashboard_layout(DASHBOARD_PATH, manifest)   # forward-compat (manifest currently unused)
 ```
 
-Run the audit at the START of any inheritance (PRISM picking up an existing dashboard to modify) and at the END of every Recipe 1 build. If it raises, surface the missing paths to the user — re-author whatever's missing before proceeding with the requested edit.
+Signature: `_audit_dashboard_layout(folder, manifest=None, *, s3_manager=None) -> True`. Falls back to the `s3_manager` singleton when the kwarg is omitted; tolerates both `List[str]` and `List[{"Key": ...}]` listing shapes. Raises `ValueError` listing any of the 5 canonical paths missing from `<folder>` — `manifest_template.json`, `manifest.json`, `dashboard.html`, `scripts/pull_data.py`, `scripts/build.py`. Does NOT enforce exclusivity; anything else under the folder is fine. Use `archive/<UTC>/` for rogue files you want to keep around for reference.
+
+Run the audit at the START of any inheritance (PRISM picking up an existing dashboard to modify) and at the END of every Recipe 1 build. If it raises, the missing paths are heal targets — re-author whatever's missing per §H Heal before proceeding with the requested edit. The audit pairs with the compile-time `_audit_refresh_attachment` (which fires at the end of every `build_dashboard` and at the start of every `refresh_dashboard`); together they enforce the compile ⇔ refresh-attach invariant in §H.
 
 ---
 
@@ -533,8 +518,6 @@ This hub covers every primitive's catalog row + the always-needed contract + the
 | `dashboards/template_crud.md` | THIN reference — points back at hub §C for the canonical CRUD skeleton; covers per-CRUD-pattern niche cases (multi-target filter rebinding, `show_when` reference cleanup, etc.). Most edits don't need this; §C carries the daily patterns. | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/template_crud.md"], mode="full")` |
 | `dashboards/recipes.md` | 21 data-shape archetypes → chart types (the cookbook) + transforms hook patterns (YoY / composition / cross-dataset join / subset projection) for `build.py` | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
 | `dashboards/pipelines.md` | The pipeline cataloging mental model + reuse decision ladder (reuse-existing-CSV / extend-existing-pipeline / add-new-pipeline) + active-pipeline integrity rules | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md"], mode="full")` |
-| `dashboards/canonical_showcase.json` | Bare templated manifest of `build_showcase` as a structural reference: 8 MECE tabs, 79 widgets, 39 datasets, 13 filters, 2 links — every primitive in the Catalog index above exercised at least once, data stripped to header rows. ~111 KB. **How to use**: fetch when in doubt about how to shape a widget / filter / link / metadata block, find the matching block by keyword search (chart_type / widget id / filter type / aggregator), copy the structural fragment verbatim, then rebind dataset names + column references to your own datasets. | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/canonical_showcase.json"], mode="full")` |
-
 **Common combos** (one call, multiple file_paths):
 
 | Build shape | Single call to copy |
@@ -1404,6 +1387,8 @@ The DEEP GLANCE surfaces three kinds of drift PRISM should resolve before the re
 - **Empty `PULLS` / `TRANSFORMS`** — when the script is structurally valid but the registry / list is empty, the next refresh produces nothing useful.
 - **Filter targets pointing at non-existent widgets** — the validator catches this at compile time, but the DEEP GLANCE makes it visible before mutation.
 
+All three are heal targets — §H Heal handles them in the same READ → MUTATE → WRITE pattern as a regular CRUD edit. Most picked-up dashboards need one or two of these healed silently before PRISM proceeds with the user's actual ask.
+
 ---
 
 ## §G. Recipe 6 — Revert
@@ -1419,6 +1404,73 @@ Reverting an edit is "re-edit the surface to the prior state". The prior state l
 After any revert, the same `build_dashboard(folder)` recompile + `_audit_dashboard_layout(folder)` audit applies — a botched revert is harder to recover from than the original bad change. Treat a revert as a normal CRUD edit; same gates apply.
 
 **No script versioning machinery.** Earlier iterations of this hub maintained a `scripts/versions/<name>_v<N>.py` chain with lockstep coupling between `pull_data` and `build`. That machinery is retired — the chat history (PRISM's primary memory of what changed) plus optional `history/<UTC>/` snapshots cover the recovery cases that matter, without the audit overhead of monotonic version chains. If you find yourself needing more than chat-history recovery, set `keep_history: true` on the registry entry; the runner will write a snapshot to `history/<UTC>/` on every successful refresh.
+
+---
+
+## §H. Recipe 7 — Heal a drifted dashboard
+
+The engine evolves. Validator codes get added, retired, or tightened. Required metadata fields get added. Catalog values (chart_types, widget kinds, filter ops) get renamed or replaced. Registry entry shapes get extended. A dashboard built three months ago against the schema of three months ago may today fail to compile against the current schema. This is normal, and it is silently fixable.
+
+**The compile ⇔ refresh-attach invariant.** A compiling dashboard is correctly attached to the refresh pipeline. `_audit_refresh_attachment(folder)` enforces this at the end of every `build_dashboard(folder)` (post-compile, pre-S3-write) and at the start of every `refresh_dashboard(folder)` (pre-pull, fail-fast). The contrapositive said louder: a non-compliant dashboard CANNOT refresh — the cron silently skips it (or fails partway), the `[Refresh]` button surfaces an error, the data goes stale, and the dashboard becomes a lie. Healing keeps the contract intact.
+
+**The mechanic is self-evidencing.** Every compile attempt — `build_dashboard(folder)`, `validate_manifest(tpl)`, `compile_dashboard(manifest)`, `refresh_dashboard(folder)` — loudly surfaces every point of non-compliance with a specific error code plus a manifest path / widget id. PRISM uses that diagnostic verbatim to heal the dashboard in place, then retries. The spirit and purpose of the dashboard stay; the bytes update to match current schema.
+
+**The behavioral discipline.** Treating a compile error on a PICKED-UP dashboard as "report and stop" is the wrong shape. The engine has already told PRISM exactly what to fix. PRISM heals, recompiles, and proceeds with whatever the user actually asked for. The user sees the same diagnostic stream they always do (internal scratchpad), not a question. Heal actions land in chat history so §G revert covers them if needed. Only escalate when the residual error genuinely encodes missing intent (a retired chart_type with no equivalent; a removed data source).
+
+The five-step heal skeleton:
+
+1. **AUDIT** — `_audit_dashboard_layout(folder)`; the canonical layout check still applies first. A missing canonical file is itself a heal target (re-author from chat history or from the surviving manifest_template / scripts).
+2. **ATTEMPT** — `build_dashboard(folder)` (or `validate_manifest(tpl)` for in-flight CRUD).
+3. **DETECT** — if it raises, parse the error. Engine errors carry the format `[severity] code [wid] @ path :: message | fix: <hint>`. The `code` is the heal-target; `path` and `wid` localize it.
+4. **HEAL** — use the heal lexicon below to map each code to a surgical fix. Apply via §C (manifest CRUD) or §D (script CRUD); never re-emit a surface wholesale.
+5. **RETRY** — `build_dashboard(folder)` again. Loop until success.
+
+### H.1 The heal lexicon — common drift patterns
+
+A reference of the most common drift patterns and their surgical fix. Not exhaustive — anything the validator or `_audit_refresh_attachment` flags is a heal target.
+
+| Pattern | Symptom (engine code or shape) | Heal action |
+|---|---|---|
+| **Retired metadata field** | `metadata.refresh_enabled` carries stale intent (silently ignored by current engine) | §C.8: `md.pop("refresh_enabled", None)`. The chrome `[Refresh]` button is non-suppressible from the manifest. |
+| **Missing required metadata** | `validate_manifest` raises `metadata.<kerberos\|dashboard_id\|methodology> required` | §C.8: set the three required fields. `kerberos` resolves from the folder path (`users/<k>/dashboards/<id>/`); `dashboard_id` is the folder leaf; `methodology` infers from `summary` / `description` / chat context. |
+| **Top-level-keyed registry entry** | `_audit_refresh_attachment` raises `registry_entry_orphaned`; cron skips the dashboard; `[Refresh]` 404s | Move entry from `registry[<id>] = {...}` into `registry["dashboards"].append({...})`; preserve `created_at`. Per Tool 3 in §B. |
+| **registry / manifest `refresh_frequency` mismatch** | `_audit_refresh_attachment` raises `refresh_frequency_mismatch`; cron fires at one cadence, validator records another | Align both to the same value (prefer the manifest's intent if they disagree). §2.3a.1 for the vocabulary. |
+| **Per-source data subfolders** | `data/haver/cpi.csv` (Rule 5 violation); `build_dashboard()` discovery misses them | Fix `pull_data.py` (§D) so every call passes `output_path=f'{SESSION_PATH}/data'`, then `refresh_dashboard(folder)`. Move stale subfolder CSVs to `archive/<UTC>/`. |
+| **Self-suffix CSV** | `data/rates_eod_eod.csv` from `pull_market_data(name='rates_eod')` instead of `name='rates'` | §D: fix the `name=` arg. Archive the broken file. Re-pull. |
+| **Retired chart_type / widget_kind / filter_type** | `compile_dashboard` raises `unknown chart_type: <retired>` (or equivalent) | Look up current equivalent in `dashboards/charts.md` / `dashboards/widgets.md` / `dashboards/filters.md`; substitute via §C. If no current equivalent (rare), surface the substitution. |
+| **Schema-rename of nested field** | `validate_manifest` raises with a path naming a renamed key (e.g. `metadata.refresh.frequency` vs `metadata.refresh_frequency`) | §C surgical rename; preserve the value. |
+| **Static literals (KPI / stat_grid)** | `kpi_static_value_forbidden` / `stat_grid_static_value_forbidden` (always-blocking) | Wire through `source: "<dataset>.<aggregator>.<col>"`; add a transform in `build.py` if the number isn't in a CSV. |
+| **`chart_too_many_series`** | `line` / `multi_line` / `area` with >4 y-series | Drop to ≤4 series; bucket tail; split into small multiples. §C.3 on the affected widget. |
+| **Manifest-orphan CSVs** | §F.2 DEEP GLANCE flags a CSV in `data/` with no matching `manifest.datasets` key | Add the dataset slot via §C.7 (if wanted), or move CSV to `archive/<UTC>/` (if vestigial). |
+| **Unattached dataset (silent-stale)** | `_audit_refresh_attachment` raises `dataset_<key>_silent_stale` — widget references `<key>`, CSV exists, but no PULLS function produces it and no TRANSFORMS function materializes it. Refreshes "succeed" trivially while the CSV ages forever. | §D edit to add the missing pull (or transform); the CSV stem must match the dataset key byte-for-byte. |
+| **Unattached dataset (no CSV)** | `_audit_refresh_attachment` raises `dataset_<key>_unattached` — widget references `<key>` but no producer found AND no CSV exists | §D add a pull or transform; compile-time would already have failed but the audit names the script-side gap explicitly. |
+| **Unparseable script** | `_audit_refresh_attachment` raises `pull_data_syntax_error` / `build_py_syntax_error` | §D: fix the script bytes. Body-level errors (NameError, ImportError) surface at refresh time as usual; syntax errors are caught early. |
+| **Stale `schema_version`** | Manifest carries `schema_version: 0` or missing; current engine expects `1` | §C: `tpl["schema_version"] = 1`. |
+| **Missing canonical file** | `_audit_dashboard_layout` raises with `missing required path(s): [scripts/build.py]` (or similar) | Re-author from chat history if available; else re-derive from the surviving surfaces (e.g. an empty `TRANSFORMS = []` if the manifest doesn't use derivations). Escalate only when the missing file's intent cannot be reconstructed. |
+
+### H.2 When to escalate vs heal silently
+
+| Pattern | Behavior |
+|---|---|
+| Field rename, retired catalog value with current equivalent, missing-but-inferrable metadata, structural compliance fix (registry, paths, scripts) | **Silent heal**. Do not surface to the user. |
+| Retired chart_type / widget_kind with NO current equivalent (rare) | One-line note alongside the fix: "Substituted `<retired>` → `<closest>` (no current equivalent); let me know if this isn't the shape you want." Then proceed with the user's ask. |
+| Missing data source entirely retired from PRISM | Stop and escalate. The dashboard's intent depends on data that no longer exists; the user is the only source of truth for replacement. |
+| `_audit_refresh_attachment` raises and there is no chat context for what the missing intent should be (e.g. orphan dataset key that doesn't match any historical pull) | Surface the gap; the user is the only source of truth. |
+
+### H.3 Heal vs revert
+
+`§G Revert` undoes a recent edit PRISM made. `§H Heal` updates a dashboard the engine has drifted away from. They are different:
+
+| Operation | Trigger | Source of truth |
+|---|---|---|
+| Revert | User asks to undo a recent edit | Chat history / `history/<UTC>/` snapshots |
+| Heal | Compile / build / validate / `_audit_refresh_attachment` error on an inherited dashboard | Current engine schema + the user's preserved intent |
+
+A revert can re-introduce a heal target (the prior state had a drift that's been fixed since). When that happens, run §H immediately after §G — the revert lands the prior bytes; the heal updates to current schema. The user-visible outcome is the prior dashboard, working today.
+
+### H.4 The audit is also why folder PICKUP is the right mental model
+
+Treating `users/<k>/dashboards/<id>/` as PRISM's workspace (the principle stated near the top of this hub) and the audit-then-heal loop are two sides of the same coin. Pickup means: read the folder, audit it, heal any drift, then make the change the user asked for. The dashboard the user touches is always current — not because PRISM remembered to "update the schema" but because compile-and-fix is automatic.
 
 ---
 

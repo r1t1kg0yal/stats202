@@ -1750,7 +1750,7 @@ def _validate_metadata(manifest: Dict[str, Any],
         return
     for k in ("kerberos", "dashboard_id", "data_as_of",
                 "generated_at", "version", "api_url", "status_url",
-                "data_url", "pill_text"):
+                "data_url"):
         v = metadata.get(k)
         if v is not None and not isinstance(v, str):
             errs.append(_err(f"metadata.{k}",
@@ -1819,10 +1819,25 @@ def _validate_metadata(manifest: Dict[str, Any],
     # ``dashboards_registry.json`` per-dashboard entry is a separate
     # field and continues to gate the hourly runner.
     rf = metadata.get("refresh_frequency")
-    if rf is not None and rf not in VALID_REFRESH_FREQUENCIES:
-        errs.append(_err("metadata.refresh_frequency",
-                            f"'{rf}' not in "
-                            f"{sorted(VALID_REFRESH_FREQUENCIES)}"))
+    if rf is not None:
+        # Accept (a) legacy enum (back-compat: existing registry entries),
+        # (b) explicit "manual" opt-out, (c) duration strings parseable by
+        # dashboards_time.parse_freq ("60s" / "5m" / "1h" / "1d" / "1w"),
+        # (d) positive integer seconds. parse_freq returns timedelta for
+        # any valid cadence and None for "manual" / unknown -- so the
+        # validator branches on the "manual" string explicitly to keep
+        # the explicit opt-out distinguishable from a typo.
+        from dashboards_time import parse_freq
+        rf_lower = rf.strip().lower() if isinstance(rf, str) else rf
+        is_manual = isinstance(rf, str) and rf_lower == "manual"
+        if not is_manual and parse_freq(rf) is None:
+            errs.append(_err(
+                "metadata.refresh_frequency",
+                f"'{rf}' is not a valid refresh frequency. "
+                f"Expected legacy enum (hourly/daily/weekly/manual) "
+                f"OR duration string (60s/5m/15m/1h/6h/1d/7d/1w) "
+                f"OR positive integer seconds."
+            ))
     # methodology: markdown string OR {title?, body} dict.
     # Drives the header "Methodology" popup button.
     meth = metadata.get("methodology")
@@ -9166,6 +9181,548 @@ def _exec_dashboard_script(folder: str, stem: str, *, s3_manager) -> Dict[str, A
     return ns
 
 
+# ---------------------------------------------------------------------------
+# Refresh-attachment audit: enforces the compile <-> refresh-attach
+# invariant from ``dashboards.md`` §H. A compiling dashboard MUST be
+# correctly attached to the refresh pipeline; the audit raises with a
+# clean diagnostic naming each gap so PRISM can heal silently and retry.
+# ---------------------------------------------------------------------------
+
+
+class RefreshAttachmentError(ValueError):
+    """A compiling dashboard is not structurally attached to the refresh pipeline.
+
+    Raised by ``_audit_refresh_attachment`` at the end of
+    ``build_dashboard`` (after compile succeeded, BEFORE S3 persistence
+    — a failed audit prevents a broken dashboard from going live) and at
+    the start of ``refresh_dashboard`` (before any pull runs — fail
+    fast). Each line of ``self.gaps`` is a discrete heal target; PRISM
+    reads, heals via ``dashboards.md`` §H, retries.
+    """
+
+    def __init__(self, folder: str, gaps: List[str]) -> None:
+        self.folder = folder
+        self.gaps = list(gaps)
+        body = "\n".join(f"  - {g}" for g in self.gaps)
+        super().__init__(
+            f"_audit_refresh_attachment: {folder} has "
+            f"refresh-attachment gap(s):\n{body}\n"
+            f"Heal each gap per dashboards.md §H, then retry."
+        )
+
+
+# Pull primitives recognized by the static-parse stem inference. See
+# ``dashboards.md`` §6 for the stem rules: pull_market_data appends
+# ``_eod`` / ``_intraday`` based on ``mode=``; the other four use
+# ``name=`` verbatim.
+_PULL_PRIMITIVES: frozenset = frozenset({
+    "pull_market_data", "pull_haver_data", "pull_plottool_data",
+    "pull_fred_data", "save_artifact",
+})
+
+
+def _collect_widget_dataset_refs(template: Dict[str, Any]) -> set:
+    """Walk a manifest template, collect every dataset key referenced by
+    a widget. Covers chart specs (``spec.dataset``), table / pivot
+    (``dataset`` or ``dataset_ref``), KPI / stat_grid
+    (``source`` = ``'<ds>.<agg>.<col>'``), and tool widget
+    inputs / outputs (``tool_def.{inputs,outputs}[].dataset``).
+    """
+    refs: set = set()
+
+    layout = template.get("layout") or {}
+    if not isinstance(layout, dict):
+        return refs
+
+    if layout.get("kind") == "tabs":
+        widget_iter = (
+            w for tab in (layout.get("tabs") or [])
+            if isinstance(tab, dict)
+            for row in (tab.get("rows") or [])
+            if isinstance(row, list)
+            for w in row if isinstance(w, dict)
+        )
+    else:
+        widget_iter = (
+            w for row in (layout.get("rows") or [])
+            if isinstance(row, list)
+            for w in row if isinstance(w, dict)
+        )
+
+    for w in widget_iter:
+        wt = w.get("widget")
+        if wt == "chart":
+            spec = w.get("spec")
+            if isinstance(spec, dict):
+                ds = spec.get("dataset")
+                if isinstance(ds, str):
+                    refs.add(ds)
+        elif wt in ("table", "pivot"):
+            ds = w.get("dataset") or w.get("dataset_ref")
+            if isinstance(ds, str):
+                refs.add(ds)
+        elif wt == "kpi":
+            for src_key in ("source", "delta_source", "sparkline_source"):
+                s = w.get(src_key)
+                if isinstance(s, str) and "." in s:
+                    refs.add(s.split(".", 1)[0])
+        elif wt == "stat_grid":
+            s = w.get("source")
+            if isinstance(s, str) and "." in s:
+                refs.add(s.split(".", 1)[0])
+            for item in (w.get("items") or []):
+                if isinstance(item, dict):
+                    src = item.get("source")
+                    if isinstance(src, str) and "." in src:
+                        refs.add(src.split(".", 1)[0])
+        elif wt == "tool":
+            td = w.get("tool_def") or {}
+            if isinstance(td, dict):
+                for io in (td.get("outputs") or []) + (td.get("inputs") or []):
+                    if isinstance(io, dict):
+                        ds = io.get("dataset")
+                        if isinstance(ds, str):
+                            refs.add(ds)
+
+    return refs
+
+
+def _infer_pull_stems_from_source(src: str) -> set:
+    """Statically infer the CSV stems each ``PULLS`` function produces,
+    from the persisted ``pull_data.py`` bytes. Pure static parse; never
+    execs the script.
+
+    Two detection paths cover the realistic write patterns:
+
+    1. **Pull-primitive calls** (the canonical PRISM idiom per
+       ``dashboards.md`` §6). For each call to ``pull_market_data`` /
+       ``pull_haver_data`` / ``pull_plottool_data`` / ``pull_fred_data`` /
+       ``save_artifact``, reads the literal ``name=`` and (for
+       ``pull_market_data``) ``mode=`` kwargs to compute the on-disk CSV
+       stem.
+    2. **Direct ``.put()`` / ``.save()`` writes** under ``/data/<stem>.csv``
+       (or ``.json``). Catches the rarer pattern where a pull function
+       constructs the CSV bytes and persists them directly (e.g. test
+       fixtures, custom scrapers). The path argument can be a string
+       literal or an f-string; the static parse looks at the literal
+       suffix.
+
+    Dynamic ``name=`` (variables, runtime expressions) and dynamic path
+    strings cannot be inferred statically and are silently skipped —
+    those call sites opt out of the static attachment check by
+    construction.
+    """
+    import ast
+    import re
+
+    stems: set = set()
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return stems  # script parse errors surface via the dedicated check
+
+    csv_path_pattern = re.compile(r"/data/([^/]+)\.(csv|json)$")
+
+    def _string_literal_suffix(node: ast.AST) -> Optional[str]:
+        """Extract a concrete string from a Constant or the literal
+        parts of a JoinedStr (f-string). FormattedValue components
+        become opaque (treated as empty string); the literal suffix is
+        usually sufficient for path-tail matching.
+        """
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.JoinedStr):
+            parts: List[str] = []
+            for v in node.values:
+                if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                    parts.append(v.value)
+                else:
+                    parts.append("")  # opaque interpolation
+            return "".join(parts)
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        # ---- Path 1: pull primitive call -------------------------------
+        fn_name: Optional[str] = None
+        if isinstance(node.func, ast.Name):
+            fn_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            fn_name = node.func.attr
+
+        if fn_name in _PULL_PRIMITIVES:
+            name: Optional[str] = None
+            mode: str = "eod"  # pull_market_data default per dashboards.md §6
+            for kw in node.keywords:
+                if kw.arg == "name" and isinstance(kw.value, ast.Constant) \
+                        and isinstance(kw.value.value, str):
+                    name = kw.value.value
+                elif kw.arg == "mode" and isinstance(kw.value, ast.Constant) \
+                        and isinstance(kw.value.value, str):
+                    mode = kw.value.value
+
+            if name is not None:
+                if fn_name == "pull_market_data":
+                    if mode == "eod":
+                        stems.add(f"{name}_eod")
+                    elif mode in ("iday", "intraday"):
+                        stems.add(f"{name}_intraday")
+                    elif mode == "both":
+                        stems.add(f"{name}_eod")
+                        stems.add(f"{name}_intraday")
+                else:
+                    stems.add(name)
+            # fall through — a pull-primitive call won't ALSO be a
+            # direct .put() / .save() write, but the AST walk is cheap
+            continue
+
+        # ---- Path 2: direct .put() / .save() write ---------------------
+        if not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in ("put", "save"):
+            continue
+
+        path_node: Optional[ast.AST] = None
+        # Second positional argument is the canonical path slot
+        if len(node.args) >= 2:
+            path_node = node.args[1]
+        for kw in node.keywords:
+            if kw.arg in ("path", "key", "url"):
+                path_node = kw.value
+                break
+
+        if path_node is None:
+            continue
+        path_str = _string_literal_suffix(path_node)
+        if path_str is None:
+            continue
+        match = csv_path_pattern.search(path_str)
+        if match:
+            stems.add(match.group(1))
+
+    return stems
+
+
+def _infer_transform_keys_from_source(src: str) -> set:
+    """Statically infer which dataset keys ``TRANSFORMS`` functions
+    materialize, from the persisted ``build.py`` bytes. Pure static
+    parse; never execs.
+
+    Walks every assignment in the AST looking for
+    ``datasets['<key>'] = ...`` or ``datasets["<key>"] = ...``.
+    Dynamic keys (variables, f-strings, computed) cannot be inferred
+    statically and are silently skipped.
+    """
+    import ast
+
+    keys: set = set()
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return keys
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            continue
+        targets = (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        )
+        for target in targets:
+            if not isinstance(target, ast.Subscript):
+                continue
+            value_node = target.value
+            if not isinstance(value_node, ast.Name) \
+                    or value_node.id != "datasets":
+                continue
+            slice_value = target.slice
+            # Python 3.8 wraps Subscript.slice in ast.Index; 3.9+ inlines.
+            if hasattr(ast, "Index") and isinstance(slice_value, ast.Index):
+                slice_value = slice_value.value  # type: ignore[attr-defined]
+            if isinstance(slice_value, ast.Constant) \
+                    and isinstance(slice_value.value, str):
+                keys.add(slice_value.value)
+
+    return keys
+
+
+def _audit_refresh_attachment(
+    folder: str,
+    *,
+    s3_manager=None,
+    strict: bool = True,
+) -> None:
+    """Verify that a compiling dashboard is structurally refresh-attachable.
+
+    Enforces the compile <-> refresh-attach invariant from
+    ``dashboards.md`` §H: ``build_dashboard(folder)`` succeeded implies
+    ``refresh_dashboard(folder)`` will also succeed (network availability
+    aside). Runs at the end of ``build_dashboard`` (after compile, BEFORE
+    S3 persistence — a failed audit prevents a broken dashboard from
+    being written) and at the start of ``refresh_dashboard`` (before any
+    pull runs — fail fast without wasted pull cost).
+
+    Checks (each gap surfaces as one line in the raised
+    ``RefreshAttachmentError`` message):
+
+    1. ``manifest_template.json`` is parseable and carries the three
+       required metadata fields (``kerberos``, ``dashboard_id``,
+       ``methodology``).
+    2. ``scripts/pull_data.py`` and ``scripts/build.py`` parse cleanly
+       (``compile()`` doesn't raise SyntaxError). Body-level errors
+       (NameError, ImportError) surface at refresh time as usual.
+    3. The registry entry exists in
+       ``users/<k>/dashboards/dashboards_registry.json`` under
+       ``dashboards[]`` (NOT as a top-level key — top-level-keyed
+       entries are invisible to the hourly cron). When ``strict=False``,
+       missing-entry downgrades to a log line — carve-out for Tool 2 of
+       Recipe 1 (``build_dashboard`` runs BEFORE Tool 3's registry
+       write).
+    4. The registry entry's ``refresh_frequency`` matches the
+       manifest's ``metadata.refresh_frequency``.
+    5. Every dataset key referenced by a widget traces to one of:
+       a) a PULLS entry whose CSV stem (inferred from literal ``name=``
+          and ``mode=`` kwargs) matches the key,
+       b) a TRANSFORMS function that materializes the key via
+          ``datasets['<key>'] = ...``, OR
+       c) (silent-stale guard) only a stale CSV on disk in
+          ``data/<key>.csv`` -- compile passes today, but refresh runs
+          pulls + transforms and the CSV never updates. The audit fires
+          ``dataset_<key>_silent_stale`` so PRISM heals the script
+          attachment rather than letting the CSV age forever.
+
+    Parameters
+    ----------
+    folder
+        Dashboard folder, e.g. ``users/goyalri/dashboards/rates_monitor``.
+    s3_manager
+        Optional S3 manager override. Defaults to the canonical one.
+    strict
+        ``True`` (default, used by ``refresh_dashboard``): every gap
+        raises. ``False`` (used by ``build_dashboard`` end-audit):
+        missing-registry-entry downgrades to a log line; other gaps
+        still raise. The carve-out exists so Tool 2 of Recipe 1 (which
+        runs ``build_dashboard`` BEFORE the Tool 3 registry write)
+        doesn't falsely fail.
+
+    Raises
+    ------
+    RefreshAttachmentError
+        Carries ``folder`` + the full list of ``gaps``. Each gap line
+        is a discrete heal target; PRISM reads, heals via
+        ``dashboards.md`` §H, retries.
+    """
+    s3 = _resolve_s3_manager(s3_manager)
+    folder = folder.rstrip("/")
+    gaps: List[str] = []
+
+    # ---- 1. manifest_template.json parseable + required metadata ----
+    tpl_path = f"{folder}/manifest_template.json".replace("//", "/")
+    try:
+        template = json.loads(
+            s3.get(tpl_path).rstrip(b"\x00").decode("utf-8")
+        )
+    except Exception as e:
+        gaps.append(
+            f"manifest_template_unparseable: {tpl_path} -- {e} "
+            f"(heal: §C deepcopy + repair, or restore from "
+            f"history/<UTC>/ per §G if available)"
+        )
+        raise RefreshAttachmentError(folder, gaps)
+
+    if not isinstance(template, dict):
+        gaps.append(
+            f"manifest_template_not_a_dict: {tpl_path} contents must be "
+            f"a JSON object (heal: §C re-author the template structure)"
+        )
+        raise RefreshAttachmentError(folder, gaps)
+
+    metadata = template.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        gaps.append(
+            f"metadata_not_a_dict: {tpl_path} metadata block must be a "
+            f"dict (heal: §C.8 wrap the existing fields under metadata={{...}})"
+        )
+        metadata = {}
+
+    dashboard_id = metadata.get("dashboard_id")
+    if not isinstance(dashboard_id, str) or not dashboard_id:
+        leaf = folder.rsplit("/", 1)[-1] if "/" in folder else folder
+        gaps.append(
+            f"metadata_dashboard_id_missing: {tpl_path} "
+            f"metadata.dashboard_id required (heal: §C.8 set to folder "
+            f"leaf {leaf!r})"
+        )
+
+    kerberos = metadata.get("kerberos")
+    if not isinstance(kerberos, str) or not kerberos:
+        inferred_k: Optional[str] = None
+        parts = folder.split("/")
+        if (len(parts) >= 4 and parts[-4] == "users"
+                and parts[-2] == "dashboards"):
+            inferred_k = parts[-3]
+        if inferred_k:
+            gaps.append(
+                f"metadata_kerberos_missing: {tpl_path} metadata.kerberos "
+                f"required (heal: §C.8 set to {inferred_k!r} per folder path)"
+            )
+        else:
+            gaps.append(
+                f"metadata_kerberos_missing: {tpl_path} metadata.kerberos "
+                f"required (heal: §C.8 set from folder path)"
+            )
+
+    methodology = metadata.get("methodology")
+    methodology_ok = (
+        (isinstance(methodology, str) and methodology.strip())
+        or (isinstance(methodology, dict) and (
+            methodology.get("title") or methodology.get("body")
+        ))
+    )
+    if not methodology_ok:
+        gaps.append(
+            f"metadata_methodology_missing: {tpl_path} "
+            f"metadata.methodology required and non-empty (heal: §C.8 "
+            f"infer from summary / description / chat context)"
+        )
+
+    manifest_freq = metadata.get("refresh_frequency")
+
+    # ---- 2. Scripts parse cleanly ----
+    script_sources: Dict[str, Optional[str]] = {}
+    for script_name in ("pull_data", "build"):
+        script_path = f"{folder}/scripts/{script_name}.py".replace("//", "/")
+        try:
+            src = s3.get(script_path).rstrip(b"\x00").decode("utf-8")
+        except Exception as e:
+            gaps.append(
+                f"{script_name}_missing: {script_path} not found on S3 "
+                f"-- {e} (heal: §B re-author the canonical script, or "
+                f"restore from history/<UTC>/ per §G)"
+            )
+            script_sources[script_name] = None
+            continue
+        try:
+            compile(src, script_path, "exec")
+            script_sources[script_name] = src
+        except SyntaxError as e:
+            gaps.append(
+                f"{script_name}_syntax_error: {script_path} -- "
+                f"line {e.lineno}: {e.msg} (heal: §D surgical edit to "
+                f"fix the script bytes)"
+            )
+            script_sources[script_name] = None
+
+    # ---- 3. Registry entry exists in dashboards[] ----
+    if (isinstance(kerberos, str) and kerberos
+            and isinstance(dashboard_id, str) and dashboard_id):
+        registry_path = (
+            f"users/{kerberos}/dashboards/dashboards_registry.json"
+        )
+        registry: Dict[str, Any] = {}
+        try:
+            registry = json.loads(
+                s3.get(registry_path).rstrip(b"\x00").decode("utf-8")
+            )
+        except Exception:
+            registry = {}
+
+        dashboards_list = registry.get("dashboards", [])
+        if not isinstance(dashboards_list, list):
+            gaps.append(
+                f"registry_dashboards_not_a_list: {registry_path} "
+                f"'dashboards' key is not a list (got "
+                f"{type(dashboards_list).__name__}; heal: §B Tool 3 to "
+                f"seed the list properly, preserving any existing entries)"
+            )
+            dashboards_list = []
+
+        entry = next(
+            (d for d in dashboards_list
+             if isinstance(d, dict) and d.get("id") == dashboard_id),
+            None,
+        )
+
+        # Top-level-keyed entry (the silent-skip pattern from §B Tool 3)
+        if entry is None and dashboard_id in registry \
+                and isinstance(registry.get(dashboard_id), dict):
+            gaps.append(
+                f"registry_entry_orphaned: {dashboard_id!r} is keyed "
+                f"top-level in {registry_path} instead of inside "
+                f"dashboards[]; the hourly cron iterates dashboards[] "
+                f"and silently skips top-level-keyed entries (heal: "
+                f"§B Tool 3 to move-into-list; preserve created_at)"
+            )
+        elif entry is None:
+            msg = (
+                f"registry_entry_missing: {dashboard_id!r} not present "
+                f"in {registry_path}'s dashboards[] list (heal: §B "
+                f"Tool 3 to register; preserve created_at if known)"
+            )
+            if strict:
+                gaps.append(msg)
+            else:
+                print(
+                    f"[_audit_refresh_attachment] {folder} :: "
+                    f"lenient -- {msg}"
+                )
+        else:
+            # ---- 4. refresh_frequency alignment ----
+            reg_freq = entry.get("refresh_frequency")
+            if manifest_freq is not None and reg_freq != manifest_freq:
+                gaps.append(
+                    f"refresh_frequency_mismatch: manifest "
+                    f"metadata.refresh_frequency={manifest_freq!r} but "
+                    f"registry refresh_frequency={reg_freq!r} (heal: "
+                    f"align both per §2.3a.1; prefer manifest's intent)"
+                )
+
+    # ---- 5. Widget-referenced datasets attach to PULLS or TRANSFORMS ----
+    pulls_src = script_sources.get("pull_data")
+    build_src = script_sources.get("build")
+    if pulls_src is not None and build_src is not None:
+        produced_keys = (
+            _infer_pull_stems_from_source(pulls_src)
+            | _infer_transform_keys_from_source(build_src)
+        )
+        referenced = _collect_widget_dataset_refs(template)
+        for ds_key in sorted(referenced):
+            if ds_key in produced_keys:
+                continue
+            # Not produced by either PULLS or TRANSFORMS. Distinguish
+            # silent-stale (CSV on disk) from fully-unattached.
+            csv_path = f"{folder}/data/{ds_key}.csv".replace("//", "/")
+            csv_exists = False
+            try:
+                s3.get(csv_path)
+                csv_exists = True
+            except Exception:
+                csv_exists = False
+
+            if csv_exists:
+                gaps.append(
+                    f"dataset_{ds_key}_silent_stale: widget references "
+                    f"dataset {ds_key!r}; {csv_path} exists on disk so "
+                    f"compile passes today, but no PULLS function "
+                    f"produces a matching stem and no TRANSFORMS function "
+                    f"materializes the key. Refreshes succeed trivially "
+                    f"while the CSV ages forever (heal: §D add the "
+                    f"missing pull or transform; the CSV stem must "
+                    f"match {ds_key!r} byte-for-byte)"
+                )
+            else:
+                gaps.append(
+                    f"dataset_{ds_key}_unattached: widget references "
+                    f"dataset {ds_key!r}; no PULLS function produces it, "
+                    f"no TRANSFORMS function materializes it, no "
+                    f"{csv_path} exists (heal: §D add a pull or transform)"
+                )
+
+    if gaps:
+        raise RefreshAttachmentError(folder, gaps)
+
+
 def run_pull(folder: str, pull_name: str, *, s3_manager=None) -> None:
     """Execute a single named pull from ``<folder>/scripts/pull_data.py``.
 
@@ -9203,8 +9760,32 @@ def _derive_domain_end(datasets: Dict[str, Any]) -> Optional[str]:
     Date-typed columns are detected via either pandas' ``datetime64``
     dtype OR a column literally named ``date`` / ``Date`` that
     ``pd.to_datetime`` can coerce. Stamped into
-    ``metadata.time.data_domain_end`` by ``build_dashboard``."""
+    ``metadata.time.data_domain_end`` by ``build_dashboard``.
+
+    Cross-dataset tz normalisation: pulls do not promise a uniform
+    timezone convention -- ``pull_market_data(mode='iday')`` emits
+    tz-aware timestamps in US/Eastern, while ``pull_market_data(mode='eod')``
+    emits tz-naive dates. The cross-dataset ``max()`` would crash with
+    ``TypeError: Cannot compare tz-naive and tz-aware timestamps``. The
+    engine absorbs the friction here: every per-dataset max Timestamp
+    is normalised to a tz-naive UTC wall-clock before the cross-dataset
+    comparison. The output is still a bare ``YYYY-MM-DD`` so the chrome
+    pill renders identically regardless of source tz.
+    """
     import pandas as pd
+
+    def _strip_tz(ts):
+        """Coerce a single ``pd.Timestamp`` to tz-naive UTC wall-clock.
+        Returns the timestamp unchanged if already tz-naive."""
+        if ts is None or pd.isna(ts):
+            return ts
+        if getattr(ts, "tzinfo", None) is not None or \
+                getattr(ts, "tz", None) is not None:
+            try:
+                return ts.tz_convert("UTC").tz_localize(None)
+            except (AttributeError, TypeError):
+                return ts
+        return ts
 
     max_date = None
     for df in datasets.values():
@@ -9224,6 +9805,7 @@ def _derive_domain_end(datasets: Dict[str, Any]) -> Optional[str]:
             this_max = date_col.dropna().max()
             if this_max is None or pd.isna(this_max):
                 continue
+            this_max = _strip_tz(this_max)
             if max_date is None or this_max > max_date:
                 max_date = this_max
 
@@ -9368,7 +9950,7 @@ def build_dashboard(folder: str, *, s3_manager=None,
     """
     import io
     import pandas as pd
-    from dashboards_time import utcnow, format_iso, format_pill
+    from dashboards_time import utcnow, format_iso
 
     s3 = _resolve_s3_manager(s3_manager)
 
@@ -9443,10 +10025,6 @@ def build_dashboard(folder: str, *, s3_manager=None,
         meta["data_as_of"] = time_block["data_domain_end"]
     meta["generated_at"] = time_block["build_completed_at"]
 
-    # Server-baked pill text — JS reads MD.pill_text first; falls back
-    # to MD.time.* readers; falls back to legacy aliases.
-    meta["pill_text"] = format_pill(time_block)
-
     manifest = populate_template(template, datasets)
 
     r = compile_dashboard(
@@ -9454,6 +10032,14 @@ def build_dashboard(folder: str, *, s3_manager=None,
     )
     if not r.success:
         raise ValueError(f"build_dashboard: compile failed: {r.error_message}")
+
+    # Enforce the compile <-> refresh-attach invariant from dashboards.md §H.
+    # Runs BEFORE S3 persistence so a failed audit does not produce a
+    # broken-but-live dashboard. `strict=False` carves out Tool 2 of
+    # Recipe 1 (build_dashboard runs BEFORE Tool 3's registry write);
+    # missing-registry-entry downgrades to a log line. All other gaps
+    # still raise.
+    _audit_refresh_attachment(folder, s3_manager=s3, strict=False)
 
     s3.put(
         json.dumps(r.manifest, indent=2).encode("utf-8"),
@@ -9490,6 +10076,14 @@ def refresh_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
     from dashboards_time import utcnow, format_iso
 
     s3 = _resolve_s3_manager(s3_manager)
+
+    # Enforce the compile <-> refresh-attach invariant from dashboards.md
+    # §H. Runs at the start so structural drift fails fast — before any
+    # expensive pull function is invoked. `strict=True` requires the
+    # registry entry to exist (cron path; registration must already have
+    # happened in a prior build flow).
+    _audit_refresh_attachment(folder, s3_manager=s3, strict=True)
+
     ns = _exec_dashboard_script(folder, "pull_data", s3_manager=s3)
     pulls = ns.get("PULLS")
     if not isinstance(pulls, dict):
@@ -9518,6 +10112,7 @@ __all__ = [
     "df_to_source", "manifest_template", "populate_template",
     "Diagnostic", "chart_data_diagnostics",
     "run_pull", "build_dashboard", "refresh_dashboard",
+    "RefreshAttachmentError",
     "resolve_chart_specs",
     "SCHEMA_VERSION", "VALID_WIDGETS", "VALID_FILTERS",
     "VALID_CHART_TYPES", "VALID_FILTER_OPS", "VALID_SYNC",
