@@ -1,5 +1,21 @@
 # staging/
 
+> ## Staleness notice for the prism/ pointer below — added 2026-05-15
+>
+> The references to `prism/` in this README (the three-subtree diagram
+> below, the "counterpart to staging/" paragraph, and the per-project
+> `prism/ refs` column) describe a state that is **no longer current**.
+> As of 2026-05-15, `prism/` is no longer maintained as the source of
+> truth for how PRISM works (see `prism/README.md` for the full
+> notice). The only PRISM-bound SSOTs still actively maintained in
+> this repo are `projects/altair/` and `projects/echarts/`; everything
+> else under `projects/` (`apis/`, `bloomberg/`, `frontend/`,
+> `gs_reference/`, `macro/`, `whitepapers/`) is not load-bearing for
+> ongoing PRISM work. The body below is preserved as-is until a
+> future cleanup pass refreshes the roster.
+>
+> ---
+
 PRISM-bound outputs + cross-project meta. Everything in this folder is
 either (a) an ephemeral drag-and-drop copy of a project's payload on
 its way into PRISM, (b) the living projects roster below, (c) a
