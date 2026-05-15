@@ -6,12 +6,10 @@ tables are prohibited in the report pipeline -- see
 `report_worker_instructions.md` and `report_writer_instructions.md`.
 
 Spoke fetched on demand from `chart_context.md`. Covers `make_table()` —
-the static-PNG table renderer. Same GS_PRIMARY navy palette and
-Liberation Sans font stack as `make_chart`. **The canvas is engine-
-decided**: PNG width fits the data (text columns wrap automatically when
-they would otherwise be too wide; cap is soft) and height grows to fit
-every row. PRISM never picks a dimension or canvas; nothing is ever
-truncated.
+the static-PNG table renderer that ships alongside `make_chart()` in the
+same engine. Same `DIMENSION_PRESETS`, same GS_PRIMARY navy palette,
+same Liberation Sans font stack — a same-preset table drops into the
+same UI cell a chart would.
 
 Reach for a table when the answer is structured rows × columns and a
 chart can't visualise the relationship cleanly: watchlists, term
@@ -44,6 +42,12 @@ pass both.
 | Many series sharing one shape (8-30 entities) | `make_chart` grid mode (`chart_context_grids.md`) |
 | Single number / KPI tile | not in altair — use echarts dashboards |
 
+Tables and charts share the chart engine's seven `dimensions` presets
+(`wide` / `square` / `tall` / `compact` / `presentation` / `thumbnail` /
+`teams`) so they slot interchangeably into UI cells. The hub
+(`chart_context.md` §11) holds the preset list — table sizing follows it
+exactly; do not reinvent.
+
 ---
 
 ## 2. Minimal call
@@ -58,6 +62,7 @@ result = make_table(
     column_formats={'GDP YoY (%)': 'pct_signed', 'CPI YoY (%)': 'pct'},
     signed_columns=['GDP YoY (%)'],
     column_color_modes={'GDP YoY (%)': 'rwg', 'CPI YoY (%)': 'bw'},
+    dimensions='wide',
     save_as='tables/macro_snapshot.png',
 )
 ```
@@ -80,6 +85,7 @@ result = make_table(
     title='Theme Tracker',
     column_color_modes={'Conviction': 'rag'},
     rag_thresholds={'Conviction': (0, 0)},   # (categorical RAG via cell_colors instead)
+    dimensions='wide',
     save_as='tables/themes.png',
 )
 
@@ -92,6 +98,7 @@ result = make_table(
     ],
     columns=['Asset', 'View', 'Conviction', 'Owner'],
     title='Trade Ideas',
+    dimensions='wide',
 )
 ```
 
@@ -108,8 +115,10 @@ auto-injected — do NOT import. `s3_manager`, `session_path`,
 | `columns` | list[str] | Header names for `rows=`-as-tuples form; reorders for `rows=`-as-dicts form |
 | `title` / `subtitle` | str | Top labels (left-aligned, FT/Bloomberg style) |
 | `caption` | str | Italic note BELOW the table (auto-wraps) |
-| `column_formats` | dict | `{col: hint}` — see §8 number formatting hints |
-| `column_aligns` | dict | `{col: 'left'\|'center'\|'right'}` override (engine default: numeric → right, text → left) |
+| `dimensions` | str | One of the chart engine's 7 presets (`wide` etc.). See hub §11. |
+| `column_formats` | dict | `{col: hint}` — see §9 number formatting hints |
+| `column_widths` | dict | `{col: int_px}` — lock specific column widths |
+| `column_aligns` | dict | `{col: 'left'\|'center'\|'right'}` override |
 | `header_levels` | list | Multi-level column headers — see §5.1 |
 | `row_groups` | list | `[(label, n_rows), ...]` navy band sub-headers — see §5.2 |
 | `row_indent` | list | Per-row indent levels (first column only) — see §5.3 |
@@ -126,6 +135,8 @@ auto-injected — do NOT import. `s3_manager`, `session_path`,
 | `signed_columns` | list | Auto green-positive / red-negative TEXT colour |
 | `total_rows` | list | Row indices to render in inverted navy + bold |
 | `subtotal_rows` | list | Row indices to render bold + subtle band |
+| `wrap_columns` | list | Columns to wrap to multi-line — see §8 |
+| `max_wrap_lines` | int | Default 4; cap on wrap lines per row |
 | `show_index` | bool | Include the DataFrame index as the leftmost column |
 
 ### `TableResult` (dataclass, NOT dict)
@@ -135,10 +146,10 @@ auto-injected — do NOT import. `s3_manager`, `session_path`,
 | `success` | bool | True on render success |
 | `png_path` / `download_url` | str | PNG S3 path / presigned URL |
 | `error_message` | str-None | Failure reason |
-| `warnings` | list | Non-fatal annotations (e.g. dropped `cell_colors` keys with unknown column names) |
+| `warnings` | list | Drift / non-fatal annotations (canvas overflow is fatal — see §13) |
 | `n_rows` / `n_cols` | int | Shape after `show_index` adjustment |
-| `truncated_rows` | int | Always 0 — `make_table` never truncates rows |
-| `canvas_size` | tuple | (width, height) the engine actually emitted |
+| `truncated_rows` | int | Always 0 from `make_table` (overflow returns `success=False`); field kept for parity with chart result types |
+| `canvas_size` | tuple | (width, height) actually used |
 
 Access via dot notation only. Always check `r.success` before reading
 `r.png_path` / `r.download_url`.
@@ -304,7 +315,21 @@ render right-aligned in red. Use for at-a-glance ranking by magnitude.
 
 ---
 
-## 8. Number formatting hints
+## 8. Text columns + wrapping
+
+| Kwarg | Default | Effect |
+|---|---|---|
+| `wrap_columns` | (none — opt in) | List of columns that wrap to multi-line; row height adapts per row |
+| `max_wrap_lines` | `4` | Cap to prevent runaway text from blowing the canvas (last line truncates with `…`) |
+| `column_widths` | (auto) | `{col: int_px}` to lock specific column widths; other columns flex to fill |
+| `column_aligns` | numeric → right, text → left | `{col: 'left'\|'center'\|'right'}` override |
+
+Use `wrap_columns` for free-form text columns (themes, notes,
+commentary). Without it, long text gets ellipsis-truncated to fit.
+
+---
+
+## 9. Number formatting hints
 
 Pass via `column_formats` as `{col: hint}`:
 
@@ -321,7 +346,7 @@ Pass via `column_formats` as `{col: hint}`:
 
 ---
 
-## 9. Authoring rules
+## 10. Authoring rules
 
 - **Author totals into the DataFrame.** `total_rows=[8]` styles the
   row that EXISTS at index 8 — the engine doesn't compute the sum.
@@ -335,17 +360,19 @@ Pass via `column_formats` as `{col: hint}`:
 - **Sparkline series can differ in length per row.** Each row's
   min/max scales independently; faint baseline drawn to give the line
   context.
-- **Mini-bar source can be the display column itself**
-  (`minibar_columns={'X': 'X'}`) — then both number and bar render in
-  the same cell.
-- **Wide text columns wrap automatically.** The engine detects
-  free-form text content (notes, themes, commentary) and wraps cells
-  to multi-line; row heights grow to fit. PRISM doesn't opt in and
-  doesn't set a wrap-line cap.
+- **Mini-bar source can be the display column itself** (`minibar_columns={'X': 'X'}`)
+  — then both number and bar render in the same cell.
+- **Tables don't auto-grow vertically.** If rows exceed the canvas
+  budget, `make_table` returns `success=False` with an actionable
+  `error_message` — pick a larger `dimensions` preset (e.g.
+  `'presentation'` / `'tall'`), pass an explicit `canvas=(W, H)`, or
+  split the table. Auto-truncation is disabled because hidden rows
+  are a wrong-answer failure mode — the reader has no signal that
+  more data exists.
 
 ---
 
-## 10. Anti-patterns (do NOT)
+## 11. Anti-patterns (do NOT)
 
 | Anti-pattern | Why |
 |---|---|
@@ -353,11 +380,12 @@ Pass via `column_formats` as `{col: hint}`:
 | Computing totals in Python and passing as last row WITHOUT `total_rows=[N]` | Loses the inverted-navy footer treatment that signals "this is the answer" |
 | `row_indent=[0, 1, 2, 3, ...]` (deep multi-level) | 2 indent levels read; 3+ degrades. Refactor to row groups. |
 | Heatmap on a column where higher-is-just-different (Country code, Ticker, Sector) | Colour should encode magnitude or sign — not nominal identity |
+| `wrap_columns=['Ticker']` on short columns | Wrap is for free-form text only. Short columns truncate cleanly. |
 | Mixing `cell_colors` with `column_color_modes` on the same cell | `cell_colors` always wins — reserve for one-off highlights, not bulk colouring |
 
 ---
 
-## 11. Common shapes (worked examples)
+## 12. Common shapes (worked examples)
 
 Source column tells PRISM which kwarg to use: `df=` for data-pulled,
 `rows=` for hardcoded.
@@ -368,14 +396,14 @@ Source column tells PRISM which kwarg to use: `df=` for data-pulled,
 | **Sovereign curve cross-country** | `df=` (treasury / market pull) | `header_levels=[[('', 1), ('Yields (%)', N), ('Δ (bp)', M)]]` + `heatmap_groups=[{'columns': [yield_cols], 'scope': 'row', 'mode': 'sequential'}]` + `signed_columns=[Δ_cols]` |
 | **P&L attribution** | `df=` (computed from positions) | `row_indent=[...]` + `subtotal_rows=[...]` + `total_rows=[N-1]` + `column_color_modes={'PnL': 'rwg'}` |
 | **Watchlist** | `df=` (real-time market pull) | `sparkline_columns={'Trend': [...]}` + `minibar_columns={'MktCap (bar)': 'Mkt Cap ($B)'}` + `column_color_modes={'YTD %': 'rwg'}` + `signed_columns=[period_pct_cols]` |
-| **Correlation matrix** | `df=` (computed from returns) | `heatmap_groups=[{'columns': [all numeric], 'scope': 'group', 'mode': 'diverging'}]` |
+| **Correlation matrix** | `df=` (computed from returns) | `heatmap_groups=[{'columns': [all numeric], 'scope': 'group', 'mode': 'diverging'}]` + `dimensions='square'` |
 | **Econ calendar** | `rows=` (hand-curated upcoming events) | `cell_colors={(r, importance_col): RAG_hex}` per importance level + `column_aligns={'Importance': 'center'}` |
-| **Theme tracker** | `rows=` (PM-authored narrative) | `column_color_modes={'Conviction': 'rag'}` — long `'Note'` column wraps automatically |
+| **Theme tracker** | `rows=` (PM-authored narrative) | `wrap_columns=['Note']` + `column_widths={'Theme': 200, 'Owner': 90, 'Conviction': 100}` + `column_color_modes={'Conviction': 'rag'}` |
 | **Trade ideas / curated watchlist** | `rows=` (PM-authored) | `rows=[(asset, view, conviction, owner), ...]` + `columns=[...]` |
 
 ---
 
-## 12. Failure transparency
+## 13. Failure transparency
 
 `make_table` always returns a `TableResult`. On render failure
 `success=False` and `error_message` carries the reason; `png_path`
@@ -385,7 +413,7 @@ and `download_url` are `None`. Common failure modes:
 |---|---|---|
 | `header_levels[N] spans sum to X, expected Y` | Multi-level header row span mismatch | Adjust spans to sum to `len(df.columns)` |
 | `row_groups counts sum to X, expected len(df)=Y` | Row group counts don't match dataframe | Adjust counts |
+| `Unknown dimensions preset: 'foo'` | Bad `dimensions` value | Use one of `wide` / `square` / `tall` / `compact` / `presentation` / `thumbnail` / `teams` |
 | `DataFrame has no columns` | Empty DataFrame | Filter upstream |
-| `Pass either df= (DataFrame) or rows= (list of dicts/tuples)` | Neither data-source kwarg passed | Pass exactly one |
-| `Pass either df= or rows=, not both` | Both data-source kwargs passed | Pick one |
 | `s3_manager.put failed: ...` | Underlying S3 / FS write failed | Check `session_path`; verify the manager is alive |
+| `Table has X rows but only Y fit the WxH canvas (...) Auto-truncation is disabled...` | Row count exceeds canvas budget | Pick a larger `dimensions` preset, pass explicit `canvas=(W, H)`, reduce row count, or split the table |

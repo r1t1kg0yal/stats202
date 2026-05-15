@@ -14,11 +14,12 @@
 | Primitive | Names | Where |
 |---|---|---|
 | Chart types (12) | `multi_line`, `scatter`, `scatter_multi`, `bar`, `bar_horizontal`, `heatmap`, `histogram`, `boxplot`, `area`, `donut`, `bullet`, `waterfall` | §6 |
-| Mapping keys | `x`, `y`, `color`, `value`, `theta`, `y_title`, `y_title_right`, `x_title`, `x_sort`, `y_sort`, `x_type`, `dual_axis_series`, `invert_right_axis`, `dual_axis_config`, `legend`, `trendline`, `trendlines`, `stack`, `strokeDash`, `strokeDashScale`, `strokeDashLegend`, `bins`, `maxbins`, `bin_extent`, `extent`, `scale_type`, `orientation`, `color_scheme`, `color_sort` (alias `legend_sort`), `value_sort`, `x_low`, `x_high`, `color_by`, `label`, `type` | §7 |
+| Mapping keys (~20) | `x`, `y`, `color`, `y_title`, `y_title_right`, `x_title`, `x_sort`, `y_sort`, `x_type`, `dual_axis_series`, `invert_right_axis`, `legend`, `trendline`, `trendlines`, `stack`, `strokeDash`, `strokeDashScale`, `strokeDashLegend`, `value`, `theta`, `x_low`, `x_high`, `color_by`, `label`, `type` | §7 |
 | Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §8 |
 | Composite functions (5) | `make_2pack_horizontal`, `make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`, `make_6pack_grid` | §10 |
-| Grid mode (small-multiples / facet) | `mapping['facet']`, `facet_cols`, `same_scale`, `share_x` / `share_y` / `share_color` | spoke `chart_context_grids.md` (Spokes index below) |
-| Static tables (PNG) | `make_table` + `TableResult`; content-driven canvas (engine-decided width + height); same navy palette and font as `make_chart` | spoke `chart_context_tables.md` (Spokes index below) |
+| Grid mode (small-multiples / facet) | `mapping['facet']`, `facet_cols`, `same_scale`, `share_x` / `share_y` / `share_color`, `dimensions='page_grid'` | spoke `chart_context_grids.md` (Spokes index below) |
+| Static tables (PNG) | `make_table` + `TableResult`; same `dimensions` presets, navy palette, font as `make_chart` | spoke `chart_context_tables.md` (Spokes index below) |
+| Dimension presets (7) | `wide`, `square`, `tall`, `compact`, `presentation`, `thumbnail`, `page_grid` (facet only) | §11 |
 | Skin (only published) | `gs_clean` | §1 |
 | Intent values | `'explore'`, `'publish'`, `'monitor'` | §1 |
 | Layer types | `regression`, `rule`, `point` | §8.5 |
@@ -33,8 +34,8 @@ This hub covers the always-needed surface. Deeper specs for narrow topics live i
 
 | Spoke | Contents | Verbatim tool call (copy-paste) |
 |---|---|---|
-| `chart_context_grids.md` | Grid mode (small-multiples / facet): `mapping['facet']`, `facet_cols`, `same_scale` smart-route, `share_x` / `share_y` / `share_color`, scatter phase-space gradient (`mapping['color']` + `color_scheme`), 36-panel hard cap | `list_ai_repo(file_paths=["context/modules/static/chart_context_grids.md"], mode="full")` |
-| `chart_context_tables.md` | Static-PNG tables — `make_table()` + `TableResult`; the 3 PRISM-facing color modes (`'rwg'` / `'bw'` / `'rag'`); `heatmap_groups` (column / row / group scope); multi-level `header_levels`; `row_groups` navy bands; `row_indent`, `total_rows`, `subtotal_rows`; sparkline + mini-bar cells. Canvas is engine-decided (content-sized; never preset, never truncated). | `list_ai_repo(file_paths=["context/modules/static/chart_context_tables.md"], mode="full")` |
+| `chart_context_grids.md` | Grid mode (small-multiples / facet): `mapping['facet']`, `facet_cols`, `same_scale` smart-route, `share_x` / `share_y` / `share_color`, `dimensions='page_grid'`, scatter phase-space gradient (`mapping['color']` + `color_scheme`), 36-panel hard cap | `list_ai_repo(file_paths=["context/modules/static/chart_context_grids.md"], mode="full")` |
+| `chart_context_tables.md` | Static-PNG tables — `make_table()` + `TableResult`; the 3 PRISM-facing color modes (`'rwg'` / `'bw'` / `'rag'`); `heatmap_groups` (column / row / group scope); multi-level `header_levels`; `row_groups` navy bands; `row_indent`, `total_rows`, `subtotal_rows`; sparkline + mini-bar cells; `wrap_columns` for text tables. Same `dimensions` presets and navy palette as charts. | `list_ai_repo(file_paths=["context/modules/static/chart_context_tables.md"], mode="full")` |
 
 Triggers:
 - **Grids spoke** — any cross-sectional dashboard over 8-30 entities sharing the same shape (G20 GDP per country, 12 sector PMIs, 16 FX pairs, country yield curves). Phase-space scatter plots with time-coloured trails also live in this spoke.
@@ -49,11 +50,8 @@ result = make_chart(
     df=df, chart_type='multi_line', mapping={...},
     title='Title',                # Required for production
     subtitle='Subtitle',          # Optional (NEVER for source attribution)
-    skin='gs_clean', intent='explore',
+    skin='gs_clean', intent='explore', dimensions='wide',  # See §11 dimensions
     annotations=[...], layers=[...],
-    caption='note...',            # Optional below-chart italic note
-    side_left='...',              # Optional left/right narrative panels
-    side_right='...',             # (str or {'text': ..., 'italic': True, ...})
     save_as='charts/name.png',    # Optional fixed path (overwrites, no timestamp)
     auto_beautify=True,           # Date format, label angle, y-domain
     x_label=None, y_label=None,   # Aliases for mapping['x_title' / 'y_title']
@@ -61,7 +59,7 @@ result = make_chart(
 )
 ```
 
-Canvas size is engine-decided per `chart_type` — PRISM never picks a dimension. `output_dir` is local-mode only; `interactive=True` is reserved.
+`output_dir` is local-mode only; `interactive=True` is reserved.
 
 **Auto-injected names:** `make_chart`, `make_table` (tables spoke), `profile_df` (§5), `ChartResult`/`ChartSpec`/`TableResult` (tables spoke), `check_charts_quality` (§2), composite functions (§10), all 11 annotation classes (§8).
 
@@ -175,7 +173,7 @@ For correlation stories with disparate magnitudes (gold + WTI) or disparate leve
 - **No source attribution in title/subtitle.** Title makes the argument; sources in PRISM metadata. Good: `title='Inflation Has Peaked'`, `subtitle='Core CPI decelerating 6 months'`. Bad: `title='US CPI Data'`, `subtitle='Source: Haver'`.
 - **Clean before charting.** `pd.to_numeric(errors='coerce')` then `dropna(subset=['date', 'value'])`. Max 12 color cats, 16 facet cats. >5,000 rows auto-downsample to ~2,000 (warning in `result.warnings`).
 - **Never plot `np.zeros()` placeholder.** If data missing, skip the panel or add text annotation -- never a misleading flat line at 0.
-- **Title/subtitle: 2-line cap, auto-wrap.** Engine reports the exact char limit on rejection; explicit `\n` honored as manual line break (counts toward cap). On rejection, shorten or move detail into subtitle (more chars per line).
+- **Title/subtitle: 2-line cap, auto-wrap.** Engine reports the exact char limit on rejection; explicit `\n` honored as manual line break (counts toward cap). On rejection, shorten, move detail into subtitle (more chars per line), or pick a wider `dimension_preset`.
 
 ---
 
@@ -339,23 +337,12 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',
 | `x_sort` / `y_sort` | list | Explicit ordinal sort (x) / heatmap y-axis sort |
 | `x_type` | str | Force `'ordinal'` on datetime |
 | `dual_axis_series` / `invert_right_axis` | list / bool | Right-axis series / flip right axis (higher = bottom) |
-| `dual_axis_config` | dict | Pin dual-axis y domains: `{'y_domain_left': [lo, hi], 'y_domain_right': [lo, hi]}` |
-| `legend` | bool | Show / hide legend (auto-decides by default) |
 | `trendline` / `trendlines` | bool | Overall (scatter) / per-group (scatter_multi) |
 | `stack` | bool | Bar+color: `True` stacked (default), `False` grouped |
 | `strokeDash` / `strokeDashScale` / `strokeDashLegend` | str/dict/bool | Line-style col / `{domain, range}` / show legend (default `False`) |
 | `value` / `theta` | str | Heatmap cell value / donut magnitude |
 | `x_low` / `x_high` / `color_by` / `label` | str | Bullet: range bounds / severity / label |
 | `type` | str | Waterfall bar type (`total`/`positive`/`negative`) |
-| `bins` / `maxbins` | int | Histogram bin count (aliases of each other) |
-| `bin_extent` | list | Histogram bin range override `[lo, hi]` |
-| `extent` | float | Boxplot whisker IQR multiplier (default `1.5`) |
-| `scale_type` | str | `'linear'` / `'log'` override on auto log-scale detection (multi_line / timeseries) |
-| `orientation` | str | `'vertical'` opt-out from `bar`'s auto-flip to `bar_horizontal` on long category labels |
-| `color_scheme` | str | Heatmap palette / scatter phase-space gradient |
-| `color_sort` (alias `legend_sort`) | list | Explicit category order in legend (multi-series, bar, area) |
-| `value_sort` | list | Heatmap value-driven sort |
-| `facet_order` | list | Explicit panel-id order in grid mode (overrides first-appearance) |
 
 ### 7.4 strokeDash: per-series line styles
 
@@ -423,7 +410,7 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 | `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. Default `'halo'` keeps the label legible against chart lines and dense data. `dx` 0-60; `abs(dx)>80` risks off-canvas (warns) |
 | `LastValueLabel` | `dx`, `font_size` (default 15), `font_weight`. FT/Bloomberg end-of-line labels for `multi_line` / `timeseries` -- the series identity only; no numeric value is rendered. **Auto-injected by default** (§6.1) on every multi-line single panel and every multi-line composite cell; pass an explicit instance to customise typography (e.g. `LastValueLabel(dx=10, font_weight='bold')`). Auto-derives series names from the color column. `label` ignored on multi-series; for single-series overrides the y-field name. Endpoint-pixel collisions auto-stagger vertically. **Series names > 25 chars raise `LvlSeriesNameTooLongError`** -- rename in the DataFrame. Suppressed on dual-axis (§9.4). Text-only — no endpoint dot |
 | `Trendline` | `method` (`'linear'`/`'exp'`/`'log'`/`'pow'`/`'poly'`/`'quad'`), `stroke_width`, `stroke_dash`. Regression overlay on scatter |
-| `PlotText` | `text`, `position` (`'auto'` / `'left'` / `'right'` / `'bottom'`; `'auto'` routes to right → bottom → left depending on what's already populated; `'bottom'` renders in the caption band; `'left'` / `'right'` render in the side narrative panels), `font_size`, `italic`, `color`, `align`, `width_pct`. **`text` MUST be ≤8 words** (one-line takeaway; engine hard-caps at 10 with a 2-word buffer). For longer prose pass `make_chart(caption=...)` / `side_left=...` / `side_right=...` directly (no word cap). Explicit `caption=` / `side_*=` wins against PlotText on the same slot (PlotText reroutes; warning logged). Inside-plot anchor values were removed in the 2026-05-10 outside-only rewire and now raise `ValidationError` with a migration hint |
+| `PlotText` | `text`, `position` (`'auto'` or `'bottom'`; both render below the plot in the caption band), `font_size`, `italic`, `color`, `align`, `width_pct`. **`text` MUST be ≤8 words** (one-line takeaway; engine hard-caps at 10 with a 2-word buffer). For longer prose use `make_chart(caption=...)` (no word cap). Explicit `caption=` wins against PlotText on the same band (PlotText reroutes; warning logged). Inside-plot anchor values were removed in the 2026-05-10 outside-only rewire and now raise `ValidationError` with a migration hint |
 
 ### 8.4 Chart-type compatibility
 
@@ -623,7 +610,7 @@ Per-panel axis titles (`y_title`, `y_title_right`, `x_title`) live INSIDE each `
 | `make_4pack_grid(tl, tr, bl, br, ...)` | 2x2 | 4 ChartSpecs |
 | `make_6pack_grid(r1l, r1r, r2l, r2r, r3l, r3r, ...)` | 3x2 | 6 ChartSpecs (also accepts `specs=[c1..c6]`) |
 
-All accept kwargs (`title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`, `spacing`, `filename_prefix`, `filename_suffix`) and return `CompositeResult` (same fields as `ChartResult` plus `chart_errors`). `caption` sits below the entire pack; `side_left` / `side_right` flank the whole pack — same shape as `make_chart` (str or `{'text': ..., 'italic': True, ...}` dict). Sub-chart-level text panels live on each `ChartSpec` instead.
+All accept kwargs (`title`, `subtitle`, `dimension_preset`, `save_as`, `spacing`, `filename_prefix`, `filename_suffix`) and return `CompositeResult` (same fields as `ChartResult` plus `chart_errors`).
 
 ### 10.3 Composite rules
 
@@ -649,7 +636,23 @@ All accept kwargs (`title`, `subtitle`, `caption`, `side_left`, `side_right`, `s
 
 ---
 
-## 11. Chart time horizon
+## 11. Dimensions
+
+| Preset | Size | Best for |
+|---|---|---|
+| `wide` | 700x350 | Time series (default) |
+| `square` | 450x450 | Scatter, heatmaps |
+| `tall` | 400x550 | Vertical bars, rankings |
+| `compact` | 400x300 | Dashboard components |
+| `presentation` | 900x500 | Slides |
+| `thumbnail` | 300x200 | Previews |
+| `page_grid` | (facet only) | Auto-sized per (rows, cols) for letter-portrait paper. See `chart_context_grids.md` |
+
+Typography auto-scales for `thumbnail` and `compact`.
+
+---
+
+## 12. Chart time horizon
 
 | Frequency | Default | Horizon class | Use case |
 |---|---|---|---|
@@ -662,6 +665,6 @@ Override rules: "highest since 2008" -> chart MUST include 2008. Pre-pandemic ->
 
 ---
 
-## 12. Failure transparency
+## 13. Failure transparency
 
 Never silently substitute a different layout or rationalize a substitution. If a requested chart shape isn't feasible, tell the user and offer alternatives. Max 2 retries per chart concept; after 2 failures, deliver the best version with a note or ask the user about alternatives.

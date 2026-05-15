@@ -55,13 +55,16 @@ PRISM right now.
 │                                       row / group scope); sparkline + │
 │                                       mini-bar cells; total/subtotal  │
 │                                       row auto-styling; text wrapping;│
-│                                       8/8 demos in dev/demos/         │
-│                                       31_tables.py pass; 14/14 table  │
-│                                       tests pass; PRISM-side          │
-│                                       namespace install gated on      │
-│                                       staging/prompts/open/           │
-│                                       2026-05-12_make_table_          │
-│                                       namespace_injection.md          │
+│                                       Test surface: dev/tests.py      │
+│                                       (30 API-only tests, ~6s) +      │
+│                                       dev/gallery.py (22-card first   │
+│                                       gallery) + dev/fail_gallery.py  │
+│                                       (LVL+endpoint anno overlap      │
+│                                       repro). PRISM-side namespace    │
+│                                       install gated on staging/       │
+│                                       prompts/open/2026-05-12_        │
+│                                       make_table_namespace_           │
+│                                       injection.md                    │
 │  echarts      ████████████████████  mature + TIME / LIVE-REFRESH   │
 │                                       UPLIFT LANDED (2026-05-12);   │
 │                                       COMPILE ⇔ REFRESH-ATTACH      │
@@ -133,6 +136,41 @@ PRISM right now.
 │                                       topic-chip listings, home     │
 │                                       featured block; awaiting      │
 │                                       PRISM-verbatim payload sync)  │
+│  gs_reference ████████████████████  LIVE 2026-05-14 — self-        │
+│                                       contained Django mock of      │
+│                                       goldmansachs.com visual       │
+│                                       design language (8 pages:    │
+│                                       home / what_we_do / insights │
+│                                       list+article+podcast /       │
+│                                       careers+life / our-firm/     │
+│                                       purpose) + authoritative     │
+│                                       gs_design_dna.md (~1,000     │
+│                                       lines: --gs-uitk-* tokens,   │
+│                                       60+ type roles per           │
+│                                       breakpoint, 15 component     │
+│                                       primitives, 7 page           │
+│                                       archetypes, PRISM-runtime    │
+│                                       substitution recipe for      │
+│                                       absent GS Serif TTF) + 16    │
+│                                       playwright screenshots       │
+│                                       (8 prism + 8 live runtime).  │
+│                                       Live extract from gs.com     │
+│                                       inline <style> (1,150 vars,  │
+│                                       26 @font-face). Reference    │
+│                                       asset, not a payload —       │
+│                                       PRISM consumes the spec      │
+│                                       inline; mock is for visual   │
+│                                       verification. Surfaced       │
+│                                       freshness signal to          │
+│                                       projects/frontend/dev/specs/ │
+│                                       design_system.md (GS Serif   │
+│                                       IS the live signature        │
+│                                       headline face — PRISM's TTF  │
+│                                       drop simply lacks it; the    │
+│                                       frontend spec's 2026-05-02   │
+│                                       framing reassigning display  │
+│                                       to GS Cond Black needs an    │
+│                                       additive correction).        │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -249,18 +287,18 @@ email, and report flows.
 
 | Aspect | Value |
 |---|---|
-| Drag-and-drop status | READY (chart engine + new tables engine). 16/16 demos pass (15 chart + 1 tables). PRISM-runtime introspection confirmed every helper signature + the verbatim 14-entry namespace literal + sole-consumer property (`mcp/tools/script_exec_tools.py`). A live PRISM session is the only remaining verification step for the chart side; tables side awaits `staging/prompts/open/2026-05-12_make_table_namespace_injection.md` round-trip. |
+| Drag-and-drop status | READY (chart engine + tables engine). 30/30 lightweight API-only tests in `dev/tests.py` pass (~6s); first gallery + fail gallery render cleanly under `dev/output/<TS>_<slug>/`. PRISM-runtime introspection confirmed every helper signature + the verbatim 14-entry namespace literal + sole-consumer property (`mcp/tools/script_exec_tools.py`). A live PRISM session is the only remaining verification step for the chart side; tables side awaits `staging/prompts/open/2026-05-12_make_table_namespace_injection.md` round-trip. |
 | Canonical payload | `projects/altair/altair-payload/chart_functions.py`, `chart_functions_studio.py`, `chart_context.md` (hub) + `chart_context_grids.md` + `chart_context_tables.md` (2 spokes: grid mode + static tables) |
 | Stub mirror | `projects/altair/ai_development/mcp/utils/*.py` — mirrors the 5 helpers `chart_functions.py` imports |
 | Pinned interpreter | `projects/altair/.venv/` (regenerate after the 2026-05-02 restructure — shebangs point at old `GS/viz/altair/.venv/` paths) |
-| Demo gallery | `projects/altair/dev/demos/01..25_*.py` (one file per demo; `run_all.py --all`) |
-| Skill shape | Hub + 2 spokes. `chart_context.md` (hub, ~600 lines after the 2026-05-10 Chart Center disable) carries the always-needed surface — namespace + QC + design defaults + authoring rules + chart types + mapping + annotations + dual-axis + composites + dimensions + horizons + failure transparency. `chart_context_grids.md` (spoke, ~157 lines) carves off the grid / small-multiples topic. `chart_context_tables.md` (NEW spoke, ~280 lines, landed 2026-05-12) carves off the static-PNG table engine — `make_table()` + `TableResult` + 3 PRISM-facing color modes (`'rwg'` / `'bw'` / `'rag'`) + `heatmap_groups` (col/row/group scope) + multi-level `header_levels` + `row_groups` navy bands + `row_indent` / `total_rows` / `subtotal_rows` + sparkline + mini-bar cells + `wrap_columns`. Both spokes fetched mid-session via `list_ai_repo(file_paths=["context/modules/static/chart_context_tables.md"], mode="full")`. `TestChartContextCoverage` + `TestTablesSpokeCoverage` + `TestTablesEngineSmoke` in `dev/tests.py` pin skill/engine drift across hub + both spokes. The 2026-05-12 tables spoke is the second carve-out from single-file ergonomics; both carve-outs followed the same pattern (genuine standalone topic + discipline-warranting affordances that wouldn't compress to a paragraph in the hub). |
+| Galleries | `projects/altair/dev/gallery.py` (22-card first gallery covering all 12 chart types + 3 composite shapes + 2 table data-source paths + dual-axis + a multi-annotation case) + `projects/altair/dev/fail_gallery.py` (control + 5 reproductions of the LVL + endpoint annotation overlap bug). Both run with no args -> render to `dev/output/<YYYY-MM-DD_HHMM>_<slug>/` and `webbrowser.open` the index.html. Per-edit mini-galleries follow the same timestamped-output convention per `.cursor/rules/viz-platforms.mdc`. |
+| Skill shape | Hub + 2 spokes. `chart_context.md` (hub, ~600 lines after the 2026-05-10 Chart Center disable) carries the always-needed surface — namespace + QC + design defaults + authoring rules + chart types + mapping + annotations + dual-axis + composites + dimensions + horizons + failure transparency. `chart_context_grids.md` (spoke, ~157 lines) carves off the grid / small-multiples topic. `chart_context_tables.md` (spoke, ~280 lines, landed 2026-05-12) carves off the static-PNG table engine — `make_table()` + `TableResult` + 3 PRISM-facing color modes (`'rwg'` / `'bw'` / `'rag'`) + `heatmap_groups` (col/row/group scope) + multi-level `header_levels` + `row_groups` navy bands + `row_indent` / `total_rows` / `subtotal_rows` + sparkline + mini-bar cells + `wrap_columns`. Both spokes fetched mid-session via `list_ai_repo(file_paths=["context/modules/static/chart_context_tables.md"], mode="full")`. The 2026-05-12 tables spoke is the second carve-out from single-file ergonomics; both carve-outs followed the same pattern (genuine standalone topic + discipline-warranting affordances that wouldn't compress to a paragraph in the hub). Skill / engine drift is caught at PRISM round-trip rather than via a local introspection gate -- the staging test surface is API-only. |
 | QC workflow | `workflows/altair_qc.md` — adversarial vision + validation hardening |
 | Notes file | `projects/altair/dev/notes.md` |
-| Tests | `projects/altair/dev/tests.py` (`python tests.py` interactive; `python tests.py unit -v` headless). Currently houses `TestChartContextCoverage` (skill/engine drift gate) + `TestGroupedBarCellBudget` (cell-budget regression). |
+| Tests | `projects/altair/dev/tests.py` (`python tests.py` interactive; `python tests.py unit -v` headless). Lightweight API-only suite -- 30 tests across `TestSingleChartAPI` (one per chart_type), `TestAnnotationsAPI` (one per annotation class), `TestCompositeAPI` (one per composite helper), `TestTableAPI` (the two `make_table` data-source paths + a `heatmap_groups` smoke). Every test calls the public entry point (`make_chart`, `make_table`, `make_*pack_*`) the same way PRISM does and asserts `result.success` + a basic invariant. No internal-function tests, no engine-introspection drift gates. |
 | Test prompts | `altair-payload/test_prompts/{chart_types,mapping,annotations,dual_axis,composites}_test.md` — one per topic area, 7 prompts each. Per the cross-project convention. STAGING-ONLY (does NOT ship). The 5-topic split is regression-coverage scaffolding, independent of the single-file skill. `chart_center_test.md` was archived to `projects/altair/dev/archive/test_prompts/` alongside the 2026-05-10 Chart Center disable (§11 stripped from `chart_context.md`, studio call sites in `chart_functions.py` deactivated). Restore the file alongside re-adding §11 + the studio call sites when re-enabling. |
 | Active feature work | `projects/altair/dev/specs/composites.md` — 4-batch plan for layered composites, forecast styling, new annotation classes (`BarValueLabels`, `BarHighlight`, `Connector`, `SeriesLabel`), two-level x-axis |
-| Feedback queue + external signals (UPDATED 2026-05-03) | 3 distinct incidents + 1 cross-project signal in `projects/altair/dev/feedback/` and `dev/notes.md` §External-signals / §Cross-project-signals. **FEEDBACK (3):** (a) `2026-04-26-2333-stress-test-results.md` — engine stress harness; (b) `2026-05-02_4pack_blowout.md` — grouped-bar 4-pack cell-budget blowout (RESOLVED — facet-width math now subtracts spacing overhead; 3px readability gate raises `GROUPED BAR CELL-BUDGET ERROR`; `TestGroupedBarCellBudget` pins); (c) `2026-05-02_chartspec_y_title_kwarg.md` — `ChartSpec(y_title=...)` hallucinated kwarg (skill rule lives in `chart_context.md` §7.1 + §10.2; optional engine convenience kwarg remains open). **PRISM DIAGNOSTIC (1):** `scans/prism/2026-05-02_bimodal_stir_report_diagnostic.md` issue 2 — heatmap >12 color cardinality silent-fail (skill rule lives in `chart_context.md` §6.3; optional `_validate_chart_inputs` binning-named error remains open). **CROSS-PROJECT SIGNAL (1, NEW 2026-05-02):** GS Sans font registration for matplotlib — `projects/frontend/dev/notes.md` §A has the plan; sequenced AFTER frontend staging fonts mirror lands. Engine edit adds `_register_gs_fonts()` at `chart_functions.py` import time (matplotlib sandbox workaround — PRISM hard-blocks matplotlib imports at the sandbox surface) and flips `GS_CLEAN` `"font.family"` from `"Liberation Sans, Arial, sans-serif"` to `"GS Sans, Helvetica Neue, Arial, sans-serif"`. Details in `projects/altair/dev/notes.md` "Cross-project signals". |
+| Feedback queue + external signals | 3 historical incidents + 1 cross-project signal in `projects/altair/dev/feedback/` and `dev/notes.md` §External-signals / §Cross-project-signals. **FEEDBACK (3):** (a) `2026-04-26-2333-stress-test-results.md` — engine stress harness; (b) `2026-05-02_4pack_blowout.md` — grouped-bar 4-pack cell-budget blowout (RESOLVED — facet-width math now subtracts spacing overhead; 3px readability gate raises `GROUPED BAR CELL-BUDGET ERROR`); (c) `2026-05-02_chartspec_y_title_kwarg.md` — `ChartSpec(y_title=...)` hallucinated kwarg (skill rule lives in `chart_context.md` §7.1 + §10.2; optional engine convenience kwarg remains open). **PRISM DIAGNOSTIC (1):** `scans/prism/2026-05-02_bimodal_stir_report_diagnostic.md` issue 2 — heatmap >12 color cardinality silent-fail (skill rule lives in `chart_context.md` §6.3; optional `_validate_chart_inputs` binning-named error remains open). **CROSS-PROJECT SIGNAL (1):** GS Sans font registration for matplotlib — `projects/frontend/dev/notes.md` §A has the plan; sequenced AFTER frontend staging fonts mirror lands. Engine edit adds `_register_gs_fonts()` at `chart_functions.py` import time (matplotlib sandbox workaround — PRISM hard-blocks matplotlib imports at the sandbox surface) and flips `GS_CLEAN` `"font.family"` from `"Liberation Sans, Arial, sans-serif"` to `"GS Sans, Helvetica Neue, Arial, sans-serif"`. Details in `projects/altair/dev/notes.md` "Cross-project signals". **OPEN BUG (2026-05-14):** LVL + endpoint annotation overlap reproduced in `dev/fail_gallery.py` (control + 5 repros). PRISM-shaped `Callout` / `PointLabel` / `PointHighlight` placed at the line endpoint stacks visually next to the auto-injected `LastValueLabel`. No engine fix yet -- repro pixels are the bug report; engine should detect endpoint-clustered annotations and either suppress the auto-LVL or reposition. |
 
 ### echarts — interactive HTML dashboard compiler
 

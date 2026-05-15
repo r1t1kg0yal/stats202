@@ -13862,9 +13862,8 @@ def make_chart(
     """Create a single chart from a DataFrame.
 
     This is the only chart-creation entry point the LLM should call.
-    All styling is controlled by ``skin`` (developer-controlled). Canvas
-    size is engine-decided per ``chart_type`` (see ``_AUTO_DIMENSIONS``);
-    PRISM never picks a dimension preset. Annotations are passed in
+    All styling is controlled by ``skin`` (developer-controlled). Layout
+    is controlled by ``dimensions``. Annotations are passed in
     structured form via ``annotations=[VLine(...), HLine(...), ...]``.
 
     Args:
@@ -13876,6 +13875,8 @@ def make_chart(
         subtitle: Chart subtitle (never use for source attribution).
         skin: Visual style. Today only ``gs_clean`` is published.
         intent: ``explore`` (default), ``publish``, or ``monitor``.
+        dimensions: Preset name (``wide``, ``square``, ``tall``,
+            ``compact``, ``presentation``, ``thumbnail``, ``teams``).
         annotations: Optional list of structured annotations.
         output_dir: Local-mode output directory (PRISM uses ``session_path``).
         filename_prefix / filename_suffix: Components of the output
@@ -14207,25 +14208,21 @@ def make_chart(
         )
 
     # ---- Skin / dimensions ----------------------------------------------
-    # Canvas size is engine-decided per chart_type. PRISM does not pass
-    # dimensions; the kwarg remains on the signature for staging-side
-    # power-user use (demos, fixture rendering) and is private-by-
-    # convention (not taught in the skill). When not passed, route
-    # through ``_auto_dimensions`` -- the same table the v2 ``Chart``
-    # class consults.
     skin_config = get_skin(skin, intent)
-    if dimensions is None:
-        dimensions = _auto_dimensions(chart_type)
-    if dimensions not in DIMENSION_PRESETS:
-        return ChartResult(
-            chart_type=chart_type, skin=skin, success=False,
-            error_message=(
-                f"Unknown dimension preset {dimensions!r}. "
-                f"Available: {list(DIMENSION_PRESETS.keys())}"
-            ),
-            warnings=warnings,
-        )
-    width, height = DIMENSION_PRESETS[dimensions]
+    if dimensions is not None:
+        if dimensions not in DIMENSION_PRESETS:
+            return ChartResult(
+                chart_type=chart_type, skin=skin, success=False,
+                error_message=(
+                    f"Unknown dimension preset {dimensions!r}. "
+                    f"Available: {list(DIMENSION_PRESETS.keys())}"
+                ),
+                warnings=warnings,
+            )
+        width, height = DIMENSION_PRESETS[dimensions]
+    else:
+        width = skin_config.get("width", 600)
+        height = skin_config.get("height", 400)
 
     # ---- Pre-dispatch annotation absorption (Phase 1 of collision sweep)
     # ---- See dev/scratch/_collision_audit_2026-05-10_1955/inventory.md
@@ -17084,50 +17081,6 @@ def _render_facet_grid(
     )
 
 
-def _resolve_composite_aliases(
-    *,
-    dimensions: Optional[str],
-    dimension_preset: Optional[str],
-    side_left: Union[str, Dict[str, Any], None],
-    narrative_left: Union[str, Dict[str, Any], None],
-    side_right: Union[str, Dict[str, Any], None],
-    narrative_right: Union[str, Dict[str, Any], None],
-) -> Tuple[
-    Optional[str],
-    Union[str, Dict[str, Any], None],
-    Union[str, Dict[str, Any], None],
-    List[str],
-]:
-    """Resolve composite kwarg aliases to single canonical values.
-
-    The composite functions accept BOTH the make_chart-style canonical
-    names (``dimensions``, ``side_left``, ``side_right``) AND their
-    composite-specific legacy names (``dimension_preset``,
-    ``narrative_left``, ``narrative_right``). Canonical wins when both
-    are passed and a warning is emitted so the caller sees the conflict.
-    """
-    alias_warnings: List[str] = []
-    if dimensions is not None and dimension_preset is not None:
-        alias_warnings.append(
-            "Both `dimensions=` and `dimension_preset=` were passed; "
-            "`dimensions=` (canonical) wins. Drop `dimension_preset=`."
-        )
-    if side_left is not None and narrative_left is not None:
-        alias_warnings.append(
-            "Both `side_left=` and `narrative_left=` were passed; "
-            "`side_left=` (canonical) wins. Drop `narrative_left=`."
-        )
-    if side_right is not None and narrative_right is not None:
-        alias_warnings.append(
-            "Both `side_right=` and `narrative_right=` were passed; "
-            "`side_right=` (canonical) wins. Drop `narrative_right=`."
-        )
-    resolved_dim = dimensions if dimensions is not None else dimension_preset
-    resolved_left = side_left if side_left is not None else narrative_left
-    resolved_right = side_right if side_right is not None else narrative_right
-    return resolved_dim, resolved_left, resolved_right, alias_warnings
-
-
 def make_composite(
     charts: List[ChartSpec],
     layout: LayoutType,
@@ -17135,7 +17088,6 @@ def make_composite(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
-    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17147,9 +17099,7 @@ def make_composite(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
-    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Generic composite entry point used by all ``make_Npack_*`` wrappers.
@@ -17165,24 +17115,11 @@ def make_composite(
 
     Composite-level text panels:
       ``caption`` sits below the entire pack (composite footer).
-      ``side_left`` / ``side_right`` flank the whole pack (also
-      accepted under the legacy aliases ``narrative_left`` /
-      ``narrative_right``). Each accepts a string or a style dict
-      (see ``make_chart``). Sub-chart-level text panels live on each
-      ``ChartSpec`` instead.
+      ``narrative_left`` / ``narrative_right`` flank the whole pack.
+    Each accepts a string or a style dict (see ``make_chart``).
+    Sub-chart-level text panels live on each ``ChartSpec`` instead.
     """
     warnings_list: List[str] = []
-    dimension_preset, narrative_left, narrative_right, alias_warnings = (
-        _resolve_composite_aliases(
-            dimensions=dimensions,
-            dimension_preset=dimension_preset,
-            side_left=side_left,
-            narrative_left=narrative_left,
-            side_right=side_right,
-            narrative_right=narrative_right,
-        )
-    )
-    warnings_list.extend(alias_warnings)
 
     if layout not in (
         "2_horizontal", "2_vertical", "3_triangle", "3_inverted",
@@ -17551,7 +17488,6 @@ def make_2pack_horizontal(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
-    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17563,9 +17499,7 @@ def make_2pack_horizontal(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
-    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Two charts side-by-side. ``chart1`` is left, ``chart2`` is right."""
@@ -17573,15 +17507,13 @@ def make_2pack_horizontal(
         [chart1, chart2],
         "2_horizontal",
         title=title, subtitle=subtitle, skin=skin,
-        dimensions=dimensions, dimension_preset=dimension_preset,
-        output_dir=output_dir,
+        dimension_preset=dimension_preset, output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        side_left=side_left, narrative_left=narrative_left,
-        side_right=side_right, narrative_right=narrative_right,
+        narrative_left=narrative_left, narrative_right=narrative_right,
     )
 
 
@@ -17592,7 +17524,6 @@ def make_2pack_vertical(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
-    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "wide",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17604,9 +17535,7 @@ def make_2pack_vertical(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
-    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Two charts stacked vertically. ``chart1`` is top, ``chart2`` is bottom."""
@@ -17614,15 +17543,13 @@ def make_2pack_vertical(
         [chart1, chart2],
         "2_vertical",
         title=title, subtitle=subtitle, skin=skin,
-        dimensions=dimensions, dimension_preset=dimension_preset,
-        output_dir=output_dir,
+        dimension_preset=dimension_preset, output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        side_left=side_left, narrative_left=narrative_left,
-        side_right=side_right, narrative_right=narrative_right,
+        narrative_left=narrative_left, narrative_right=narrative_right,
     )
 
 
@@ -17634,7 +17561,6 @@ def make_3pack_triangle(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
-    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17646,9 +17572,7 @@ def make_3pack_triangle(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
-    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Three charts: one on top, two on bottom."""
@@ -17656,15 +17580,13 @@ def make_3pack_triangle(
         [chart_top, chart_bottom_left, chart_bottom_right],
         "3_triangle",
         title=title, subtitle=subtitle, skin=skin,
-        dimensions=dimensions, dimension_preset=dimension_preset,
-        output_dir=output_dir,
+        dimension_preset=dimension_preset, output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        side_left=side_left, narrative_left=narrative_left,
-        side_right=side_right, narrative_right=narrative_right,
+        narrative_left=narrative_left, narrative_right=narrative_right,
     )
 
 
@@ -17677,7 +17599,6 @@ def make_4pack_grid(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
-    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17689,9 +17610,7 @@ def make_4pack_grid(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
-    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """2x2 grid (top-left, top-right, bottom-left, bottom-right)."""
@@ -17699,15 +17618,13 @@ def make_4pack_grid(
         [chart_tl, chart_tr, chart_bl, chart_br],
         "4_grid",
         title=title, subtitle=subtitle, skin=skin,
-        dimensions=dimensions, dimension_preset=dimension_preset,
-        output_dir=output_dir,
+        dimension_preset=dimension_preset, output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        side_left=side_left, narrative_left=narrative_left,
-        side_right=side_right, narrative_right=narrative_right,
+        narrative_left=narrative_left, narrative_right=narrative_right,
     )
 
 
@@ -17723,7 +17640,6 @@ def make_6pack_grid(
     subtitle: Optional[str] = None,
     specs: Optional[List[ChartSpec]] = None,
     skin: str = "gs_clean",
-    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17735,9 +17651,7 @@ def make_6pack_grid(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
-    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """3x2 grid (3 rows, 2 columns) of charts.
@@ -17795,15 +17709,13 @@ def make_6pack_grid(
         charts,
         "6_grid",
         title=title, subtitle=subtitle, skin=skin,
-        dimensions=dimensions, dimension_preset=dimension_preset,
-        output_dir=output_dir,
+        dimension_preset=dimension_preset, output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        side_left=side_left, narrative_left=narrative_left,
-        side_right=side_right, narrative_right=narrative_right,
+        narrative_left=narrative_left, narrative_right=narrative_right,
     )
 
 
@@ -17825,21 +17737,47 @@ def _qc_one(
     """
     png_path = getattr(r, "png_path", None)
     success = getattr(r, "success", True)
+    truncated_rows = getattr(r, "truncated_rows", 0) or 0
+    warnings_list = getattr(r, "warnings", []) or []
     if not success or not png_path:
-        err = getattr(r, "error_message", None)
-        reason = (
-            f"chart build failed: {err}" if err
-            else "chart build failed: no png_path and no error_message on result"
-        )
+        # Distinguish a real render failure from a render-with-truncation that
+        # somehow lost its png path. This message used to read 'no png_path'
+        # which surfaced to users as 'Chart failed to render: unknown error'
+        # even though the engine had emitted a clear truncation warning.
+        if truncated_rows and warnings_list:
+            reason = (
+                f"rendered with truncation but png_path missing; "
+                f"engine warning: {warnings_list[0]}"
+            )
+        else:
+            err = getattr(r, "error_message", None)
+            reason = (
+                f"chart build failed: {err}" if err
+                else "chart build failed: no png_path and no error_message on result"
+            )
         return {
             "passed": False,
             "reason": reason,
             "png_path": png_path,
+            "truncated_rows": truncated_rows,
         }
     try:
         png_bytes = s3_manager.get(png_path)
         verdict = check_chart_quality(png_bytes)
         verdict.setdefault("png_path", png_path)
+        # Surface truncation as a non-fatal annotation so downstream callers
+        # can distinguish 'rendered cleanly' from 'rendered but N rows dropped'.
+        if truncated_rows:
+            verdict["truncated_rows"] = truncated_rows
+            existing_reason = verdict.get("reason") or ""
+            trunc_note = (
+                f"rendered with {truncated_rows} row(s) truncated -- "
+                f"consider a larger dimensions preset"
+            )
+            verdict["reason"] = (
+                f"{existing_reason}: {trunc_note}" if existing_reason else trunc_note
+            )
+            verdict["reason"] = str(verdict.get("reason") or "")
         return verdict
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -18264,14 +18202,12 @@ _V2_MAPPING_KEYS: Tuple[str, ...] = (
 _V2_UNSET = object()
 
 
-# Per-chart-type dimension defaults. The engine picks the right canvas
-# for each chart type so PRISM never has to think about it. Both v1's
-# ``make_chart`` (when ``dimensions=None``) and v2's ``Chart`` class
-# (when ``.with_dimensions()`` is not called) consult this table.
-# Override path on v1: pass an explicit ``dimensions=`` (private-by-
-# convention; not taught in the skill). Override on v2:
-# ``Chart.with_dimensions(preset)``.
-_AUTO_DIMENSIONS: Dict[str, str] = {
+# Per-chart-type dimension defaults. The v2 surface deliberately does
+# NOT expose ``dimensions=`` to the LLM -- the engine picks the right
+# canvas for each chart type so PRISM never has to think about it.
+# Override path: ``Chart.with_dimensions(preset)`` (escape hatch, not
+# taught in the v2 skill).
+_V2_AUTO_DIMENSIONS: Dict[str, str] = {
     "multi_line":      "wide",     # 700x350 - time series default
     "timeseries":      "wide",
     "area":            "wide",
@@ -18288,14 +18224,14 @@ _AUTO_DIMENSIONS: Dict[str, str] = {
 }
 
 
-def _auto_dimensions(chart_type: str) -> str:
+def _v2_auto_dimensions(chart_type: str) -> str:
     """Return the engine-picked dimension preset for ``chart_type``.
 
     Single source of truth for "what canvas does this chart type want".
     Falls through to ``'wide'`` for any chart type without an explicit
     entry, matching the long-running engine default.
     """
-    return _AUTO_DIMENSIONS.get(chart_type, "wide")
+    return _V2_AUTO_DIMENSIONS.get(chart_type, "wide")
 
 
 def _v2_resolve_layout(layout: str, n_charts: int) -> str:
@@ -18408,7 +18344,7 @@ class Chart:
         side_right: Union[str, Dict[str, Any], None] = None,
         # ----- Style --------------------------------------------------
         # NB: ``dimensions`` is intentionally NOT a public kwarg --
-        # the engine picks per chart_type (see ``_auto_dimensions``).
+        # the engine picks per chart_type (see ``_v2_auto_dimensions``).
         # Use ``Chart.with_dimensions(preset)`` if you really need to
         # override (escape hatch, not taught in the skill).
         skin: str = "gs_clean",
@@ -18474,7 +18410,7 @@ class Chart:
         self._skin = skin
         self._intent = intent
         # ``self._dimensions`` is the OVERRIDE slot. None means "let
-        # the engine pick per chart_type" via ``_auto_dimensions``.
+        # the engine pick per chart_type" via ``_v2_auto_dimensions``.
         # Set by ``.with_dimensions(preset)`` for power-user override.
         self._dimensions: Optional[DimensionPreset] = None
         self._auto_beautify = auto_beautify
@@ -18598,7 +18534,7 @@ class Chart:
         Override (set via ``.with_dimensions()``) wins; otherwise the
         engine auto-picks per chart type.
         """
-        return self._dimensions or _auto_dimensions(self._type)
+        return self._dimensions or _v2_auto_dimensions(self._type)
 
     def preview(self) -> Dict[str, Any]:
         """Return the planned Vega-Lite spec without writing PNG / S3.
@@ -19015,19 +18951,6 @@ _TABLE_PALETTES: Dict[str, Tuple] = {
     "owb":      ("diverging", GS_PRIMARY["colors"][8], GS_PRIMARY["colors"][0], 0.65),
 }
 
-# Content-driven table sizing constants. The table engine sizes its PNG
-# to fit content exactly; PRISM never picks a canvas. These tunables
-# govern only the wrap / compress behaviour for unusually-wide content
-# and are private to this module. The "soft" hard-coded numbers reflect
-# typical FT/Bloomberg article-body widths and reading-comfortable text
-# column widths; they are not meant to be overridden by callers.
-_TBL_SIDE_PAD = 12          # Left/right canvas margin (px)
-_TBL_TEXT_COL_MAX = 280     # Cap text-col natural width before wrapping
-_TBL_TEXT_COL_FLOOR = 160   # Lower bound when compressing text cols
-_TBL_MAX_TABLE_W = 1400     # Soft upper bound on canvas width
-_TBL_CELL_PAD_X = 10        # Per-cell horizontal padding
-_TBL_BODY_PAD_BOTTOM = 6    # Padding between last row and caption / edge
-
 _TBL_FONT_SEARCH_PATHS: Dict[str, List[str]] = {
     "regular": [
         "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
@@ -19234,6 +19157,15 @@ def _tbl_hard_break(text: str, font, max_width_px: int) -> List[str]:
     return pieces or [text]
 
 
+def _tbl_truncate(text: str, font, max_width_px: int) -> str:
+    text = str(text)
+    if font.getlength(text) <= max_width_px:
+        return text
+    while text and font.getlength(text + "…") > max_width_px:
+        text = text[:-1]
+    return (text + "…") if text else ""
+
+
 def _tbl_normalize_mode(spec: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
     if isinstance(spec, dict):
         return {**spec}
@@ -19263,11 +19195,10 @@ class _TableLayoutGeom:
     table_x: int
     table_w: int
     body_top_y: int
+    body_avail_h: int
     header_h: int
     col_xs: List[int]
     col_widths: List[int]
-    col_wraps: List[bool]
-    row_heights: List[int]
     caption_y: int
     caption_h: int
     row_default_h: int
@@ -19286,18 +19217,12 @@ def _tbl_measure_title(title: Optional[str], subtitle: Optional[str], theme: Dic
     return h
 
 
-def _tbl_measure_caption(caption: Optional[str], inner_w: int, theme: Dict[str, Any]) -> Tuple[int, List[str]]:
-    """Return (caption_band_height, wrapped_caption_lines).
-
-    Caption wraps to the inner table width (canvas_w - 2 * side_pad).
-    Returns 0 / empty list when no caption is set.
-    """
+def _tbl_measure_caption(caption: Optional[str], canvas_w: int, side_pad: int, theme: Dict[str, Any]) -> int:
     if not caption:
-        return 0, []
+        return 0
     cap_font = _tbl_load_font("italic", theme["caption_font_size"])
-    lines = _tbl_wrap_text(caption, cap_font, inner_w)
-    h = int(len(lines) * theme["caption_font_size"] * 1.4) + 12
-    return h, lines
+    lines = _tbl_wrap_text(caption, cap_font, canvas_w - 2 * side_pad)
+    return int(len(lines) * theme["caption_font_size"] * 1.4) + 12
 
 
 def _tbl_default_align(col: str, df: pd.DataFrame) -> str:
@@ -19306,144 +19231,100 @@ def _tbl_default_align(col: str, df: pd.DataFrame) -> str:
     return "left"
 
 
-def _tbl_is_text_col(
-    df: pd.DataFrame, col: str,
-    sparkline_columns: Dict[str, Any], minibar_columns: Dict[str, Any],
-) -> bool:
-    """Text columns wrap when wide; numeric / datetime / sparkline /
-    minibar columns never wrap."""
-    if col in sparkline_columns or col in minibar_columns:
-        return False
-    series = df[col]
-    if pd.api.types.is_numeric_dtype(series):
-        return False
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return False
-    return True
-
-
-def _tbl_natural_widths(
+def _tbl_column_widths(
     df: pd.DataFrame,
-    column_formats: Dict[str, str],
+    column_formats: Dict[str, str], column_widths: Dict[str, Union[int, str]],
     sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
-    theme: Dict[str, Any],
-) -> Tuple[List[int], List[bool], List[int]]:
-    """Compute the per-column natural width, wrap flag, and minimum
-    floor (the smallest width that still keeps the header visible).
-
-    Returns (widths, wraps, floors).
-      ``widths[i]``  - natural rendered width in px (already clamped to
-                       ``_TBL_TEXT_COL_MAX`` for wrapping text columns).
-      ``wraps[i]``   - True when the column is a text column that has
-                       been capped at ``_TBL_TEXT_COL_MAX`` and so its
-                       cells must wrap to fit. Numeric / datetime /
-                       sparkline / minibar columns always carry False.
-      ``floors[i]``  - lowest acceptable width when the table needs to
-                       compress to fit ``_TBL_MAX_TABLE_W``. Equal to
-                       the column's natural width for non-wrapping
-                       columns (they cannot be compressed without
-                       truncation, which is forbidden) and to
-                       max(header_w, ``_TBL_TEXT_COL_FLOOR``) for
-                       wrapping text columns.
-    """
+    canvas_w: int, side_pad: int, theme: Dict[str, Any],
+    wrap_columns: List[str],
+) -> List[int]:
     body_font = _tbl_load_font("regular", theme["body_font_size"])
     header_font = _tbl_load_font("bold", theme["header_font_size"])
-    cell_pad_x = _TBL_CELL_PAD_X
+    cell_pad_x = 10
+    total_avail = canvas_w - 2 * side_pad
 
-    widths: List[int] = []
-    wraps: List[bool] = []
-    floors: List[int] = []
+    natural: List[int] = []
     for col in df.columns:
-        header_w = int(header_font.getlength(str(col))) + 2 * cell_pad_x
+        explicit = column_widths.get(col)
+        if isinstance(explicit, int):
+            natural.append(max(40, explicit))
+            continue
         if col in sparkline_columns:
-            w = 120 + 2 * cell_pad_x
-            widths.append(w)
-            wraps.append(False)
-            floors.append(w)
+            natural.append(120 + 2 * cell_pad_x)
             continue
         if col in minibar_columns:
-            w = 110 + 2 * cell_pad_x
-            widths.append(w)
-            wraps.append(False)
-            floors.append(w)
+            natural.append(110 + 2 * cell_pad_x)
+            continue
+        header_w = int(header_font.getlength(str(col))) + 2 * cell_pad_x
+        if col in wrap_columns:
+            natural.append(max(header_w, 160))
             continue
         body_max_w = 0
-        for v in df[col].tolist():
+        for v in df[col].head(40).tolist():
             text = _tbl_smart_format(v, column_formats.get(col))
-            tw = int(body_font.getlength(text)) + 2 * cell_pad_x
-            if tw > body_max_w:
-                body_max_w = tw
-        natural = max(header_w, body_max_w, 60)
-        is_text = _tbl_is_text_col(df, col, sparkline_columns, minibar_columns)
-        if is_text and natural > _TBL_TEXT_COL_MAX:
-            widths.append(max(header_w, _TBL_TEXT_COL_MAX))
-            wraps.append(True)
-            floors.append(max(header_w, _TBL_TEXT_COL_FLOOR))
+            w = int(body_font.getlength(text)) + 2 * cell_pad_x
+            if w > body_max_w:
+                body_max_w = w
+        natural.append(max(header_w, body_max_w, 60))
+
+    total_natural = sum(natural)
+    if total_natural <= total_avail:
+        leftover = total_avail - total_natural
+        weights: List[float] = []
+        for i, col in enumerate(df.columns):
+            if col in sparkline_columns or col in minibar_columns:
+                weights.append(0.0)
+            elif isinstance(column_widths.get(col), int):
+                weights.append(0.0)
+            elif col in wrap_columns:
+                weights.append(2.0 * float(natural[i]))
+            else:
+                weights.append(float(natural[i]))
+        sw = sum(weights)
+        if sw > 0:
+            for i, w in enumerate(weights):
+                natural[i] += int(round(leftover * (w / sw)))
         else:
-            widths.append(natural)
-            wraps.append(False)
-            floors.append(natural)
-    return widths, wraps, floors
-
-
-def _tbl_compress_to_fit(
-    widths: List[int], wraps: List[bool], floors: List[int],
-    side_pad: int,
-) -> List[int]:
-    """If sum(widths) + 2*side_pad exceeds the soft ceiling, compress
-    wrapping text columns toward their floors uniformly. If the ceiling
-    cannot be honoured even at the floor, the overflow is accepted -
-    the table just renders wider. No truncation."""
-    inner_target = _TBL_MAX_TABLE_W - 2 * side_pad
-    cur = sum(widths)
-    if cur <= inner_target:
-        return list(widths)
-    overflow = cur - inner_target
-    flex_idx = [i for i, wrapping in enumerate(wraps) if wrapping]
-    if not flex_idx:
-        return list(widths)
-    out = list(widths)
-    while overflow > 0:
-        room = sum(out[i] - floors[i] for i in flex_idx)
-        if room <= 0:
-            break
-        take = min(overflow, room)
-        for i in flex_idx:
-            slack = out[i] - floors[i]
-            if slack <= 0:
+            natural[0] += leftover
+    else:
+        protected = sum(
+            natural[i] for i, col in enumerate(df.columns)
+            if col in sparkline_columns or col in minibar_columns
+            or isinstance(column_widths.get(col), int)
+        )
+        flex_total = total_natural - protected
+        flex_avail = max(60 * (len(df.columns) - 1), total_avail - protected)
+        scale = flex_avail / flex_total if flex_total > 0 else 1.0
+        for i, col in enumerate(df.columns):
+            if col in sparkline_columns or col in minibar_columns or isinstance(column_widths.get(col), int):
                 continue
-            share = int(round(take * (slack / room)))
-            share = min(share, slack)
-            out[i] -= share
-        overflow = sum(out) - inner_target
-        if overflow <= 0 or sum(out[i] - floors[i] for i in flex_idx) <= 0:
-            break
-    return out
+            natural[i] = max(40, int(round(natural[i] * scale)))
+
+    natural[-1] += total_avail - sum(natural)
+    return natural
 
 
 def _tbl_row_heights(
-    df: pd.DataFrame,
-    col_widths: List[int],
-    col_wraps: List[bool],
-    column_formats: Dict[str, str],
-    theme: Dict[str, Any],
+    df: pd.DataFrame, col_widths: List[int],
+    column_formats: Dict[str, str], theme: Dict[str, Any],
+    wrap_columns: List[str], max_wrap_lines: int,
 ) -> List[int]:
-    """Per-row height, growing to fit any wrapping cell content."""
     body_font = _tbl_load_font("regular", theme["body_font_size"])
-    cell_pad_x = _TBL_CELL_PAD_X
+    cell_pad_x = 10
     base_h = int(theme["body_font_size"] * 1.95)
     line_h = int(theme["body_font_size"] * 1.45)
     out: List[int] = []
-    for _, row in df.iterrows():
+    for r_idx, (_, row) in enumerate(df.iterrows()):
         max_lines = 1
         for ci, col in enumerate(df.columns):
-            if not col_wraps[ci]:
+            if col not in wrap_columns:
                 continue
             avail = col_widths[ci] - 2 * cell_pad_x
             text = _tbl_smart_format(row[col], column_formats.get(col))
             lines = _tbl_wrap_text(text, body_font, max(20, avail))
-            if len(lines) > max_lines:
-                max_lines = len(lines)
+            n = min(len(lines), max_wrap_lines)
+            if n > max_lines:
+                max_lines = n
         h = max(base_h, max_lines * line_h + 8)
         out.append(h)
     return out
@@ -19451,70 +19332,42 @@ def _tbl_row_heights(
 
 def _tbl_layout(
     df: pd.DataFrame, title: Optional[str], subtitle: Optional[str],
-    caption: Optional[str],
+    caption: Optional[str], canvas: Tuple[int, int], side_pad: int,
     theme: Dict[str, Any],
     header_levels: Optional[List[List[Tuple[str, int]]]],
     column_formats: Dict[str, str],
+    column_widths: Dict[str, Union[int, str]],
     sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
-    row_groups: Optional[List[Tuple[str, int]]],
-) -> Tuple[_TableLayoutGeom, List[str]]:
-    """Compute a content-driven layout. Returns the geometry plus the
-    pre-wrapped caption lines (so the draw step doesn't have to re-wrap).
-
-    Width:  side_pad + Sum(col_widths) + side_pad
-            (capped softly at ``_TBL_MAX_TABLE_W`` via wrap-column
-             compression; if even the floor compression can't fit, the
-             table renders wider rather than truncating any cell.)
-
-    Height: title + header + Sum(row_heights) + group bands + caption
-            + bottom padding. Always exact - no fixed canvas, so no
-            bottom whitespace.
-    """
-    side_pad = _TBL_SIDE_PAD
-    natural_w, wraps, floors = _tbl_natural_widths(
-        df, column_formats, sparkline_columns, minibar_columns, theme,
-    )
-    col_widths = _tbl_compress_to_fit(natural_w, wraps, floors, side_pad)
-
-    canvas_w = 2 * side_pad + sum(col_widths)
-    inner_w = canvas_w - 2 * side_pad
-
+    row_groups: Optional[List[Tuple[str, int]]], wrap_columns: List[str],
+) -> _TableLayoutGeom:
+    canvas_w, canvas_h = canvas
     title_h = _tbl_measure_title(title, subtitle, theme)
-    caption_h, _caption_lines = _tbl_measure_caption(caption, inner_w, theme)
-
+    caption_h = _tbl_measure_caption(caption, canvas_w, side_pad, theme)
     n_super_levels = len(header_levels) if header_levels else 0
     header_row_h = int(theme["header_font_size"] * 1.7)
     header_h = header_row_h * (n_super_levels + 1)
     body_top_y = title_h + header_h + (8 if title_h else 0)
-
+    body_avail_h = canvas_h - body_top_y - caption_h - 6
     row_default_h = int(theme["body_font_size"] * 1.95)
     group_band_h = int(theme["body_font_size"] * 1.85)
-
-    row_heights = _tbl_row_heights(
-        df, col_widths, wraps, column_formats, theme,
+    cw = _tbl_column_widths(
+        df, column_formats, column_widths, sparkline_columns, minibar_columns,
+        canvas_w, side_pad, theme, wrap_columns,
     )
-    n_group_bands = len(row_groups or [])
-    body_h = sum(row_heights) + n_group_bands * group_band_h
-    canvas_h = body_top_y + body_h + caption_h + _TBL_BODY_PAD_BOTTOM
-
     col_xs = [side_pad]
     acc = side_pad
-    for w in col_widths:
+    for w in cw:
         acc += w
         col_xs.append(acc)
-
-    geom = _TableLayoutGeom(
+    return _TableLayoutGeom(
         canvas_w=canvas_w, canvas_h=canvas_h,
         title_h=title_h, table_x=side_pad,
-        table_w=inner_w,
-        body_top_y=body_top_y,
-        header_h=header_h, col_xs=col_xs,
-        col_widths=col_widths, col_wraps=wraps,
-        row_heights=row_heights,
-        caption_y=body_top_y + body_h, caption_h=caption_h,
+        table_w=canvas_w - 2 * side_pad,
+        body_top_y=body_top_y, body_avail_h=body_avail_h,
+        header_h=header_h, col_xs=col_xs, col_widths=cw,
+        caption_y=canvas_h - caption_h, caption_h=caption_h,
         row_default_h=row_default_h, group_band_h=group_band_h,
     )
-    return geom, _caption_lines
 
 
 def _tbl_resolve_heatmap_group(
@@ -19670,12 +19523,12 @@ def _tbl_draw_header(draw, df: pd.DataFrame, geom: _TableLayoutGeom,
                 fill="#FFFFFF", width=1,
             )
     y0 = band_y0 + n_levels * header_row_h
-    cell_pad_x = _TBL_CELL_PAD_X
+    cell_pad_x = 10
     for i, col in enumerate(df.columns):
         x0 = geom.col_xs[i]
         x1 = geom.col_xs[i + 1]
         align = column_aligns.get(col, _tbl_default_align(col, df))
-        text = str(col)
+        text = _tbl_truncate(str(col), header_font, x1 - x0 - 2 * cell_pad_x)
         tw = header_font.getlength(text)
         if align == "right":
             tx = x1 - cell_pad_x - tw
@@ -19749,15 +19602,13 @@ def _tbl_draw_body(
     signed_columns: List[str],
     total_rows: List[int],
     subtotal_rows: List[int],
-) -> None:
-    """Draw every body row. Canvas is content-sized so there is no
-    body-bottom check and no truncation; every row renders. Wrapping
-    is driven by ``geom.col_wraps`` (engine-decided) and the per-row
-    height (already computed by ``_tbl_layout``) is what gives wrapped
-    cells the room they need."""
+    row_heights: List[int],
+    wrap_columns: List[str],
+    max_wrap_lines: int,
+) -> int:
     body_font = _tbl_load_font("regular", theme["body_font_size"])
     body_bold = _tbl_load_font("bold", theme["body_font_size"])
-    cell_pad_x = _TBL_CELL_PAD_X
+    cell_pad_x = 10
     group_starts: Dict[int, str] = {}
     if row_groups:
         cursor = 0
@@ -19766,11 +19617,16 @@ def _tbl_draw_body(
             cursor += count
     col_index = {c: i for i, c in enumerate(df.columns)}
     n_cols = len(df.columns)
-    row_heights = geom.row_heights
+    body_bottom = geom.body_top_y + geom.body_avail_h
     y = geom.body_top_y
+    rendered = 0
     for r_idx, (_, row) in enumerate(df.iterrows()):
         rh = row_heights[r_idx] if r_idx < len(row_heights) else geom.row_default_h
+        if y + rh > body_bottom:
+            break
         if r_idx in group_starts:
+            if y + geom.group_band_h + rh > body_bottom:
+                break
             draw.rectangle(
                 [geom.table_x, y, geom.table_x + geom.table_w, y + geom.group_band_h],
                 fill=theme["primary_color"],
@@ -19870,8 +19726,12 @@ def _tbl_draw_body(
                     else:
                         text_color = theme["body_text"]
             avail_w = x1 - x0 - 2 * cell_pad_x - indent_px
-            if geom.col_wraps[ci]:
+            if col in wrap_columns:
                 lines = _tbl_wrap_text(text_str, font, max(20, avail_w))
+                full_lines = lines
+                lines = lines[:max_wrap_lines]
+                if len(full_lines) > max_wrap_lines:
+                    lines[-1] = _tbl_truncate(lines[-1], font, avail_w)
                 line_h = int(theme["body_font_size"] * 1.45)
                 block_h = len(lines) * line_h
                 ty = y + (rh - block_h) // 2 + 1
@@ -19886,6 +19746,7 @@ def _tbl_draw_body(
                     draw.text((tx, ty), line, fill=text_color, font=font)
                     ty += line_h
             else:
+                text_str = _tbl_truncate(text_str, font, max(20, avail_w))
                 tw = font.getlength(text_str)
                 if align == "right":
                     tx = x1 - cell_pad_x - tw
@@ -19901,6 +19762,20 @@ def _tbl_draw_body(
                 fill="#E0E0E0", width=1,
             )
         y += rh
+        rendered += 1
+    return rendered
+
+
+def _tbl_groups_before(rendered: int, row_groups: Optional[List[Tuple[str, int]]]) -> int:
+    if not row_groups:
+        return 0
+    cursor = 0
+    n = 0
+    for _, count in row_groups:
+        if cursor < rendered:
+            n += 1
+        cursor += count
+    return n
 
 
 def _tbl_png_bytes(img: Image.Image) -> bytes:
@@ -19930,7 +19805,10 @@ def make_table(
     subtitle: Optional[str] = None,
     caption: Optional[str] = None,
     skin: str = "gs_clean",
+    dimensions: Optional[str] = "wide",
+    canvas: Optional[Tuple[int, int]] = None,
     column_formats: Optional[Dict[str, str]] = None,
+    column_widths: Optional[Dict[str, Union[int, str]]] = None,
     column_aligns: Optional[Dict[str, str]] = None,
     header_levels: Optional[List[List[Tuple[str, int]]]] = None,
     row_groups: Optional[List[Tuple[str, int]]] = None,
@@ -19948,14 +19826,19 @@ def make_table(
     signed_columns: Optional[List[str]] = None,
     total_rows: Optional[List[int]] = None,
     subtotal_rows: Optional[List[int]] = None,
+    wrap_columns: Optional[List[str]] = None,
+    max_wrap_lines: int = 4,
+    body_font_size: Optional[int] = None,
+    header_font_size: Optional[int] = None,
     show_index: bool = False,
+    side_pad: int = 12,
     save_as: Optional[str] = None,
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     output_dir: str = "",
     user_id: Optional[str] = None,
 ) -> TableResult:
-    """Render a DataFrame as a content-sized PNG table.
+    """Render a DataFrame as a beautifully-styled PNG table.
 
     Two data-source paths (mutually exclusive — pass exactly one):
         df=<DataFrame>   data-pulled (Haver / market / CSV / scraper /
@@ -19964,12 +19847,6 @@ def make_table(
                           (column names from keys; pass columns=[...] to
                           reorder) or list-of-tuples/lists (requires
                           columns=[...] to name the headers).
-
-    Canvas is engine-decided. Width = sum of column widths (capped softly
-    at ~1400px; wide text columns wrap to fit); height = sum of row
-    heights (uncapped, grows to fit every row). The PNG is exactly the
-    size the content needs — never preset-bound, never truncated, never
-    surrounded by whitespace. PRISM never picks a dimension or canvas.
 
     PRISM-facing color modes (3 strings): "rwg" / "bw" / "rag".
 
@@ -20030,6 +19907,7 @@ def make_table(
     df = df.reset_index(drop=True)
 
     column_formats = dict(column_formats or {})
+    column_widths = dict(column_widths or {})
     column_aligns = dict(column_aligns or {})
     rag_thresholds = dict(rag_thresholds or {})
     highlight_columns = list(highlight_columns or [])
@@ -20066,13 +19944,27 @@ def make_table(
     signed_columns = list(signed_columns or [])
     total_rows = list(total_rows or [])
     subtotal_rows = list(subtotal_rows or [])
+    wrap_columns = list(wrap_columns or [])
     row_colors = dict(row_colors or {})
     heatmap_groups = list(heatmap_groups or [])
 
     raw_modes = column_color_modes or {}
     column_color_modes = {col: _tbl_normalize_mode(spec) for col, spec in raw_modes.items()}
 
+    if canvas is None:
+        if dimensions is None or dimensions not in DIMENSION_PRESETS:
+            return TableResult(
+                success=False,
+                error_message=f"Unknown dimensions preset: {dimensions!r}. "
+                              f"Choose from {list(DIMENSION_PRESETS.keys())}",
+            )
+        canvas = DIMENSION_PRESETS[dimensions]
+
     theme = dict(_TABLE_THEME)
+    if body_font_size:
+        theme["body_font_size"] = body_font_size
+    if header_font_size:
+        theme["header_font_size"] = header_font_size
 
     if header_levels:
         for level_idx, level in enumerate(header_levels):
@@ -20092,26 +19984,48 @@ def make_table(
                               f"expected len(df)={len(df)}",
             )
 
-    geom, _caption_lines = _tbl_layout(
-        df, title, subtitle, caption, theme,
-        header_levels, column_formats,
-        sparkline_columns, minibar_columns, row_groups,
+    geom = _tbl_layout(
+        df, title, subtitle, caption, canvas, side_pad, theme,
+        header_levels, column_formats, column_widths,
+        sparkline_columns, minibar_columns, row_groups, wrap_columns,
     )
-    canvas = (geom.canvas_w, geom.canvas_h)
+    row_h = _tbl_row_heights(
+        df, geom.col_widths, column_formats, theme, wrap_columns, max_wrap_lines,
+    )
 
     img = Image.new("RGB", canvas, theme["background_color"])
     draw = ImageDraw.Draw(img)
 
     _tbl_draw_title(draw, title, subtitle, geom, theme)
     _tbl_draw_header(draw, df, geom, theme, header_levels, column_aligns)
-    _tbl_draw_body(
+    rendered = _tbl_draw_body(
         draw, df, geom, theme,
         column_formats, column_aligns, column_color_modes, heatmap_groups,
         rag_thresholds, row_bands, row_groups, row_indent, row_colors,
         cell_colors, cell_text_colors, highlight_columns,
         sparkline_columns, minibar_columns, signed_columns,
         total_rows, subtotal_rows,
+        row_h, wrap_columns, max_wrap_lines,
     )
+
+    # No auto-truncation. If the canvas can't hold every row, fail loudly
+    # so the caller picks a larger preset (or splits the table) rather than
+    # silently dropping data. Tables with hidden rows are a wrong-answer
+    # failure mode -- the reader has no signal that more data exists.
+    truncated = max(0, len(df) - rendered)
+    if truncated:
+        return TableResult(
+            success=False,
+            error_message=(
+                f"Table has {len(df)} rows but only {rendered} fit the "
+                f"{canvas[0]}x{canvas[1]} canvas ({dimensions!r} preset). "
+                f"Use a larger dimensions preset (e.g. 'presentation' or "
+                f"'tall'), pass an explicit canvas=(W, H), reduce row count, "
+                f"or split the table. Auto-truncation is disabled to prevent "
+                f"silent data loss."
+            ),
+            warnings=warnings,
+        )
 
     _tbl_draw_caption(draw, caption, geom, theme)
 
@@ -20131,7 +20045,7 @@ def make_table(
             # s3_manager.put() returns None; the canonical path is out_path
             # itself. (Previously we assigned the return value to written_path,
             # which silently produced png_path=None on every successful table
-            # render.)
+            # render -- see TKT png_path= on success regression.)
             s3_manager.put(buf, out_path)
             written_path = out_path
         except Exception as e:  # noqa: BLE001
@@ -20163,7 +20077,7 @@ def make_table(
         warnings=warnings,
         n_rows=len(df),
         n_cols=len(df.columns),
-        truncated_rows=0,
+        truncated_rows=truncated,
         canvas_size=canvas,
     )
 

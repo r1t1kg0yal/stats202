@@ -34,14 +34,13 @@ result = make_chart(
         'facet': 'country',       # triggers grid mode
     },
     facet_cols=4,                 # rows derived: ceil(n_panels / cols)
+    dimensions='page_grid',       # sizes panels for letter-portrait paper
     title='G20 Real GDP Growth (YoY %)',
 )
 ```
 
 Grid mode is triggered ONLY by `mapping['facet']`. Without it,
-`make_chart` runs in normal single-canvas mode. Canvas size is
-engine-decided (panels auto-sized for letter-portrait paper) — no
-dimension preset to pick.
+`make_chart` runs in normal single-canvas mode.
 
 ### Kwargs
 
@@ -49,6 +48,7 @@ dimension preset to pick.
 |---|---|---|
 | `mapping['facet']` | (required) | Column whose unique values become panel ids |
 | `facet_cols` | near-square `ceil(sqrt(n))` | Rows derived from cols; trailing cells blank if not divisible |
+| `dimensions` | `'page_grid'` (default for facet) | Auto-sizes panels for US Letter portrait. `wide` / `square` / `compact` / etc still work but treat their (w, h) as per-panel BUDGET |
 | `same_scale` | `False` | Smart-routes per chart_type (§4) — preferred over individual `share_*` |
 | `share_x` / `share_y` / `share_color` | `False` | Lower-level locks; reach for these only when `same_scale` is too coarse |
 | `mapping['facet_order']` | first-appearance in df | Optional explicit list of panel ids |
@@ -114,7 +114,7 @@ result = make_chart(
         'color': 'quarter',           # temporal column -> viridis gradient
         'color_scheme': 'turbo',      # optional: more rainbow-y
     },
-    facet_cols=4,
+    facet_cols=4, dimensions='page_grid',
     same_scale=True,
     title='Inflation vs Growth: time-coloured phase plot',
 )
