@@ -1,6 +1,6 @@
 # Template CRUD — niche reference
 
-The canonical CRUD recipes for `manifest_template.json` live in the **hub at §C** (`dashboards.md`). The hub carries the full READ → DEEPCOPY → MUTATE → VALIDATE → WRITE skeleton, the `_walk_rows` / `_find_widget` helpers, and the eight most common mutations (append widget, insert at column, replace spec, remove widget, add tab, add filter, add dataset slot, patch metadata).
+The canonical CRUD recipes for `manifest_template.json` live in the **hub at §C** (`dashboards_hub.md`). The hub carries the full READ → DEEPCOPY → MUTATE → VALIDATE → WRITE skeleton, the `_walk_rows` / `_find_widget` helpers, and the eight most common mutations (append widget, insert at column, replace spec, remove widget, add tab, add filter, add dataset slot, patch metadata).
 
 This spoke covers the **less-common patterns** that the hub elides for size — niche operations PRISM only needs occasionally. Fetch this only when the hub patterns don't cover the case.
 

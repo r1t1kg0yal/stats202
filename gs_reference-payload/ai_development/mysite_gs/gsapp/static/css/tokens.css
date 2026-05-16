@@ -1,0 +1,257 @@
+/* ═══════════════════════════════════════════════════════════════════════
+   tokens.css — gs-reference design system tokens
+
+   Mirrors the --gs-uitk-* namespace extracted from goldmansachs.com. The
+   public homepage (https://www.goldmansachs.com/, Next.js SSR) injects the
+   subscribe / Briefings ribbon as `subscribe-cta-root` with verbatim
+   `background-color:#7297C5` and `color:rgba(0,0,0,.95)` alongside
+   breakpoint padding keyed to those values; that hex is authoritative for
+   “GS sky blue” chrome in this repo. See gs_design_dna.md for prose.
+
+   Token names stay byte-aligned with UITK conventions so searches line up
+   with live markup.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+:root {
+    /* ───── Colors: surfaces ──────────────────────────────────────── */
+    --gs-uitk-color-surface-neutral-minimal: #FFFFFF;
+    --gs-uitk-color-surface-neutral-subtle: #F7F7FA;
+    --gs-uitk-color-surface-neutral-regular: #DCDCE0;
+    --gs-uitk-color-surface-neutral-bold: #A2A4A6;
+    --gs-uitk-color-surface-inverse-bold: #000000;
+    --gs-uitk-color-surface-always-dark-regular: #121212;
+    --gs-uitk-color-surface-brand-bold: #7297C5;
+    --gs-uitk-color-surface-brand-subtle: #F0EBE6;
+    --gs-uitk-color-surface-backdrop: rgba(18, 18, 18, 0.8);
+
+    /* ───── Colors: text (alpha tiers on black/white) ─────────────── */
+    --gs-uitk-color-text-neutral-bold: rgba(0, 0, 0, 0.95);
+    --gs-uitk-color-text-neutral-regular: rgba(0, 0, 0, 0.80);
+    --gs-uitk-color-text-neutral-subtle: rgba(0, 0, 0, 0.70);
+    --gs-uitk-color-text-neutral-minimal: rgba(0, 0, 0, 0.60);
+    --gs-uitk-color-text-inverse-bold: rgba(255, 255, 255, 0.95);
+    --gs-uitk-color-text-inverse-regular: rgba(255, 255, 255, 0.80);
+    --gs-uitk-color-text-inverse-subtle: rgba(255, 255, 255, 0.70);
+    --gs-uitk-color-text-inverse-minimal: rgba(255, 255, 255, 0.60);
+    --gs-uitk-color-text-brand: #446EA6;
+    --gs-uitk-color-text-functional-positive: #398025;
+    --gs-uitk-color-text-functional-negative: #C2170A;
+    --gs-uitk-color-text-functional-warning: #B2570D;
+
+    /* ───── Colors: borders ───────────────────────────────────────── */
+    --gs-uitk-color-border-neutral-minimal: rgba(0, 0, 0, 0.16);
+    --gs-uitk-color-border-neutral-subtle: rgba(0, 0, 0, 0.34);
+    --gs-uitk-color-border-neutral-regular: rgba(0, 0, 0, 0.44);
+    --gs-uitk-color-border-neutral-bold: rgba(0, 0, 0, 0.95);
+    --gs-uitk-color-border-inverse-minimal: rgba(255, 255, 255, 0.22);
+    --gs-uitk-color-border-inverse-subtle: rgba(255, 255, 255, 0.34);
+    --gs-uitk-color-border-inverse-regular: rgba(255, 255, 255, 0.44);
+    --gs-uitk-color-border-inverse-bold: rgba(255, 255, 255, 0.95);
+    --gs-uitk-color-border-brand: #7297C5;
+    --gs-uitk-color-border-functional-negative: #C2170A;
+    --gs-uitk-color-border-functional-positive: #398025;
+    --gs-uitk-color-border-functional-warning: #B2570D;
+
+    /* ───── Colors: actions / brand ───────────────────────────────── */
+    --gs-uitk-color-action-brand: #7297C5;
+    --gs-uitk-color-action-neutral-bold: #000000;
+    --gs-uitk-color-action-neutral-subtle: #F7F7FA;
+    --gs-uitk-color-action-inverse: #FFFFFF;
+    --gs-uitk-color-action-functional-positive: #398025;
+    --gs-uitk-color-action-functional-negative: #C2170A;
+    --gs-uitk-color-action-functional-warning: #B2570D;
+    --gs-uitk-color-interaction-selected-bold: #7297C5;
+    --gs-uitk-color-interaction-selected-subtle: rgba(114, 151, 197, 0.16);
+    --gs-uitk-color-interaction-hover-on-light: rgba(0, 0, 0, 0.04);
+    --gs-uitk-color-interaction-pressed-on-light: rgba(0, 0, 0, 0.08);
+    --gs-uitk-color-interaction-hover-on-dark: rgba(255, 255, 255, 0.10);
+    --gs-uitk-color-interaction-pressed-on-dark: rgba(255, 255, 255, 0.16);
+
+    /* ───── Colors: dataviz (010 swatch per categorical hue) ──────── */
+    --gs-uitk-color-dataviz-categorical010: #092C61;  /* deep navy   */
+    /* Navy luminance ramp (hue 010) — verbatim from GS.com SSR UITK injection */
+    --gs-uitk-color-dataviz-categorical010_070: #073985;
+    --gs-uitk-color-dataviz-categorical010_080: #092C61; /* equals categorical010 */
+    --gs-uitk-color-dataviz-categorical010_090: #0B2040;
+    --gs-uitk-color-dataviz-categorical010_100: #0B1624;
+    --gs-uitk-color-dataviz-categorical020: #7297C5;  /* sky blue    */
+    --gs-uitk-color-dataviz-categorical030: #A6428C;  /* mauve       */
+    --gs-uitk-color-dataviz-categorical040: #159788;  /* teal        */
+    --gs-uitk-color-dataviz-categorical050: #E0731A;  /* burnt orange*/
+    --gs-uitk-color-dataviz-categorical060: #7537AD;  /* purple      */
+    --gs-uitk-color-dataviz-categorical070: #B03030;  /* brick red   */
+    --gs-uitk-color-dataviz-categorical080: #BD8C00;  /* mustard     */
+    --gs-uitk-color-dataviz-categorical090: #69370E;  /* brown       */
+    --gs-uitk-color-dataviz-categorical100: #617A27;  /* olive       */
+    --gs-uitk-color-dataviz-divergent-positive: #398025;
+    --gs-uitk-color-dataviz-divergent-negative: #C2170A;
+    --gs-uitk-color-dataviz-divergent-contrast-positive: #092C61;
+    --gs-uitk-color-dataviz-divergent-contrast-negative: #E0731A;
+
+    /* ───── Image overlay gradients ───────────────────────────────── */
+    --gs-uitk-overlay-hero: linear-gradient(180deg, rgba(0,0,0,0) 50%, rgba(0,0,0,0.8) 100%);
+    --gs-uitk-overlay-card: linear-gradient(180deg, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 100%);
+
+    /* ───── Spacing (8-pt-derived grid) ───────────────────────────── */
+    --gs-uitk-space-0: 0px;
+    --gs-uitk-space-1: 4px;
+    --gs-uitk-space-2: 8px;
+    --gs-uitk-space-3: 12px;
+    --gs-uitk-space-4: 16px;
+    --gs-uitk-space-5: 24px;
+    --gs-uitk-space-6: 32px;
+    --gs-uitk-space-7: 48px;
+    --gs-uitk-space-8: 64px;
+    --gs-uitk-space-9: 96px;
+    --gs-uitk-space-10: 128px;
+
+    /* ───── Layout widths ─────────────────────────────────────────── */
+    --gs-uitk-width-container: 1440px;
+    --gs-uitk-width-prose: 816px;
+    --gs-uitk-gutter-xs: 24px;
+    --gs-uitk-gutter-md: 48px;
+    --gs-uitk-gutter-lg: 64px;
+
+    /* ───── Border-radius ─────────────────────────────────────────── */
+    --gs-uitk-border-radius-none: 0px;
+    --gs-uitk-border-radius-sm: 2px;
+    --gs-uitk-border-radius-pill: 9999px;
+
+    /* ───── Elevation (overlay only) ──────────────────────────────── */
+    --gs-uitk-shadow-overlay: 0 8px 32px rgba(0, 0, 0, 0.16);
+
+    /* ═════════════════════════════════════════════════════════════════
+       Typography tokens — verbatim names from live extraction.
+       Each role exposes per-breakpoint font shorthands and letter-spacing.
+       The .gs-* utility classes below pick the right one via @media queries.
+       ═════════════════════════════════════════════════════════════════ */
+
+    /* Font families. PRISM-runtime substitution for GS Serif:
+       headline01-03 fall back to GS Sans Condensed Light;
+       headline04 + quotes fall back to GS Sans Light italic.
+       The mock body declares data-runtime="prism" by default.
+       Flip to data-runtime="live" to preview the system-serif fallback. */
+    --gs-font-sans: "GS Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --gs-font-sans-condensed: "GS Sans Condensed", "Helvetica Neue Condensed", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    --gs-font-serif-live: "GS Serif", "Times New Roman", Times, Georgia, serif;
+    --gs-font-serif-prism: var(--gs-font-sans-condensed);
+    --gs-font-mono: ui-monospace, "Roboto Mono", "SF Mono", Menlo, Monaco, Consolas, monospace;
+
+    /* Headlines — GS Serif Light 300 (live) / GS Cond Light 300 (prism) */
+    --gs-uitk-text-headline01-xs-screen-font: 300 50px/50px var(--gs-font-serif-prism);
+    --gs-uitk-text-headline01-md-screen-font: 300 80px/80px var(--gs-font-serif-prism);
+    --gs-uitk-text-headline01-lg-screen-font: 300 140px/140px var(--gs-font-serif-prism);
+    --gs-uitk-text-headline02-xs-screen-font: 300 44px/44px var(--gs-font-serif-prism);
+    --gs-uitk-text-headline02-md-screen-font: 300 60px/60px var(--gs-font-serif-prism);
+    --gs-uitk-text-headline02-lg-screen-font: 300 100px/100px var(--gs-font-serif-prism);
+    --gs-uitk-text-headline03-xs-screen-font: 300 36px/36px var(--gs-font-serif-prism);
+    --gs-uitk-text-headline03-md-screen-font: 300 50px/50px var(--gs-font-serif-prism);
+    --gs-uitk-text-headline03-lg-screen-font: 300 80px/80px var(--gs-font-serif-prism);
+    --gs-uitk-text-headline04-xs-screen-font: 300 30px/30px var(--gs-font-sans);
+    --gs-uitk-text-headline04-md-screen-font: 300 40px/40px var(--gs-font-sans);
+    --gs-uitk-text-headline04-lg-screen-font: 300 60px/60px var(--gs-font-sans);
+
+    /* Quotes — GS Serif Light italic (live) / GS Sans Light italic (prism) */
+    --gs-uitk-text-quote01-xs-screen-font: 300 italic 44px/52px var(--gs-font-serif-prism);
+    --gs-uitk-text-quote01-md-screen-font: 300 italic 60px/72px var(--gs-font-serif-prism);
+    --gs-uitk-text-quote01-lg-screen-font: 300 italic 100px/120px var(--gs-font-serif-prism);
+    --gs-uitk-text-quote02-xs-screen-font: 300 italic 36px/44px var(--gs-font-serif-prism);
+    --gs-uitk-text-quote02-md-screen-font: 300 italic 40px/48px var(--gs-font-serif-prism);
+    --gs-uitk-text-quote02-lg-screen-font: 300 italic 60px/72px var(--gs-font-serif-prism);
+    --gs-uitk-text-quote03-xs-screen-font: 300 italic 28px/34px var(--gs-font-serif-prism);
+    --gs-uitk-text-quote03-md-screen-font: 300 italic 30px/36px var(--gs-font-serif-prism);
+    --gs-uitk-text-quote03-lg-screen-font: 300 italic 40px/48px var(--gs-font-serif-prism);
+    --gs-uitk-text-quote04-xs-screen-font: 300 italic 22px/26px var(--gs-font-sans);
+    --gs-uitk-text-quote04-md-screen-font: 300 italic 26px/32px var(--gs-font-sans);
+    --gs-uitk-text-quote04-lg-screen-font: 300 italic 30px/36px var(--gs-font-sans);
+
+    /* Headings (GS Sans, page / section titles) */
+    --gs-uitk-text-heading01-regular-font: 400 40px/48px var(--gs-font-sans);
+    --gs-uitk-text-heading01-medium-font: 500 40px/48px var(--gs-font-sans);
+    --gs-uitk-text-heading02-regular-font: 400 32px/40px var(--gs-font-sans);
+    --gs-uitk-text-heading02-medium-font: 500 32px/40px var(--gs-font-sans);
+    --gs-uitk-text-heading03-regular-font: 400 24px/32px var(--gs-font-sans);
+    --gs-uitk-text-heading03-medium-font: 500 24px/32px var(--gs-font-sans);
+
+    /* Subtitles (GS Sans, intro paragraphs) */
+    --gs-uitk-text-subtitle01-regular-xs-screen-font: 400 24px/32px var(--gs-font-sans);
+    --gs-uitk-text-subtitle01-regular-md-screen-font: 400 28px/38px var(--gs-font-sans);
+    --gs-uitk-text-subtitle01-regular-lg-screen-font: 400 36px/42px var(--gs-font-sans);
+    --gs-uitk-text-subtitle01-medium-xs-screen-font: 500 24px/32px var(--gs-font-sans);
+    --gs-uitk-text-subtitle01-medium-md-screen-font: 500 28px/38px var(--gs-font-sans);
+    --gs-uitk-text-subtitle01-medium-lg-screen-font: 500 36px/42px var(--gs-font-sans);
+    --gs-uitk-text-subtitle02-regular-xs-screen-font: 400 22px/28px var(--gs-font-sans);
+    --gs-uitk-text-subtitle02-regular-md-screen-font: 400 24px/32px var(--gs-font-sans);
+    --gs-uitk-text-subtitle02-regular-lg-screen-font: 400 28px/36px var(--gs-font-sans);
+
+    /* Body — GS Sans, four sizes */
+    --gs-uitk-text-body01-regular-xs-screen-font: 400 22px/32px var(--gs-font-sans);
+    --gs-uitk-text-body01-regular-md-screen-font: 400 22px/32px var(--gs-font-sans);
+    --gs-uitk-text-body01-regular-lg-screen-font: 400 28px/42px var(--gs-font-sans);
+    --gs-uitk-text-body02-regular-xs-screen-font: 400 16px/24px var(--gs-font-sans);
+    --gs-uitk-text-body02-regular-md-screen-font: 400 18px/28px var(--gs-font-sans);
+    --gs-uitk-text-body02-regular-lg-screen-font: 400 20px/30px var(--gs-font-sans);
+    --gs-uitk-text-body03-regular-xs-screen-font: 400 16px/24px var(--gs-font-sans);
+    --gs-uitk-text-body03-regular-md-screen-font: 400 16px/24px var(--gs-font-sans);
+    --gs-uitk-text-body03-regular-lg-screen-font: 400 18px/28px var(--gs-font-sans);
+    --gs-uitk-text-body04-regular-xs-screen-font: 400 14px/20px var(--gs-font-sans);
+    --gs-uitk-text-body04-regular-md-screen-font: 400 14px/20px var(--gs-font-sans);
+    --gs-uitk-text-body04-regular-lg-screen-font: 400 16px/24px var(--gs-font-sans);
+
+    /* Labels — GS Sans, six sizes */
+    --gs-uitk-text-label01-regular-font: 400 20px/24px var(--gs-font-sans);
+    --gs-uitk-text-label01-medium-font: 500 20px/24px var(--gs-font-sans);
+    --gs-uitk-text-label01-bold-font: 700 20px/24px var(--gs-font-sans);
+    --gs-uitk-text-label02-regular-font: 400 18px/22px var(--gs-font-sans);
+    --gs-uitk-text-label02-medium-font: 500 18px/22px var(--gs-font-sans);
+    --gs-uitk-text-label02-bold-font: 700 18px/22px var(--gs-font-sans);
+    --gs-uitk-text-label03-regular-font: 400 16px/20px var(--gs-font-sans);
+    --gs-uitk-text-label03-medium-font: 500 16px/20px var(--gs-font-sans);
+    --gs-uitk-text-label03-bold-font: 700 16px/20px var(--gs-font-sans);
+    --gs-uitk-text-label04-regular-font: 400 14px/18px var(--gs-font-sans);
+    --gs-uitk-text-label04-medium-font: 500 14px/18px var(--gs-font-sans);
+    --gs-uitk-text-label04-bold-font: 700 14px/18px var(--gs-font-sans);
+    --gs-uitk-text-label05-regular-font: 400 12px/16px var(--gs-font-sans);
+    --gs-uitk-text-label05-medium-font: 500 12px/16px var(--gs-font-sans);
+    --gs-uitk-text-label06-regular-font: 400 10px/12px var(--gs-font-sans);
+
+    /* Captions / overlines */
+    --gs-uitk-text-caption01-regular-font: 400 14px/18px var(--gs-font-sans);
+    --gs-uitk-text-caption02-regular-font: 400 12px/16px var(--gs-font-sans);
+
+    --gs-uitk-text-overline01-xs-screen-font: 400 14px/18px var(--gs-font-sans);
+    --gs-uitk-text-overline01-md-screen-font: 400 16px/20px var(--gs-font-sans);
+    --gs-uitk-text-overline01-lg-screen-font: 400 16px/20px var(--gs-font-sans);
+    --gs-uitk-text-overline02-xs-screen-font: 400 12px/16px var(--gs-font-sans);
+    --gs-uitk-text-overline02-md-screen-font: 400 14px/18px var(--gs-font-sans);
+    --gs-uitk-text-overline02-lg-screen-font: 400 14px/18px var(--gs-font-sans);
+    --gs-uitk-text-overline03-xs-screen-font: 400 10px/14px var(--gs-font-sans);
+    --gs-uitk-text-overline03-md-screen-font: 400 12px/16px var(--gs-font-sans);
+    --gs-uitk-text-overline03-lg-screen-font: 400 12px/16px var(--gs-font-sans);
+
+    /* Stats — GS Sans Condensed Light 300 (signature) */
+    --gs-uitk-text-stat01-xs-screen-font: 300 100px/100px var(--gs-font-sans-condensed);
+    --gs-uitk-text-stat01-md-screen-font: 300 144px/144px var(--gs-font-sans-condensed);
+    --gs-uitk-text-stat01-lg-screen-font: 300 200px/200px var(--gs-font-sans-condensed);
+    --gs-uitk-text-stat02-xs-screen-font: 300 72px/72px var(--gs-font-sans-condensed);
+    --gs-uitk-text-stat02-md-screen-font: 300 88px/88px var(--gs-font-sans-condensed);
+    --gs-uitk-text-stat02-lg-screen-font: 300 100px/100px var(--gs-font-sans-condensed);
+    --gs-uitk-text-stat03-xs-screen-font: 500 44px/44px var(--gs-font-sans);
+    --gs-uitk-text-stat03-md-screen-font: 500 46px/46px var(--gs-font-sans);
+    --gs-uitk-text-stat03-lg-screen-font: 500 46px/46px var(--gs-font-sans);
+
+    /* Code — Roboto Mono via system stack */
+    --gs-uitk-text-code01-font: 400 14px/20px var(--gs-font-mono);
+    --gs-uitk-text-code02-font: 500 12px/16px var(--gs-font-mono);
+}
+
+/* ───── Live-mode override ─────────────────────────────────────────────
+   Flip GS Serif role onto a system-serif fallback so the headline / quote
+   register reads closer to gs.com (when you're previewing the live
+   direction rather than PRISM's runtime constraints).
+
+   <html data-runtime="live"> ... </html>
+   ────────────────────────────────────────────────────────────────────── */
+html[data-runtime="live"] {
+    --gs-font-serif-prism: var(--gs-font-serif-live);
+}

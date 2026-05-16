@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "showcase",
   "title": "ECharts dashboard showcase (every primitive)",
-  "description": "Canonical proof-of-coverage demo. Every primitive in dashboards.md catalog index appears here, MECE-grouped across eight tabs.",
+  "description": "Canonical proof-of-coverage demo. Every primitive in dashboards_hub.md catalog index appears here, MECE-grouped across eight tabs.",
   "theme": "gs_clean",
   "palette": "gs_primary",
   "metadata": {
@@ -21,9 +21,9 @@
     "refresh_frequency": "manual",
     "summary": {
       "title": "What this dashboard exercises",
-      "body": "Eight MECE tabs covering every primitive in `dashboards.md` -- 30 chart types, 10 widget kinds, 10 filter types, 11 filter ops, 6 note kinds, 5 annotation types, 8 KPI aggregators, 11 table formats, 4 tool input kinds, 8 tool output kinds, 4 sync modes, 4 brush types, both layouts.\n\nEach tab opens with a markdown header naming the primitives demonstrated; every chart / table / KPI carries a per-widget subtitle calling out the specific primitive it exercises. **This is the proof-of-coverage demo** -- if any tab fails to render, the engine has a regression."
+      "body": "Eight MECE tabs covering every primitive in `dashboards_hub.md` -- 30 chart types, 10 widget kinds, 10 filter types, 11 filter ops, 6 note kinds, 5 annotation types, 8 KPI aggregators, 11 table formats, 4 tool input kinds, 8 tool output kinds, 4 sync modes, 4 brush types, both layouts.\n\nEach tab opens with a markdown header naming the primitives demonstrated; every chart / table / KPI carries a per-widget subtitle calling out the specific primitive it exercises. **This is the proof-of-coverage demo** -- if any tab fails to render, the engine has a regression."
     },
-    "methodology": "## Sources\n\nAll synthetic, deterministic (SEED-controlled in `dev/demos.py`). The data shapes mirror what PRISM emits from production data sources -- enough to exercise every primitive without depending on live pulls.\n\n## Construction\n\n* Tab 1-3 use `pull_rates_panel`, `pull_cross_asset`, `_pull_macro_panel`, `_pull_global_*`, `_pull_portfolio_*`, `_pull_fomc_*`, `_pull_equity_*` from `dev/demos.py`.\n* Tab 4-6 add small inline DataFrames sized to each primitive's minimum demonstration shape.\n* Tab 7 reads canonical tool defs from `dev/tool_examples/<name>/`.\n* Tab 8 runs `manifest_template`, `populate_template`, `validate_manifest`, `chart_data_diagnostics` against deliberately-imperfect manifests at compile time, embeds the live output into markdown widgets.\n\n## What's NOT exercised here\n\n* Live data pulls (no network).\n* The persistence + refresh build flow (Tools 1+2+3 from `dashboards.md` Section 6) -- tested in PRISM.\n* The `Refresh` button (`metadata.refresh_frequency` set to `manual`).\n* Vision-QC (deprecated; see `prism/vision-qc.md`)."
+    "methodology": "## Sources\n\nAll synthetic, deterministic (SEED-controlled in `dev/demos.py`). The data shapes mirror what PRISM emits from production data sources -- enough to exercise every primitive without depending on live pulls.\n\n## Construction\n\n* Tab 1-3 use `pull_rates_panel`, `pull_cross_asset`, `_pull_macro_panel`, `_pull_global_*`, `_pull_portfolio_*`, `_pull_fomc_*`, `_pull_equity_*` from `dev/demos.py`.\n* Tab 4-6 add small inline DataFrames sized to each primitive's minimum demonstration shape.\n* Tab 7 reads canonical tool defs from `dev/tool_examples/<name>/`.\n* Tab 8 runs `manifest_template`, `populate_template`, `validate_manifest`, `chart_data_diagnostics` against deliberately-imperfect manifests at compile time, embeds the live output into markdown widgets.\n\n## What's NOT exercised here\n\n* Live data pulls (no network).\n* The persistence + refresh build flow (Tools 1+2+3 from `dashboards_hub.md` Section 6) -- tested in PRISM.\n* The `Refresh` button (`metadata.refresh_frequency` set to `manual`).\n* Vision-QC (deprecated; see `prism/vision-qc.md`)."
   },
   "header_actions": [
     {

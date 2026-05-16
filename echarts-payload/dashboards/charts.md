@@ -183,6 +183,8 @@ Five types in `annotations=[...]`:
     {"type": "point", "x": "2023-06-15", "y": 4.4, "label": "peak"}]
 ```
 
+**Required positional key per type:** `hline` → `y`, `vline` → `x`, `band` → `(x1,x2)` OR `(y1,y2)`, `arrow` → `(x1,y1,x2,y2)`, `point` → `(x,y)`. The compiler also accepts the author-friendly aliases `value` / `at` / `x_value` / `y_value` and folds them to the canonical positional key (so `{"type": "hline", "value": 0}` is treated as `{"type": "hline", "y": 0}`). Items missing the required positional key (and no alias) are silently dropped rather than emitted as broken markLine entries that would crash ECharts' renderSeries.
+
 Common keys: `label`, `color`, `style` (`'solid'|'dashed'|'dotted'`), `stroke_dash` (`[4,4]`), `stroke_width`, `label_color`, `label_position`, `opacity` (band), `head_size` / `head_type` (arrow), `font_size` (point). `band` accepts `y1`/`y2` (horizontal band) and aliases `x_start`/`x_end`, `y_start`/`y_end`. Dual-axis: `hline` accepts `"axis": "right"`. Charts without axes (pie / donut / sankey / treemap / sunburst / radar / gauge / funnel / parallel_coords / tree) silently ignore annotations.
 
 Annotate regime changes, policy shifts, event dates, structural breaks. Don't annotate self-evident facts (zero line on a spread, target on every CPI chart).

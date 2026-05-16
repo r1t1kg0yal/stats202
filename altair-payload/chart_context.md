@@ -1,11 +1,13 @@
-# Altair Charts (`make_chart`)
+# Altair Charts & Tables (`make_chart`, `make_table`)
 
 - **Module:** `chart_context`
 - **Audience:** PRISM (all interfaces, all workflows), developers
 - **Tier:** 2 (on-demand)
-- **Scope:** All static-PNG chart authoring (chat / email / report). Composites ship in this same module. Interactive HTML dashboards use `dashboards` (echarts).
+- **Scope:** All static-PNG chart and table authoring (chat / email / report). Composites ship in this same module. Interactive HTML dashboards use `dashboards` (echarts).
 
 `make_chart()`, `make_table()`, the composite/annotation/profile helpers are auto-injected. Raw matplotlib is blocked. Do NOT import chart functions. `s3_manager`, `session_path`, `user_id` are auto-injected at call time -- never pass them.
+
+**Tables are first-class.** Every table PRISM authors goes through `make_table()` — across every interface (chat / email / report / any artifact for the user). **Markdown tables are forbidden anywhere in PRISM output.** The full table surface lives in the `chart_context_tables.md` spoke (fetched on demand); see "Tables vs Charts" below for the trigger.
 
 ---
 
@@ -41,6 +43,21 @@ Triggers:
 - **Grids spoke** — any cross-sectional dashboard over 8-30 entities sharing the same shape (G20 GDP per country, 12 sector PMIs, 16 FX pairs, country yield curves). Phase-space scatter plots with time-coloured trails also live in this spoke.
 - **Tables spoke** — any presentation of structured data with ≥2 columns and ≥2 rows where a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, FX cross-rates, sector tapes, calendars, snapshot dashboards, attribution decompositions.
 - **Colors spoke** — any user request to change / customise colours on any chart type: palette swap ("use a colourblind-safe palette"), pin a category to a hex ("make the US line red"), single-series colour ("draw it in green"), heatmap ramp override ("flip to red-blue").
+
+---
+
+## Tables vs Charts: which primitive
+
+Two engines, one module. Pick by question shape, not by aesthetic preference.
+
+| Question shape | Reach for |
+|---|---|
+| Time series, distribution, scatter, ranking, regime, co-movement, lead-lag | `make_chart` (this hub, §1-12) |
+| 8-30 entities sharing one shape (G20 PMIs, country curves, FX cross-rates) | `make_chart` grid mode (`chart_context_grids.md`) |
+| Structured rows × columns where a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, sector tapes, calendars, snapshot dashboards, theme trackers, trade-idea lists | `make_table` (`chart_context_tables.md`) |
+| Single number / KPI tile | Not in altair — use echarts dashboards |
+
+If the answer is structured tabular content the user wants to read, use `make_table` — never a markdown table, never a code-block dump, never inline prose. Fetch the tables spoke before authoring any non-trivial table (colour modes, heatmap groups, sparkline / mini-bar cells, indent / total / subtotal styling all live there).
 
 ---
 

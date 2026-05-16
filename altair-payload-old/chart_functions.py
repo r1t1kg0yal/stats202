@@ -76,7 +76,7 @@ import traceback
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 # ---------------------------------------------------------------------------
 # Third-party
@@ -97,7 +97,9 @@ from ai_development.mcp.utils.download_links import generate_presigned_download_
 from ai_development.mcp.utils.error_handler import send_error_email
 from ai_development.mcp.utils.unit_helper_functions import guess_units_from_name
 from ai_development.mcp.utils.vision_functions import check_chart_quality
-from ai_development.mcp.utils.chart_functions_studio import GS_PRIMARY
+from ai_development.mcp.utils.chart_functions_studio import (
+    GS_PRIMARY, MONO_BLUE, MONO_GREY, VIVID, TABLEAU, OKABE_ITO, PASTEL,
+)
 
 # ---------------------------------------------------------------------------
 # Module logger
@@ -5315,7 +5317,9 @@ def render_annotations(
                 chart = chart.encode(
                     color=alt.Color(
                         f"{color_field}:N",
-                        scale=_get_color_scale(skin_config),
+                        scale=_resolve_categorical_color_scale(
+                            mapping, skin_config, color_field, df,
+                        ),
                         legend=None,
                     )
                 )
@@ -8531,6 +8535,211 @@ def _get_color_scale(skin_config: Dict[str, Any]) -> alt.Scale:
     return alt.Scale(range=scheme)
 
 
+# ---------------------------------------------------------------------------
+# Categorical palette registry (PRISM-facing color customisation)
+# ---------------------------------------------------------------------------
+#
+# PRISM-friendly aliases for the curated set of categorical palettes
+# already defined in ``chart_functions_studio.py``. The skill spoke
+# (``chart_context_colors.md``) is the single source of truth for the
+# names PRISM is allowed to pass; this table is the engine-side map
+# from those names to the actual hex lists. Keep both in lockstep.
+#
+# Sequential / diverging palettes for heatmaps + scatter phase-space
+# gradient continue to flow through Vega-Lite's named-scheme handling
+# (``alt.Scheme(...)`` or ``scale.scheme=<name>``); they are not in
+# this registry because Vega does the colour generation, not us.
+
+_CATEGORICAL_PALETTES: Dict[str, List[str]] = {
+    "gs_primary": list(GS_PRIMARY["colors"]),
+    "colorblind": list(OKABE_ITO["colors"]),
+    "bold":       list(VIVID["colors"]),
+    "mono_navy":  list(MONO_BLUE["colors"]),
+    "mono_grey":  list(MONO_GREY["colors"]),
+    "business":   list(TABLEAU["colors"]),
+    "pastel":     list(PASTEL["colors"]),
+}
+
+_HEATMAP_GRADIENT_NAMES: Set[str] = {
+    "blues", "greens", "reds", "oranges", "purples", "greys",
+    "viridis", "plasma", "magma", "cividis", "turbo", "inferno", "rainbow",
+    "redblue", "spectral", "browngreen", "redyellowblue",
+    "redyellowgreen", "blueorange",
+}
+
+
+def _validate_color_kwargs(
+    mapping: Dict[str, Any], chart_type: str,
+) -> None:
+    """Validate ``mapping['color_scheme']`` and ``mapping['color_map']``.
+
+    Catches typos / off-list palette names + obvious mode mismatches
+    (categorical palette on heatmap, gradient ramp on categorical
+    chart) at the boundary so PRISM sees an actionable error instead
+    of a silently-wrong render.
+    """
+    is_heatmap_path = chart_type == "heatmap"
+
+    color_scheme = mapping.get("color_scheme")
+    if color_scheme is not None and not isinstance(color_scheme, str):
+        raise ValidationError(
+            f"mapping['color_scheme'] must be a string palette name; "
+            f"got {type(color_scheme).__name__}."
+        )
+    if isinstance(color_scheme, str):
+        in_cat = color_scheme in _CATEGORICAL_PALETTES
+        in_grad = color_scheme in _HEATMAP_GRADIENT_NAMES
+        cat_names = sorted(_CATEGORICAL_PALETTES.keys())
+        if not in_cat and not in_grad:
+            raise ValidationError(
+                f"mapping['color_scheme']={color_scheme!r} is not a "
+                f"recognised palette. Categorical palettes: {cat_names}. "
+                f"Heatmap / gradient palettes: blues, greens, reds, "
+                f"viridis, plasma, magma, redblue, spectral, ..."
+            )
+        if is_heatmap_path and in_cat and not in_grad:
+            raise ValidationError(
+                f"mapping['color_scheme']={color_scheme!r} is a "
+                f"categorical palette but chart_type='heatmap' needs a "
+                f"gradient ramp (e.g. 'blues', 'viridis', 'redblue'). "
+                f"Use color_scheme='blues' (sequential) or 'redblue' "
+                f"(diverging-at-zero)."
+            )
+        if (not is_heatmap_path) and in_grad and not in_cat:
+            raise ValidationError(
+                f"mapping['color_scheme']={color_scheme!r} is a heatmap / "
+                f"gradient ramp but chart_type='{chart_type}' needs a "
+                f"categorical palette. Pick from {cat_names}, or pass "
+                f"mapping['color_map'] with explicit hex values."
+            )
+
+    color_map = mapping.get("color_map")
+    if color_map is None:
+        return
+    if is_heatmap_path:
+        raise ValidationError(
+            "mapping['color_map'] is for categorical color encodings "
+            "(multi_line, scatter_multi, bar+color, area+color, donut). "
+            "On heatmap, override the ramp with mapping['color_scheme'] "
+            "(e.g. 'blues', 'redblue')."
+        )
+    if isinstance(color_map, dict):
+        for cat, hex_val in color_map.items():
+            if not isinstance(cat, str):
+                raise ValidationError(
+                    f"mapping['color_map'] dict keys must be category "
+                    f"strings; got {type(cat).__name__}."
+                )
+            if not isinstance(hex_val, str) or not hex_val.startswith("#"):
+                raise ValidationError(
+                    f"mapping['color_map'][{cat!r}]={hex_val!r} must be "
+                    f"a hex string like '#1A2B3C'."
+                )
+    elif isinstance(color_map, (list, tuple)):
+        for hex_val in color_map:
+            if not isinstance(hex_val, str) or not hex_val.startswith("#"):
+                raise ValidationError(
+                    f"mapping['color_map'] entries must be hex strings "
+                    f"like '#1A2B3C'; got {hex_val!r}."
+                )
+    else:
+        raise ValidationError(
+            f"mapping['color_map'] must be a list of hex strings or a "
+            f"dict {{category: hex}}; got {type(color_map).__name__}."
+        )
+
+
+def _resolve_single_series_color(
+    mapping: Dict[str, Any], skin_config: Dict[str, Any],
+) -> str:
+    """Resolve the single-series mark colour honouring PRISM's color kwargs.
+
+    Used for chart paths without a categorical color scale (single-
+    series multi_line, area, bar without color, scatter without
+    color). When PRISM passes:
+
+      - ``mapping['color_map'] = ['#hex', ...]`` (list): use ``[0]``
+      - ``mapping['color_scheme'] = <categorical palette name>``: use
+        the palette's slot 0
+
+    Otherwise fall back to ``skin_config['primary_color']`` (the
+    skin's brand mark colour). Dict-shape ``color_map`` is ignored on
+    single-series paths because there is no category name to match.
+    """
+    color_map = mapping.get("color_map")
+    if isinstance(color_map, (list, tuple)) and len(color_map) > 0:
+        first = color_map[0]
+        if isinstance(first, str) and first.startswith("#"):
+            return first
+    color_scheme = mapping.get("color_scheme")
+    if isinstance(color_scheme, str) and color_scheme in _CATEGORICAL_PALETTES:
+        return _CATEGORICAL_PALETTES[color_scheme][0]
+    return skin_config.get("primary_color", "#003359")
+
+
+def _resolve_categorical_color_scale(
+    mapping: Dict[str, Any],
+    skin_config: Dict[str, Any],
+    color_field: Optional[str] = None,
+    df: Optional[pd.DataFrame] = None,
+) -> alt.Scale:
+    """Resolve the categorical color scale honouring PRISM's color kwargs.
+
+    Priority (highest wins):
+
+      1. ``mapping['color_map']`` dict ``{category: hex}``: pin specific
+         categories; fill any remaining categories from the default
+         categorical palette (or the palette named in
+         ``mapping['color_scheme']`` when also set).
+      2. ``mapping['color_map']`` list of hex strings: ``range`` only,
+         applied in legend order (Vega-Lite cycles through the list).
+      3. ``mapping['color_scheme']`` resolves to a categorical palette
+         name in ``_CATEGORICAL_PALETTES``: use that palette as
+         ``range``.
+      4. Fallback: skin's default categorical palette via
+         ``_get_color_scale``.
+
+    ``color_field`` + ``df`` are needed for the dict-shape ``color_map``
+    case so we can enumerate categories and fill the missing ones from
+    the default palette without leaving Vega-Lite to guess.
+    """
+    color_map = mapping.get("color_map")
+    color_scheme = mapping.get("color_scheme")
+
+    default_palette = (
+        _CATEGORICAL_PALETTES.get(color_scheme, list(GS_PRIMARY["colors"]))
+        if isinstance(color_scheme, str)
+        else list(GS_PRIMARY["colors"])
+    )
+
+    if isinstance(color_map, dict):
+        if color_field and df is not None and color_field in df.columns:
+            categories = (
+                df[color_field].dropna().astype(str).unique().tolist()
+            )
+        else:
+            categories = list(color_map.keys())
+        range_hexes: List[str] = []
+        fallback_idx = 0
+        for cat in categories:
+            if cat in color_map:
+                range_hexes.append(color_map[cat])
+            else:
+                range_hexes.append(
+                    default_palette[fallback_idx % len(default_palette)]
+                )
+                fallback_idx += 1
+        return alt.Scale(domain=categories, range=range_hexes)
+
+    if isinstance(color_map, (list, tuple)):
+        return alt.Scale(range=list(color_map))
+
+    if isinstance(color_scheme, str) and color_scheme in _CATEGORICAL_PALETTES:
+        return alt.Scale(range=_CATEGORICAL_PALETTES[color_scheme])
+
+    return _get_color_scale(skin_config)
+
+
 def _scatter_multi_color_opacity(n: int) -> float:
     """Point opacity for the categorical multi-color scatter path.
 
@@ -9407,7 +9616,7 @@ def _build_timeseries(
 
     # ---- chart construction --------------------------------------------
     mark_config = skin_config.get("mark_config", {}).get("line", {})
-    primary_color = skin_config.get("primary_color", "#003359")
+    primary_color = _resolve_single_series_color(mapping, skin_config)
     tooltips = _build_tooltip(mapping, "multi_line", df)
 
     chart = (
@@ -9444,7 +9653,7 @@ def _build_timeseries(
             color=alt.Color(
                 color_field,
                 type="nominal",
-                scale=_get_color_scale(skin_config),
+                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                 sort=color_sort,
                 legend=alt.Legend(
                     **_safe_legend_kwargs(
@@ -9679,7 +9888,9 @@ def _build_multi_line_dual_axis(
 
     # ---- titles ----------------------------------------------------------
     mark_config = skin_config.get("mark_config", {}).get("line", {})
-    color_scale = _get_color_scale(skin_config)
+    color_scale = _resolve_categorical_color_scale(
+        mapping, skin_config, color_field, df,
+    )
 
     y_title_left = mapping.get("y_title") or _format_label(y_field, mapping, "y")
     y_title_right = mapping.get("y_title_right") or _format_label(
@@ -9922,7 +10133,7 @@ def _build_profile_line(
             color=alt.Color(
                 color_field,
                 type="nominal",
-                scale=_get_color_scale(skin_config),
+                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                 sort=color_sort,
                 legend=alt.Legend(
                     **_safe_legend_kwargs(
@@ -10167,7 +10378,7 @@ def _build_scatter(
 
     # ---- mark + chart construction --------------------------------------
     mark_config = skin_config.get("mark_config", {}).get("point", {})
-    primary_color = skin_config.get("primary_color", "#003359")
+    primary_color = _resolve_single_series_color(mapping, skin_config)
 
     # Opacity branches by color-encoding regime. The categorical
     # multi-color path scales opacity DOWN with point count via
@@ -10271,7 +10482,7 @@ def _build_scatter(
                 color=alt.Color(
                     color_field,
                     type="nominal",
-                    scale=_get_color_scale(skin_config),
+                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                     sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
                     legend=alt.Legend(title=None, symbolOpacity=1.0),
                 )
@@ -10638,7 +10849,7 @@ def _build_bar(
         bar_x_label_overlap = alt.Undefined
         bar_x_label_separation = alt.Undefined
 
-    primary_color = skin_config.get("primary_color", "#003359")
+    primary_color = _resolve_single_series_color(mapping, skin_config)
 
     # ---- bar width cap for low-cardinality data --------------------------
     # Vega-Lite divides the plot width across all bars, so a single bar
@@ -10716,7 +10927,7 @@ def _build_bar(
                 color=alt.Color(
                     color_field,
                     type="nominal",
-                    scale=_get_color_scale(skin_config),
+                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                     sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
                     legend=alt.Legend(title=None),
                 ),
@@ -11011,7 +11222,7 @@ def _build_bar(
                 color=alt.Color(
                     color_field,
                     type="nominal",
-                    scale=_get_color_scale(skin_config),
+                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                     sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
                     legend=alt.Legend(title=None),
                 ),
@@ -11105,7 +11316,7 @@ def _build_bar_horizontal(
         y_title = None
     _validate_y_axis_label(x_title, mapping)  # x is the value axis here
 
-    primary_color = skin_config.get("primary_color", "#003359")
+    primary_color = _resolve_single_series_color(mapping, skin_config)
 
     # ---- bar height cap for low-cardinality data -----------------------
     # Vega-Lite divides plot height across categories; with one or two
@@ -11183,7 +11394,7 @@ def _build_bar_horizontal(
                 color=alt.Color(
                     color_field,
                     type="nominal",
-                    scale=_get_color_scale(skin_config),
+                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                     sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
                     legend=alt.Legend(title=None),
                 )
@@ -11346,7 +11557,7 @@ def _build_bar_horizontal(
                 color=alt.Color(
                     color_field,
                     type="nominal",
-                    scale=_get_color_scale(skin_config),
+                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                     sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
                     legend=alt.Legend(title=None),
                 ),
@@ -11455,7 +11666,7 @@ def _build_area(
             color=alt.Color(
                 color_field,
                 type="nominal",
-                scale=_get_color_scale(skin_config),
+                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                 sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
                 legend=alt.Legend(title=None),
             )
@@ -11877,7 +12088,7 @@ def _build_histogram(
         raise ValidationError(f"x_field '{x_field}' has no valid values.")
 
     mark_config = skin_config.get("mark_config", {}).get("bar", {})
-    primary_color = skin_config.get("primary_color", "#003359")
+    primary_color = _resolve_single_series_color(mapping, skin_config)
 
     x_title = _format_label(x_field, mapping, "x") or "Value"
 
@@ -11988,7 +12199,7 @@ def _build_histogram(
         chart = chart.encode(
             color=alt.Color(
                 color_field, type="nominal",
-                scale=_get_color_scale(skin_config),
+                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                 sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
                 legend=alt.Legend(title=None),
             )
@@ -12097,7 +12308,7 @@ def _build_boxplot(
     y_scale = alt.Scale(domain=[y_min - y_padding, y_max + y_padding])
 
     mark_config = skin_config.get("mark_config", {}).get("boxplot", {})
-    primary_color = skin_config.get("primary_color", "#003359")
+    primary_color = _resolve_single_series_color(mapping, skin_config)
     encodings: Dict[str, Any] = {
         "y": alt.Y(
             y_field,
@@ -12144,7 +12355,7 @@ def _build_boxplot(
         chart = chart.encode(
             color=alt.Color(
                 color_field, type="nominal",
-                scale=_get_color_scale(skin_config),
+                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
                 sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
                 legend=alt.Legend(title=None),
             )
@@ -12231,7 +12442,9 @@ def _build_donut(
             color=alt.Color(
                 category_field,
                 type="nominal",
-                scale=_get_color_scale(skin_config),
+                scale=_resolve_categorical_color_scale(
+                    mapping, skin_config, category_field, df,
+                ),
                 sort=_resolve_color_sort(df, category_field, mapping.get("color_sort")),
                 legend=alt.Legend(title=None),
             ),
@@ -12350,7 +12563,7 @@ def _build_bullet(
 
     # ---- Layer 2: current-value markers ---------------------------------
     marker_size = mapping.get("marker_size", 200)
-    primary_color = skin_config.get("primary_color", "#003359")
+    primary_color = _resolve_single_series_color(mapping, skin_config)
 
     if color_by_field and color_by_field in df.columns:
         # Auto-detect: z-score (centered around 0) vs percentile (0-100).
@@ -12600,7 +12813,7 @@ def _build_waterfall(
     df["_wf_y_end"] = y_ends
 
     # ---- color by type --------------------------------------------------
-    primary_color = skin_config.get("primary_color", "#003359")
+    primary_color = _resolve_single_series_color(mapping, skin_config)
     color_map = {
         "total": primary_color,
         "positive": "#2EB857",
@@ -13616,6 +13829,7 @@ class ChartResult:
     success: bool = True
     error_message: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
+    audit_trail: List[str] = field(default_factory=list)
     interactive: bool = True
     download_url: Optional[str] = None
     editor_html_path: Optional[str] = None
@@ -13632,6 +13846,8 @@ class ChartResult:
             parts.append(f"error={self.error_message}")
         if self.warnings:
             parts.append(f"warnings={self.warnings}")
+        if self.audit_trail:
+            parts.append(f"audit_trail={self.audit_trail}")
         parts.append(f"chart_type={self.chart_type}")
         return ", ".join(parts) + ")"
 
@@ -13644,6 +13860,7 @@ class ChartResult:
             "success": self.success,
             "error_message": self.error_message,
             "warnings": self.warnings,
+            "audit_trail": self.audit_trail,
             "interactive": self.interactive,
             "editor_html_path": self.editor_html_path,
             "editor_download_url": self.editor_download_url,
@@ -13846,6 +14063,9 @@ def make_chart(
     layers: Optional[List[Dict[str, Any]]] = None,
     x_label: Optional[str] = None,
     y_label: Optional[str] = None,
+    x_title: Optional[str] = None,
+    y_title: Optional[str] = None,
+    y_title_right: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
@@ -13862,8 +14082,9 @@ def make_chart(
     """Create a single chart from a DataFrame.
 
     This is the only chart-creation entry point the LLM should call.
-    All styling is controlled by ``skin`` (developer-controlled). Layout
-    is controlled by ``dimensions``. Annotations are passed in
+    All styling is controlled by ``skin`` (developer-controlled). Canvas
+    size is engine-decided per ``chart_type`` (see ``_AUTO_DIMENSIONS``);
+    PRISM never picks a dimension preset. Annotations are passed in
     structured form via ``annotations=[VLine(...), HLine(...), ...]``.
 
     Args:
@@ -13875,8 +14096,6 @@ def make_chart(
         subtitle: Chart subtitle (never use for source attribution).
         skin: Visual style. Today only ``gs_clean`` is published.
         intent: ``explore`` (default), ``publish``, or ``monitor``.
-        dimensions: Preset name (``wide``, ``square``, ``tall``,
-            ``compact``, ``presentation``, ``thumbnail``, ``teams``).
         annotations: Optional list of structured annotations.
         output_dir: Local-mode output directory (PRISM uses ``session_path``).
         filename_prefix / filename_suffix: Components of the output
@@ -13893,6 +14112,10 @@ def make_chart(
             point) layered on top of the base chart.
         x_label / y_label: Convenience aliases for ``mapping['x_title']`` /
             ``mapping['y_title']``.
+        x_title / y_title / y_title_right: Canonical axis-title kwargs at
+            top-level. Equivalent to setting ``mapping['x_title']`` /
+            ``mapping['y_title']`` / ``mapping['y_title_right']``;
+            mapping[...] wins when both are set.
         user_id: Optional Kerberos ID resolved from the runtime context.
         caption: Below-chart caption text (str) or style-override dict
             (``{"text": ..., "italic": True, "font_size": 10, ...}``).
@@ -13930,8 +14153,17 @@ def make_chart(
         ``mapping['facet']`` is set, the result represents the whole
         composite grid -- ``chart_type`` carries a ``_facet`` suffix
         and ``vegalite_json`` is the composite Vega-Lite spec.
+
+        ``warnings`` carries fail-soft annotations the caller may want
+        to surface (data-quality issues, dropped annotations,
+        validation softeners). ``audit_trail`` carries informational
+        engine decisions where the chart is fine but the engine made
+        a routing call (auto-recovered to dual-axis, auto-downsampled,
+        alias resolution). PRISM should NOT surface ``audit_trail``
+        entries as failures.
     """
     warnings: List[str] = []
+    audit_trail: List[str] = []
 
     # ---- Argument normalization ----------------------------------------
     if chart_type not in (
@@ -13960,10 +14192,21 @@ def make_chart(
         )
 
     mapping = dict(mapping)
-    if x_label is not None and "x_title" not in mapping:
-        mapping["x_title"] = x_label
-    if y_label is not None and "y_title" not in mapping:
-        mapping["y_title"] = y_label
+    # Top-level axis-title kwargs route into mapping. Both the
+    # ``x_label``/``y_label`` aliases (legacy) and the canonical
+    # ``x_title``/``y_title``/``y_title_right`` names are accepted at
+    # the call site for ergonomics; mapping[...] wins when both are
+    # set so the more-specific call site (mapping) overrides the
+    # convenience kwarg.
+    for kwarg_val, mapping_key in (
+        (x_label, "x_title"),
+        (y_label, "y_title"),
+        (x_title, "x_title"),
+        (y_title, "y_title"),
+        (y_title_right, "y_title_right"),
+    ):
+        if kwarg_val is not None and mapping_key not in mapping:
+            mapping[mapping_key] = kwarg_val
 
     if s3_manager is None:
         raise ValueError(
@@ -14027,6 +14270,18 @@ def make_chart(
                 "Either set mapping['facet']='<col>' to use the facet grid, "
                 "or pick a different preset (wide / square / compact / ...)."
             ),
+        )
+
+    # ---- Validate color customisation kwargs ----------------------------
+    # Surfaces typo / off-list palette names at the boundary so PRISM
+    # sees an actionable error instead of a silently-rendered default.
+    try:
+        _validate_color_kwargs(mapping, chart_type)
+    except ValidationError as exc:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=str(exc), warnings=warnings,
+            audit_trail=audit_trail,
         )
 
     # ---- Auto-melt for multi_line / area --------------------------------
@@ -14148,7 +14403,7 @@ def make_chart(
             original_len = len(df)
             df, freq = _auto_downsample_timeseries(df, x_field)
             if freq:
-                warnings.append(
+                audit_trail.append(
                     f"Data auto-downsampled from {original_len} to {len(df)} rows "
                     f"(frequency: {freq}) to avoid Altair row limit."
                 )
@@ -14174,7 +14429,7 @@ def make_chart(
         )
         if recovered is not None:
             new_mapping, recovery_msg = recovered
-            warnings.append(recovery_msg)
+            audit_trail.append(recovery_msg)
             recovered_result = make_chart(
                 df=df, chart_type=chart_type, mapping=new_mapping,
                 title=title, subtitle=subtitle, skin=skin, intent=intent,
@@ -14186,6 +14441,8 @@ def make_chart(
                 s3_manager=s3_manager, save_as=save_as,
                 interactive=interactive, auto_beautify=auto_beautify,
                 layers=layers, x_label=x_label, y_label=y_label,
+                x_title=x_title, y_title=y_title,
+                y_title_right=y_title_right,
                 user_id=user_id, caption=caption,
                 side_left=side_left, side_right=side_right,
                 facet_cols=facet_cols,
@@ -14195,34 +14452,43 @@ def make_chart(
                 edge_only_axis_titles=edge_only_axis_titles,
                 _auto_recover_depth=_auto_recover_depth + 1,
             )
-            # Merge accumulated warnings (recovery message + any soft
-            # warnings raised before the rejection) ahead of the warnings
-            # the recursive call surfaced.
+            # Merge accumulated warnings + audit_trail (recovery
+            # message + any soft warnings raised before the rejection)
+            # ahead of what the recursive call surfaced.
             recovered_result.warnings = (
                 warnings + list(recovered_result.warnings or [])
+            )
+            recovered_result.audit_trail = (
+                audit_trail + list(recovered_result.audit_trail or [])
             )
             return recovered_result
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
             error_message=str(exc), warnings=warnings,
+            audit_trail=audit_trail,
         )
 
     # ---- Skin / dimensions ----------------------------------------------
+    # Canvas size is engine-decided per chart_type. PRISM does not pass
+    # dimensions; the kwarg remains on the signature for staging-side
+    # power-user use (demos, fixture rendering) and is private-by-
+    # convention (not taught in the skill). When not passed, route
+    # through ``_auto_dimensions`` -- the same table the v2 ``Chart``
+    # class consults.
     skin_config = get_skin(skin, intent)
-    if dimensions is not None:
-        if dimensions not in DIMENSION_PRESETS:
-            return ChartResult(
-                chart_type=chart_type, skin=skin, success=False,
-                error_message=(
-                    f"Unknown dimension preset {dimensions!r}. "
-                    f"Available: {list(DIMENSION_PRESETS.keys())}"
-                ),
-                warnings=warnings,
-            )
-        width, height = DIMENSION_PRESETS[dimensions]
-    else:
-        width = skin_config.get("width", 600)
-        height = skin_config.get("height", 400)
+    if dimensions is None:
+        dimensions = _auto_dimensions(chart_type)
+    if dimensions not in DIMENSION_PRESETS:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                f"Unknown dimension preset {dimensions!r}. "
+                f"Available: {list(DIMENSION_PRESETS.keys())}"
+            ),
+            warnings=warnings,
+            audit_trail=audit_trail,
+        )
+    width, height = DIMENSION_PRESETS[dimensions]
 
     # ---- Pre-dispatch annotation absorption (Phase 1 of collision sweep)
     # ---- See dev/scratch/_collision_audit_2026-05-10_1955/inventory.md
@@ -14406,6 +14672,7 @@ def make_chart(
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
             error_message=str(exc), warnings=warnings,
+            audit_trail=audit_trail,
         )
     except Exception as exc:  # noqa: BLE001
         send_error_email(
@@ -14426,6 +14693,7 @@ def make_chart(
             chart_type=chart_type, skin=skin, success=False,
             error_message=f"Chart build failed: {type(exc).__name__}: {exc}",
             warnings=warnings,
+            audit_trail=audit_trail,
         )
 
     # ---- LastValueLabel on dual-axis: prohibited, drop with warning ----
@@ -14530,6 +14798,7 @@ def make_chart(
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
             error_message=str(exc), warnings=warnings,
+            audit_trail=audit_trail,
         )
     lvl_right_pad = _estimate_lvl_right_margin(annotations, df, mapping)
 
@@ -14581,6 +14850,7 @@ def make_chart(
             return ChartResult(
                 chart_type=chart_type, skin=skin, success=False,
                 error_message=str(exc), warnings=warnings,
+                audit_trail=audit_trail,
             )
         # Always emit TitleParams with explicit anchor='start' so that
         # when the chart is later wrapped in an hconcat (side panels) the
@@ -14729,6 +14999,7 @@ def make_chart(
             f"PNG export unavailable: {png_error_message}" if png_save_failed else None
         ),
         warnings=warnings,
+        audit_trail=audit_trail,
         interactive=interactive,
     )
 
@@ -14919,6 +15190,12 @@ class ChartSpec:
     accept the same string-or-dict shape as on ``make_chart``. Captions
     sit below their own sub-chart; side panels flank that sub-chart and
     remain inside the composite frame.
+
+    Axis-title kwargs (``x_title`` / ``y_title`` / ``y_title_right``,
+    plus ``x_label`` / ``y_label`` aliases) accept the same canonical-
+    or-mapping pattern as ``make_chart``: pass at top level for
+    ergonomics OR set on ``mapping``; ``mapping[...]`` wins if both
+    are set.
     """
 
     df: pd.DataFrame
@@ -14931,6 +15208,28 @@ class ChartSpec:
     caption: Union[str, Dict[str, Any], None] = None
     side_left: Union[str, Dict[str, Any], None] = None
     side_right: Union[str, Dict[str, Any], None] = None
+    x_label: Optional[str] = None
+    y_label: Optional[str] = None
+    x_title: Optional[str] = None
+    y_title: Optional[str] = None
+    y_title_right: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        # Route top-level axis-title kwargs into ``mapping`` so the
+        # downstream renderer doesn't have to know about the
+        # convenience kwargs. Mirrors ``make_chart``'s behaviour;
+        # mapping[...] wins when both are set.
+        merged = dict(self.mapping or {})
+        for kwarg_val, mapping_key in (
+            (self.x_label, "x_title"),
+            (self.y_label, "y_title"),
+            (self.x_title, "x_title"),
+            (self.y_title, "y_title"),
+            (self.y_title_right, "y_title_right"),
+        ):
+            if kwarg_val is not None and mapping_key not in merged:
+                merged[mapping_key] = kwarg_val
+        self.mapping = merged
 
 
 @dataclass
@@ -14947,6 +15246,7 @@ class CompositeResult:
     success: bool = True
     error_message: Optional[str] = None
     warnings: List[str] = field(default_factory=list)
+    audit_trail: List[str] = field(default_factory=list)
     download_url: Optional[str] = None
     vegalite_json: Optional[Dict[str, Any]] = None
     skin: Optional[str] = None
@@ -16203,8 +16503,9 @@ def _get_facet_panel_order(
 
     Default is first-appearance order in df (predictable; matches how
     PRISM tends to construct its DataFrames). An explicit
-    ``explicit_order`` argument (currently unused but reserved for
-    a future ``mapping['facet_order']``) takes precedence.
+    ``explicit_order`` argument -- typically threaded from
+    ``mapping['facet_order']`` at the ``_render_facet_grid`` call site
+    -- takes precedence and validates that every requested id exists.
     """
     if explicit_order is not None:
         # Validate that every requested id exists in the data.
@@ -16701,7 +17002,28 @@ def _render_facet_grid(
         )
 
     # ---- Resolve panel order, count, grid shape -------------------------
-    panel_order = _get_facet_panel_order(df, facet_col)
+    explicit_facet_order = mapping.get("facet_order")
+    if explicit_facet_order is not None and not isinstance(
+        explicit_facet_order, (list, tuple)
+    ):
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                f"mapping['facet_order'] must be a list of panel ids; "
+                f"got {type(explicit_facet_order).__name__}."
+            ),
+        )
+    try:
+        panel_order = _get_facet_panel_order(
+            df, facet_col,
+            explicit_order=list(explicit_facet_order)
+            if explicit_facet_order is not None else None,
+        )
+    except ValidationError as exc:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=str(exc),
+        )
     n_panels = len(panel_order)
 
     if n_panels > _FACET_HARD_CAP:
@@ -17081,6 +17403,50 @@ def _render_facet_grid(
     )
 
 
+def _resolve_composite_aliases(
+    *,
+    dimensions: Optional[str],
+    dimension_preset: Optional[str],
+    side_left: Union[str, Dict[str, Any], None],
+    narrative_left: Union[str, Dict[str, Any], None],
+    side_right: Union[str, Dict[str, Any], None],
+    narrative_right: Union[str, Dict[str, Any], None],
+) -> Tuple[
+    Optional[str],
+    Union[str, Dict[str, Any], None],
+    Union[str, Dict[str, Any], None],
+    List[str],
+]:
+    """Resolve composite kwarg aliases to single canonical values.
+
+    The composite functions accept BOTH the make_chart-style canonical
+    names (``dimensions``, ``side_left``, ``side_right``) AND their
+    composite-specific legacy names (``dimension_preset``,
+    ``narrative_left``, ``narrative_right``). Canonical wins when both
+    are passed and a warning is emitted so the caller sees the conflict.
+    """
+    alias_warnings: List[str] = []
+    if dimensions is not None and dimension_preset is not None:
+        alias_warnings.append(
+            "Both `dimensions=` and `dimension_preset=` were passed; "
+            "`dimensions=` (canonical) wins. Drop `dimension_preset=`."
+        )
+    if side_left is not None and narrative_left is not None:
+        alias_warnings.append(
+            "Both `side_left=` and `narrative_left=` were passed; "
+            "`side_left=` (canonical) wins. Drop `narrative_left=`."
+        )
+    if side_right is not None and narrative_right is not None:
+        alias_warnings.append(
+            "Both `side_right=` and `narrative_right=` were passed; "
+            "`side_right=` (canonical) wins. Drop `narrative_right=`."
+        )
+    resolved_dim = dimensions if dimensions is not None else dimension_preset
+    resolved_left = side_left if side_left is not None else narrative_left
+    resolved_right = side_right if side_right is not None else narrative_right
+    return resolved_dim, resolved_left, resolved_right, alias_warnings
+
+
 def make_composite(
     charts: List[ChartSpec],
     layout: LayoutType,
@@ -17088,6 +17454,7 @@ def make_composite(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
+    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17099,7 +17466,9 @@ def make_composite(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Generic composite entry point used by all ``make_Npack_*`` wrappers.
@@ -17115,11 +17484,24 @@ def make_composite(
 
     Composite-level text panels:
       ``caption`` sits below the entire pack (composite footer).
-      ``narrative_left`` / ``narrative_right`` flank the whole pack.
-    Each accepts a string or a style dict (see ``make_chart``).
-    Sub-chart-level text panels live on each ``ChartSpec`` instead.
+      ``side_left`` / ``side_right`` flank the whole pack (also
+      accepted under the legacy aliases ``narrative_left`` /
+      ``narrative_right``). Each accepts a string or a style dict
+      (see ``make_chart``). Sub-chart-level text panels live on each
+      ``ChartSpec`` instead.
     """
     warnings_list: List[str] = []
+    dimension_preset, narrative_left, narrative_right, alias_warnings = (
+        _resolve_composite_aliases(
+            dimensions=dimensions,
+            dimension_preset=dimension_preset,
+            side_left=side_left,
+            narrative_left=narrative_left,
+            side_right=side_right,
+            narrative_right=narrative_right,
+        )
+    )
+    warnings_list.extend(alias_warnings)
 
     if layout not in (
         "2_horizontal", "2_vertical", "3_triangle", "3_inverted",
@@ -17488,6 +17870,7 @@ def make_2pack_horizontal(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
+    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17499,7 +17882,9 @@ def make_2pack_horizontal(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Two charts side-by-side. ``chart1`` is left, ``chart2`` is right."""
@@ -17507,13 +17892,15 @@ def make_2pack_horizontal(
         [chart1, chart2],
         "2_horizontal",
         title=title, subtitle=subtitle, skin=skin,
-        dimension_preset=dimension_preset, output_dir=output_dir,
+        dimensions=dimensions, dimension_preset=dimension_preset,
+        output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        narrative_left=narrative_left, narrative_right=narrative_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -17524,6 +17911,7 @@ def make_2pack_vertical(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
+    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "wide",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17535,7 +17923,9 @@ def make_2pack_vertical(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Two charts stacked vertically. ``chart1`` is top, ``chart2`` is bottom."""
@@ -17543,13 +17933,15 @@ def make_2pack_vertical(
         [chart1, chart2],
         "2_vertical",
         title=title, subtitle=subtitle, skin=skin,
-        dimension_preset=dimension_preset, output_dir=output_dir,
+        dimensions=dimensions, dimension_preset=dimension_preset,
+        output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        narrative_left=narrative_left, narrative_right=narrative_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -17561,6 +17953,7 @@ def make_3pack_triangle(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
+    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17572,7 +17965,9 @@ def make_3pack_triangle(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Three charts: one on top, two on bottom."""
@@ -17580,13 +17975,15 @@ def make_3pack_triangle(
         [chart_top, chart_bottom_left, chart_bottom_right],
         "3_triangle",
         title=title, subtitle=subtitle, skin=skin,
-        dimension_preset=dimension_preset, output_dir=output_dir,
+        dimensions=dimensions, dimension_preset=dimension_preset,
+        output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        narrative_left=narrative_left, narrative_right=narrative_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -17599,6 +17996,7 @@ def make_4pack_grid(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
+    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17610,7 +18008,9 @@ def make_4pack_grid(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """2x2 grid (top-left, top-right, bottom-left, bottom-right)."""
@@ -17618,13 +18018,15 @@ def make_4pack_grid(
         [chart_tl, chart_tr, chart_bl, chart_br],
         "4_grid",
         title=title, subtitle=subtitle, skin=skin,
-        dimension_preset=dimension_preset, output_dir=output_dir,
+        dimensions=dimensions, dimension_preset=dimension_preset,
+        output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        narrative_left=narrative_left, narrative_right=narrative_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -17640,6 +18042,7 @@ def make_6pack_grid(
     subtitle: Optional[str] = None,
     specs: Optional[List[ChartSpec]] = None,
     skin: str = "gs_clean",
+    dimensions: Optional[DimensionPreset] = None,
     dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -17651,7 +18054,9 @@ def make_6pack_grid(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """3x2 grid (3 rows, 2 columns) of charts.
@@ -17709,13 +18114,15 @@ def make_6pack_grid(
         charts,
         "6_grid",
         title=title, subtitle=subtitle, skin=skin,
-        dimension_preset=dimension_preset, output_dir=output_dir,
+        dimensions=dimensions, dimension_preset=dimension_preset,
+        output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption,
-        narrative_left=narrative_left, narrative_right=narrative_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -17737,47 +18144,21 @@ def _qc_one(
     """
     png_path = getattr(r, "png_path", None)
     success = getattr(r, "success", True)
-    truncated_rows = getattr(r, "truncated_rows", 0) or 0
-    warnings_list = getattr(r, "warnings", []) or []
     if not success or not png_path:
-        # Distinguish a real render failure from a render-with-truncation that
-        # somehow lost its png path. This message used to read 'no png_path'
-        # which surfaced to users as 'Chart failed to render: unknown error'
-        # even though the engine had emitted a clear truncation warning.
-        if truncated_rows and warnings_list:
-            reason = (
-                f"rendered with truncation but png_path missing; "
-                f"engine warning: {warnings_list[0]}"
-            )
-        else:
-            err = getattr(r, "error_message", None)
-            reason = (
-                f"chart build failed: {err}" if err
-                else "chart build failed: no png_path and no error_message on result"
-            )
+        err = getattr(r, "error_message", None)
+        reason = (
+            f"chart build failed: {err}" if err
+            else "chart build failed: no png_path and no error_message on result"
+        )
         return {
             "passed": False,
             "reason": reason,
             "png_path": png_path,
-            "truncated_rows": truncated_rows,
         }
     try:
         png_bytes = s3_manager.get(png_path)
         verdict = check_chart_quality(png_bytes)
         verdict.setdefault("png_path", png_path)
-        # Surface truncation as a non-fatal annotation so downstream callers
-        # can distinguish 'rendered cleanly' from 'rendered but N rows dropped'.
-        if truncated_rows:
-            verdict["truncated_rows"] = truncated_rows
-            existing_reason = verdict.get("reason") or ""
-            trunc_note = (
-                f"rendered with {truncated_rows} row(s) truncated -- "
-                f"consider a larger dimensions preset"
-            )
-            verdict["reason"] = (
-                f"{existing_reason}: {trunc_note}" if existing_reason else trunc_note
-            )
-            verdict["reason"] = str(verdict.get("reason") or "")
         return verdict
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -18202,12 +18583,14 @@ _V2_MAPPING_KEYS: Tuple[str, ...] = (
 _V2_UNSET = object()
 
 
-# Per-chart-type dimension defaults. The v2 surface deliberately does
-# NOT expose ``dimensions=`` to the LLM -- the engine picks the right
-# canvas for each chart type so PRISM never has to think about it.
-# Override path: ``Chart.with_dimensions(preset)`` (escape hatch, not
-# taught in the v2 skill).
-_V2_AUTO_DIMENSIONS: Dict[str, str] = {
+# Per-chart-type dimension defaults. The engine picks the right canvas
+# for each chart type so PRISM never has to think about it. Both v1's
+# ``make_chart`` (when ``dimensions=None``) and v2's ``Chart`` class
+# (when ``.with_dimensions()`` is not called) consult this table.
+# Override path on v1: pass an explicit ``dimensions=`` (private-by-
+# convention; not taught in the skill). Override on v2:
+# ``Chart.with_dimensions(preset)``.
+_AUTO_DIMENSIONS: Dict[str, str] = {
     "multi_line":      "wide",     # 700x350 - time series default
     "timeseries":      "wide",
     "area":            "wide",
@@ -18224,14 +18607,14 @@ _V2_AUTO_DIMENSIONS: Dict[str, str] = {
 }
 
 
-def _v2_auto_dimensions(chart_type: str) -> str:
+def _auto_dimensions(chart_type: str) -> str:
     """Return the engine-picked dimension preset for ``chart_type``.
 
     Single source of truth for "what canvas does this chart type want".
     Falls through to ``'wide'`` for any chart type without an explicit
     entry, matching the long-running engine default.
     """
-    return _V2_AUTO_DIMENSIONS.get(chart_type, "wide")
+    return _AUTO_DIMENSIONS.get(chart_type, "wide")
 
 
 def _v2_resolve_layout(layout: str, n_charts: int) -> str:
@@ -18344,7 +18727,7 @@ class Chart:
         side_right: Union[str, Dict[str, Any], None] = None,
         # ----- Style --------------------------------------------------
         # NB: ``dimensions`` is intentionally NOT a public kwarg --
-        # the engine picks per chart_type (see ``_v2_auto_dimensions``).
+        # the engine picks per chart_type (see ``_auto_dimensions``).
         # Use ``Chart.with_dimensions(preset)`` if you really need to
         # override (escape hatch, not taught in the skill).
         skin: str = "gs_clean",
@@ -18410,7 +18793,7 @@ class Chart:
         self._skin = skin
         self._intent = intent
         # ``self._dimensions`` is the OVERRIDE slot. None means "let
-        # the engine pick per chart_type" via ``_v2_auto_dimensions``.
+        # the engine pick per chart_type" via ``_auto_dimensions``.
         # Set by ``.with_dimensions(preset)`` for power-user override.
         self._dimensions: Optional[DimensionPreset] = None
         self._auto_beautify = auto_beautify
@@ -18534,7 +18917,7 @@ class Chart:
         Override (set via ``.with_dimensions()``) wins; otherwise the
         engine auto-picks per chart type.
         """
-        return self._dimensions or _v2_auto_dimensions(self._type)
+        return self._dimensions or _auto_dimensions(self._type)
 
     def preview(self) -> Dict[str, Any]:
         """Return the planned Vega-Lite spec without writing PNG / S3.
@@ -18951,6 +19334,19 @@ _TABLE_PALETTES: Dict[str, Tuple] = {
     "owb":      ("diverging", GS_PRIMARY["colors"][8], GS_PRIMARY["colors"][0], 0.65),
 }
 
+# Content-driven table sizing constants. The table engine sizes its PNG
+# to fit content exactly; PRISM never picks a canvas. These tunables
+# govern only the wrap / compress behaviour for unusually-wide content
+# and are private to this module. The "soft" hard-coded numbers reflect
+# typical FT/Bloomberg article-body widths and reading-comfortable text
+# column widths; they are not meant to be overridden by callers.
+_TBL_SIDE_PAD = 12          # Left/right canvas margin (px)
+_TBL_TEXT_COL_MAX = 280     # Cap text-col natural width before wrapping
+_TBL_TEXT_COL_FLOOR = 160   # Lower bound when compressing text cols
+_TBL_MAX_TABLE_W = 1400     # Soft upper bound on canvas width
+_TBL_CELL_PAD_X = 10        # Per-cell horizontal padding
+_TBL_BODY_PAD_BOTTOM = 6    # Padding between last row and caption / edge
+
 _TBL_FONT_SEARCH_PATHS: Dict[str, List[str]] = {
     "regular": [
         "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
@@ -19038,15 +19434,57 @@ def _tbl_palette_div(palette: str, value: float, extent: float, center: float = 
     return _tbl_blend("#FFFFFF", neg_hex, abs(t) * max_i)
 
 
-def _tbl_rag_color(value: float, red_max: float, amber_max: float) -> Optional[str]:
+def _tbl_rag_color(value: float, thresholds: Any) -> Optional[str]:
+    """Compute the RAG bucket colour for a numeric value.
+
+    ``thresholds`` shapes (engine accepts all three for ergonomics):
+
+      * Legacy 2-tuple ``(red_max, amber_max)`` — lower-is-bad.
+        Below red_max → red, between → amber, above → green.
+      * Dict ``{'red_below': X, 'amber_below': Y}`` — lower-is-bad
+        with explicit naming (equivalent to the legacy 2-tuple).
+      * Dict ``{'amber_above': X, 'red_above': Y}`` — higher-is-bad
+        (inflation, unemployment, default rate, recession probability).
+        Below amber_above → green, between → amber, above red_above
+        → red.
+
+    Returns ``None`` when the value is non-numeric / NaN, or when the
+    threshold dict shape is incomplete.
+    """
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return None
-    v = float(value)
-    if v < red_max:
-        return "#F4D6D6"
-    if v < amber_max:
-        return "#FCE9CC"
-    return "#D8EED8"
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if isinstance(thresholds, (tuple, list)) and len(thresholds) == 2:
+        red_max, amber_max = thresholds
+        if v < red_max:
+            return "#F4D6D6"
+        if v < amber_max:
+            return "#FCE9CC"
+        return "#D8EED8"
+
+    if isinstance(thresholds, dict):
+        red_below = thresholds.get("red_below")
+        amber_below = thresholds.get("amber_below")
+        amber_above = thresholds.get("amber_above")
+        red_above = thresholds.get("red_above")
+        if red_below is not None and amber_below is not None:
+            if v < float(red_below):
+                return "#F4D6D6"
+            if v < float(amber_below):
+                return "#FCE9CC"
+            return "#D8EED8"
+        if amber_above is not None and red_above is not None:
+            if v > float(red_above):
+                return "#F4D6D6"
+            if v > float(amber_above):
+                return "#FCE9CC"
+            return "#D8EED8"
+
+    return None
 
 
 @dataclass
@@ -19157,15 +19595,6 @@ def _tbl_hard_break(text: str, font, max_width_px: int) -> List[str]:
     return pieces or [text]
 
 
-def _tbl_truncate(text: str, font, max_width_px: int) -> str:
-    text = str(text)
-    if font.getlength(text) <= max_width_px:
-        return text
-    while text and font.getlength(text + "…") > max_width_px:
-        text = text[:-1]
-    return (text + "…") if text else ""
-
-
 def _tbl_normalize_mode(spec: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
     if isinstance(spec, dict):
         return {**spec}
@@ -19192,37 +19621,64 @@ class _TableLayoutGeom:
     canvas_w: int
     canvas_h: int
     title_h: int
+    title_lines: List[str]
+    subtitle_lines: List[str]
     table_x: int
     table_w: int
     body_top_y: int
-    body_avail_h: int
     header_h: int
     col_xs: List[int]
     col_widths: List[int]
+    col_wraps: List[bool]
+    row_heights: List[int]
     caption_y: int
     caption_h: int
     row_default_h: int
     group_band_h: int
 
 
-def _tbl_measure_title(title: Optional[str], subtitle: Optional[str], theme: Dict[str, Any]) -> int:
+def _tbl_measure_title(
+    title: Optional[str], subtitle: Optional[str],
+    inner_w: int, theme: Dict[str, Any],
+) -> Tuple[int, List[str], List[str]]:
+    """Return ``(band_height_px, wrapped_title_lines, wrapped_subtitle_lines)``.
+
+    Title and subtitle are wrapped at word boundaries to fit ``inner_w``
+    (the canvas inner width). Single words wider than ``inner_w`` fall
+    back to character-level hard-break (matching caption behaviour).
+    The band's height is computed from the line counts so titles that
+    wrap to multiple lines grow the canvas top-to-bottom rather than
+    clipping at the canvas's right edge.
+    """
     if not title and not subtitle:
-        return 0
+        return 0, [], []
+    title_font = _tbl_load_font("bold", theme["title_font_size"])
+    subtitle_font = _tbl_load_font("regular", theme["subtitle_font_size"])
+    title_lines = _tbl_wrap_text(title, title_font, inner_w) if title else []
+    subtitle_lines = (
+        _tbl_wrap_text(subtitle, subtitle_font, inner_w) if subtitle else []
+    )
     h = 6
-    if title:
-        h += int(theme["title_font_size"] * 1.2)
-    if subtitle:
-        h += int(theme["subtitle_font_size"] * 1.4)
+    if title_lines:
+        h += int(len(title_lines) * theme["title_font_size"] * 1.2)
+    if subtitle_lines:
+        h += int(len(subtitle_lines) * theme["subtitle_font_size"] * 1.4)
     h += 8
-    return h
+    return h, title_lines, subtitle_lines
 
 
-def _tbl_measure_caption(caption: Optional[str], canvas_w: int, side_pad: int, theme: Dict[str, Any]) -> int:
+def _tbl_measure_caption(caption: Optional[str], inner_w: int, theme: Dict[str, Any]) -> Tuple[int, List[str]]:
+    """Return (caption_band_height, wrapped_caption_lines).
+
+    Caption wraps to the inner table width (canvas_w - 2 * side_pad).
+    Returns 0 / empty list when no caption is set.
+    """
     if not caption:
-        return 0
+        return 0, []
     cap_font = _tbl_load_font("italic", theme["caption_font_size"])
-    lines = _tbl_wrap_text(caption, cap_font, canvas_w - 2 * side_pad)
-    return int(len(lines) * theme["caption_font_size"] * 1.4) + 12
+    lines = _tbl_wrap_text(caption, cap_font, inner_w)
+    h = int(len(lines) * theme["caption_font_size"] * 1.4) + 12
+    return h, lines
 
 
 def _tbl_default_align(col: str, df: pd.DataFrame) -> str:
@@ -19231,100 +19687,144 @@ def _tbl_default_align(col: str, df: pd.DataFrame) -> str:
     return "left"
 
 
-def _tbl_column_widths(
+def _tbl_is_text_col(
+    df: pd.DataFrame, col: str,
+    sparkline_columns: Dict[str, Any], minibar_columns: Dict[str, Any],
+) -> bool:
+    """Text columns wrap when wide; numeric / datetime / sparkline /
+    minibar columns never wrap."""
+    if col in sparkline_columns or col in minibar_columns:
+        return False
+    series = df[col]
+    if pd.api.types.is_numeric_dtype(series):
+        return False
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return False
+    return True
+
+
+def _tbl_natural_widths(
     df: pd.DataFrame,
-    column_formats: Dict[str, str], column_widths: Dict[str, Union[int, str]],
+    column_formats: Dict[str, str],
     sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
-    canvas_w: int, side_pad: int, theme: Dict[str, Any],
-    wrap_columns: List[str],
-) -> List[int]:
+    theme: Dict[str, Any],
+) -> Tuple[List[int], List[bool], List[int]]:
+    """Compute the per-column natural width, wrap flag, and minimum
+    floor (the smallest width that still keeps the header visible).
+
+    Returns (widths, wraps, floors).
+      ``widths[i]``  - natural rendered width in px (already clamped to
+                       ``_TBL_TEXT_COL_MAX`` for wrapping text columns).
+      ``wraps[i]``   - True when the column is a text column that has
+                       been capped at ``_TBL_TEXT_COL_MAX`` and so its
+                       cells must wrap to fit. Numeric / datetime /
+                       sparkline / minibar columns always carry False.
+      ``floors[i]``  - lowest acceptable width when the table needs to
+                       compress to fit ``_TBL_MAX_TABLE_W``. Equal to
+                       the column's natural width for non-wrapping
+                       columns (they cannot be compressed without
+                       truncation, which is forbidden) and to
+                       max(header_w, ``_TBL_TEXT_COL_FLOOR``) for
+                       wrapping text columns.
+    """
     body_font = _tbl_load_font("regular", theme["body_font_size"])
     header_font = _tbl_load_font("bold", theme["header_font_size"])
-    cell_pad_x = 10
-    total_avail = canvas_w - 2 * side_pad
+    cell_pad_x = _TBL_CELL_PAD_X
 
-    natural: List[int] = []
+    widths: List[int] = []
+    wraps: List[bool] = []
+    floors: List[int] = []
     for col in df.columns:
-        explicit = column_widths.get(col)
-        if isinstance(explicit, int):
-            natural.append(max(40, explicit))
-            continue
+        header_w = int(header_font.getlength(str(col))) + 2 * cell_pad_x
         if col in sparkline_columns:
-            natural.append(120 + 2 * cell_pad_x)
+            w = 120 + 2 * cell_pad_x
+            widths.append(w)
+            wraps.append(False)
+            floors.append(w)
             continue
         if col in minibar_columns:
-            natural.append(110 + 2 * cell_pad_x)
-            continue
-        header_w = int(header_font.getlength(str(col))) + 2 * cell_pad_x
-        if col in wrap_columns:
-            natural.append(max(header_w, 160))
+            w = 110 + 2 * cell_pad_x
+            widths.append(w)
+            wraps.append(False)
+            floors.append(w)
             continue
         body_max_w = 0
-        for v in df[col].head(40).tolist():
+        for v in df[col].tolist():
             text = _tbl_smart_format(v, column_formats.get(col))
-            w = int(body_font.getlength(text)) + 2 * cell_pad_x
-            if w > body_max_w:
-                body_max_w = w
-        natural.append(max(header_w, body_max_w, 60))
-
-    total_natural = sum(natural)
-    if total_natural <= total_avail:
-        leftover = total_avail - total_natural
-        weights: List[float] = []
-        for i, col in enumerate(df.columns):
-            if col in sparkline_columns or col in minibar_columns:
-                weights.append(0.0)
-            elif isinstance(column_widths.get(col), int):
-                weights.append(0.0)
-            elif col in wrap_columns:
-                weights.append(2.0 * float(natural[i]))
-            else:
-                weights.append(float(natural[i]))
-        sw = sum(weights)
-        if sw > 0:
-            for i, w in enumerate(weights):
-                natural[i] += int(round(leftover * (w / sw)))
+            tw = int(body_font.getlength(text)) + 2 * cell_pad_x
+            if tw > body_max_w:
+                body_max_w = tw
+        natural = max(header_w, body_max_w, 60)
+        is_text = _tbl_is_text_col(df, col, sparkline_columns, minibar_columns)
+        if is_text and natural > _TBL_TEXT_COL_MAX:
+            widths.append(max(header_w, _TBL_TEXT_COL_MAX))
+            wraps.append(True)
+            floors.append(max(header_w, _TBL_TEXT_COL_FLOOR))
         else:
-            natural[0] += leftover
-    else:
-        protected = sum(
-            natural[i] for i, col in enumerate(df.columns)
-            if col in sparkline_columns or col in minibar_columns
-            or isinstance(column_widths.get(col), int)
-        )
-        flex_total = total_natural - protected
-        flex_avail = max(60 * (len(df.columns) - 1), total_avail - protected)
-        scale = flex_avail / flex_total if flex_total > 0 else 1.0
-        for i, col in enumerate(df.columns):
-            if col in sparkline_columns or col in minibar_columns or isinstance(column_widths.get(col), int):
-                continue
-            natural[i] = max(40, int(round(natural[i] * scale)))
+            widths.append(natural)
+            wraps.append(False)
+            floors.append(natural)
+    return widths, wraps, floors
 
-    natural[-1] += total_avail - sum(natural)
-    return natural
+
+def _tbl_compress_to_fit(
+    widths: List[int], wraps: List[bool], floors: List[int],
+    side_pad: int,
+) -> List[int]:
+    """If sum(widths) + 2*side_pad exceeds the soft ceiling, compress
+    wrapping text columns toward their floors uniformly. If the ceiling
+    cannot be honoured even at the floor, the overflow is accepted -
+    the table just renders wider. No truncation."""
+    inner_target = _TBL_MAX_TABLE_W - 2 * side_pad
+    cur = sum(widths)
+    if cur <= inner_target:
+        return list(widths)
+    overflow = cur - inner_target
+    flex_idx = [i for i, wrapping in enumerate(wraps) if wrapping]
+    if not flex_idx:
+        return list(widths)
+    out = list(widths)
+    while overflow > 0:
+        room = sum(out[i] - floors[i] for i in flex_idx)
+        if room <= 0:
+            break
+        take = min(overflow, room)
+        for i in flex_idx:
+            slack = out[i] - floors[i]
+            if slack <= 0:
+                continue
+            share = int(round(take * (slack / room)))
+            share = min(share, slack)
+            out[i] -= share
+        overflow = sum(out) - inner_target
+        if overflow <= 0 or sum(out[i] - floors[i] for i in flex_idx) <= 0:
+            break
+    return out
 
 
 def _tbl_row_heights(
-    df: pd.DataFrame, col_widths: List[int],
-    column_formats: Dict[str, str], theme: Dict[str, Any],
-    wrap_columns: List[str], max_wrap_lines: int,
+    df: pd.DataFrame,
+    col_widths: List[int],
+    col_wraps: List[bool],
+    column_formats: Dict[str, str],
+    theme: Dict[str, Any],
 ) -> List[int]:
+    """Per-row height, growing to fit any wrapping cell content."""
     body_font = _tbl_load_font("regular", theme["body_font_size"])
-    cell_pad_x = 10
+    cell_pad_x = _TBL_CELL_PAD_X
     base_h = int(theme["body_font_size"] * 1.95)
     line_h = int(theme["body_font_size"] * 1.45)
     out: List[int] = []
-    for r_idx, (_, row) in enumerate(df.iterrows()):
+    for _, row in df.iterrows():
         max_lines = 1
         for ci, col in enumerate(df.columns):
-            if col not in wrap_columns:
+            if not col_wraps[ci]:
                 continue
             avail = col_widths[ci] - 2 * cell_pad_x
             text = _tbl_smart_format(row[col], column_formats.get(col))
             lines = _tbl_wrap_text(text, body_font, max(20, avail))
-            n = min(len(lines), max_wrap_lines)
-            if n > max_lines:
-                max_lines = n
+            if len(lines) > max_lines:
+                max_lines = len(lines)
         h = max(base_h, max_lines * line_h + 8)
         out.append(h)
     return out
@@ -19332,42 +19832,74 @@ def _tbl_row_heights(
 
 def _tbl_layout(
     df: pd.DataFrame, title: Optional[str], subtitle: Optional[str],
-    caption: Optional[str], canvas: Tuple[int, int], side_pad: int,
+    caption: Optional[str],
     theme: Dict[str, Any],
     header_levels: Optional[List[List[Tuple[str, int]]]],
     column_formats: Dict[str, str],
-    column_widths: Dict[str, Union[int, str]],
     sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
-    row_groups: Optional[List[Tuple[str, int]]], wrap_columns: List[str],
-) -> _TableLayoutGeom:
-    canvas_w, canvas_h = canvas
-    title_h = _tbl_measure_title(title, subtitle, theme)
-    caption_h = _tbl_measure_caption(caption, canvas_w, side_pad, theme)
+    row_groups: Optional[List[Tuple[str, int]]],
+) -> Tuple[_TableLayoutGeom, List[str]]:
+    """Compute a content-driven layout. Returns the geometry plus the
+    pre-wrapped caption lines (so the draw step doesn't have to re-wrap).
+
+    Width:  side_pad + Sum(col_widths) + side_pad
+            (capped softly at ``_TBL_MAX_TABLE_W`` via wrap-column
+             compression; if even the floor compression can't fit, the
+             table renders wider rather than truncating any cell.)
+
+    Height: title + header + Sum(row_heights) + group bands + caption
+            + bottom padding. Always exact - no fixed canvas, so no
+            bottom whitespace.
+    """
+    side_pad = _TBL_SIDE_PAD
+    natural_w, wraps, floors = _tbl_natural_widths(
+        df, column_formats, sparkline_columns, minibar_columns, theme,
+    )
+    col_widths = _tbl_compress_to_fit(natural_w, wraps, floors, side_pad)
+
+    canvas_w = 2 * side_pad + sum(col_widths)
+    inner_w = canvas_w - 2 * side_pad
+
+    title_h, title_lines, subtitle_lines = _tbl_measure_title(
+        title, subtitle, inner_w, theme,
+    )
+    caption_h, _caption_lines = _tbl_measure_caption(caption, inner_w, theme)
+
     n_super_levels = len(header_levels) if header_levels else 0
     header_row_h = int(theme["header_font_size"] * 1.7)
     header_h = header_row_h * (n_super_levels + 1)
     body_top_y = title_h + header_h + (8 if title_h else 0)
-    body_avail_h = canvas_h - body_top_y - caption_h - 6
+
     row_default_h = int(theme["body_font_size"] * 1.95)
     group_band_h = int(theme["body_font_size"] * 1.85)
-    cw = _tbl_column_widths(
-        df, column_formats, column_widths, sparkline_columns, minibar_columns,
-        canvas_w, side_pad, theme, wrap_columns,
+
+    row_heights = _tbl_row_heights(
+        df, col_widths, wraps, column_formats, theme,
     )
+    n_group_bands = len(row_groups or [])
+    body_h = sum(row_heights) + n_group_bands * group_band_h
+    canvas_h = body_top_y + body_h + caption_h + _TBL_BODY_PAD_BOTTOM
+
     col_xs = [side_pad]
     acc = side_pad
-    for w in cw:
+    for w in col_widths:
         acc += w
         col_xs.append(acc)
-    return _TableLayoutGeom(
+
+    geom = _TableLayoutGeom(
         canvas_w=canvas_w, canvas_h=canvas_h,
-        title_h=title_h, table_x=side_pad,
-        table_w=canvas_w - 2 * side_pad,
-        body_top_y=body_top_y, body_avail_h=body_avail_h,
-        header_h=header_h, col_xs=col_xs, col_widths=cw,
-        caption_y=canvas_h - caption_h, caption_h=caption_h,
+        title_h=title_h,
+        title_lines=title_lines, subtitle_lines=subtitle_lines,
+        table_x=side_pad,
+        table_w=inner_w,
+        body_top_y=body_top_y,
+        header_h=header_h, col_xs=col_xs,
+        col_widths=col_widths, col_wraps=wraps,
+        row_heights=row_heights,
+        caption_y=body_top_y + body_h, caption_h=caption_h,
         row_default_h=row_default_h, group_band_h=group_band_h,
     )
+    return geom, _caption_lines
 
 
 def _tbl_resolve_heatmap_group(
@@ -19422,7 +19954,7 @@ def _tbl_resolve_heatmap_group(
 def _tbl_resolve_column_mode(
     r: int, c: int, df: pd.DataFrame,
     column_color_modes: Dict[str, Dict[str, Any]],
-    rag_thresholds: Dict[str, Tuple[float, float]],
+    rag_thresholds: Dict[str, Any],
 ) -> Optional[str]:
     col_name = df.columns[c]
     spec = column_color_modes.get(col_name)
@@ -19441,7 +19973,7 @@ def _tbl_resolve_column_mode(
         thr = spec.get("thresholds") or rag_thresholds.get(col_name)
         if thr is None or vf is None:
             return None
-        return _tbl_rag_color(vf, thr[0], thr[1])
+        return _tbl_rag_color(vf, thr)
     if mode == "highlight":
         return spec.get("color", "#E8F0F7")
     if vf is None:
@@ -19460,18 +19992,26 @@ def _tbl_resolve_column_mode(
     return None
 
 
-def _tbl_draw_title(draw, title: Optional[str], subtitle: Optional[str],
-                     geom: _TableLayoutGeom, theme: Dict[str, Any]) -> None:
-    if not title and not subtitle:
+def _tbl_draw_title(draw, geom: _TableLayoutGeom, theme: Dict[str, Any]) -> None:
+    """Draw the pre-wrapped title + subtitle lines stored on ``geom``.
+
+    Layout already wrapped both to ``geom.table_w`` so the draw step
+    only emits one line at a time.
+    """
+    if not geom.title_lines and not geom.subtitle_lines:
         return
     title_font = _tbl_load_font("bold", theme["title_font_size"])
     subtitle_font = _tbl_load_font("regular", theme["subtitle_font_size"])
     y = 6
-    if title:
-        draw.text((geom.table_x, y), title, fill="#000000", font=title_font)
+    for line in geom.title_lines:
+        draw.text((geom.table_x, y), line, fill="#000000", font=title_font)
         y += int(theme["title_font_size"] * 1.2)
-    if subtitle:
-        draw.text((geom.table_x, y), subtitle, fill=theme["muted_text"], font=subtitle_font)
+    for line in geom.subtitle_lines:
+        draw.text(
+            (geom.table_x, y), line,
+            fill=theme["muted_text"], font=subtitle_font,
+        )
+        y += int(theme["subtitle_font_size"] * 1.4)
 
 
 def _tbl_draw_caption(draw, caption: Optional[str],
@@ -19523,12 +20063,12 @@ def _tbl_draw_header(draw, df: pd.DataFrame, geom: _TableLayoutGeom,
                 fill="#FFFFFF", width=1,
             )
     y0 = band_y0 + n_levels * header_row_h
-    cell_pad_x = 10
+    cell_pad_x = _TBL_CELL_PAD_X
     for i, col in enumerate(df.columns):
         x0 = geom.col_xs[i]
         x1 = geom.col_xs[i + 1]
         align = column_aligns.get(col, _tbl_default_align(col, df))
-        text = _tbl_truncate(str(col), header_font, x1 - x0 - 2 * cell_pad_x)
+        text = str(col)
         tw = header_font.getlength(text)
         if align == "right":
             tx = x1 - cell_pad_x - tw
@@ -19589,7 +20129,7 @@ def _tbl_draw_body(
     column_formats: Dict[str, str], column_aligns: Dict[str, str],
     column_color_modes: Dict[str, Dict[str, Any]],
     heatmap_groups: List[Dict[str, Any]],
-    rag_thresholds: Dict[str, Tuple[float, float]],
+    rag_thresholds: Dict[str, Any],
     row_bands: bool,
     row_groups: Optional[List[Tuple[str, int]]],
     row_indent: Optional[List[int]],
@@ -19602,13 +20142,15 @@ def _tbl_draw_body(
     signed_columns: List[str],
     total_rows: List[int],
     subtotal_rows: List[int],
-    row_heights: List[int],
-    wrap_columns: List[str],
-    max_wrap_lines: int,
-) -> int:
+) -> None:
+    """Draw every body row. Canvas is content-sized so there is no
+    body-bottom check and no truncation; every row renders. Wrapping
+    is driven by ``geom.col_wraps`` (engine-decided) and the per-row
+    height (already computed by ``_tbl_layout``) is what gives wrapped
+    cells the room they need."""
     body_font = _tbl_load_font("regular", theme["body_font_size"])
     body_bold = _tbl_load_font("bold", theme["body_font_size"])
-    cell_pad_x = 10
+    cell_pad_x = _TBL_CELL_PAD_X
     group_starts: Dict[int, str] = {}
     if row_groups:
         cursor = 0
@@ -19617,16 +20159,11 @@ def _tbl_draw_body(
             cursor += count
     col_index = {c: i for i, c in enumerate(df.columns)}
     n_cols = len(df.columns)
-    body_bottom = geom.body_top_y + geom.body_avail_h
+    row_heights = geom.row_heights
     y = geom.body_top_y
-    rendered = 0
     for r_idx, (_, row) in enumerate(df.iterrows()):
         rh = row_heights[r_idx] if r_idx < len(row_heights) else geom.row_default_h
-        if y + rh > body_bottom:
-            break
         if r_idx in group_starts:
-            if y + geom.group_band_h + rh > body_bottom:
-                break
             draw.rectangle(
                 [geom.table_x, y, geom.table_x + geom.table_w, y + geom.group_band_h],
                 fill=theme["primary_color"],
@@ -19726,12 +20263,8 @@ def _tbl_draw_body(
                     else:
                         text_color = theme["body_text"]
             avail_w = x1 - x0 - 2 * cell_pad_x - indent_px
-            if col in wrap_columns:
+            if geom.col_wraps[ci]:
                 lines = _tbl_wrap_text(text_str, font, max(20, avail_w))
-                full_lines = lines
-                lines = lines[:max_wrap_lines]
-                if len(full_lines) > max_wrap_lines:
-                    lines[-1] = _tbl_truncate(lines[-1], font, avail_w)
                 line_h = int(theme["body_font_size"] * 1.45)
                 block_h = len(lines) * line_h
                 ty = y + (rh - block_h) // 2 + 1
@@ -19746,7 +20279,6 @@ def _tbl_draw_body(
                     draw.text((tx, ty), line, fill=text_color, font=font)
                     ty += line_h
             else:
-                text_str = _tbl_truncate(text_str, font, max(20, avail_w))
                 tw = font.getlength(text_str)
                 if align == "right":
                     tx = x1 - cell_pad_x - tw
@@ -19762,20 +20294,6 @@ def _tbl_draw_body(
                 fill="#E0E0E0", width=1,
             )
         y += rh
-        rendered += 1
-    return rendered
-
-
-def _tbl_groups_before(rendered: int, row_groups: Optional[List[Tuple[str, int]]]) -> int:
-    if not row_groups:
-        return 0
-    cursor = 0
-    n = 0
-    for _, count in row_groups:
-        if cursor < rendered:
-            n += 1
-        cursor += count
-    return n
 
 
 def _tbl_png_bytes(img: Image.Image) -> bytes:
@@ -19805,10 +20323,7 @@ def make_table(
     subtitle: Optional[str] = None,
     caption: Optional[str] = None,
     skin: str = "gs_clean",
-    dimensions: Optional[str] = "wide",
-    canvas: Optional[Tuple[int, int]] = None,
     column_formats: Optional[Dict[str, str]] = None,
-    column_widths: Optional[Dict[str, Union[int, str]]] = None,
     column_aligns: Optional[Dict[str, str]] = None,
     header_levels: Optional[List[List[Tuple[str, int]]]] = None,
     row_groups: Optional[List[Tuple[str, int]]] = None,
@@ -19817,7 +20332,7 @@ def make_table(
     row_colors: Optional[Dict[int, str]] = None,
     column_color_modes: Optional[Dict[str, Union[str, Dict[str, Any]]]] = None,
     heatmap_groups: Optional[List[Dict[str, Any]]] = None,
-    rag_thresholds: Optional[Dict[str, Tuple[float, float]]] = None,
+    rag_thresholds: Optional[Dict[str, Any]] = None,
     highlight_columns: Optional[List[str]] = None,
     cell_colors: Optional[Dict[Tuple[int, int], str]] = None,
     cell_text_colors: Optional[Dict[Tuple[int, int], str]] = None,
@@ -19826,19 +20341,14 @@ def make_table(
     signed_columns: Optional[List[str]] = None,
     total_rows: Optional[List[int]] = None,
     subtotal_rows: Optional[List[int]] = None,
-    wrap_columns: Optional[List[str]] = None,
-    max_wrap_lines: int = 4,
-    body_font_size: Optional[int] = None,
-    header_font_size: Optional[int] = None,
     show_index: bool = False,
-    side_pad: int = 12,
     save_as: Optional[str] = None,
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     output_dir: str = "",
     user_id: Optional[str] = None,
 ) -> TableResult:
-    """Render a DataFrame as a beautifully-styled PNG table.
+    """Render a DataFrame as a content-sized PNG table.
 
     Two data-source paths (mutually exclusive — pass exactly one):
         df=<DataFrame>   data-pulled (Haver / market / CSV / scraper /
@@ -19847,6 +20357,12 @@ def make_table(
                           (column names from keys; pass columns=[...] to
                           reorder) or list-of-tuples/lists (requires
                           columns=[...] to name the headers).
+
+    Canvas is engine-decided. Width = sum of column widths (capped softly
+    at ~1400px; wide text columns wrap to fit); height = sum of row
+    heights (uncapped, grows to fit every row). The PNG is exactly the
+    size the content needs — never preset-bound, never truncated, never
+    surrounded by whitespace. PRISM never picks a dimension or canvas.
 
     PRISM-facing color modes (3 strings): "rwg" / "bw" / "rag".
 
@@ -19907,7 +20423,6 @@ def make_table(
     df = df.reset_index(drop=True)
 
     column_formats = dict(column_formats or {})
-    column_widths = dict(column_widths or {})
     column_aligns = dict(column_aligns or {})
     rag_thresholds = dict(rag_thresholds or {})
     highlight_columns = list(highlight_columns or [])
@@ -19944,27 +20459,13 @@ def make_table(
     signed_columns = list(signed_columns or [])
     total_rows = list(total_rows or [])
     subtotal_rows = list(subtotal_rows or [])
-    wrap_columns = list(wrap_columns or [])
     row_colors = dict(row_colors or {})
     heatmap_groups = list(heatmap_groups or [])
 
     raw_modes = column_color_modes or {}
     column_color_modes = {col: _tbl_normalize_mode(spec) for col, spec in raw_modes.items()}
 
-    if canvas is None:
-        if dimensions is None or dimensions not in DIMENSION_PRESETS:
-            return TableResult(
-                success=False,
-                error_message=f"Unknown dimensions preset: {dimensions!r}. "
-                              f"Choose from {list(DIMENSION_PRESETS.keys())}",
-            )
-        canvas = DIMENSION_PRESETS[dimensions]
-
     theme = dict(_TABLE_THEME)
-    if body_font_size:
-        theme["body_font_size"] = body_font_size
-    if header_font_size:
-        theme["header_font_size"] = header_font_size
 
     if header_levels:
         for level_idx, level in enumerate(header_levels):
@@ -19984,48 +20485,26 @@ def make_table(
                               f"expected len(df)={len(df)}",
             )
 
-    geom = _tbl_layout(
-        df, title, subtitle, caption, canvas, side_pad, theme,
-        header_levels, column_formats, column_widths,
-        sparkline_columns, minibar_columns, row_groups, wrap_columns,
+    geom, _caption_lines = _tbl_layout(
+        df, title, subtitle, caption, theme,
+        header_levels, column_formats,
+        sparkline_columns, minibar_columns, row_groups,
     )
-    row_h = _tbl_row_heights(
-        df, geom.col_widths, column_formats, theme, wrap_columns, max_wrap_lines,
-    )
+    canvas = (geom.canvas_w, geom.canvas_h)
 
     img = Image.new("RGB", canvas, theme["background_color"])
     draw = ImageDraw.Draw(img)
 
-    _tbl_draw_title(draw, title, subtitle, geom, theme)
+    _tbl_draw_title(draw, geom, theme)
     _tbl_draw_header(draw, df, geom, theme, header_levels, column_aligns)
-    rendered = _tbl_draw_body(
+    _tbl_draw_body(
         draw, df, geom, theme,
         column_formats, column_aligns, column_color_modes, heatmap_groups,
         rag_thresholds, row_bands, row_groups, row_indent, row_colors,
         cell_colors, cell_text_colors, highlight_columns,
         sparkline_columns, minibar_columns, signed_columns,
         total_rows, subtotal_rows,
-        row_h, wrap_columns, max_wrap_lines,
     )
-
-    # No auto-truncation. If the canvas can't hold every row, fail loudly
-    # so the caller picks a larger preset (or splits the table) rather than
-    # silently dropping data. Tables with hidden rows are a wrong-answer
-    # failure mode -- the reader has no signal that more data exists.
-    truncated = max(0, len(df) - rendered)
-    if truncated:
-        return TableResult(
-            success=False,
-            error_message=(
-                f"Table has {len(df)} rows but only {rendered} fit the "
-                f"{canvas[0]}x{canvas[1]} canvas ({dimensions!r} preset). "
-                f"Use a larger dimensions preset (e.g. 'presentation' or "
-                f"'tall'), pass an explicit canvas=(W, H), reduce row count, "
-                f"or split the table. Auto-truncation is disabled to prevent "
-                f"silent data loss."
-            ),
-            warnings=warnings,
-        )
 
     _tbl_draw_caption(draw, caption, geom, theme)
 
@@ -20045,7 +20524,7 @@ def make_table(
             # s3_manager.put() returns None; the canonical path is out_path
             # itself. (Previously we assigned the return value to written_path,
             # which silently produced png_path=None on every successful table
-            # render -- see TKT png_path= on success regression.)
+            # render.)
             s3_manager.put(buf, out_path)
             written_path = out_path
         except Exception as e:  # noqa: BLE001
@@ -20077,7 +20556,7 @@ def make_table(
         warnings=warnings,
         n_rows=len(df),
         n_cols=len(df.columns),
-        truncated_rows=truncated,
+        truncated_rows=0,
         canvas_size=canvas,
     )
 

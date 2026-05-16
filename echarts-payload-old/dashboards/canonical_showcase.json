@@ -1,0 +1,3008 @@
+{
+  "schema_version": 1,
+  "id": "showcase",
+  "title": "ECharts dashboard showcase (every primitive)",
+  "description": "Canonical proof-of-coverage demo. Every primitive in dashboards.md catalog index appears here, MECE-grouped across eight tabs.",
+  "theme": "gs_clean",
+  "palette": "gs_primary",
+  "metadata": {
+    "kerberos": "demo",
+    "dashboard_id": "showcase",
+    "data_as_of": "2026-04-22T16:00:00Z",
+    "generated_at": "<canonical-snapshot>",
+    "sources": [
+      "Synthetic GS demo data"
+    ],
+    "tags": [
+      "showcase",
+      "reference",
+      "canonical"
+    ],
+    "refresh_frequency": "manual",
+    "summary": {
+      "title": "What this dashboard exercises",
+      "body": "Eight MECE tabs covering every primitive in `dashboards.md` -- 30 chart types, 10 widget kinds, 10 filter types, 11 filter ops, 6 note kinds, 5 annotation types, 8 KPI aggregators, 11 table formats, 4 tool input kinds, 8 tool output kinds, 4 sync modes, 4 brush types, both layouts.\n\nEach tab opens with a markdown header naming the primitives demonstrated; every chart / table / KPI carries a per-widget subtitle calling out the specific primitive it exercises. **This is the proof-of-coverage demo** -- if any tab fails to render, the engine has a regression."
+    },
+    "methodology": "## Sources\n\nAll synthetic, deterministic (SEED-controlled in `dev/demos.py`). The data shapes mirror what PRISM emits from production data sources -- enough to exercise every primitive without depending on live pulls.\n\n## Construction\n\n* Tab 1-3 use `pull_rates_panel`, `pull_cross_asset`, `_pull_macro_panel`, `_pull_global_*`, `_pull_portfolio_*`, `_pull_fomc_*`, `_pull_equity_*` from `dev/demos.py`.\n* Tab 4-6 add small inline DataFrames sized to each primitive's minimum demonstration shape.\n* Tab 7 reads canonical tool defs from `dev/tool_examples/<name>/`.\n* Tab 8 runs `manifest_template`, `populate_template`, `validate_manifest`, `chart_data_diagnostics` against deliberately-imperfect manifests at compile time, embeds the live output into markdown widgets.\n\n## What's NOT exercised here\n\n* Live data pulls (no network).\n* The persistence + refresh build flow (Tools 1+2+3 from `dashboards.md` Section 6) -- tested in PRISM.\n* The `Refresh` button (`metadata.refresh_frequency` set to `manual`).\n* Vision-QC (deprecated; see `prism/vision-qc.md`)."
+  },
+  "header_actions": [
+    {
+      "label": "Open notes",
+      "href": "https://example.com/echarts-notes",
+      "icon": "ℹ",
+      "title": "header_actions href example"
+    },
+    {
+      "label": "Validate (console)",
+      "onclick": "window.console.log('header_actions onclick fired')",
+      "icon": "✓",
+      "primary": true,
+      "title": "header_actions onclick example"
+    }
+  ],
+  "datasets": {
+    "rates": {
+      "source": [
+        [
+          "date",
+          "us_2y",
+          "us_5y",
+          "us_10y",
+          "us_30y",
+          "2s10s",
+          "5s30s",
+          "10y_real"
+        ]
+      ],
+      "template": true
+    },
+    "spreads": {
+      "source": [],
+      "template": true
+    },
+    "xa": {
+      "source": [
+        [
+          "date",
+          "spx",
+          "dxy",
+          "wti",
+          "gold"
+        ]
+      ],
+      "template": true
+    },
+    "xa_aug": {
+      "source": [
+        [
+          "date",
+          "spx",
+          "dxy",
+          "wti",
+          "gold",
+          "us_10y"
+        ]
+      ],
+      "template": true
+    },
+    "eps": {
+      "source": [
+        [
+          "quarter",
+          "eps",
+          "type"
+        ]
+      ],
+      "template": true
+    },
+    "ratings": {
+      "source": [
+        [
+          "rating",
+          "count"
+        ]
+      ],
+      "template": true
+    },
+    "pnl_stack": {
+      "source": [
+        [
+          "date",
+          "bucket",
+          "pnl_cum_mm"
+        ]
+      ],
+      "template": true
+    },
+    "ohlc": {
+      "source": [
+        [
+          "date",
+          "open",
+          "close",
+          "low",
+          "high",
+          "volume_m"
+        ]
+      ],
+      "template": true
+    },
+    "slope": {
+      "source": [
+        [
+          "snapshot",
+          "sector",
+          "ret"
+        ]
+      ],
+      "template": true
+    },
+    "beta": {
+      "source": [
+        [
+          "mkt_return_pct",
+          "stk_return_pct"
+        ]
+      ],
+      "template": true
+    },
+    "factor_mkt": {
+      "source": [
+        [
+          "date",
+          "factor",
+          "mkt_pct",
+          "factor_pct"
+        ]
+      ],
+      "template": true
+    },
+    "macro": {
+      "source": [
+        [
+          "date",
+          "us_2y",
+          "us_10y",
+          "real_10y",
+          "breakeven_5y5y",
+          "ig_oas_bp",
+          "hy_oas_bp",
+          "vix",
+          "spx",
+          "dxy",
+          "regime"
+        ]
+      ],
+      "template": true
+    },
+    "returns": {
+      "source": [
+        [
+          "return_pct"
+        ]
+      ],
+      "template": true
+    },
+    "factor_returns": {
+      "source": [
+        [
+          "date",
+          "factor",
+          "ret_pct"
+        ]
+      ],
+      "template": true
+    },
+    "bullet": {
+      "source": [
+        [
+          "metric",
+          "current",
+          "low_5y",
+          "high_5y",
+          "z"
+        ]
+      ],
+      "template": true
+    },
+    "corr_panel": {
+      "source": [
+        [
+          "date",
+          "spx",
+          "ndx",
+          "us_10y",
+          "us_2y",
+          "dxy",
+          "gold",
+          "wti",
+          "bitcoin"
+        ]
+      ],
+      "template": true
+    },
+    "heatmap": {
+      "source": [
+        [
+          "sector",
+          "month",
+          "ret_pct"
+        ]
+      ],
+      "template": true
+    },
+    "calendar": {
+      "source": [
+        [
+          "date",
+          "ret_pct"
+        ]
+      ],
+      "template": true
+    },
+    "alloc": {
+      "source": [
+        [
+          "bucket",
+          "weight_pct"
+        ]
+      ],
+      "template": true
+    },
+    "outbound": {
+      "source": [
+        [
+          "region",
+          "outbound"
+        ]
+      ],
+      "template": true
+    },
+    "treemap": {
+      "source": [
+        [
+          "region",
+          "country",
+          "asset_class",
+          "aum"
+        ]
+      ],
+      "template": true
+    },
+    "funnel": {
+      "source": [
+        [
+          "stage",
+          "aum_bn"
+        ]
+      ],
+      "template": true
+    },
+    "flows": {
+      "source": [
+        [
+          "src",
+          "tgt",
+          "v"
+        ]
+      ],
+      "template": true
+    },
+    "network": {
+      "source": [
+        [
+          "src",
+          "tgt",
+          "v",
+          "category"
+        ]
+      ],
+      "template": true
+    },
+    "cptree": {
+      "source": [
+        [
+          "name",
+          "parent"
+        ]
+      ],
+      "template": true
+    },
+    "parallel": {
+      "source": [
+        [
+          "bucket",
+          "size_mm",
+          "vol_pct",
+          "beta",
+          "mtd_ret_pct",
+          "carry_bps"
+        ]
+      ],
+      "template": true
+    },
+    "radar": {
+      "source": [
+        [
+          "factor",
+          "score",
+          "book"
+        ]
+      ],
+      "template": true
+    },
+    "fan": {
+      "source": [
+        [
+          "date",
+          "central_pct",
+          "p25_pct",
+          "p75_pct",
+          "p10_pct",
+          "p90_pct"
+        ]
+      ],
+      "template": true
+    },
+    "gauge": {
+      "source": [
+        [
+          "value",
+          "min",
+          "max"
+        ]
+      ],
+      "template": true
+    },
+    "waterfall": {
+      "source": [
+        [
+          "step",
+          "delta",
+          "is_total"
+        ]
+      ],
+      "template": true
+    },
+    "marimekko": {
+      "source": [
+        [
+          "sector",
+          "size_bucket",
+          "share"
+        ]
+      ],
+      "template": true
+    },
+    "rich": {
+      "source": [
+        [
+          "ticker",
+          "sector",
+          "shares",
+          "price",
+          "mkt_cap",
+          "ret_1d",
+          "ytd_pct",
+          "z_score",
+          "spread_bp",
+          "delta_pct",
+          "report_dt",
+          "next_call",
+          "ir_url",
+          "rating"
+        ]
+      ],
+      "template": true
+    },
+    "spark_hist": {
+      "source": [
+        [
+          "date",
+          "ticker",
+          "price"
+        ]
+      ],
+      "template": true
+    },
+    "perf_long": {
+      "source": [
+        [
+          "ticker",
+          "sector",
+          "country",
+          "window",
+          "ret"
+        ]
+      ],
+      "template": true
+    },
+    "risk_summary": {
+      "source": [
+        [
+          "beta_60d",
+          "duration_y",
+          "gross_lev",
+          "hy_oas_bp",
+          "var_95_mm",
+          "sharpe_1y"
+        ]
+      ],
+      "template": true
+    },
+    "filter_universe": {
+      "source": [
+        [
+          "ticker",
+          "sector",
+          "rating",
+          "ytm_pct",
+          "spread_bp",
+          "duration_yrs",
+          "size_mm"
+        ]
+      ],
+      "template": true
+    },
+    "universe_cascade": {
+      "source": [
+        [
+          "region",
+          "country"
+        ]
+      ],
+      "template": true
+    },
+    "sector_perf": {
+      "source": [
+        [
+          "region",
+          "sector",
+          "ret_pct"
+        ]
+      ],
+      "template": true
+    },
+    "clickable_scatter": {
+      "source": [
+        [
+          "ticker",
+          "sector",
+          "rating",
+          "size_mm",
+          "carry_bps",
+          "roll_bps",
+          "ytm_pct"
+        ]
+      ],
+      "template": true
+    },
+    "fomc_dates": {
+      "source": [
+        [
+          "date",
+          "label"
+        ]
+      ],
+      "template": true
+    }
+  },
+  "filters": [
+    {
+      "id": "fil_date",
+      "type": "dateRange",
+      "label": "Lookback",
+      "default": "1Y",
+      "field": "date",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_sync_a",
+        "fil_sync_b"
+      ]
+    },
+    {
+      "id": "region_filter",
+      "type": "select",
+      "label": "Region",
+      "default": null,
+      "all_value": "All",
+      "options": [
+        "United States",
+        "China",
+        "EU",
+        "Japan",
+        "UK"
+      ],
+      "field": "region",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_bar"
+      ]
+    },
+    {
+      "id": "fil_sector",
+      "type": "multiSelect",
+      "label": "Sectors",
+      "default": [
+        "Tech",
+        "Financials",
+        "Energy"
+      ],
+      "options": [
+        "Banks",
+        "Financials",
+        "Tech",
+        "Health",
+        "Energy",
+        "Discretionary",
+        "Staples"
+      ],
+      "field": "sector",
+      "op": "in",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_table",
+        "fil_clickable"
+      ]
+    },
+    {
+      "id": "fil_rating",
+      "type": "radio",
+      "label": "Min rating",
+      "default": "BBB",
+      "options": [
+        "AAA",
+        "AA",
+        "A",
+        "BBB"
+      ],
+      "field": "rating",
+      "op": "in",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_table"
+      ]
+    },
+    {
+      "id": "fil_ytm",
+      "type": "numberRange",
+      "label": "YTM range",
+      "default": [
+        3.0,
+        7.0
+      ],
+      "field": "ytm_pct",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_table"
+      ]
+    },
+    {
+      "id": "fil_dur",
+      "type": "slider",
+      "label": "Max duration",
+      "default": 12.0,
+      "field": "duration_yrs",
+      "op": "<=",
+      "min": 0.5,
+      "max": 12.0,
+      "step": 0.5,
+      "scope": "tab:filters",
+      "targets": [
+        "fil_table"
+      ]
+    },
+    {
+      "id": "fil_size",
+      "type": "number",
+      "label": "Min size ($mm)",
+      "default": 0,
+      "field": "size_mm",
+      "op": ">=",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_table"
+      ]
+    },
+    {
+      "id": "fil_search",
+      "type": "text",
+      "label": "Ticker contains",
+      "default": "",
+      "field": "ticker",
+      "op": "contains",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_table"
+      ]
+    },
+    {
+      "id": "fil_starts",
+      "type": "text",
+      "label": "Ticker starts with",
+      "default": "",
+      "field": "ticker",
+      "op": "startsWith",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_table"
+      ]
+    },
+    {
+      "id": "fil_ig_only",
+      "type": "toggle",
+      "label": "IG only",
+      "default": false,
+      "field": "rating",
+      "op": "in",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_table"
+      ]
+    },
+    {
+      "id": "screen",
+      "type": "rule",
+      "label": "Compound screen",
+      "summary": "rated AND (rich-tight OR short-fin)",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_table"
+      ],
+      "rule": {
+        "all": [
+          {
+            "field": "rating",
+            "op": "in",
+            "value": [
+              "AAA",
+              "AA",
+              "A",
+              "BBB"
+            ]
+          },
+          {
+            "any": [
+              {
+                "all": [
+                  {
+                    "field": "ytm_pct",
+                    "op": ">",
+                    "value": 4.5
+                  },
+                  {
+                    "field": "spread_bp",
+                    "op": "<",
+                    "value": 200
+                  }
+                ]
+              },
+              {
+                "all": [
+                  {
+                    "field": "sector",
+                    "op": "in",
+                    "value": [
+                      "Financials",
+                      "Banks"
+                    ]
+                  },
+                  {
+                    "field": "duration_yrs",
+                    "op": "<",
+                    "value": 5.0
+                  }
+                ]
+              },
+              {
+                "not": {
+                  "field": "ticker",
+                  "op": "startsWith",
+                  "value": "Z"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "casc_region",
+      "type": "select",
+      "label": "Region (cascade)",
+      "default": "NA",
+      "options": [
+        "NA",
+        "EU",
+        "AP"
+      ],
+      "field": "region",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_cascade"
+      ]
+    },
+    {
+      "id": "casc_country",
+      "type": "select",
+      "label": "Country (cascade)",
+      "depends_on": "casc_region",
+      "options_from": {
+        "dataset": "universe_cascade",
+        "key": "country",
+        "where": "region == ${casc_region}"
+      },
+      "options": [
+        "US"
+      ],
+      "field": "country",
+      "scope": "tab:filters",
+      "targets": [
+        "fil_cascade"
+      ]
+    }
+  ],
+  "layout": {
+    "kind": "tabs",
+    "cols": 12,
+    "tabs": [
+      {
+        "id": "ts",
+        "label": "1. Time series",
+        "description": "Time-series chart family + annotations + multi-axis.",
+        "rows": [
+          [
+            {
+              "widget": "markdown",
+              "id": "ts_md",
+              "w": 12,
+              "content": "## Tab 1 -- Time series & comparison\n\n- `line`\n- `multi_line`\n- `bar`\n- `bar_horizontal`\n- `area`\n- `candlestick`\n- `slope`\n- `annotations: hline / vline / band / arrow / point`\n- `mapping.axes (multi-axis)`\n- `strokeDash`\n- `y_log`\n- `per-chart dataZoom`\n- `stat_strip (auto)`\n\nRead the upper-left UST levels chart first: it carries every annotation type plus the auto stat strip. The dual-axis tile below it routes four series (SPX / UST / DXY / WTI) onto four independent axes via `mapping.axes`. The right column cycles through `bar` / `bar_horizontal` / `area` / `slope` -- all share the same `gs_primary` palette declared on the manifest, no per-chart overrides."
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "ts_levels",
+              "w": 6,
+              "h_px": 360,
+              "title": "UST curve levels (line + annotations)",
+              "subtitle": "`chart_type=multi_line` with all five annotation types: `hline` / `vline` / `band` / `arrow` / `point`. Auto stat strip via the Sigma button.",
+              "spec": {
+                "chart_type": "multi_line",
+                "dataset": "rates",
+                "mapping": {
+                  "x": "date",
+                  "y": [
+                    "us_2y",
+                    "us_5y",
+                    "us_10y",
+                    "us_30y"
+                  ],
+                  "y_title": "Yield (%)"
+                },
+                "annotations": [
+                  {
+                    "type": "hline",
+                    "y": 4.0,
+                    "label": "4% reference",
+                    "color": "#888",
+                    "style": "dashed"
+                  },
+                  {
+                    "type": "vline",
+                    "x": "2025-12-15",
+                    "label": "FOMC pause",
+                    "color": "#B08D3F"
+                  },
+                  {
+                    "type": "band",
+                    "x1": "2025-09-01",
+                    "x2": "2025-11-01",
+                    "label": "Volatile window",
+                    "opacity": 0.18
+                  },
+                  {
+                    "type": "arrow",
+                    "x1": "2026-01-15",
+                    "y1": 4.55,
+                    "x2": "2026-03-10",
+                    "y2": 4.2,
+                    "label": "rally"
+                  },
+                  {
+                    "type": "point",
+                    "x": "2026-04-22",
+                    "y": 4.4,
+                    "label": "latest"
+                  }
+                ]
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "ts_spread",
+              "w": 6,
+              "h_px": 360,
+              "title": "2s10s spread (line + zero hline)",
+              "subtitle": "`chart_type=line` -- the simplest single-series case. `dateZoom slider` injected automatically.",
+              "spec": {
+                "chart_type": "line",
+                "dataset": "rates",
+                "mapping": {
+                  "x": "date",
+                  "y": "2s10s",
+                  "y_title": "Spread (bp)"
+                },
+                "annotations": [
+                  {
+                    "type": "hline",
+                    "y": 0,
+                    "label": "Inversion threshold",
+                    "color": "#B3261E"
+                  }
+                ]
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "ts_bar",
+              "w": 6,
+              "h_px": 320,
+              "title": "EPS actual vs estimate (bar, grouped)",
+              "subtitle": "`chart_type=bar` with `mapping.color` long-form and `stack=False`. Vertical bars; categorical x.",
+              "spec": {
+                "chart_type": "bar",
+                "dataset": "eps",
+                "mapping": {
+                  "x": "quarter",
+                  "y": "eps",
+                  "color": "type",
+                  "stack": false,
+                  "y_title": "EPS ($)"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "ts_bar_h",
+              "w": 6,
+              "h_px": 320,
+              "title": "Analyst ratings (bar_horizontal)",
+              "subtitle": "`chart_type=bar_horizontal` -- value on x, category on y. Useful for ranked counts / ratings / analyst tallies.",
+              "spec": {
+                "chart_type": "bar_horizontal",
+                "dataset": "ratings",
+                "mapping": {
+                  "x": "count",
+                  "y": "rating",
+                  "color": "rating",
+                  "y_title": ""
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "ts_area",
+              "w": 6,
+              "h_px": 320,
+              "title": "Cumulative P&L by bucket (area, stacked)",
+              "subtitle": "`chart_type=area` -- stacked area on long-form data via `mapping.color`. 4 buckets stays under the line-shaped y-series cap (charts.md §3.1).",
+              "spec": {
+                "chart_type": "area",
+                "dataset": "pnl_stack",
+                "mapping": {
+                  "x": "date",
+                  "y": "pnl_cum_mm",
+                  "color": "bucket",
+                  "y_title": "Cum P&L ($mm)"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "ts_slope",
+              "w": 6,
+              "h_px": 320,
+              "title": "Sector returns: month-end vs latest (slope)",
+              "subtitle": "`chart_type=slope` -- exactly two snapshots in the x column; right-edge labels per category.",
+              "spec": {
+                "chart_type": "slope",
+                "dataset": "slope",
+                "mapping": {
+                  "x": "snapshot",
+                  "y": "ret",
+                  "color": "sector",
+                  "y_title": "Return (%)"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "ts_candle",
+              "w": 6,
+              "h_px": 360,
+              "title": "Equity OHLC (candlestick)",
+              "subtitle": "`chart_type=candlestick` -- requires `open` / `close` / `low` / `high` mapping. Builders managing their own dataZoom are left alone.",
+              "spec": {
+                "chart_type": "candlestick",
+                "dataset": "ohlc",
+                "mapping": {
+                  "x": "date",
+                  "open": "open",
+                  "close": "close",
+                  "low": "low",
+                  "high": "high"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "ts_axes",
+              "w": 6,
+              "h_px": 360,
+              "title": "Cross-asset overlay (mapping.axes, log scale)",
+              "subtitle": "Four series, four independent axes via `mapping.axes`: SPX (left), UST (right inverted), DXY (left offset), WTI (right offset). `y_log` on SPX axis.",
+              "spec": {
+                "chart_type": "multi_line",
+                "dataset": "xa_aug",
+                "mapping": {
+                  "x": "date",
+                  "y": [
+                    "spx",
+                    "us_10y",
+                    "dxy",
+                    "wti"
+                  ],
+                  "axes": [
+                    {
+                      "side": "left",
+                      "title": "SPX",
+                      "series": [
+                        "spx"
+                      ],
+                      "format": "compact",
+                      "log": true
+                    },
+                    {
+                      "side": "right",
+                      "title": "UST 10Y",
+                      "series": [
+                        "us_10y"
+                      ],
+                      "invert": true,
+                      "format": "percent"
+                    },
+                    {
+                      "side": "left",
+                      "title": "DXY",
+                      "series": [
+                        "dxy"
+                      ]
+                    },
+                    {
+                      "side": "right",
+                      "title": "WTI",
+                      "series": [
+                        "wti"
+                      ],
+                      "format": "usd"
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        ]
+      },
+      {
+        "id": "dist",
+        "label": "2. Distribution",
+        "description": "Distribution + relationship + heatmap chart family.",
+        "rows": [
+          [
+            {
+              "widget": "markdown",
+              "id": "dist_md",
+              "w": 12,
+              "content": "## Tab 2 -- Distribution & relationship\n\n- `scatter (with trendline)`\n- `scatter_multi (per-group OLS)`\n- `scatter_studio`\n- `histogram`\n- `boxplot`\n- `bullet`\n- `correlation_matrix (runtime drawer)`\n- `heatmap`\n- `calendar_heatmap`\n\n`scatter_studio` (row 2, full-width) is the most interactive primitive in the catalog: viewer picks X / Y / color / size / per-axis transform / regression off the drawer; stats strip recomputes on the fly. `correlation_matrix` (row 4 left) carries its own runtime drawer for transform / window / method without re-querying PRISM."
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "dist_scatter",
+              "w": 6,
+              "h_px": 320,
+              "title": "Beta scatter (with trendline)",
+              "subtitle": "`chart_type=scatter` + `trendline: True` adds an overall OLS line + R^2.",
+              "spec": {
+                "chart_type": "scatter",
+                "dataset": "beta",
+                "mapping": {
+                  "x": "mkt_return_pct",
+                  "y": "stk_return_pct",
+                  "trendline": true,
+                  "x_title": "SPX return (%)",
+                  "y_title": "AAPL return (%)"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "dist_scatter_multi",
+              "w": 6,
+              "h_px": 320,
+              "title": "Factor returns vs market (scatter_multi, OLS per group)",
+              "subtitle": "`chart_type=scatter_multi` + per-group OLS via `trendlines: True`. One regression line per color.",
+              "spec": {
+                "chart_type": "scatter_multi",
+                "dataset": "factor_mkt",
+                "mapping": {
+                  "x": "mkt_pct",
+                  "y": "factor_pct",
+                  "color": "factor",
+                  "trendlines": true,
+                  "x_title": "Market return (%)",
+                  "y_title": "Factor return (%)"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "dist_studio",
+              "w": 6,
+              "h_px": 460,
+              "title": "Macro panel -- scatter_studio (interactive)",
+              "subtitle": "Pick X / Y / color / size + per-axis transform from the controls drawer. Stats strip recomputes on every change.",
+              "spec": {
+                "chart_type": "scatter_studio",
+                "dataset": "macro",
+                "mapping": {
+                  "x_columns": [
+                    "us_2y",
+                    "us_10y",
+                    "real_10y",
+                    "ig_oas_bp",
+                    "hy_oas_bp",
+                    "vix",
+                    "spx",
+                    "dxy"
+                  ],
+                  "y_columns": [
+                    "us_2y",
+                    "us_10y",
+                    "real_10y",
+                    "ig_oas_bp",
+                    "hy_oas_bp",
+                    "vix",
+                    "spx",
+                    "dxy"
+                  ],
+                  "color_columns": [
+                    "regime"
+                  ],
+                  "x_default": "us_10y",
+                  "y_default": "vix",
+                  "color_default": "regime",
+                  "order_by": "date",
+                  "x_transform_default": "raw",
+                  "y_transform_default": "raw"
+                },
+                "studio": {
+                  "regression": [
+                    "off",
+                    "ols",
+                    "ols_per_group"
+                  ],
+                  "regression_default": "ols_per_group",
+                  "windows": [
+                    "all",
+                    "252d",
+                    "504d",
+                    "1260d"
+                  ],
+                  "window_default": "all",
+                  "show_stats": true
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "dist_hist",
+              "w": 4,
+              "h_px": 280,
+              "title": "Daily returns (histogram, density)",
+              "subtitle": "`chart_type=histogram`, `bins=24`, `density=True`.",
+              "spec": {
+                "chart_type": "histogram",
+                "dataset": "returns",
+                "mapping": {
+                  "x": "return_pct",
+                  "bins": 24,
+                  "density": true,
+                  "x_title": "Daily return (%)"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "dist_box",
+              "w": 4,
+              "h_px": 280,
+              "title": "Factor returns by sector (boxplot)",
+              "subtitle": "`chart_type=boxplot` -- categorical x, numeric y. Whiskers + outliers auto-computed.",
+              "spec": {
+                "chart_type": "boxplot",
+                "dataset": "factor_returns",
+                "mapping": {
+                  "x": "factor",
+                  "y": "ret_pct",
+                  "y_title": "Return (%)"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "dist_bullet",
+              "w": 4,
+              "h_px": 280,
+              "title": "Valuation vs 5Y range (bullet)",
+              "subtitle": "`chart_type=bullet` -- current marker against a low/high band per category.",
+              "spec": {
+                "chart_type": "bullet",
+                "dataset": "bullet",
+                "mapping": {
+                  "y": "metric",
+                  "x": "current",
+                  "x_low": "low_5y",
+                  "x_high": "high_5y",
+                  "label": "metric"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "dist_corr",
+              "w": 6,
+              "h_px": 360,
+              "title": "Cross-asset correlations (correlation_matrix)",
+              "subtitle": "`chart_type=correlation_matrix` -- columns auto-compute pairwise corr; runtime drawer flips transform / window / method without reload.",
+              "spec": {
+                "chart_type": "correlation_matrix",
+                "dataset": "corr_panel",
+                "mapping": {
+                  "columns": [
+                    "spx",
+                    "ndx",
+                    "us_10y",
+                    "us_2y",
+                    "dxy",
+                    "gold",
+                    "wti",
+                    "bitcoin"
+                  ],
+                  "transform": "pct_change",
+                  "method": "pearson",
+                  "order_by": "date",
+                  "window": "63d",
+                  "window_options": [
+                    "all",
+                    "63d",
+                    "126d",
+                    "252d",
+                    "504d"
+                  ]
+                },
+                "initial_state": {
+                  "corr_transform": "pct_change",
+                  "corr_window": "63d"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "dist_heatmap",
+              "w": 6,
+              "h_px": 360,
+              "title": "Sector x month returns (heatmap)",
+              "subtitle": "`chart_type=heatmap` -- pre-computed bivariate cells via `(x, y, value)`. `gs_diverging` palette.",
+              "spec": {
+                "chart_type": "heatmap",
+                "dataset": "heatmap",
+                "mapping": {
+                  "x": "month",
+                  "y": "sector",
+                  "value": "ret_pct"
+                },
+                "color_scale": "diverging",
+                "value_min": -10,
+                "value_max": 10,
+                "show_values": true
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "dist_cal",
+              "w": 6,
+              "h_px": 240,
+              "title": "Daily returns calendar (calendar_heatmap)",
+              "subtitle": "`chart_type=calendar_heatmap` -- one cell per calendar day; `(date, value)` mapping; `gs_diverging` palette.",
+              "spec": {
+                "chart_type": "calendar_heatmap",
+                "dataset": "calendar",
+                "mapping": {
+                  "date": "date",
+                  "value": "ret_pct"
+                },
+                "color_scale": "diverging"
+              }
+            }
+          ]
+        ]
+      },
+      {
+        "id": "hier",
+        "label": "3. Hierarchy & flow",
+        "description": "Hierarchical, flow, and specialty chart types.",
+        "rows": [
+          [
+            {
+              "widget": "markdown",
+              "id": "hier_md",
+              "w": 12,
+              "content": "## Tab 3 -- Hierarchy, flow & specialty\n\n- `pie`\n- `donut`\n- `treemap`\n- `sunburst`\n- `funnel`\n- `sankey`\n- `graph`\n- `tree`\n- `parallel_coords`\n- `radar`\n- `gauge`\n- `waterfall`\n- `fan_cone`\n- `marimekko`\n\nCharts here intentionally have no `dataZoom` slider -- none of these types have a time axis. The `treemap` and `sunburst` share the same hierarchical dataset to show the two views of the same shape."
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "hier_pie",
+              "w": 4,
+              "h_px": 280,
+              "title": "Allocation (pie)",
+              "subtitle": "`chart_type=pie` -- (category, value).",
+              "spec": {
+                "chart_type": "pie",
+                "dataset": "alloc",
+                "mapping": {
+                  "category": "bucket",
+                  "value": "weight_pct",
+                  "legend_position": "bottom"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "hier_donut",
+              "w": 4,
+              "h_px": 280,
+              "title": "Outbound trade share (donut)",
+              "subtitle": "`chart_type=donut` -- pie with hole.",
+              "spec": {
+                "chart_type": "donut",
+                "dataset": "outbound",
+                "mapping": {
+                  "category": "region",
+                  "value": "outbound",
+                  "legend_position": "bottom"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "hier_gauge",
+              "w": 4,
+              "h_px": 280,
+              "title": "VaR utilisation (gauge)",
+              "subtitle": "`chart_type=gauge` -- `value` against `min` / `max` arc.",
+              "spec": {
+                "chart_type": "gauge",
+                "dataset": "gauge",
+                "mapping": {
+                  "value": "value",
+                  "min": "min",
+                  "max": "max"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "hier_treemap",
+              "w": 4,
+              "h_px": 320,
+              "title": "AUM treemap",
+              "subtitle": "`chart_type=treemap` -- `path` + `value`. Click to drill, breadcrumb to ascend.",
+              "spec": {
+                "chart_type": "treemap",
+                "dataset": "treemap",
+                "mapping": {
+                  "path": [
+                    "region",
+                    "country",
+                    "asset_class"
+                  ],
+                  "value": "aum"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "hier_sunburst",
+              "w": 4,
+              "h_px": 320,
+              "title": "AUM sunburst",
+              "subtitle": "`chart_type=sunburst` -- same data + same `path` mapping; radial layout.",
+              "spec": {
+                "chart_type": "sunburst",
+                "dataset": "treemap",
+                "mapping": {
+                  "path": [
+                    "region",
+                    "country",
+                    "asset_class"
+                  ],
+                  "value": "aum"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "hier_funnel",
+              "w": 4,
+              "h_px": 320,
+              "title": "Mandate funnel",
+              "subtitle": "`chart_type=funnel` -- ordered conversion stages with descending magnitudes.",
+              "spec": {
+                "chart_type": "funnel",
+                "dataset": "funnel",
+                "mapping": {
+                  "category": "stage",
+                  "value": "aum_bn"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "hier_sankey",
+              "w": 6,
+              "h_px": 360,
+              "title": "Bilateral trade flows (sankey)",
+              "subtitle": "`chart_type=sankey` -- (source, target, value).",
+              "spec": {
+                "chart_type": "sankey",
+                "dataset": "flows",
+                "mapping": {
+                  "source": "src",
+                  "target": "tgt",
+                  "value": "v"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "hier_graph",
+              "w": 6,
+              "h_px": 360,
+              "title": "Counterparty network (graph)",
+              "subtitle": "`chart_type=graph` -- adds `node_category` for auto-coloured clusters. Drag nodes.",
+              "spec": {
+                "chart_type": "graph",
+                "dataset": "network",
+                "mapping": {
+                  "source": "src",
+                  "target": "tgt",
+                  "value": "v",
+                  "node_category": "category"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "hier_tree",
+              "w": 6,
+              "h_px": 320,
+              "title": "Counterparty hierarchy (tree)",
+              "subtitle": "`chart_type=tree` -- (name, parent). Click a node to collapse subtree.",
+              "spec": {
+                "chart_type": "tree",
+                "dataset": "cptree",
+                "mapping": {
+                  "name": "name",
+                  "parent": "parent"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "hier_parallel",
+              "w": 6,
+              "h_px": 320,
+              "title": "Position snapshot (parallel_coords)",
+              "subtitle": "`chart_type=parallel_coords` -- multi-dim per-row visualisation. `color` highlights buckets.",
+              "spec": {
+                "chart_type": "parallel_coords",
+                "dataset": "parallel",
+                "mapping": {
+                  "dims": [
+                    "size_mm",
+                    "vol_pct",
+                    "beta",
+                    "mtd_ret_pct",
+                    "carry_bps"
+                  ],
+                  "color": "bucket"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "hier_radar",
+              "w": 4,
+              "h_px": 320,
+              "title": "Factor exposure (radar)",
+              "subtitle": "`chart_type=radar` -- (category, value, series). Series overlap on shared axes.",
+              "spec": {
+                "chart_type": "radar",
+                "dataset": "radar",
+                "mapping": {
+                  "category": "factor",
+                  "value": "score",
+                  "series": "book"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "hier_waterfall",
+              "w": 4,
+              "h_px": 320,
+              "title": "P&L bridge (waterfall)",
+              "subtitle": "`chart_type=waterfall` -- `is_total` flags open / close as full-height bars.",
+              "spec": {
+                "chart_type": "waterfall",
+                "dataset": "waterfall",
+                "mapping": {
+                  "x": "step",
+                  "y": "delta",
+                  "is_total": "is_total",
+                  "y_title": "Contribution (bp)"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "hier_fan",
+              "w": 4,
+              "h_px": 320,
+              "title": "Rate-path forecast (fan_cone)",
+              "subtitle": "`chart_type=fan_cone` -- central path + N stacked confidence ribbons.",
+              "spec": {
+                "chart_type": "fan_cone",
+                "dataset": "fan",
+                "mapping": {
+                  "x": "date",
+                  "y": "central_pct",
+                  "bands": [
+                    {
+                      "lower": "p10_pct",
+                      "upper": "p90_pct",
+                      "label": "10-90%",
+                      "opacity": 0.1
+                    },
+                    {
+                      "lower": "p25_pct",
+                      "upper": "p75_pct",
+                      "label": "25-75%",
+                      "opacity": 0.25
+                    }
+                  ],
+                  "y_title": "Rate (%)"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "hier_marimekko",
+              "w": 6,
+              "h_px": 320,
+              "title": "Cap-weighted sector x size (marimekko)",
+              "subtitle": "`chart_type=marimekko` -- 2D categorical proportions. x-col widths = column shares; y stacks proportionally inside each column.",
+              "spec": {
+                "chart_type": "marimekko",
+                "dataset": "marimekko",
+                "mapping": {
+                  "x": "sector",
+                  "y": "size_bucket",
+                  "value": "share"
+                }
+              }
+            }
+          ]
+        ]
+      },
+      {
+        "id": "tabular",
+        "label": "4. Tables & KPIs",
+        "description": "All 8 KPI aggregators, all 11 table formats, pivot.",
+        "rows": [
+          [
+            {
+              "widget": "markdown",
+              "id": "tab_md",
+              "w": 12,
+              "content": "## Tab 4 -- Tabular widgets\n\n- `kpi (8 aggregators: latest / first / sum / mean / min / max / count / prev)`\n- `stat_grid`\n- `table (11 formats, in_cell bar + sparkline, conditional formatting, color_scale, row_click rich drilldown)`\n- `pivot`\n\nEach KPI tile in row 1 names the aggregator it pulls (`<dataset>.<agg>.<column>` syntax). The rich table in row 3 has one column for every `format` value in the spec; click any row to open a multi-section drilldown modal."
+            }
+          ],
+          [
+            {
+              "widget": "kpi",
+              "id": "kpi_latest",
+              "w": 3,
+              "label": "10Y rate (latest)",
+              "source": "rates.latest.us_10y",
+              "suffix": "%",
+              "delta_source": "rates.prev.us_10y",
+              "delta_label": "vs prev",
+              "sparkline_source": "rates.us_10y",
+              "info": "`source: rates.latest.us_10y` -- aggregator: `latest`. Delta uses `prev`."
+            },
+            {
+              "widget": "kpi",
+              "id": "kpi_first",
+              "w": 3,
+              "label": "10Y rate (first obs)",
+              "source": "rates.first.us_10y",
+              "suffix": "%",
+              "info": "aggregator: `first` (oldest row)."
+            },
+            {
+              "widget": "kpi",
+              "id": "kpi_min",
+              "w": 3,
+              "label": "Min 10Y in window",
+              "source": "rates.min.us_10y",
+              "suffix": "%",
+              "info": "aggregator: `min`."
+            },
+            {
+              "widget": "kpi",
+              "id": "kpi_max",
+              "w": 3,
+              "label": "Max 10Y in window",
+              "source": "rates.max.us_10y",
+              "suffix": "%",
+              "info": "aggregator: `max`."
+            }
+          ],
+          [
+            {
+              "widget": "kpi",
+              "id": "kpi_mean",
+              "w": 3,
+              "label": "Mean 10Y",
+              "source": "rates.mean.us_10y",
+              "suffix": "%",
+              "info": "aggregator: `mean`."
+            },
+            {
+              "widget": "kpi",
+              "id": "kpi_sum",
+              "w": 3,
+              "label": "Sum of 2s10s prints",
+              "source": "rates.sum.2s10s",
+              "format": "compact",
+              "info": "aggregator: `sum` -- bp prints summed across the window. Demonstrative only."
+            },
+            {
+              "widget": "kpi",
+              "id": "kpi_count",
+              "w": 3,
+              "label": "Obs count",
+              "source": "rates.count.us_10y",
+              "info": "aggregator: `count`."
+            },
+            {
+              "widget": "kpi",
+              "id": "kpi_prev",
+              "w": 3,
+              "label": "10Y prior session",
+              "source": "rates.prev.us_10y",
+              "suffix": "%",
+              "info": "aggregator: `prev` (second-to-last row -- drives delta widgets)."
+            }
+          ],
+          [
+            {
+              "widget": "stat_grid",
+              "id": "tab_stat_grid",
+              "w": 12,
+              "title": "Risk summary (stat_grid)",
+              "subtitle": "Dense grid of label / value stats; takes less vertical space than a KPI ribbon.",
+              "stats": [
+                {
+                  "id": "g1",
+                  "label": "Beta to SPX",
+                  "source": "risk_summary.latest.beta_60d",
+                  "decimals": 2,
+                  "sub": "60D",
+                  "trend": 0.04,
+                  "info": "OLS beta of book P&L vs S&P 500 TR, trailing 60 biz days."
+                },
+                {
+                  "id": "g2",
+                  "label": "Duration",
+                  "source": "risk_summary.latest.duration_y",
+                  "decimals": 1,
+                  "suffix": "y",
+                  "sub": "DV01 $280k"
+                },
+                {
+                  "id": "g3",
+                  "label": "Gross leverage",
+                  "source": "risk_summary.latest.gross_lev",
+                  "decimals": 1,
+                  "suffix": "x",
+                  "sub": "vs 3.0x cap",
+                  "trend": 0.1
+                },
+                {
+                  "id": "g4",
+                  "label": "HY OAS",
+                  "source": "risk_summary.latest.hy_oas_bp",
+                  "decimals": 0,
+                  "suffix": " bp",
+                  "sub": "z = -1.1",
+                  "trend": -0.05
+                },
+                {
+                  "id": "g5",
+                  "label": "VaR 95",
+                  "source": "risk_summary.latest.var_95_mm",
+                  "decimals": 0,
+                  "prefix": "$",
+                  "suffix": "m",
+                  "sub": "1d, MC 10k"
+                },
+                {
+                  "id": "g6",
+                  "label": "Sharpe",
+                  "source": "risk_summary.latest.sharpe_1y",
+                  "decimals": 2,
+                  "sub": "rolling 1Y",
+                  "trend": 0.02
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "widget": "table",
+              "id": "tab_rich",
+              "w": 12,
+              "title": "Rich table -- all 11 formats + in-cell bar + sparkline",
+              "subtitle": "| `format` | renders |\n|---|---|\n| `text` | string |\n| `number` | 12345.67 |\n| `integer` | 12345 |\n| `percent` | 0.123 -> 12.30% |\n| `currency` | $12,345.67 |\n| `bps` | +25 bp |\n| `date` | 2026-04-22 |\n| `datetime` | 2026-04-22 16:00 |\n| `link` | github.com -> clickable |\n| `signed` | +12.34 / -5.67 |\n| `delta` | Δ +0.25 |",
+              "dataset_ref": "rich",
+              "searchable": true,
+              "sortable": true,
+              "max_rows": 50,
+              "row_height": "compact",
+              "columns": [
+                {
+                  "field": "ticker",
+                  "label": "Ticker",
+                  "format": "text",
+                  "align": "left"
+                },
+                {
+                  "field": "sector",
+                  "label": "Sector",
+                  "format": "text",
+                  "align": "left"
+                },
+                {
+                  "field": "shares",
+                  "label": "Shares",
+                  "format": "integer",
+                  "align": "right"
+                },
+                {
+                  "field": "price",
+                  "label": "Price",
+                  "format": "number:2",
+                  "align": "right"
+                },
+                {
+                  "field": "mkt_cap",
+                  "label": "Mkt cap",
+                  "format": "currency",
+                  "align": "right"
+                },
+                {
+                  "field": "ret_1d",
+                  "label": "1d",
+                  "format": "signed:2",
+                  "align": "right",
+                  "in_cell": "bar"
+                },
+                {
+                  "field": "ytd_pct",
+                  "label": "YTD",
+                  "format": "percent:1",
+                  "align": "right",
+                  "color_scale": {
+                    "min": -0.2,
+                    "max": 0.2,
+                    "palette": "gs_diverging"
+                  }
+                },
+                {
+                  "field": "z_score",
+                  "label": "z",
+                  "format": "signed:2",
+                  "align": "right",
+                  "conditional": [
+                    {
+                      "op": ">=",
+                      "value": 2.0,
+                      "background": "#c53030",
+                      "color": "#fff",
+                      "bold": true
+                    },
+                    {
+                      "op": "<=",
+                      "value": -2.0,
+                      "background": "#2b6cb0",
+                      "color": "#fff",
+                      "bold": true
+                    }
+                  ]
+                },
+                {
+                  "field": "spread_bp",
+                  "label": "Spread",
+                  "format": "bps",
+                  "align": "right"
+                },
+                {
+                  "field": "delta_pct",
+                  "label": "Δ vs T-1",
+                  "format": "delta:2",
+                  "align": "right"
+                },
+                {
+                  "field": "report_dt",
+                  "label": "Report",
+                  "format": "date",
+                  "align": "left"
+                },
+                {
+                  "field": "next_call",
+                  "label": "Earnings call",
+                  "format": "datetime",
+                  "align": "left"
+                },
+                {
+                  "field": "ir_url",
+                  "label": "IR page",
+                  "format": "link",
+                  "align": "left"
+                },
+                {
+                  "field": "ticker",
+                  "label": "Spark (60d)",
+                  "in_cell": "sparkline",
+                  "from_dataset": "spark_hist",
+                  "row_key": "ticker",
+                  "filter_field": "ticker",
+                  "value": "price",
+                  "show_text": false
+                }
+              ],
+              "row_click": {
+                "title_field": "ticker",
+                "subtitle_template": "{sector} - mkt cap {mkt_cap:currency}",
+                "detail": {
+                  "wide": true,
+                  "sections": [
+                    {
+                      "type": "stats",
+                      "fields": [
+                        {
+                          "field": "price",
+                          "label": "Price",
+                          "format": "number:2"
+                        },
+                        {
+                          "field": "ytd_pct",
+                          "label": "YTD",
+                          "format": "percent:1",
+                          "signed_color": true
+                        },
+                        {
+                          "field": "z_score",
+                          "label": "z-score",
+                          "format": "signed:2"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "markdown",
+                      "template": "**{ticker}** -- {sector} -- spread {spread_bp:bps}."
+                    },
+                    {
+                      "type": "chart",
+                      "title": "Price history (60d)",
+                      "chart_type": "line",
+                      "dataset": "spark_hist",
+                      "row_key": "ticker",
+                      "filter_field": "ticker",
+                      "mapping": {
+                        "x": "date",
+                        "y": "price"
+                      },
+                      "height": 200
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "pivot",
+              "id": "tab_pivot",
+              "w": 12,
+              "title": "Sector x window perf (pivot)",
+              "subtitle": "Long-form `(sector, country, ticker, window, ret)`. User picks row dim / col dim / value / agg from the dropdowns; cells use the `gs_diverging` color scale.",
+              "dataset_ref": "perf_long",
+              "row_dim_columns": [
+                "sector",
+                "country",
+                "ticker"
+              ],
+              "col_dim_columns": [
+                "window"
+              ],
+              "value_columns": [
+                "ret"
+              ],
+              "agg_options": [
+                "mean",
+                "median",
+                "sum",
+                "min",
+                "max",
+                "count"
+              ],
+              "row_default": "sector",
+              "col_default": "window",
+              "value_default": "ret",
+              "agg_default": "mean",
+              "decimals": 2,
+              "color_scale": "diverging",
+              "show_totals": true
+            }
+          ]
+        ]
+      },
+      {
+        "id": "prose",
+        "label": "5. Prose & header",
+        "description": "Note kinds + markdown grammar + image + divider.",
+        "rows": [
+          [
+            {
+              "widget": "markdown",
+              "id": "prose_md",
+              "w": 12,
+              "content": "## Tab 5 -- Prose, media & header\n\n- `note (6 kinds: insight / thesis / watch / risk / context / fact)`\n- `markdown (full grammar)`\n- `image`\n- `divider`\n- `metadata.summary (always-on banner above row 1)`\n- `metadata.methodology (header chrome popup)`\n- `header_actions (custom buttons left of chrome)`\n\nThe summary banner / methodology popup / header_actions live on the manifest's metadata + header_actions blocks (visible at the top of every tab, not on this tab specifically). The 6 note kinds below are paired so each kind sits next to its near-mate."
+            }
+          ],
+          [
+            {
+              "widget": "markdown",
+              "id": "n_insight",
+              "w": 6,
+              "kind": "insight",
+              "title": "Insight",
+              "content": "The 2s10s curve has been drifting flatter for **six consecutive sessions** -- the persistence is the signal, not the magnitude.\n\nFront end is still pricing ~3 cuts; the long end has barely moved."
+            },
+            {
+              "widget": "markdown",
+              "id": "n_thesis",
+              "w": 6,
+              "kind": "thesis",
+              "title": "Thesis",
+              "content": "Carry-and-roll on belly USTs continues to outperform either bull-flatten or bear-steepen trades on a Sharpe basis until the **next FOMC**.\n\nLong 5s30s steepener via 1Y rec / receivers stays the cleanest expression."
+            }
+          ],
+          [
+            {
+              "widget": "markdown",
+              "id": "n_watch",
+              "w": 6,
+              "kind": "watch",
+              "title": "Watch",
+              "content": "**Levels to watch:**\n\n- 10Y above 4.55% reopens the bear-steepen trade\n- 2s10s back to flat -> structural bid for credit\n- VIX > 22 invalidates the carry trade"
+            },
+            {
+              "widget": "markdown",
+              "id": "n_risk",
+              "w": 6,
+              "kind": "risk",
+              "title": "Risk",
+              "content": "**Pain trade is a hot CPI print Friday.**\n\nFront end re-prices in 24 hours, breakevens widen, the carry trade unwinds in a single session. Stop on a 12bp reversal."
+            }
+          ],
+          [
+            {
+              "widget": "markdown",
+              "id": "n_context",
+              "w": 6,
+              "kind": "context",
+              "title": "Context",
+              "content": "Cycle is in the **mid-cut phase**. Three cuts delivered (Sep / Nov / Dec); next FOMC is in 12 sessions. SLOOS turned net easing in February. Earnings revisions positive."
+            },
+            {
+              "widget": "markdown",
+              "id": "n_fact",
+              "w": 6,
+              "kind": "fact",
+              "title": "Fact",
+              "content": "**Point-in-time facts (as of close):**\n\n- Fed funds target: 4.00 - 4.25%\n- Last FOMC: 2026-03-12 (cut 25bp)\n- Next FOMC: 2026-05-07 (12 sessions)\n- Last NFP: +152k vs +180k cons"
+            }
+          ],
+          [
+            {
+              "widget": "divider",
+              "id": "prose_div"
+            }
+          ],
+          [
+            {
+              "widget": "markdown",
+              "id": "prose_grammar",
+              "w": 12,
+              "content": "## Markdown grammar (shared across all prose surfaces)\n\nSame grammar applies to: `widget: markdown`, `metadata.summary`, `metadata.methodology`, every `popup: {body}`, table `row_click` markdown sections.\n\n### Inline\n**bold**, *italic*, ~~strike~~, `code`, [link](https://example.com).\n\n### Block\nLists:\n\n- bullet\n- another bullet\n  - nested (2-space indent)\n\n1. ordered\n2. ordered (numbers don't have to be sequential)\n\n### Blockquote\n\n> The most reliable signal is when the curve and the credit market disagree about the same recession.\n\n### Code block\n\n```python\nmanifest = {'datasets': {'rates': df_rates}, 'layout': {...}}\ncompile_dashboard(manifest, strict=True)\n```\n\n### Table\n\n| Surface | Markdown? |\n|---|---|\n| `widget: markdown` | Yes |\n| `metadata.summary` | Yes |\n| Tab `description` | No (plain text) |\n| Tab `label` | No (plain text) |\n\n### Horizontal rule\n\n---\n\nAnything not matching is escaped as plain text -- including raw HTML."
+            }
+          ],
+          [
+            {
+              "widget": "divider",
+              "id": "prose_div2"
+            }
+          ],
+          [
+            {
+              "widget": "image",
+              "id": "prose_img",
+              "w": 6,
+              "title": "image widget",
+              "subtitle": "`widget: image` -- src URL or static path. Embeds with `alt` + optional `link`.",
+              "src": "https://www.goldmansachs.com/favicon.ico",
+              "alt": "GS"
+            },
+            {
+              "widget": "markdown",
+              "id": "prose_img_caption",
+              "w": 6,
+              "kind": "context",
+              "title": "Image widget usage",
+              "content": "Use `widget: image` for: section banners (left edge of `markets_wrap`), small visual callouts, vendor logos in the header, sparkline-shaped explainers between data rows. The renderer treats `src` as opaque -- HTTP URLs, static `/static/img/...` paths, or base64 data URIs all work."
+            }
+          ]
+        ]
+      },
+      {
+        "id": "filters",
+        "label": "6. Filters & sync",
+        "description": "Every filter type, sync, brush, click-emit, click-popup.",
+        "rows": [
+          [
+            {
+              "widget": "markdown",
+              "id": "fil_md",
+              "w": 12,
+              "content": "## Tab 6 -- Filters & cross-sync\n\n- `10 filter types: dateRange / select / multiSelect / numberRange / toggle / slider / radio / text / number / rule`\n- `11 filter ops: == / != / > / >= / < / <= / contains / startsWith / endsWith / in / not_in`\n- `cascading filters (depends_on + options_from)`\n- `links sync (axis / tooltip / legend / dataZoom)`\n- `links brush (rect / polygon / lineX / lineY)`\n- `click_emit_filter`\n- `click_popup`\n- `row_click`\n\nAll filters on this tab scope to `tab:filters` so they render inline above the widgets. The donut on row 4 has `click_emit_filter` wired to the bar chart beside it; click a slice to filter. Row 5 has a scatter with `click_popup` -- click any point for a multi-section drilldown. The two line charts in row 3 share a `Link` with `sync: ['axis', 'tooltip', 'dataZoom']` plus a `brush: lineX`."
+            }
+          ],
+          [
+            {
+              "widget": "table",
+              "id": "fil_cascade",
+              "w": 6,
+              "title": "Cascading filters: region -> country",
+              "subtitle": "Pick a region; the country dropdown rebuilds. Two `select` filters wired via `depends_on` + `options_from`.",
+              "dataset_ref": "universe_cascade",
+              "searchable": true,
+              "columns": [
+                {
+                  "field": "region",
+                  "label": "Region"
+                },
+                {
+                  "field": "country",
+                  "label": "Country"
+                }
+              ]
+            },
+            {
+              "widget": "table",
+              "id": "fil_table",
+              "w": 6,
+              "title": "Universe (every filter type targets this)",
+              "subtitle": "Apply any flat filter or the rule filter; rows trim. Multi-filter AND.",
+              "dataset_ref": "filter_universe",
+              "searchable": true,
+              "max_rows": 30,
+              "columns": [
+                {
+                  "field": "ticker",
+                  "label": "Ticker"
+                },
+                {
+                  "field": "sector",
+                  "label": "Sector"
+                },
+                {
+                  "field": "rating",
+                  "label": "Rating"
+                },
+                {
+                  "field": "ytm_pct",
+                  "label": "YTM",
+                  "format": "number:2"
+                },
+                {
+                  "field": "spread_bp",
+                  "label": "Spread",
+                  "format": "bps"
+                },
+                {
+                  "field": "duration_yrs",
+                  "label": "Dur",
+                  "format": "number:1"
+                },
+                {
+                  "field": "size_mm",
+                  "label": "Size",
+                  "format": "currency"
+                }
+              ]
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "fil_sync_a",
+              "w": 6,
+              "h_px": 300,
+              "title": "SPX (sync member)",
+              "subtitle": "Linked to fil_sync_b via `sync: ['axis', 'tooltip', 'dataZoom']` + `brush: lineX`. Drag a slider on either chart.",
+              "spec": {
+                "chart_type": "line",
+                "dataset": "xa",
+                "mapping": {
+                  "x": "date",
+                  "y": "spx",
+                  "y_title": "SPX"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "fil_sync_b",
+              "w": 6,
+              "h_px": 300,
+              "title": "Gold (sync member)",
+              "subtitle": "Same Link as fil_sync_a; tooltip + axis + zoom track.",
+              "spec": {
+                "chart_type": "line",
+                "dataset": "xa",
+                "mapping": {
+                  "x": "date",
+                  "y": "gold",
+                  "y_title": "Gold ($)"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "fil_donut",
+              "w": 6,
+              "h_px": 320,
+              "title": "Outbound region (click_emit_filter -> region)",
+              "subtitle": "Click a slice; the bar chart on the right filters to that region via `click_emit_filter: 'region_filter'`.",
+              "spec": {
+                "chart_type": "donut",
+                "dataset": "outbound",
+                "mapping": {
+                  "category": "region",
+                  "value": "outbound",
+                  "legend_position": "bottom"
+                }
+              },
+              "click_emit_filter": "region_filter"
+            },
+            {
+              "widget": "chart",
+              "id": "fil_bar",
+              "w": 6,
+              "h_px": 320,
+              "title": "Sector returns (filtered by region)",
+              "subtitle": "Auto-filters to the selected region from the donut click.",
+              "spec": {
+                "chart_type": "bar",
+                "dataset": "sector_perf",
+                "mapping": {
+                  "x": "sector",
+                  "y": "ret_pct",
+                  "color": "region",
+                  "y_title": "Return (%)"
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "fil_clickable",
+              "w": 6,
+              "h_px": 360,
+              "title": "Clickable scatter (click_popup -> rich modal)",
+              "subtitle": "Each point opens a multi-section drilldown modal: stats / markdown / chart / table. Same grammar as table `row_click`.",
+              "spec": {
+                "chart_type": "scatter",
+                "dataset": "clickable_scatter",
+                "mapping": {
+                  "x": "carry_bps",
+                  "y": "roll_bps",
+                  "color": "sector",
+                  "size": "size_mm",
+                  "x_title": "Carry (bps)",
+                  "y_title": "Roll (bps)"
+                }
+              },
+              "click_popup": {
+                "title_field": "ticker",
+                "subtitle_template": "{sector} -- {rating} -- size {size_mm:currency}",
+                "detail": {
+                  "wide": true,
+                  "sections": [
+                    {
+                      "type": "stats",
+                      "fields": [
+                        {
+                          "field": "carry_bps",
+                          "label": "Carry",
+                          "format": "bps"
+                        },
+                        {
+                          "field": "roll_bps",
+                          "label": "Roll",
+                          "format": "bps"
+                        },
+                        {
+                          "field": "ytm_pct",
+                          "label": "YTM",
+                          "format": "number:2",
+                          "suffix": "%"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "markdown",
+                      "template": "**{ticker}** -- {sector} -- rated `{rating}`."
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        ]
+      },
+      {
+        "id": "tools",
+        "label": "7. Tools",
+        "description": "widget: tool -- inline def, JS compute, all kinds.",
+        "rows": [
+          [
+            {
+              "widget": "markdown",
+              "id": "tool_md",
+              "w": 12,
+              "content": "## Tab 7 -- Tool widgets\n\n- `widget: tool (form-driven compute)`\n- `input kinds: scalar / sweep / expression / matrix (scalar covers number / date / text / select / radio / toggle)`\n- `output kinds: stat / scalar / param / kpi / series / table / stat_grid / distribution`\n- `inline tool_def (no registry; def + JS travel with manifest)`\n\nThree canonical tool patterns. Bond pricer (scalars + radio toggle + table output). Black-Scholes (scalars + stat headline + series chart with `x_from: input.K`). Fed scenarios (scalar dates + 24x3 matrix input + series + table outputs)."
+            }
+          ],
+          [
+            {
+              "widget": "tool",
+              "id": "tool_bond",
+              "w": 12,
+              "title": "Fixed-coupon bond pricer (scalars + table)",
+              "subtitle": "Scalar inputs (price, coupon, maturity) + a radio mode toggle (Price->YTM vs YTM->Price). Outputs: stat headline + cashflow `table`.",
+              "tool_def": {
+                "name": "bond_pricer",
+                "version": "1.0.0",
+                "title": "Fixed-coupon bond pricer",
+                "description": "Price a fixed-coupon bullet bond. Input price OR yield; the other is solved.",
+                "category": "pricer",
+                "compute": {
+                  "kind": "js",
+                  "fn": "compute",
+                  "source": "// Fixed-coupon bullet bond pricer. Solves price <-> YTM via Newton iteration\n// when given the other side. Returns a stat grid + a cashflow table.\n//\n// Conventions:\n//   freq    = coupon payments per year (1, 2, 4, 12)\n//   coupon  = annual coupon rate as a decimal (e.g. 0.045 = 4.5%)\n//   ytm     = yield to maturity as a decimal, freq-compounded\n//   N       = number of periods = round(maturity_yrs * freq)\n//   c       = coupon per period = face * coupon / freq\n//   df_i    = (1 + ytm/freq)^-i\n//\n// Output fields:\n//   ytm       (decimal, e.g. 0.045 = 4.5%)\n//   price     (per face = `face` arg)\n//   duration  (Macaulay, years)\n//   mod_dur   (modified duration, years)\n//   convexity (per 1.00 yield change, scaled by 1; report as raw)\n//   dv01      (price change per 1bp parallel yield shift, sign positive)\n//   cashflows (array of {period, yrs, cashflow, df, pv})\n\nfunction compute(inputs) {\n    var face   = +inputs.face;\n    var coupon = +inputs.coupon_pct / 100;\n    var T      = +inputs.maturity_yrs;\n    var freq   = +inputs.freq;\n    var N      = Math.max(1, Math.round(T * freq));\n    var c      = face * coupon / freq;\n\n    function priceFromYtm(y) {\n        var per = y / freq;\n        var pv = 0;\n        for (var i = 1; i <= N; i++) {\n            var cf = c + (i === N ? face : 0);\n            pv += cf / Math.pow(1 + per, i);\n        }\n        return pv;\n    }\n\n    function solveYtm(targetPrice) {\n        var y = (coupon > 0 ? coupon : 0.05);\n        for (var k = 0; k < 80; k++) {\n            var per = y / freq;\n            var p = 0, dp = 0;\n            for (var i = 1; i <= N; i++) {\n                var cf = c + (i === N ? face : 0);\n                var disc = Math.pow(1 + per, i);\n                p += cf / disc;\n                dp += -i * cf / (Math.pow(1 + per, i + 1) * freq);\n            }\n            var diff = p - targetPrice;\n            if (Math.abs(diff) < 1e-10) break;\n            if (Math.abs(dp) < 1e-12) break;\n            y = y - diff / dp;\n            if (y < -0.5) y = -0.5;\n            if (y > 5)    y = 5;\n        }\n        return y;\n    }\n\n    var ytm, price;\n    if (inputs.input_mode === 'yield') {\n        ytm = +inputs.ytm_pct / 100;\n        price = priceFromYtm(ytm);\n    } else {\n        price = +inputs.price;\n        ytm = solveYtm(price);\n    }\n\n    var per = ytm / freq;\n    var rows = [];\n    var pv_total = 0, w_dur = 0, w_conv = 0;\n    for (var i = 1; i <= N; i++) {\n        var cf = c + (i === N ? face : 0);\n        var df = Math.pow(1 + per, -i);\n        var pv = cf * df;\n        var t  = i / freq;\n        rows.push({period: i, yrs: t, cashflow: cf, df: df, pv: pv});\n        pv_total += pv;\n        w_dur    += t * pv;\n        w_conv   += t * (t + 1.0 / freq) * pv;\n    }\n\n    var mac_dur = pv_total > 0 ? w_dur / pv_total : 0;\n    var mod_dur = mac_dur / (1 + per);\n    var convexity = pv_total > 0\n        ? w_conv / pv_total / Math.pow(1 + per, 2)\n        : 0;\n    var dv01 = mod_dur * price / 10000;\n\n    return {\n        ytm:       ytm,\n        price:     price,\n        duration:  mac_dur,\n        mod_dur:   mod_dur,\n        convexity: convexity,\n        dv01:      dv01,\n        cashflows: rows\n    };\n}\n"
+                },
+                "inputs": [
+                  {
+                    "id": "face",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Face value",
+                    "default": 100,
+                    "step": 1,
+                    "decimals": 0,
+                    "min": 0
+                  },
+                  {
+                    "id": "coupon_pct",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Coupon (%)",
+                    "default": 4.5,
+                    "step": 0.125,
+                    "decimals": 3,
+                    "min": 0,
+                    "max": 30
+                  },
+                  {
+                    "id": "maturity_yrs",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Maturity (yrs)",
+                    "default": 10,
+                    "step": 0.25,
+                    "decimals": 2,
+                    "min": 0.25,
+                    "max": 50
+                  },
+                  {
+                    "id": "freq",
+                    "kind": "scalar",
+                    "type": "select",
+                    "label": "Coupon freq",
+                    "default": 2,
+                    "options": [
+                      {
+                        "value": 1,
+                        "label": "Annual"
+                      },
+                      {
+                        "value": 2,
+                        "label": "Semi-annual"
+                      },
+                      {
+                        "value": 4,
+                        "label": "Quarterly"
+                      },
+                      {
+                        "value": 12,
+                        "label": "Monthly"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "input_mode",
+                    "kind": "scalar",
+                    "type": "radio",
+                    "label": "Input",
+                    "default": "price",
+                    "options": [
+                      {
+                        "value": "price",
+                        "label": "Price -> YTM"
+                      },
+                      {
+                        "value": "yield",
+                        "label": "YTM -> Price"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "price",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Price (per 100)",
+                    "default": 99.5,
+                    "step": 0.01,
+                    "decimals": 4,
+                    "show_when": {
+                      "input_mode": "price"
+                    }
+                  },
+                  {
+                    "id": "ytm_pct",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "YTM (%)",
+                    "default": 4.5,
+                    "step": 0.01,
+                    "decimals": 4,
+                    "show_when": {
+                      "input_mode": "yield"
+                    }
+                  }
+                ],
+                "outputs": [
+                  {
+                    "id": "ytm",
+                    "kind": "stat",
+                    "label": "YTM",
+                    "format": "percent",
+                    "decimals": 3
+                  },
+                  {
+                    "id": "price",
+                    "kind": "stat",
+                    "label": "Price",
+                    "format": "number",
+                    "decimals": 4
+                  },
+                  {
+                    "id": "duration",
+                    "kind": "stat",
+                    "label": "Mac Dur",
+                    "format": "number",
+                    "decimals": 2,
+                    "suffix": " yrs"
+                  },
+                  {
+                    "id": "mod_dur",
+                    "kind": "stat",
+                    "label": "Mod Dur",
+                    "format": "number",
+                    "decimals": 2,
+                    "suffix": " yrs"
+                  },
+                  {
+                    "id": "convexity",
+                    "kind": "stat",
+                    "label": "Convexity",
+                    "format": "number",
+                    "decimals": 2
+                  },
+                  {
+                    "id": "dv01",
+                    "kind": "stat",
+                    "label": "DV01 / 100",
+                    "format": "number",
+                    "decimals": 4
+                  },
+                  {
+                    "id": "cashflows",
+                    "kind": "table",
+                    "label": "Cashflow schedule",
+                    "columns": [
+                      {
+                        "field": "period",
+                        "label": "#",
+                        "format": "integer",
+                        "align": "right"
+                      },
+                      {
+                        "field": "yrs",
+                        "label": "Yrs",
+                        "format": "number:2",
+                        "align": "right"
+                      },
+                      {
+                        "field": "cashflow",
+                        "label": "Cashflow",
+                        "format": "number:2",
+                        "align": "right"
+                      },
+                      {
+                        "field": "df",
+                        "label": "DF",
+                        "format": "number:4",
+                        "align": "right"
+                      },
+                      {
+                        "field": "pv",
+                        "label": "PV",
+                        "format": "number:2",
+                        "align": "right"
+                      }
+                    ]
+                  }
+                ],
+                "display": {
+                  "input_panel_w": 4,
+                  "headline_stats": [
+                    "ytm",
+                    "price",
+                    "duration",
+                    "mod_dur",
+                    "convexity",
+                    "dv01"
+                  ]
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "tool",
+              "id": "tool_option",
+              "w": 12,
+              "title": "Black-Scholes option (stat headline + series)",
+              "subtitle": "Greeks reported in trader units. P&L vs spot `series` chart with a `vline` annotation that tracks `input.K` live.",
+              "tool_def": {
+                "name": "option_bsm",
+                "version": "1.0.0",
+                "title": "Black-Scholes option pricer",
+                "description": "European call/put price + greeks. Optional spot sweep for P&L curve.",
+                "category": "pricer",
+                "compute": {
+                  "kind": "js",
+                  "fn": "compute",
+                  "source": "// Black-Scholes-Merton European call/put with continuous dividend yield.\n// Greeks reported in user-friendly units:\n//   delta : raw (dV/dS)\n//   gamma : raw (d2V/dS2)\n//   vega  : per 1 vol-PERCENTAGE-POINT (i.e. dV/dvol scaled / 100)\n//   theta : per CALENDAR DAY (dV/dt scaled / 365)\n//   rho   : per 1 rate-PERCENTAGE-POINT (i.e. dV/dr scaled / 100)\n//\n// `payoff` output sweeps spot from spot * (1 - sweep_pct/100) to\n// spot * (1 + sweep_pct/100) at sweep_n evenly-spaced points; computes\n// option value at each spot (NOT terminal payoff), then subtracts the\n// CURRENT premium so the line shows mark-to-market P&L vs current spot.\n\nfunction _normCdf(x) {\n    var a1 =  0.254829592;\n    var a2 = -0.284496736;\n    var a3 =  1.421413741;\n    var a4 = -1.453152027;\n    var a5 =  1.061405429;\n    var p  =  0.3275911;\n    var sign = x < 0 ? -1 : 1;\n    var ax = Math.abs(x) / Math.sqrt(2);\n    var t = 1.0 / (1.0 + p * ax);\n    var y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-ax * ax);\n    return 0.5 * (1.0 + sign * y);\n}\n\nfunction _normPdf(x) {\n    return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);\n}\n\nfunction _bsm(kind, S, K, T, sigma, r, q) {\n    if (T <= 0 || sigma <= 0) {\n        var intrinsic = kind === 'call' ? Math.max(S - K, 0) : Math.max(K - S, 0);\n        return {\n            price: intrinsic, delta: 0, gamma: 0,\n            vega: 0, theta: 0, rho: 0\n        };\n    }\n    var sqrtT = Math.sqrt(T);\n    var d1 = (Math.log(S / K) + (r - q + 0.5 * sigma * sigma) * T) / (sigma * sqrtT);\n    var d2 = d1 - sigma * sqrtT;\n    var Nd1 = _normCdf(d1);\n    var Nd2 = _normCdf(d2);\n    var nd1 = _normPdf(d1);\n    var disc_r = Math.exp(-r * T);\n    var disc_q = Math.exp(-q * T);\n\n    var price, delta, theta, rho;\n    if (kind === 'call') {\n        price = S * disc_q * Nd1 - K * disc_r * Nd2;\n        delta = disc_q * Nd1;\n        theta = (-S * disc_q * nd1 * sigma / (2 * sqrtT)\n                 - r * K * disc_r * Nd2\n                 + q * S * disc_q * Nd1);\n        rho = K * T * disc_r * Nd2;\n    } else {\n        var Nmd1 = _normCdf(-d1);\n        var Nmd2 = _normCdf(-d2);\n        price = K * disc_r * Nmd2 - S * disc_q * Nmd1;\n        delta = -disc_q * Nmd1;\n        theta = (-S * disc_q * nd1 * sigma / (2 * sqrtT)\n                 + r * K * disc_r * Nmd2\n                 - q * S * disc_q * Nmd1);\n        rho = -K * T * disc_r * Nmd2;\n    }\n    var gamma = disc_q * nd1 / (S * sigma * sqrtT);\n    var vega  = S * disc_q * nd1 * sqrtT;\n    return {\n        price: price,\n        delta: delta,\n        gamma: gamma,\n        vega:  vega / 100,        // per 1 vol-pt\n        theta: theta / 365,       // per calendar day\n        rho:   rho / 100          // per 1 rate-pt\n    };\n}\n\nfunction compute(inputs) {\n    var kind = String(inputs.kind || 'call');\n    var S = +inputs.spot;\n    var K = +inputs.strike;\n    var T = +inputs.tte;\n    var sigma = +inputs.vol  / 100;\n    var r     = +inputs.rate / 100;\n    var q     = +inputs.div  / 100;\n\n    var g = _bsm(kind, S, K, T, sigma, r, q);\n\n    var pct = +inputs.sweep_pct / 100;\n    var n   = Math.max(11, Math.round(+inputs.sweep_n));\n    if (n % 2 === 0) n += 1;\n    var lo = S * (1 - pct);\n    var hi = S * (1 + pct);\n    var rows = [];\n    for (var i = 0; i < n; i++) {\n        var s = lo + (hi - lo) * (i / (n - 1));\n        var v = _bsm(kind, s, K, T, sigma, r, q);\n        rows.push({spot: s, pnl: v.price - g.price});\n    }\n\n    return {\n        price: g.price,\n        delta: g.delta,\n        gamma: g.gamma,\n        vega:  g.vega,\n        theta: g.theta,\n        rho:   g.rho,\n        payoff: rows\n    };\n}\n"
+                },
+                "inputs": [
+                  {
+                    "id": "kind",
+                    "kind": "scalar",
+                    "type": "radio",
+                    "label": "Type",
+                    "default": "call",
+                    "options": [
+                      {
+                        "value": "call",
+                        "label": "Call"
+                      },
+                      {
+                        "value": "put",
+                        "label": "Put"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "spot",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Spot",
+                    "default": 100,
+                    "step": 0.5,
+                    "decimals": 2,
+                    "min": 0.01
+                  },
+                  {
+                    "id": "strike",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Strike",
+                    "default": 100,
+                    "step": 0.5,
+                    "decimals": 2,
+                    "min": 0.01
+                  },
+                  {
+                    "id": "tte",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Time to expiry (yrs)",
+                    "default": 0.5,
+                    "step": 0.05,
+                    "decimals": 3,
+                    "min": 0.001,
+                    "max": 30
+                  },
+                  {
+                    "id": "vol",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Vol (%)",
+                    "default": 20,
+                    "step": 1,
+                    "decimals": 2,
+                    "min": 0.01,
+                    "max": 500
+                  },
+                  {
+                    "id": "rate",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Rate (%)",
+                    "default": 4.5,
+                    "step": 0.05,
+                    "decimals": 3,
+                    "min": -10,
+                    "max": 30
+                  },
+                  {
+                    "id": "div",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Div yld (%)",
+                    "default": 0,
+                    "step": 0.05,
+                    "decimals": 3,
+                    "min": 0,
+                    "max": 30
+                  },
+                  {
+                    "id": "sweep_pct",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "P&L sweep ± (%)",
+                    "default": 20,
+                    "step": 1,
+                    "decimals": 0,
+                    "min": 1,
+                    "max": 100
+                  },
+                  {
+                    "id": "sweep_n",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Sweep points",
+                    "default": 41,
+                    "step": 2,
+                    "decimals": 0,
+                    "min": 11,
+                    "max": 201
+                  }
+                ],
+                "outputs": [
+                  {
+                    "id": "price",
+                    "kind": "stat",
+                    "label": "Price",
+                    "format": "number",
+                    "decimals": 4
+                  },
+                  {
+                    "id": "delta",
+                    "kind": "stat",
+                    "label": "Delta",
+                    "format": "number",
+                    "decimals": 4
+                  },
+                  {
+                    "id": "gamma",
+                    "kind": "stat",
+                    "label": "Gamma",
+                    "format": "number",
+                    "decimals": 4
+                  },
+                  {
+                    "id": "vega",
+                    "kind": "stat",
+                    "label": "Vega",
+                    "format": "number",
+                    "decimals": 4,
+                    "tooltip": "Per 1 vol-pt; reported as %-of-vol"
+                  },
+                  {
+                    "id": "theta",
+                    "kind": "stat",
+                    "label": "Theta",
+                    "format": "number",
+                    "decimals": 4,
+                    "tooltip": "Per calendar day"
+                  },
+                  {
+                    "id": "rho",
+                    "kind": "stat",
+                    "label": "Rho",
+                    "format": "number",
+                    "decimals": 4,
+                    "tooltip": "Per 1 rate-pt"
+                  },
+                  {
+                    "id": "payoff",
+                    "kind": "series",
+                    "label": "P&L vs spot at expiry",
+                    "x": "spot",
+                    "y": "pnl",
+                    "x_format": "number",
+                    "y_format": "number",
+                    "annotations": [
+                      {
+                        "type": "vline",
+                        "x_from": "input.spot",
+                        "label": "Spot"
+                      },
+                      {
+                        "type": "vline",
+                        "x_from": "input.strike",
+                        "label": "Strike"
+                      }
+                    ]
+                  }
+                ],
+                "display": {
+                  "input_panel_w": 4,
+                  "headline_stats": [
+                    "price",
+                    "delta",
+                    "gamma",
+                    "vega",
+                    "theta",
+                    "rho"
+                  ]
+                }
+              }
+            }
+          ],
+          [
+            {
+              "widget": "tool",
+              "id": "tool_fed",
+              "w": 12,
+              "title": "Fed scenario swap rates (matrix input + series)",
+              "subtitle": "24-row x 3-col `matrix` input (paste from Excel supported) + scalar dates + scalar starting FF. Outputs: swap-rate `table` + FF-path `series`.",
+              "tool_def": {
+                "name": "fed_scenario_swaps",
+                "version": "1.0.0",
+                "title": "Fed scenario swap rates",
+                "description": "Compute OIS-style spot and forward swap rates under multiple FOMC hike/cut scenarios.",
+                "category": "scenario",
+                "compute": {
+                  "kind": "js",
+                  "fn": "compute",
+                  "source": "// Fed scenario swap rates.\n//\n// For each scenario column in `fomc_deltas`, compute a daily Fed funds path\n// from `trade_date`, applying each FOMC meeting's bp delta the day AFTER the\n// meeting. From the path, derive OIS-style swap rates (ACT/360 daily\n// compounding) for spot tenors 1y..5y, forward 1y1y..4y1y, and one custom\n// dated swap defined by (swap_start, swap_end).\n//\n// Inputs:\n//   starting_ff      number           (in %, e.g. 3.84)\n//   trade_date       string YYYY-MM-DD\n//   swap_start       string YYYY-MM-DD\n//   swap_end         string YYYY-MM-DD\n//   fomc_deltas      {rows: [{key, label}], cols: [{id, label}], values: [[bp...]]}\n//\n// Outputs:\n//   summary          {columns:[...], rows:[{tenor, <scen1>, <scen2>, ...}, ...]}\n//   ff_paths         [{date, rate, scenario}, ...]   (long form)\n//\n// Conventions:\n//   ACT/360 daily compounding (USD OIS market convention)\n//   par OIS rate over [a, b] = (CF - 1) * (360 / days_in_period) * 100  in %\n//   horizon = max(swap_end - trade_date, 5y) for path generation.\n\nfunction _parseDate(s) {\n    if (s instanceof Date) return s;\n    var t = Date.parse(s);\n    if (isNaN(t)) return null;\n    return new Date(t);\n}\n\nfunction _ymd(d) {\n    var y = d.getUTCFullYear();\n    var m = String(d.getUTCMonth() + 1).padStart(2, '0');\n    var dd = String(d.getUTCDate()).padStart(2, '0');\n    return y + '-' + m + '-' + dd;\n}\n\nfunction _addDays(d, n) {\n    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(),\n                              d.getUTCDate() + n));\n}\n\nfunction _diffDays(a, b) {\n    return Math.round((b - a) / 86400000);\n}\n\nfunction _addYears(d, n) {\n    return new Date(Date.UTC(d.getUTCFullYear() + n,\n                              d.getUTCMonth(), d.getUTCDate()));\n}\n\n// Build daily FF rate array starting at trade_date out to horizon_end.\n// step_dates: array of {date: Date, delta_bp: number} sorted ascending.\n// Each meeting's delta_bp is applied the day AFTER that meeting date.\n// Returns an array of length horizon_days+1, indexed by day offset from\n// trade_date (0 = trade_date, 1 = trade_date + 1 day, ...).\nfunction _buildPath(starting_pct, trade_dt, step_dates, horizon_days) {\n    var path = new Array(horizon_days + 1);\n    var rate = starting_pct;\n    var nextStep = 0;\n    for (var i = 0; i <= horizon_days; i++) {\n        var d = _addDays(trade_dt, i);\n        while (nextStep < step_dates.length) {\n            var sd = step_dates[nextStep].date;\n            // The rate changes the day AFTER the FOMC date.\n            if (d > sd) {\n                rate += step_dates[nextStep].delta_bp / 100;\n                nextStep++;\n            } else break;\n        }\n        path[i] = rate;\n    }\n    return path;\n}\n\n// Compounded factor over [from_idx, to_idx) using ACT/360 daily compounding.\nfunction _compoundFactor(path, from_idx, to_idx) {\n    var cf = 1.0;\n    for (var i = from_idx; i < to_idx; i++) {\n        var r = path[i] / 100; // decimal\n        cf *= (1 + r / 360);\n    }\n    return cf;\n}\n\n// Par OIS rate over [from_idx, to_idx) -- returns rate in PERCENT.\nfunction _parRate(path, from_idx, to_idx) {\n    var days = to_idx - from_idx;\n    if (days <= 0) return NaN;\n    var cf = _compoundFactor(path, from_idx, to_idx);\n    return (cf - 1) * (360 / days) * 100;\n}\n\nfunction compute(inputs) {\n    var trade_dt  = _parseDate(inputs.trade_date);\n    var swap_a    = _parseDate(inputs.swap_start) || trade_dt;\n    var swap_b    = _parseDate(inputs.swap_end)   || _addYears(trade_dt, 3);\n    var startFf   = +inputs.starting_ff;\n\n    var matrix = inputs.fomc_deltas || {rows: [], cols: [], values: []};\n    var rows = matrix.rows  || [];\n    var cols = matrix.cols  || [];\n    var vals = matrix.values || [];\n\n    if (!trade_dt || cols.length === 0) {\n        return {summary: {columns: [], rows: []}, ff_paths: []};\n    }\n\n    // Horizon: max of 5y and (swap_end - trade_date), plus a small buffer.\n    var horizon_days = Math.max(\n        _diffDays(trade_dt, _addYears(trade_dt, 5)),\n        swap_b ? _diffDays(trade_dt, swap_b) : 0\n    ) + 30;\n\n    // Tenor list (years): spot 1..5, forwards 1y1y..4y1y, custom.\n    var spot_tenors = [\n        {id: '1y',  near: 0, far: 1},\n        {id: '2y',  near: 0, far: 2},\n        {id: '3y',  near: 0, far: 3},\n        {id: '4y',  near: 0, far: 4},\n        {id: '5y',  near: 0, far: 5},\n        {id: '1y1y', near: 1, far: 2},\n        {id: '2y1y', near: 2, far: 3},\n        {id: '3y1y', near: 3, far: 4},\n        {id: '4y1y', near: 4, far: 5}\n    ];\n\n    // For each scenario column, build path + compute rates.\n    var summary_rows = [];\n    var ff_paths = [];\n\n    spot_tenors.forEach(function(t) {\n        var rec = {tenor: t.id};\n        cols.forEach(function() { rec[arguments[0]]; });\n        summary_rows.push(rec);\n    });\n    summary_rows.push({tenor: 'custom'});\n\n    var step_per_col = [];\n    cols.forEach(function(col, ci) {\n        // Collect this column's deltas attached to row dates.\n        var steps = [];\n        for (var ri = 0; ri < rows.length; ri++) {\n            var row = rows[ri];\n            var dt = _parseDate(row.key);\n            if (!dt) continue;\n            var raw = (vals[ri] || [])[ci];\n            var bp = (raw == null || raw === '') ? 0 : +raw;\n            if (isNaN(bp)) bp = 0;\n            steps.push({date: dt, delta_bp: bp});\n        }\n        steps.sort(function(a, b) { return a.date - b.date; });\n        step_per_col.push(steps);\n    });\n\n    cols.forEach(function(col, ci) {\n        var steps = step_per_col[ci];\n        var path = _buildPath(startFf, trade_dt, steps, horizon_days);\n\n        // Spot + forward tenors.\n        spot_tenors.forEach(function(t, ti) {\n            var near_dt = _addYears(trade_dt, t.near);\n            var far_dt  = _addYears(trade_dt, t.far);\n            var ai = Math.max(0, _diffDays(trade_dt, near_dt));\n            var bi = Math.min(path.length, _diffDays(trade_dt, far_dt));\n            var r = _parRate(path, ai, bi);\n            summary_rows[ti][col.id] = r;\n        });\n\n        // Custom dated swap.\n        var ai = Math.max(0, _diffDays(trade_dt, swap_a));\n        var bi = Math.min(path.length, _diffDays(trade_dt, swap_b));\n        var r_custom = _parRate(path, ai, bi);\n        summary_rows[summary_rows.length - 1][col.id] = r_custom;\n\n        // FF path long-form: subsample to weekly to keep payload tight.\n        var stride = 7;\n        for (var i = 0; i < path.length; i += stride) {\n            var d = _addDays(trade_dt, i);\n            ff_paths.push({date: _ymd(d), rate: path[i], scenario: col.label || col.id});\n        }\n    });\n\n    return {\n        summary:  {\n            columns: [\n                {field: 'tenor',  label: 'Tenor',     align: 'left'}\n            ].concat(cols.map(function(c) {\n                return {field: c.id, label: (c.label || c.id) + ' (%)',\n                          align: 'right', format: 'number:3'};\n            })),\n            rows: summary_rows\n        },\n        ff_paths: ff_paths\n    };\n}\n"
+                },
+                "inputs": [
+                  {
+                    "id": "starting_ff",
+                    "kind": "scalar",
+                    "type": "number",
+                    "label": "Starting FF (%)",
+                    "default": 3.84,
+                    "step": 0.01,
+                    "decimals": 2,
+                    "min": 0,
+                    "max": 25
+                  },
+                  {
+                    "id": "trade_date",
+                    "kind": "scalar",
+                    "type": "date",
+                    "label": "Trade date",
+                    "default": "2026-09-29"
+                  },
+                  {
+                    "id": "swap_start",
+                    "kind": "scalar",
+                    "type": "date",
+                    "label": "Custom swap start",
+                    "default": "2026-09-29"
+                  },
+                  {
+                    "id": "swap_end",
+                    "kind": "scalar",
+                    "type": "date",
+                    "label": "Custom swap end",
+                    "default": "2029-09-29"
+                  },
+                  {
+                    "id": "fomc_deltas",
+                    "kind": "matrix",
+                    "label": "Hike / cut by meeting (bp)",
+                    "rows_from": {
+                      "dataset": "fomc_dates",
+                      "key_col": "date",
+                      "label_col": "label"
+                    },
+                    "cols": [
+                      {
+                        "id": "Base",
+                        "label": "Base"
+                      },
+                      {
+                        "id": "Hawk",
+                        "label": "Hawk"
+                      },
+                      {
+                        "id": "Dove",
+                        "label": "Dove"
+                      }
+                    ],
+                    "cell": {
+                      "type": "number",
+                      "default": 0,
+                      "step": 25,
+                      "suffix": " bp",
+                      "decimals": 0,
+                      "min": -200,
+                      "max": 200
+                    },
+                    "paste_enabled": true,
+                    "row_actions": [
+                      "fill_zero",
+                      "fill_25",
+                      "fill_minus_25"
+                    ]
+                  }
+                ],
+                "outputs": [
+                  {
+                    "id": "summary",
+                    "kind": "table",
+                    "label": "Swap rates by scenario",
+                    "columns": [
+                      {
+                        "field": "tenor",
+                        "label": "Tenor",
+                        "align": "left"
+                      },
+                      {
+                        "field": "Base",
+                        "label": "Base (%)",
+                        "align": "right",
+                        "format": "number:3"
+                      },
+                      {
+                        "field": "Hawk",
+                        "label": "Hawk (%)",
+                        "align": "right",
+                        "format": "number:3"
+                      },
+                      {
+                        "field": "Dove",
+                        "label": "Dove (%)",
+                        "align": "right",
+                        "format": "number:3"
+                      }
+                    ]
+                  },
+                  {
+                    "id": "ff_paths",
+                    "kind": "series",
+                    "label": "Fed funds path by scenario",
+                    "x": "date",
+                    "y": "rate",
+                    "color": "scenario",
+                    "x_format": "date",
+                    "y_format": "percent"
+                  }
+                ],
+                "display": {
+                  "input_panel_w": 5,
+                  "outputs": [
+                    {
+                      "id": "summary",
+                      "as": "table",
+                      "w": 6
+                    },
+                    {
+                      "id": "ff_paths",
+                      "as": "chart",
+                      "w": 6,
+                      "chart_type": "multi_line"
+                    }
+                  ]
+                }
+              },
+              "inputs": {
+                "starting_ff": 4.0,
+                "trade_date": "2026-09-29",
+                "swap_start": "2026-09-29",
+                "swap_end": "2029-09-29"
+              }
+            }
+          ]
+        ]
+      },
+      {
+        "id": "dev",
+        "label": "8. Dev workflow",
+        "description": "Validation, diagnostics, variants, computed datasets.",
+        "rows": [
+          [
+            {
+              "widget": "markdown",
+              "id": "dev_md",
+              "w": 12,
+              "content": "## Tab 8 -- Dev workflow & diagnostics\n\n- `manifest_template + populate_template`\n- `validate_manifest`\n- `chart_data_diagnostics`\n- `strict=True / strict=False`\n- `save_pngs`\n- `chart variants: spec / option / ref`\n- `raw chart_type`\n- `computed datasets`\n- `field_provenance`\n- `show_when`\n- `initial_state`\n- `stat_strip`\n\nThe four markdown panels in row 1 carry **live output** from helper calls run at compile time -- not mocked text. Row 2 demonstrates the three chart variants on the same data. Row 3 shows a chart driven by a manifest-level `compute` block with `system: 'computed'` provenance auto-stamped."
+            }
+          ],
+          [
+            {
+              "widget": "markdown",
+              "id": "dev_template",
+              "w": 6,
+              "content": "## `manifest_template` -> `populate_template`\n\n**Step 1** -- `manifest_template(seed)` strips data rows from every dataset, leaving only the header row. The template's `datasets.rates.source` now holds 1 row with columns: `['date', 'us_2y', 'us_5y', 'us_10y', 'us_30y', '2s10s', '5s30s', '10y_real']`.\n\nTemplates are pure JSON -- safe to persist, diff in source control, hand-edit, and re-feed each refresh.\n\n**Step 2** -- `populate_template(template, {'rates': df})` re-injects fresh data. The populated `datasets.rates.source` now holds **252 data rows** (plus header); values are JSON-serialisable scalars. Pass `require_all_slots=True` to fail loudly when the template declares a dataset slot the call doesn't fill."
+            },
+            {
+              "widget": "markdown",
+              "id": "dev_validate",
+              "w": 6,
+              "content": "## `validate_manifest`\n\nStatus: **FAILED** -- 5 error(s) on a deliberately-broken manifest.\n\nCheapest pre-compile pass: structure / types / id uniqueness / cross-references / required keys.\n\n| # | Path / message |\n|---|---|\n| 1 | `filters[0].options: required for type 'select'` |\n| 2 | `filters[1].id: duplicate id 'x'` |\n| 3 | `layout.rows[0][0].spec.dataset: 'missing_dataset' not declared in manifest.datasets (available: ['rates'])` |\n| 4 | `layout.rows[0][1].id: duplicate widget id 'c'` |\n| 5 | `layout.rows[0][1].spec.chart_type: 'frobnicator' not in ['area', 'bar', 'bar_horizontal', 'boxplot', 'bullet', 'calendar_heatmap', 'candlestick', 'correlation_matrix', 'donut', 'fan_cone', 'funnel', 'gauge', 'graph', 'heatmap', 'histogram', 'line', 'marimekko', 'multi_line', 'parallel_coords', 'pie', 'radar', 'sankey', 'scatter', 'scatter_multi', 'scatter_studio', 'slope', 'sunburst', 'tree', 'treemap', 'waterfall']` |"
+            }
+          ],
+          [
+            {
+              "widget": "markdown",
+              "id": "dev_diag",
+              "w": 12,
+              "content": "## `chart_data_diagnostics`\n\nReturned **3** diagnostic(s) on a 4-widget manifest with one healthy chart + an empty dataset + a missing column + a KPI source typo.\n\nDiagnostic codes are stable -- pattern-match on `code` to drive automated repair.\n\n| Severity | Code | Widget | Message |\n|---|---|---|---|\n| error | `chart_dataset_empty` | `empty_chart` | chart 'empty_chart' references dataset 'empty' which has 0 rows; chart will render blank. |\n| error | `chart_mapping_column_missing` | `missing_col` | mapping.y='us_99y' is not a column in dataset 'rates'. |\n| error | `kpi_source_column_missing` | `k_typo` | kpi 'k_typo' source='rates.latest.us_99y' references column 'us_99y' which is not in dataset 'rates'. |"
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "v_spec",
+              "w": 4,
+              "h_px": 280,
+              "title": "Variant 1: spec",
+              "subtitle": "`{chart_type, dataset, mapping}` -- the PRISM-preferred path.",
+              "spec": {
+                "chart_type": "line",
+                "dataset": "rates",
+                "mapping": {
+                  "x": "date",
+                  "y": "us_10y",
+                  "y_title": "Yield (%)"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "v_option",
+              "w": 4,
+              "h_px": 280,
+              "title": "Variant 2: option (raw passthrough)",
+              "subtitle": "Hand-rolled ECharts option dict on the widget; bypasses the builder.",
+              "option": {
+                "title": {
+                  "text": "Hand-rolled option (passthrough)",
+                  "left": "center"
+                },
+                "tooltip": {
+                  "trigger": "item"
+                },
+                "legend": {
+                  "orient": "horizontal",
+                  "bottom": 0
+                },
+                "series": [
+                  {
+                    "name": "Tier",
+                    "type": "pie",
+                    "radius": [
+                      "35%",
+                      "65%"
+                    ],
+                    "data": [
+                      {
+                        "value": 35,
+                        "name": "Producer"
+                      },
+                      {
+                        "value": 28,
+                        "name": "Consumer"
+                      },
+                      {
+                        "value": 22,
+                        "name": "Refiner"
+                      },
+                      {
+                        "value": 15,
+                        "name": "Other"
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "v_ref",
+              "w": 4,
+              "h_px": 280,
+              "title": "Variant 3: ref",
+              "subtitle": "`ref: 'echarts/<file>.json'` -- spec loaded from a sibling JSON file. Compiler resolves paths relative to the manifest's parent dir.",
+              "ref": "echarts/showcase_ref_chart.json"
+            }
+          ],
+          [
+            {
+              "widget": "chart",
+              "id": "computed_chart",
+              "w": 6,
+              "h_px": 320,
+              "title": "Computed dataset: 2s10s spread (bp)",
+              "subtitle": "`spreads.compute.us_2s10s_bp = (us_10y - us_2y) * 100`; provenance auto-stamps `system: 'computed'` + the recipe string.",
+              "spec": {
+                "chart_type": "multi_line",
+                "dataset": "spreads",
+                "mapping": {
+                  "x": "date",
+                  "y": [
+                    "us_2s10s_bp",
+                    "us_5s30s_bp"
+                  ],
+                  "y_title": "Spread (bp)"
+                }
+              }
+            },
+            {
+              "widget": "chart",
+              "id": "initial_chart",
+              "w": 6,
+              "h_px": 320,
+              "title": "initial_state: opens in YoY %",
+              "subtitle": "Same data as the levels chart on Tab 1; `spec.initial_state.transform = 'yoy_pct'` opens the controls drawer pre-set to YoY %.",
+              "spec": {
+                "chart_type": "line",
+                "dataset": "rates",
+                "mapping": {
+                  "x": "date",
+                  "y": "us_10y",
+                  "y_title": "Yield"
+                },
+                "initial_state": {
+                  "transform": "yoy_pct",
+                  "smoothing": 5
+                }
+              }
+            }
+          ]
+        ]
+      }
+    ]
+  },
+  "links": [
+    {
+      "group": "fil_sync",
+      "members": [
+        "fil_sync_a",
+        "fil_sync_b"
+      ],
+      "sync": [
+        "axis",
+        "tooltip",
+        "legend",
+        "dataZoom"
+      ]
+    },
+    {
+      "group": "fil_brush",
+      "members": [
+        "fil_sync_a",
+        "fil_sync_b"
+      ],
+      "brush": {
+        "type": "lineX",
+        "xAxisIndex": 0
+      }
+    }
+  ]
+}

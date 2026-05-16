@@ -69,7 +69,7 @@ If two widgets reference the same `dataset_key`, they share one PULLS entry (the
 | Knob | Effect |
 |------|--------|
 | `coordinates` / `codes` / `series` / `expressions` | Which columns the pipeline produces |
-| `start` | History depth — clipping here is irreversible (`dashboards.md` §10) |
+| `start` | History depth — clipping here is irreversible (`dashboards_hub.md` §10) |
 | `name` | The CSV stem (post-suffix for market_data) and therefore the dataset_key |
 | `output_path` | Always `f"{SESSION_PATH}/data"` (Rule 5); never per-source subfolders |
 

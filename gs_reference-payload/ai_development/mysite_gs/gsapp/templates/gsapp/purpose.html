@@ -1,0 +1,95 @@
+{% extends "gsapp/base.html" %}
+{% load gs_extras %}
+
+{% block title %}Our Purpose — gs-reference mock{% endblock %}
+
+{% block content %}
+
+<section class="gs-page-header gs-page-header--centered">
+    <div class="gs-page-header__inner">
+        <span class="gs-overline">{{ page_eyebrow }}</span>
+        <h1 class="gs-headline gs-headline--02">{{ page_title }}</h1>
+        <p class="gs-subtitle--lg" style="max-width: 720px;">{{ page_subtitle }}</p>
+    </div>
+</section>
+
+{# Values 4-up text-only cards #}
+<section class="gs-section">
+    <div class="gs-container">
+        <header class="gs-section-heading gs-text-center" style="align-items: center;">
+            <span class="gs-overline">Our Values</span>
+            <h2 class="gs-headline gs-headline--04">Four Principles That Define Us</h2>
+        </header>
+        <div class="gs-grid gs-grid--4">
+            {% for v in values %}
+            <div class="gs-card gs-card--text">
+                <div class="gs-card__body">
+                    <h3 class="gs-card__title">{{ v.title }}</h3>
+                    <p class="gs-body">{{ v.body }}</p>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+{# Principles two-up #}
+<section class="gs-section gs-section--subtle">
+    <div class="gs-container">
+        <div class="gs-two-up">
+            <div class="gs-two-up__media">{% gs_placeholder tint=principles_two_up.image_tint aspect="1x1" label=principles_two_up.title %}</div>
+            <div class="gs-two-up__content">
+                <span class="gs-overline">{{ principles_two_up.eyebrow }}</span>
+                <h2 class="gs-headline gs-headline--04">{{ principles_two_up.title }}</h2>
+                <p class="gs-body--lg">{{ principles_two_up.body }}</p>
+                <a href="#" class="gs-button gs-button--ghost-dark gs-two-up__cta">
+                    {{ principles_two_up.cta }} <span class="gs-button__arrow" aria-hidden="true">&rarr;</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+{# Ethics link list #}
+<section class="gs-section">
+    <div class="gs-container" style="max-width: 960px;">
+        <header class="gs-section-heading">
+            <span class="gs-overline">Business Standards</span>
+            <h2 class="gs-headline gs-headline--04">Conduct &amp; Governance</h2>
+            <p class="gs-body--lg">
+                The standards and frameworks that govern how we operate
+                and the public commitments we make as an institution.
+            </p>
+        </header>
+        <ul class="gs-link-list">
+            {% for link in ethics_links %}
+            <li><a href="#">{{ link.title }} <span aria-hidden="true">&rarr;</span></a></li>
+            {% endfor %}
+        </ul>
+    </div>
+</section>
+
+{# Discover cards #}
+<section class="gs-section gs-section--subtle">
+    <div class="gs-container">
+        <header class="gs-section-heading">
+            <span class="gs-overline">Discover</span>
+            <h2 class="gs-headline gs-headline--04">Explore More</h2>
+        </header>
+        <div class="gs-grid gs-grid--2">
+            {% for card in discover_cards %}
+            <a href="#" class="gs-card">
+                <div class="gs-card__image">{% gs_placeholder tint=card.image_tint aspect="16x9" label=card.title %}</div>
+                <div class="gs-card__body">
+                    <span class="gs-overline">{{ card.eyebrow }}</span>
+                    <h3 class="gs-card__title">{{ card.title }}</h3>
+                    <p class="gs-body">{{ card.body }}</p>
+                    <span class="gs-card__cta">Read More <span aria-hidden="true">&rarr;</span></span>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+{% endblock %}

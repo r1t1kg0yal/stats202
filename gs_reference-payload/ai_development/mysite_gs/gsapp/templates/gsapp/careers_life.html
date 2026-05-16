@@ -1,0 +1,53 @@
+{% extends "gsapp/base.html" %}
+{% load gs_extras %}
+
+{% block title %}Life at the Firm — gs-reference mock{% endblock %}
+
+{% block content %}
+
+<section class="gs-page-header">
+    <div class="gs-page-header__inner">
+        <span class="gs-overline">{{ page_eyebrow }}</span>
+        <h1 class="gs-headline gs-headline--02">{{ page_title }}</h1>
+        <p class="gs-subtitle--lg" style="max-width: 720px;">{{ page_subtitle }}</p>
+        <a href="#" class="gs-page-header__share" aria-label="Share">
+            Share <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>
+        </a>
+    </div>
+</section>
+
+{% for tu in two_ups %}
+<section class="gs-section {% if forloop.counter|divisibleby:2 %}gs-section--subtle{% endif %}">
+    <div class="gs-container">
+        <div class="gs-two-up {% if tu.reverse %}gs-two-up--reverse{% endif %}">
+            <div class="gs-two-up__media">{% gs_placeholder tint=tu.image_tint aspect="1x1" label=tu.title %}</div>
+            <div class="gs-two-up__content">
+                <span class="gs-overline">{{ tu.eyebrow }}</span>
+                <h2 class="gs-headline gs-headline--04">{{ tu.title }}</h2>
+                <p class="gs-body--lg">{{ tu.body }}</p>
+                <a href="#" class="gs-button gs-button--ghost-dark gs-two-up__cta">
+                    {{ tu.cta }} <span class="gs-button__arrow" aria-hidden="true">&rarr;</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+{% endfor %}
+
+<section class="gs-section">
+    <div class="gs-container">
+        <div class="gs-two-up gs-two-up--reverse">
+            <div class="gs-two-up__media">{% gs_placeholder tint=alumni_two_up.image_tint aspect="1x1" label=alumni_two_up.title %}</div>
+            <div class="gs-two-up__content">
+                <span class="gs-overline">{{ alumni_two_up.eyebrow }}</span>
+                <h2 class="gs-headline gs-headline--04">{{ alumni_two_up.title }}</h2>
+                <p class="gs-body--lg">{{ alumni_two_up.body }}</p>
+                <a href="#" class="gs-button gs-button--ghost-dark gs-two-up__cta">
+                    {{ alumni_two_up.cta }} <span class="gs-button__arrow" aria-hidden="true">&rarr;</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+{% endblock %}

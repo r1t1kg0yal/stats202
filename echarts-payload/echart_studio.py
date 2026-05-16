@@ -986,11 +986,54 @@ def _normalize_annotations(
     Items that don't carry the required positional key (e.g. an
     event_line missing ``x``) are skipped silently rather than
     silently emitting a broken markLine entry.
+
+    For the canonical flat list-of-typed-dicts shape, the compiler also
+    accepts the author-friendly aliases ``value`` / ``at`` / ``x_value`` /
+    ``y_value`` and folds them to the canonical positional key (so
+    ``{"type": "hline", "value": 0}`` is treated as
+    ``{"type": "hline", "y": 0}``). Items missing the required positional
+    key (and no alias) are silently dropped rather than emitted as broken
+    markLine entries that crash ECharts' renderSeries with
+    ``"Cannot read properties of undefined (reading 'coord')"``.
     """
     if raw is None:
         return []
     if isinstance(raw, list):
-        return [a for a in raw if isinstance(a, dict)]
+        cleaned: List[Dict[str, Any]] = []
+        for a in raw:
+            if not isinstance(a, dict):
+                continue
+            t = str(a.get("type", "")).lower()
+            ann = dict(a)
+            if t == "hline":
+                if "y" not in ann:
+                    for alias in ("value", "y_value", "at"):
+                        if alias in ann:
+                            ann["y"] = ann.pop(alias)
+                            break
+                if ann.get("y") is None:
+                    continue
+            elif t == "vline":
+                if "x" not in ann:
+                    for alias in ("value", "x_value", "at"):
+                        if alias in ann:
+                            ann["x"] = ann.pop(alias)
+                            break
+                if ann.get("x") is None:
+                    continue
+            elif t == "band":
+                has_x_band = ann.get("x1") is not None and ann.get("x2") is not None
+                has_y_band = ann.get("y1") is not None and ann.get("y2") is not None
+                if not (has_x_band or has_y_band):
+                    continue
+            elif t == "arrow":
+                if any(ann.get(k) is None for k in ("x1", "y1", "x2", "y2")):
+                    continue
+            elif t == "point":
+                if ann.get("x") is None or ann.get("y") is None:
+                    continue
+            cleaned.append(ann)
+        return cleaned
     if not isinstance(raw, dict):
         return []
     out: List[Dict[str, Any]] = []

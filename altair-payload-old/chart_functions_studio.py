@@ -883,6 +883,11 @@ OKABE_ITO: Dict[str, Any] = {
     "colors": ["#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2",
                "#D55E00", "#CC79A7", "#000000"],
 }
+PASTEL: Dict[str, Any] = {
+    "name": "pastel", "label": "Pastel (soft, low-saturation)", "kind": "categorical",
+    "colors": ["#A8DADC", "#FFB4A2", "#B5EAEA", "#FCE38A", "#C1A7E2",
+               "#F8B5C8", "#A0D2DB", "#FFCFD2"],
+}
 VIRIDIS: Dict[str, Any]  = {"name": "viridis",  "label": "Viridis",  "kind": "sequential", "scheme": "viridis"}
 BLUES: Dict[str, Any]    = {"name": "blues",    "label": "Blues",    "kind": "sequential", "scheme": "blues"}
 REDS: Dict[str, Any]     = {"name": "reds",     "label": "Reds",     "kind": "sequential", "scheme": "reds"}
@@ -894,7 +899,7 @@ SPECTRAL: Dict[str, Any] = {"name": "spectral", "label": "Spectral", "kind": "di
 PALETTES: Dict[str, Dict[str, Any]] = {
     p["name"]: p for p in [
         GS_PRIMARY, GS_DIVERGING, MONO_BLUE, MONO_GREY,
-        VIVID, TABLEAU, OKABE_ITO,
+        VIVID, TABLEAU, OKABE_ITO, PASTEL,
         VIRIDIS, BLUES, REDS, GREENS, REDBLUE, SPECTRAL,
     ]
 }

@@ -1,0 +1,141 @@
+{% load static %}{% load gs_extras %}<!DOCTYPE html>
+<html lang="en" data-runtime="{{ request.GET.runtime|default:'prism' }}">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}gs-reference mock{% endblock %}</title>
+    <meta name="description" content="Mock of the gs.com visual design language for PRISM-side reference.">
+    <link rel="stylesheet" href="{% static 'css/tokens.css' %}?v=7">
+    <link rel="stylesheet" href="{% static 'css/fonts.css' %}?v=7">
+    <link rel="stylesheet" href="{% static 'css/components.css' %}?v=7">
+</head>
+<body>
+
+    <header class="gs-nav" role="banner">
+        <div class="gs-nav__inner">
+            <a href="/" class="gs-nav__logo">
+                <span class="gs-nav__logo-mark">GS</span>
+                <span>Goldman Sachs</span>
+            </a>
+
+            <nav class="gs-nav__items" aria-label="Primary">
+                {% for item in nav_items %}
+                <li class="gs-nav__item {% if item.label == active_nav %}gs-nav__item--active{% endif %}">
+                    <a href="{{ item.url }}">{{ item.label }}</a>
+                </li>
+                {% endfor %}
+            </nav>
+
+            <div class="gs-nav__right">
+                <button type="button" class="gs-nav__icon" aria-label="Search">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="7"/>
+                        <line x1="16.5" y1="16.5" x2="21" y2="21"/>
+                    </svg>
+                </button>
+                <button type="button" class="gs-nav__icon" aria-label="Menu">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="3" y1="6" x2="21" y2="6"/>
+                        <line x1="3" y1="12" x2="21" y2="12"/>
+                        <line x1="3" y1="18" x2="21" y2="18"/>
+                    </svg>
+                </button>
+                <a href="#" class="gs-button gs-button--ghost-dark" style="min-height: 40px; padding-top: 0; padding-bottom: 0;">
+                    Client Login
+                </a>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+
+    <section class="gs-briefings" aria-labelledby="briefings-title">
+        <div class="gs-briefings__inner">
+            <span class="gs-overline">Newsletter</span>
+            <h2 id="briefings-title" class="gs-heading gs-heading--02">Subscribe to Briefings</h2>
+            <p class="gs-body--lg">
+                The signature newsletter for insights and analysis from
+                across the firm. Delivered to your inbox each weekday.
+            </p>
+            <form class="gs-briefings__form" method="post" action="#" onsubmit="return false;">
+                <input type="email" class="gs-briefings__input" placeholder="Email address" aria-label="Email address">
+                <button type="submit" class="gs-briefings__submit">
+                    Submit <span aria-hidden="true">&rarr;</span>
+                </button>
+            </form>
+            <p class="gs-briefings__legal">
+                By submitting this information, you agree that the
+                information you are providing is subject to the
+                <a href="#">privacy policy</a> and <a href="#">terms of use</a>.
+                You consent to receive communications via email.
+            </p>
+        </div>
+    </section>
+
+    <footer class="gs-footer" role="contentinfo">
+        <div class="gs-container">
+            <div class="gs-footer__columns">
+                <div>
+                    <h3 class="gs-footer__col-title">Our Firm</h3>
+                    <ul class="gs-footer__list">
+                        <li><a href="/our-firm/purpose-and-values/">Purpose and Values</a></li>
+                        <li><a href="#">Our People</a></li>
+                        <li><a href="#">History</a></li>
+                        <li><a href="#">Newsroom</a></li>
+                        <li><a href="#">Sustainability</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h3 class="gs-footer__col-title">What We Do</h3>
+                    <ul class="gs-footer__list">
+                        <li><a href="/what-we-do/">Investment Banking</a></li>
+                        <li><a href="/what-we-do/">Asset Management</a></li>
+                        <li><a href="/what-we-do/">Wealth Management</a></li>
+                        <li><a href="/what-we-do/">Markets</a></li>
+                        <li><a href="/what-we-do/">Platform Solutions</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h3 class="gs-footer__col-title">Insights</h3>
+                    <ul class="gs-footer__list">
+                        <li><a href="/insights/">All Insights</a></li>
+                        <li><a href="/insights/">Macroeconomics</a></li>
+                        <li><a href="/insights/">Markets</a></li>
+                        <li><a href="/insights/">Podcasts</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h3 class="gs-footer__col-title">Careers</h3>
+                    <ul class="gs-footer__list">
+                        <li><a href="/careers/">Careers Home</a></li>
+                        <li><a href="/careers/life/">Life at the Firm</a></li>
+                        <li><a href="#">Programs</a></li>
+                        <li><a href="#">Search Jobs</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h3 class="gs-footer__col-title">Investor Relations</h3>
+                    <ul class="gs-footer__list">
+                        <li><a href="#">Quarterly Earnings</a></li>
+                        <li><a href="#">Annual Reports</a></li>
+                        <li><a href="#">Stock Information</a></li>
+                        <li><a href="#">Events</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="gs-footer__bottom">
+                <span>&copy; gs-reference mock. Visual reference only; not a Goldman Sachs property.</span>
+                <ul class="gs-footer__bottom-links">
+                    <li><a href="#">Privacy &amp; Cookies</a></li>
+                    <li><a href="#">Terms of Use</a></li>
+                    <li><a href="#">Accessibility</a></li>
+                    <li><a href="#">Worldwide</a></li>
+                </ul>
+            </div>
+        </div>
+    </footer>
+</body>
+</html>

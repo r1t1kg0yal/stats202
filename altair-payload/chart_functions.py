@@ -4143,6 +4143,7 @@ def _auto_stagger_vline_labels(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
     clamped_domain: Optional[List[float]],
+    chart_width_px: int = 700,
 ) -> List[Annotation]:
     """Detect VLine label collisions and convert each colliding cluster's
     labels to PointLabel annotations at staggered y heights.
@@ -4151,6 +4152,12 @@ def _auto_stagger_vline_labels(
     label boxes would overlap horizontally, then re-renders each cluster
     with the labels stripped from the VLines and a PointLabel placed at
     the corresponding x and a rotating high/mid/low y position.
+
+    ``chart_width_px`` defaults to the ``wide`` preset width (700px)
+    for standalone use. ``render_annotations`` passes the real
+    per-panel pixel width when known (composites with 300-400px cells
+    rely on this so the cluster detection's pixel-distance check uses
+    the panel's actual horizontal budget, not the standalone default).
     """
     labeled_vlines: List[Tuple[int, VLine]] = [
         (i, ann)
@@ -4175,7 +4182,6 @@ def _auto_stagger_vline_labels(
     else:
         x_min_num, x_max_num = 0.0, 1.0
     x_span = (x_max_num - x_min_num) if x_max_num != x_min_num else 1.0
-    chart_width_px = 700
     char_width_px = 7
     min_gap_px = 14
 
@@ -4336,72 +4342,272 @@ def _flip_hline_label_inside_band(
 # illegible pile because z-order overwrites the first label with the second.
 # ---------------------------------------------------------------------------
 
-def _auto_stagger_callouts(annotations: List[Annotation]) -> List[Annotation]:
+def _auto_stagger_pointlabels(
+    annotations: List[Annotation],
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_width_px: int = 700,
+) -> List[Annotation]:
+    """Stagger 2+ PointLabels whose x values cluster close together.
+
+    Each PointLabel paints at ``(x, y) + (dx, dy)`` pixels. With the
+    default ``dy=-10``, two PointLabels at nearby x-values render their
+    labels side-by-side just above the line and overlap when they don't
+    fit in the available horizontal pitch. This handler detects
+    consecutive PointLabels whose x-values are within an estimated
+    label width of each other and alternates their ``dy`` so adjacent
+    labels stack above-then-below-then-above their points.
+
+    Behaviour:
+      - Pairs / clusters that share an exact ``(x, y)`` are handled by
+        ``_auto_stagger_callouts`` (which already dedups PointLabel +
+        Callout collisions); this handler only acts on horizontal
+        clusters where the x values differ but pack close.
+      - When the PointLabel carries an explicit non-default ``dy``,
+        respect the caller's intent and skip staggering -- the caller
+        is positioning labels deliberately.
+      - The data-to-pixel x conversion uses the visible x-range
+        spanned by ``df[x_field]``; a chart-width estimate of 700px
+        (the ``wide`` preset width) is used as a default when the
+        annotation pipeline doesn't carry the real plot width. The
+        result is conservative -- if anything we'll stagger labels
+        that don't quite need it, never miss labels that do.
+    """
+    if not annotations:
+        return annotations
+
+    x_field = mapping.get("x") if isinstance(mapping.get("x"), str) else None
+    if not x_field or x_field not in df.columns:
+        return annotations
+
+    # Index PointLabels with index + numeric-or-datetime x sort key.
+    point_indices: List[Tuple[int, float]] = []
+    for idx, ann in enumerate(annotations):
+        if not isinstance(ann, PointLabel) or not ann.label:
+            continue
+        # Skip annotations whose dy is not the default (-10) -- caller
+        # is positioning intentionally.
+        if ann.dy != -10:
+            continue
+        try:
+            x_num = _to_numeric_x(ann.x)
+        except Exception:  # noqa: BLE001
+            continue
+        point_indices.append((idx, x_num))
+
+    if len(point_indices) < 2:
+        return annotations
+
+    # Sort by x; collect the visible x-range from the DataFrame for the
+    # data-to-pixel conversion.
+    point_indices.sort(key=lambda t: t[1])
+    try:
+        x_min = _to_numeric_x(df[x_field].min())
+        x_max = _to_numeric_x(df[x_field].max())
+    except Exception:  # noqa: BLE001
+        return annotations
+    x_span = float(x_max - x_min)
+    if x_span <= 0:
+        return annotations
+
+    # Estimated PointLabel pixel width: label_chars * font_size * 0.6.
+    # Use the longest label in the candidate set so adjacent labels of
+    # different lengths don't collide when one is much wider.
+    max_chars = max(
+        len(annotations[idx].label)  # type: ignore[union-attr]
+        for idx, _ in point_indices
+    )
+    sample_font_size = annotations[point_indices[0][0]].font_size  # type: ignore[union-attr]
+    label_pixel_w = max_chars * sample_font_size * 0.6 + 6
+    # Pixel-per-data-unit conversion uses the panel's real width when
+    # the caller threaded one through (composites do); otherwise the
+    # ``wide`` preset (700px).
+    px_per_x = float(chart_width_px) / x_span
+
+    # Greedily build clusters: any consecutive pair whose pixel gap is
+    # smaller than the label pixel width sits in the same cluster.
+    clusters: List[List[int]] = []
+    current: List[int] = []
+    last_x_pixel: Optional[float] = None
+    for idx, x_num in point_indices:
+        x_pixel = (x_num - x_min) * px_per_x
+        if last_x_pixel is None or (x_pixel - last_x_pixel) >= label_pixel_w:
+            if len(current) >= 2:
+                clusters.append(current)
+            current = [idx]
+        else:
+            current.append(idx)
+        last_x_pixel = x_pixel
+    if len(current) >= 2:
+        clusters.append(current)
+
+    if not clusters:
+        return annotations
+
+    # Stagger each cluster: alternate above (-10, -24, -38, ...) and
+    # below (+14, +28, +42, ...) of the anchor point. This mirrors
+    # _auto_stagger_callouts' dy stair-step but with the alternating
+    # pattern so the labels visually fan out from each point.
+    for cluster in clusters:
+        for k, idx in enumerate(cluster):
+            ann = annotations[idx]
+            if not isinstance(ann, PointLabel):
+                continue
+            level = k // 2
+            if k % 2 == 0:
+                ann.dy = -10 - level * 14
+            else:
+                ann.dy = 14 + level * 14
+        logger.info(
+            "[render_annotations] Staggered %d PointLabel(s) clustered at "
+            "x-pixel pitch < %.1fpx (max label %d chars).",
+            len(cluster), label_pixel_w, max_chars,
+        )
+
+    return annotations
+
+
+def _auto_stagger_callouts(
+    annotations: List[Annotation],
+    df: Optional[pd.DataFrame] = None,
+    mapping: Optional[Dict[str, Any]] = None,
+    chart_height_px: int = 350,
+) -> List[Annotation]:
     """Dedupe and stagger overlapping Callouts.
 
     Behaviour:
-      - Two or more Callouts with the same ``(x, y)`` and same ``label``
-        are deduped to a single Callout (keep the first, log a warning
-        on subsequent ones).
-      - Two or more Callouts with the same ``(x, y)`` but different
-        labels keep all but stagger their ``dy`` so they form a
-        readable vertical stack.
+      - Two or more Callouts at the same ``x`` whose ``y`` values land
+        within a per-Callout pixel pitch of each other form a *cluster*
+        (the cluster is the loosened dedup unit -- callers no longer
+        need to pin every Callout to a byte-identical ``y`` to trigger
+        the stack handler).
+      - Within each cluster, two Callouts with the same ``label`` are
+        deduped to one (keep the first, log a warning on subsequent
+        ones); two or more Callouts with distinct labels keep all but
+        stagger their ``dy`` so they form a readable vertical stack.
       - PointLabel + Callout at the same ``(x, y)`` is treated as a
         special-case dedup -- the Callout's label is kept (Callout has
         a halo for legibility) and the PointLabel is dropped.
 
     The per-Callout x/y coordinates are unchanged; only ``dy`` is
     rewritten to spread overlapping labels.
+
+    ``df`` and ``mapping`` are used only to derive the data-y range,
+    which feeds the y-pixel pitch test used to detect a cluster. When
+    not supplied (callers that pre-date the loosened dedup) the
+    function falls back to the previous strict-equality behaviour.
+    ``chart_height_px`` defaults to a conservative ``wide``-preset
+    height (350px) when the annotation pipeline doesn't thread the
+    real plot height through.
     """
     if not annotations:
         return annotations
 
     new_annotations = list(annotations)
-    by_key: Dict[Tuple[Any, Any], List[int]] = {}
+
+    # ----- y-pixel-per-y-data conversion --------------------------------
+    # When df + mapping describe a numeric y-axis, derive the pixel
+    # pitch used to test whether two Callouts share a cluster. Without
+    # them, fall back to ``y_pitch_data = 0`` so the cluster test
+    # degenerates to the previous strict-equality behaviour.
+    y_pitch_data: float = 0.0
+    callout_pixel_pitch_px = 18.0  # ~callout halo height + small gap
+    if df is not None and mapping is not None:
+        y_field = mapping.get("y")
+        if y_field and y_field in df.columns:
+            y_vals = pd.to_numeric(df[y_field], errors="coerce").dropna()
+            if len(y_vals) > 0:
+                y_lo = float(y_vals.min())
+                y_hi = float(y_vals.max())
+                y_range = (y_hi - y_lo) if y_hi != y_lo else 1.0
+                # data-units required to span ``callout_pixel_pitch_px``
+                # in the plot region.
+                y_pitch_data = (callout_pixel_pitch_px / chart_height_px) * y_range
+
+    # ----- group Callouts by exact x; within each x-group, cluster by y -
+    callout_by_x: Dict[Any, List[int]] = {}
     for idx, ann in enumerate(new_annotations):
         if isinstance(ann, Callout) and ann.label:
-            # Coerce y to float ONLY when it's already numeric. Categorical
-            # y values (heatmap with sector labels, e.g. y='Tech') must
-            # pass through as-is so the dedup key still matches when two
-            # Callouts pin to the same cell.
-            try:
-                y_key: Any = float(ann.y) if ann.y is not None else None
-            except (TypeError, ValueError):
-                y_key = ann.y
-            key = (ann.x, y_key)
-            by_key.setdefault(key, []).append(idx)
+            callout_by_x.setdefault(ann.x, []).append(idx)
 
     indices_to_drop: set = set()
-    for key, idxs in by_key.items():
-        if len(idxs) <= 1:
-            continue
-        seen_labels: Dict[str, int] = {}
-        survivors: List[int] = []
+    # cluster_keys[(x_key, y_repr)] = list of (idx) -- consumed by the
+    # PointLabel co-location pass below.
+    callout_keys: set = set()
+    for x_key, idxs in callout_by_x.items():
+        # Annotate each idx with its numeric y where possible; non-numeric
+        # y values (categorical heatmap rows etc.) fall back to the raw
+        # value so the cluster test still treats identical category
+        # strings as colliding.
+        entries: List[Tuple[int, Any, float]] = []
         for idx in idxs:
             ann = new_annotations[idx]
             if not isinstance(ann, Callout):
                 continue
-            if ann.label in seen_labels:
-                logger.warning(
-                    "[render_annotations] Dropping duplicate Callout at "
-                    "(x=%s, y=%s) with same label %r already at index %d",
-                    ann.x, ann.y, ann.label, seen_labels[ann.label],
-                )
-                indices_to_drop.add(idx)
+            try:
+                y_num = float(ann.y) if ann.y is not None else 0.0
+                y_key: Any = y_num
+            except (TypeError, ValueError):
+                y_num = 0.0
+                y_key = ann.y
+            entries.append((idx, y_key, y_num))
+            callout_keys.add((x_key, y_key))
+        if len(entries) <= 1:
+            continue
+        # Sort by numeric y; cluster consecutive entries whose y-gap is
+        # within ``y_pitch_data`` (or treat all as one cluster when the
+        # pitch is unknown / zero, preserving the legacy behaviour).
+        entries.sort(key=lambda t: t[2])
+        clusters: List[List[Tuple[int, Any, float]]] = []
+        current: List[Tuple[int, Any, float]] = [entries[0]]
+        for j in range(1, len(entries)):
+            prev_y = current[-1][2]
+            curr_y = entries[j][2]
+            gap = abs(curr_y - prev_y)
+            if y_pitch_data == 0 or gap < y_pitch_data:
+                current.append(entries[j])
             else:
-                seen_labels[ann.label] = idx
-                survivors.append(idx)
-        # If 2+ distinct labels still share the coordinate, stagger dy.
-        if len(survivors) >= 2:
-            base_dy = float(new_annotations[survivors[0]].dy)  # type: ignore[union-attr]
-            spacing = 14
-            for k, idx in enumerate(survivors):
+                if len(current) >= 2:
+                    clusters.append(current)
+                current = [entries[j]]
+        if len(current) >= 2:
+            clusters.append(current)
+        # For each cluster: dedup same-label, then stagger remaining dy.
+        for cluster in clusters:
+            seen_labels: Dict[str, int] = {}
+            survivors: List[int] = []
+            for idx, _y_key, _y_num in cluster:
                 ann = new_annotations[idx]
-                if isinstance(ann, Callout):
-                    ann.dy = int(base_dy - k * spacing)
+                if not isinstance(ann, Callout):
+                    continue
+                if ann.label in seen_labels:
+                    logger.warning(
+                        "[render_annotations] Dropping duplicate Callout "
+                        "at (x=%s, y=%s) with same label %r already at "
+                        "index %d (cluster size %d).",
+                        ann.x, ann.y, ann.label, seen_labels[ann.label],
+                        len(cluster),
+                    )
+                    indices_to_drop.add(idx)
+                else:
+                    seen_labels[ann.label] = idx
+                    survivors.append(idx)
+            if len(survivors) >= 2:
+                base_dy = float(new_annotations[survivors[0]].dy)  # type: ignore[union-attr]
+                spacing = 14
+                for k, idx in enumerate(survivors):
+                    ann = new_annotations[idx]
+                    if isinstance(ann, Callout):
+                        ann.dy = int(base_dy - k * spacing)
+                logger.info(
+                    "[render_annotations] Staggered %d Callout(s) "
+                    "clustered at x=%s within %.4f y-units "
+                    "(~%.1fpx pitch).",
+                    len(survivors), x_key, y_pitch_data,
+                    callout_pixel_pitch_px,
+                )
 
     # PointLabel + Callout at the same coordinate: drop PointLabel.
-    callout_keys = set(by_key.keys())
     for idx, ann in enumerate(new_annotations):
         if isinstance(ann, PointLabel):
             try:
@@ -4477,7 +4683,12 @@ def _auto_stagger_hline_labels(
 
     labeled.sort(key=lambda pair: -float(pair[1].y))
 
-    label_height_px = 14
+    # Pitch ladder uses 1.5 * HLine label fontSize (10px) so adjacent
+    # rows have a comfortable half-line-height gap rather than the
+    # previous tight 14px (which was visually flush). Bumped per the
+    # collision audit's C02 finding.
+    hline_label_fontsize = 10
+    label_height_px = int(hline_label_fontsize * 1.5)
     min_gap_y = label_height_px / max(chart_height_px, 1) * y_range
 
     groups: List[List[Tuple[int, HLine]]] = []
@@ -5339,10 +5550,25 @@ def render_annotations(
     annotations = _drop_right_edge_vlines(annotations, df, mapping)
 
     # ---- auto-stagger ---------------------------------------------------
+    # ``chart_width`` is the per-panel plot width passed by the caller
+    # (real cell width in composites, the standalone preset elsewhere);
+    # default to the ``wide`` preset (700px) when the caller hasn't
+    # threaded one through.
+    panel_width_px = int(chart_width) if chart_width else 700
+    panel_height_px = int(chart_height) if chart_height else 350
     annotations = _auto_stagger_band_labels(annotations, df, mapping, clamped_domain)
-    annotations = _auto_stagger_vline_labels(annotations, df, mapping, clamped_domain)
-    annotations = _auto_stagger_hline_labels(annotations, df, mapping, clamped_domain)
-    annotations = _auto_stagger_callouts(annotations)
+    annotations = _auto_stagger_vline_labels(
+        annotations, df, mapping, clamped_domain, chart_width_px=panel_width_px
+    )
+    annotations = _auto_stagger_hline_labels(
+        annotations, df, mapping, clamped_domain, chart_height_px=panel_height_px
+    )
+    annotations = _auto_stagger_pointlabels(
+        annotations, df, mapping, chart_width_px=panel_width_px
+    )
+    annotations = _auto_stagger_callouts(
+        annotations, df=df, mapping=mapping, chart_height_px=panel_height_px
+    )
     annotations = _flip_hline_label_inside_band(annotations)
 
     for annotation in annotations:
@@ -8570,6 +8796,7 @@ _HEATMAP_GRADIENT_NAMES: Set[str] = {
 
 def _validate_color_kwargs(
     mapping: Dict[str, Any], chart_type: str,
+    df: Optional[pd.DataFrame] = None,
 ) -> None:
     """Validate ``mapping['color_scheme']`` and ``mapping['color_map']``.
 
@@ -8577,6 +8804,11 @@ def _validate_color_kwargs(
     (categorical palette on heatmap, gradient ramp on categorical
     chart) at the boundary so PRISM sees an actionable error instead
     of a silently-wrong render.
+
+    ``df`` is optional; when supplied, integer-key ``color_map`` slots
+    are also range-checked against the actual category count for the
+    color field, so PRISM hears immediately about
+    ``color_map={5: '#hex'}`` on a 3-category chart.
     """
     is_heatmap_path = chart_type == "heatmap"
 
@@ -8624,17 +8856,50 @@ def _validate_color_kwargs(
             "(e.g. 'blues', 'redblue')."
         )
     if isinstance(color_map, dict):
-        for cat, hex_val in color_map.items():
-            if not isinstance(cat, str):
+        for key, hex_val in color_map.items():
+            # Booleans are int subclasses in Python; reject them so
+            # ``{True: '#hex'}`` doesn't silently mean "slot 1".
+            if isinstance(key, bool) or (
+                not isinstance(key, str) and not isinstance(key, int)
+            ):
                 raise ValidationError(
                     f"mapping['color_map'] dict keys must be category "
-                    f"strings; got {type(cat).__name__}."
+                    f"strings (e.g. 'US') or positive integer legend slot "
+                    f"positions (e.g. 2 for the second colour); got "
+                    f"{type(key).__name__} {key!r}."
+                )
+            if isinstance(key, int) and key < 1:
+                raise ValidationError(
+                    f"mapping['color_map'] integer keys are 1-indexed "
+                    f"legend slot positions; got {key} (must be >= 1; "
+                    f"slot 1 is the first colour, slot 2 the second, ...)."
                 )
             if not isinstance(hex_val, str) or not hex_val.startswith("#"):
                 raise ValidationError(
-                    f"mapping['color_map'][{cat!r}]={hex_val!r} must be "
+                    f"mapping['color_map'][{key!r}]={hex_val!r} must be "
                     f"a hex string like '#1A2B3C'."
                 )
+        # Range-check int keys against the actual category count when
+        # we have df + color_field. Surfaces "color_map={5: ...} on a
+        # 3-category chart" at the boundary with an actionable message.
+        color_field = mapping.get("color")
+        if df is not None and color_field and color_field in df.columns:
+            n_categories = (
+                df[color_field].dropna().astype(str).nunique()
+            )
+            if n_categories > 0:
+                for key in color_map.keys():
+                    if isinstance(key, int) and not isinstance(key, bool):
+                        if key > n_categories:
+                            raise ValidationError(
+                                f"mapping['color_map'] integer slot {key} "
+                                f"is out of range; the chart's "
+                                f"{color_field!r} column has "
+                                f"{n_categories} categories (legal slots: "
+                                f"1..{n_categories}). Use the named-key "
+                                f"form ({{'<category>': '#hex'}}) or pick "
+                                f"a slot in range."
+                            )
     elif isinstance(color_map, (list, tuple)):
         for hex_val in color_map:
             if not isinstance(hex_val, str) or not hex_val.startswith("#"):
@@ -8687,10 +8952,17 @@ def _resolve_categorical_color_scale(
 
     Priority (highest wins):
 
-      1. ``mapping['color_map']`` dict ``{category: hex}``: pin specific
-         categories; fill any remaining categories from the default
-         categorical palette (or the palette named in
-         ``mapping['color_scheme']`` when also set).
+      1. ``mapping['color_map']`` dict with two key types, mixable in
+         the same dict:
+           - **String keys** = category names (e.g. ``'US'``). Pin a
+             named category to a specific hex.
+           - **Integer keys** = 1-indexed legend slot positions
+             (e.g. ``2`` = the second colour the user sees in the
+             legend). Pin the Nth slot regardless of category name.
+         Any category not pinned by either form falls back to the
+         default categorical palette (or the palette named in
+         ``mapping['color_scheme']`` when also set). Named-key wins
+         over integer-key when both apply to the same slot.
       2. ``mapping['color_map']`` list of hex strings: ``range`` only,
          applied in legend order (Vega-Lite cycles through the list).
       3. ``mapping['color_scheme']`` resolves to a categorical palette
@@ -8701,7 +8973,10 @@ def _resolve_categorical_color_scale(
 
     ``color_field`` + ``df`` are needed for the dict-shape ``color_map``
     case so we can enumerate categories and fill the missing ones from
-    the default palette without leaving Vega-Lite to guess.
+    the default palette without leaving Vega-Lite to guess. Integer
+    slot positions resolve against legend-sorted order
+    (``_resolve_color_sort``) so "slot 2" matches what the user sees in
+    the rendered legend, not raw pandas insertion order.
     """
     color_map = mapping.get("color_map")
     color_scheme = mapping.get("color_scheme")
@@ -8718,17 +8993,42 @@ def _resolve_categorical_color_scale(
                 df[color_field].dropna().astype(str).unique().tolist()
             )
         else:
-            categories = list(color_map.keys())
-        range_hexes: List[str] = []
-        fallback_idx = 0
-        for cat in categories:
+            categories = [k for k in color_map.keys() if isinstance(k, str)]
+
+        sort_order: Optional[List[str]] = None
+        if df is not None and color_field and color_field in df.columns:
+            sort_order = _resolve_color_sort(
+                df, color_field, mapping.get("color_sort"),
+            )
+        legend_order = sort_order if sort_order is not None else list(categories)
+
+        # Per Design Principle #7: pinning slot K must NOT shift any
+        # other slot's colour. Each un-pinned slot keeps the colour it
+        # would have under the default palette at THAT slot index, not
+        # the next-available palette colour. (The previous "advance a
+        # fallback counter only on un-pinned slots" pattern silently
+        # collapsed every slot above a pin one position down the
+        # palette, defeating the highlight-one intent.)
+        cat_to_hex: Dict[str, str] = {}
+        for slot_idx, cat in enumerate(legend_order):
             if cat in color_map:
-                range_hexes.append(color_map[cat])
+                cat_to_hex[cat] = color_map[cat]
+            elif (slot_idx + 1) in color_map:
+                cat_to_hex[cat] = color_map[slot_idx + 1]
             else:
-                range_hexes.append(
-                    default_palette[fallback_idx % len(default_palette)]
-                )
-                fallback_idx += 1
+                cat_to_hex[cat] = default_palette[
+                    slot_idx % len(default_palette)
+                ]
+
+        # Emit Scale with domain in pandas insertion order so existing
+        # legend / sort behaviour is unchanged; range[i] is the colour
+        # decided for categories[i] above.
+        range_hexes = [
+            cat_to_hex.get(
+                cat, default_palette[i % len(default_palette)],
+            )
+            for i, cat in enumerate(categories)
+        ]
         return alt.Scale(domain=categories, range=range_hexes)
 
     if isinstance(color_map, (list, tuple)):
@@ -11158,14 +11458,28 @@ def _build_bar(
         # every Nth label so visible labels get >= ~28px breathing room.
         # This MUST happen before alt.Header is constructed because
         # Header is immutable after `.encode()` builds the chart.
+        total_strip_px = n_x_cats * facet_width + spacing_overhead
         facet_label_expr = _facet_label_thinning_expr(
             list(df_grouped[x_field].unique()),
-            total_strip_px=n_x_cats * facet_width + spacing_overhead,
+            total_strip_px=total_strip_px,
         )
-        # When labels are thinned, the surviving labels have plenty of
-        # breathing room -- prefer horizontal orientation for legibility.
+        # When thinning fires, re-pick the rotation angle against the
+        # SURVIVOR pitch (not the per-facet pitch). Thinning leaves each
+        # surviving label ~28px of room -- that is enough for diagonal
+        # text but typically not enough for the GS skin's 16pt
+        # horizontal axis labels (a 3-char label at 16pt needs ~30px).
+        # The prior heuristic clobbered the angle to 0 whenever thinning
+        # fired, producing colliding horizontal labels in 4-grid
+        # composites with 10+ categories ("XLAXLBXLC...").
         if facet_label_expr is not None:
-            facet_label_angle = 0
+            survivor_count = max(
+                2, total_strip_px // _FACET_LABEL_MIN_PITCH_PX,
+            )
+            facet_label_angle = calculate_optimal_label_angle(
+                [str(v) for v in df_grouped[x_field].unique()],
+                chart_width=total_strip_px,
+                estimated_tick_count=int(survivor_count),
+            )
 
         # HARDCODED: grouped bar charts NEVER show a global x-axis title.
         # Per-facet header labels replace the axis title.
@@ -11907,7 +12221,38 @@ def _build_heatmap(
             .properties(width=width, height=height)
         )
 
-        if skin_config.get("heatmap_labels", True):
+        # Per-cell pixel-budget check: even when the skin enables
+        # heatmap labels, suppress them when the formatted label would
+        # not fit horizontally inside its cell. At 10pt, a 5-char value
+        # like "-0.43" needs ~30px of horizontal room; in a 35px-wide
+        # cell that leaves zero gap, and the labels paint into
+        # neighbouring cells producing "-0.43-0.61-0.16" ribbons of
+        # text. The check samples the formatted-value widths because
+        # raw value magnitudes mislead -- e.g. ".567" reads narrower
+        # than "-0.43" despite the same magnitude.
+        cell_label_fontsize = 10
+        n_x_cells = max(int(df[x_field].nunique()), 1)
+        per_cell_w = width / n_x_cells
+        value_fmt = _smart_number_format(df[value_field])
+        # Convert the vega-lite format spec (".2f" etc) into the
+        # equivalent python format spec for an on-screen width probe.
+        py_fmt_spec = value_fmt.lstrip(".") if value_fmt else ""
+        def _probe_len(v: Any) -> int:
+            try:
+                if py_fmt_spec:
+                    return len(format(float(v), py_fmt_spec))
+                return len(str(v))
+            except (TypeError, ValueError):
+                return len(str(v))
+        non_null = df[value_field].dropna()
+        if len(non_null) > 0:
+            label_chars = max(_probe_len(v) for v in non_null.head(50))
+        else:
+            label_chars = 5
+        label_pixel_budget = label_chars * cell_label_fontsize * 0.6 + 4
+        cells_too_narrow = per_cell_w < label_pixel_budget
+
+        if skin_config.get("heatmap_labels", True) and not cells_too_narrow:
             v_min = v_min_full
             v_max = v_max_full
             if is_mixed_sign and not forced_scheme:
@@ -11926,18 +12271,27 @@ def _build_heatmap(
                 )
             text = (
                 alt.Chart(df)
-                .mark_text(baseline="middle", fontSize=10)
+                .mark_text(baseline="middle", fontSize=cell_label_fontsize)
                 .encode(
                     x=alt.X(x_field, type="nominal", sort=x_sort_order),
                     y=alt.Y(y_field, type="nominal", sort=y_sort_order),
                     text=alt.Text(
                         value_field, type="quantitative",
-                        format=_smart_number_format(df[value_field]),
+                        format=value_fmt,
                     ),
                     color=color_condition,
                 )
             )
             chart = alt.layer(chart, text).properties(width=width, height=height)
+        elif cells_too_narrow:
+            logger.info(
+                "[_build_heatmap] suppressing cell labels: per-cell width "
+                "%.1fpx < label budget %.1fpx (%d cells x %dpx-wide canvas, "
+                "max label %d chars at %dpt). Use a wider canvas or fewer "
+                "x-categories to keep labels.",
+                per_cell_w, label_pixel_budget, n_x_cells, width,
+                label_chars, cell_label_fontsize,
+            )
     else:
         # ---- categorical / string path ----------------------------------
         # Treat the value column as ordered bins. Sort order respects an
@@ -12415,19 +12769,24 @@ def _build_donut(
     # - Inner / outer radii are sized off the SMALLER axis (with extra
     #   headroom for the legend on wide canvases) so the donut never
     #   gets clipped, regardless of canvas aspect ratio.
+    # - Inner / outer are derived from the canvas UNCONDITIONALLY -- the
+    #   skin's ``mark_config.arc.innerRadius/outerRadius`` (50/100) are
+    #   studio-slider seed values, NOT engine-render defaults; using
+    #   them here would leave a 200x200 arc adrift in a 450x450 frame.
     side = min(width, height)
     aspect_ratio = width / height if height > 0 else 1.0
     if aspect_ratio > 1.4:
-        # Wide frame: leave ~25% on the right for the legend column.
-        radius_budget = min(width * 0.6, height) * 0.5
+        # Wide frame: leave room on the right for the legend column.
+        radius_budget = min(width * 0.55, height) * 0.48
     elif aspect_ratio < 0.7:
-        # Tall frame: leave ~25% at the bottom for the legend.
-        radius_budget = min(width, height * 0.6) * 0.5
+        # Tall frame: legend below; size off width (smaller axis).
+        radius_budget = min(width, height * 0.55) * 0.48
     else:
-        # Roughly square: the legend tucks under or beside the arc.
-        radius_budget = side * 0.45
-    inner_radius = mark_config.get("innerRadius", radius_budget * 0.65)
-    outer_radius = mark_config.get("outerRadius", radius_budget)
+        # Roughly square: fill the frame, leaving ~4% margin to keep
+        # slice strokes / corner radii off the edge.
+        radius_budget = side * 0.48
+    outer_radius = radius_budget
+    inner_radius = outer_radius * 0.6
 
     chart = (
         alt.Chart(df)
@@ -12446,7 +12805,12 @@ def _build_donut(
                     mapping, skin_config, category_field, df,
                 ),
                 sort=_resolve_color_sort(df, category_field, mapping.get("color_sort")),
-                legend=alt.Legend(title=None),
+                # ``offset=8`` pulls the legend in tight against the arc.
+                # Default is ~18 -- with a frame whose inner margin is
+                # already ~4% (≈18px on a 450 frame), the default offset
+                # leaves a perceptible gulf the user sees as wasted
+                # whitespace.
+                legend=alt.Legend(title=None, offset=8),
             ),
             tooltip=_build_tooltip(mapping, "donut", df),
         )
@@ -13321,6 +13685,14 @@ def _auto_downsample_timeseries(
     If after frequency-based resampling the row count is still above
     ``MAX_ROWS_INTERACTIVE``, applies even index sampling (``df.iloc[::step]``).
 
+    Long-format multi-series data (DataFrame with one row per
+    ``(date, series)`` and an explicit series identifier column) is
+    detected by duplicate timestamps and resampled per series-group so
+    no series gets dropped. Without this branch,
+    ``df.set_index(date).resample(freq).last()`` would collapse all
+    rows in each frequency bucket to a single survivor (the last
+    series in insertion order), silently dropping every other series.
+
     Returns:
         ``(df_downsampled, freq_label)`` where ``freq_label`` is the
         chosen frequency (or ``None`` if no downsampling occurred).
@@ -13352,11 +13724,56 @@ def _auto_downsample_timeseries(
         else:
             freq = "ME"
 
-        df_indexed = df.set_index(x_field)
-        df_down = df_indexed.resample(freq).last().reset_index()
+        # Long-format detection: a date that appears more than once
+        # means we have a series identifier column packing multiple
+        # rows per timestamp. The naive ``set_index(x).resample.last()``
+        # path collapses those rows into a single survivor per bucket,
+        # which silently drops every series except whichever one
+        # happens to be last in insertion order.
+        is_long_format = bool(df[x_field].duplicated().any())
 
-        value_cols = [c for c in df_down.columns if c != x_field]
-        df_down = df_down.dropna(how="all", subset=value_cols)
+        if is_long_format:
+            # Group columns are every non-numeric, non-x column. Typical
+            # shapes: ``[date, value, series]`` -> group by ``series``;
+            # ``[date, country, sector, value]`` -> group by
+            # ``[country, sector]``. Numeric columns are treated as
+            # value columns even if they hold integer codes (we'd rather
+            # lose a numeric series-id column than collapse the panel).
+            group_cols = [
+                c for c in df.columns
+                if c != x_field
+                and not pd.api.types.is_numeric_dtype(df[c])
+            ]
+            if not group_cols:
+                # No string columns means the duplicate dates are not
+                # series-keyed; fall through to the standard path.
+                is_long_format = False
+
+        if is_long_format:
+            def _resample_one(g: pd.DataFrame) -> pd.DataFrame:
+                g_indexed = g.set_index(x_field)
+                # Resample-then-take-last keeps the most-recent
+                # observation in each frequency bucket per series.
+                return g_indexed.resample(freq).last().reset_index()
+
+            df_down = (
+                df.groupby(group_cols, sort=False, group_keys=False)
+                .apply(_resample_one)
+                .reset_index(drop=True)
+            )
+            # Numeric value columns that are all-NaN within a bucket
+            # signify an empty bucket for that series; drop those rows.
+            value_cols = [
+                c for c in df_down.columns
+                if c != x_field and c not in group_cols
+            ]
+            if value_cols:
+                df_down = df_down.dropna(how="all", subset=value_cols)
+        else:
+            df_indexed = df.set_index(x_field)
+            df_down = df_indexed.resample(freq).last().reset_index()
+            value_cols = [c for c in df_down.columns if c != x_field]
+            df_down = df_down.dropna(how="all", subset=value_cols)
 
         if len(df_down) > MAX_ROWS_INTERACTIVE:
             step = max(1, len(df_down) // target_rows)
@@ -14275,8 +14692,10 @@ def make_chart(
     # ---- Validate color customisation kwargs ----------------------------
     # Surfaces typo / off-list palette names at the boundary so PRISM
     # sees an actionable error instead of a silently-rendered default.
+    # Passing ``df`` lets the validator range-check integer-slot
+    # ``color_map`` keys against the actual category count.
     try:
-        _validate_color_kwargs(mapping, chart_type)
+        _validate_color_kwargs(mapping, chart_type, df)
     except ValidationError as exc:
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
@@ -14888,8 +15307,43 @@ def make_chart(
     spec = chart.to_dict()
     if auto_beautify:
         try:
+            # `_build_bar` may have auto-flipped a vertical-bar request
+            # into a horizontal one when category labels are too long
+            # to render upright. The flip swaps x/y inside the spec but
+            # leaves `mapping` / `chart_type` unchanged here -- the
+            # downstream `get_axis_beautification` then computes its
+            # x-axis config from the original NOMINAL field (which
+            # naturally rotates -45 for long labels) and
+            # `apply_beautification_to_spec` blindly applies that angle
+            # to the NUMERIC value axis that now sits on x. Detect the
+            # flip by comparing the rendered spec's x-field against
+            # `mapping["x"]` and swap the mapping + chart_type so the
+            # beautification matches the actual axes the user sees.
+            eff_mapping = mapping
+            eff_chart_type = chart_type
+            if chart_type == "bar":
+                spec_enc = (
+                    spec.get("encoding")
+                    or (spec.get("layer", [{}])[0].get("encoding") if spec.get("layer") else None)
+                )
+                if isinstance(spec_enc, dict):
+                    spec_x_field = (
+                        spec_enc.get("x", {}).get("field")
+                        if isinstance(spec_enc.get("x"), dict) else None
+                    )
+                    if (
+                        spec_x_field
+                        and spec_x_field != mapping.get("x")
+                        and spec_x_field == mapping.get("y")
+                    ):
+                        eff_mapping = dict(mapping)
+                        eff_mapping["x"] = mapping.get("y")
+                        eff_mapping["y"] = mapping.get("x")
+                        eff_mapping["x_title"] = mapping.get("y_title")
+                        eff_mapping["y_title"] = mapping.get("x_title")
+                        eff_chart_type = "bar_horizontal"
             axis_configs = get_axis_beautification(
-                df, mapping, chart_type, width, height
+                df, eff_mapping, eff_chart_type, width, height
             )
             if axis_configs:
                 spec = apply_beautification_to_spec(spec, axis_configs)
@@ -15460,8 +15914,38 @@ def _build_single_chart(
     # instead of the house-style "mmm-yy" (e.g. "Apr-26").
     chart_spec_dict = chart.to_dict()
     try:
+        # Detect a `_build_bar` auto-flip the same way `make_chart`
+        # does -- composite cells use this builder too, so the same
+        # B07 mismatch would otherwise apply numeric axis labels at
+        # -45 here.
+        eff_mapping_b = mapping
+        eff_chart_type_b = chart_type
+        if chart_type == "bar":
+            spec_enc = (
+                chart_spec_dict.get("encoding")
+                or (
+                    chart_spec_dict.get("layer", [{}])[0].get("encoding")
+                    if chart_spec_dict.get("layer") else None
+                )
+            )
+            if isinstance(spec_enc, dict):
+                spec_x_field = (
+                    spec_enc.get("x", {}).get("field")
+                    if isinstance(spec_enc.get("x"), dict) else None
+                )
+                if (
+                    spec_x_field
+                    and spec_x_field != mapping.get("x")
+                    and spec_x_field == mapping.get("y")
+                ):
+                    eff_mapping_b = dict(mapping)
+                    eff_mapping_b["x"] = mapping.get("y")
+                    eff_mapping_b["y"] = mapping.get("x")
+                    eff_mapping_b["x_title"] = mapping.get("y_title")
+                    eff_mapping_b["y_title"] = mapping.get("x_title")
+                    eff_chart_type_b = "bar_horizontal"
         axis_configs = get_axis_beautification(
-            df, mapping, chart_type, width, height
+            df, eff_mapping_b, eff_chart_type_b, width, height
         )
         if axis_configs:
             # ``force_x_label_angle`` (the temporal-consensus angle from
@@ -15473,7 +15957,7 @@ def _build_single_chart(
             # when the panel's own x-axis isn't temporal.
             if force_x_label_angle is not None and "x" in axis_configs:
                 x_field_for_panel = (
-                    mapping.get("x") if isinstance(mapping.get("x"), str) else None
+                    eff_mapping_b.get("x") if isinstance(eff_mapping_b.get("x"), str) else None
                 )
                 panel_x_is_temporal = bool(
                     x_field_for_panel
@@ -19736,14 +20220,20 @@ def _tbl_natural_widths(
     floors: List[int] = []
     for col in df.columns:
         header_w = int(header_font.getlength(str(col))) + 2 * cell_pad_x
+        # Sparkline / minibar columns carry a graphical body (line + dot
+        # or bar), so their natural body width is fixed. The HEADER, on
+        # the other hand, is plain text and must fit -- otherwise the
+        # header label silently overflows into the neighbouring column
+        # (PIL ``draw.text`` does not clip). Width = max(graphical
+        # default, header width).
         if col in sparkline_columns:
-            w = 120 + 2 * cell_pad_x
+            w = max(120 + 2 * cell_pad_x, header_w)
             widths.append(w)
             wraps.append(False)
             floors.append(w)
             continue
         if col in minibar_columns:
-            w = 110 + 2 * cell_pad_x
+            w = max(110 + 2 * cell_pad_x, header_w)
             widths.append(w)
             wraps.append(False)
             floors.append(w)
@@ -20508,9 +20998,23 @@ def make_table(
 
     _tbl_draw_caption(draw, caption, geom, theme)
 
+    # Horizontal rules closing the body region top and bottom. The top
+    # rule sits between the header band and the first data row; the
+    # bottom rule sits between the last data row and the caption (or,
+    # when there is no caption, between the body and the canvas bottom
+    # pad). ``geom.caption_y == body_top_y + body_h`` regardless of
+    # whether a caption was set, so it is the canonical "end of body"
+    # coordinate. Without the bottom rule, an unbanded last row's
+    # internal padding merged visually with the canvas's bottom pad,
+    # producing ~15 px of perceived "white space at the bottom".
     draw.line(
         [(geom.table_x, geom.body_top_y - 1),
          (geom.table_x + geom.table_w, geom.body_top_y - 1)],
+        fill="#1F1F1F", width=1,
+    )
+    draw.line(
+        [(geom.table_x, geom.caption_y),
+         (geom.table_x + geom.table_w, geom.caption_y)],
         fill="#1F1F1F", width=1,
     )
 

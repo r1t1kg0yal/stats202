@@ -105,7 +105,7 @@ from ai_development.dashboards.echart_dashboard import (  # noqa: E402,F401
 # -------------------------------------------------------------
 # Folder sanctity audit (canonical 5-path check)
 #
-# The L2 dashboards module (context/modules/static/tools/dashboards.md
+# The L2 dashboards module (context/modules/static/tools/dashboards_hub.md
 # section 2.5) documents this helper as the canonical pre-edit /
 # post-build audit. It must be importable from
 # ``ai_development.dashboards`` so PRISM ephemeral scripts (Tool 2

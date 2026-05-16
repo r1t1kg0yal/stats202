@@ -1,0 +1,147 @@
+{% extends "gsapp/base.html" %}
+{% load gs_extras %}
+
+{% block title %}Home — gs-reference mock{% endblock %}
+
+{% block content %}
+
+{# ─── Hero (DNA §8.4) ───────────────────────────────────────────── #}
+<section class="gs-hero">
+    <div class="gs-hero__image">{% gs_placeholder tint=hero.image_tint aspect="16x9" label=hero.title %}</div>
+    <div class="gs-hero__overlay"></div>
+    <div class="gs-hero__content">
+        <div class="gs-hero__text">
+            <span class="gs-overline gs-overline--inverse">{{ hero.eyebrow }}</span>
+            <h1 class="gs-headline gs-headline--01 gs-headline--inverse">{{ hero.title }}</h1>
+            <p class="gs-body--lg gs-body--inverse">{{ hero.subtitle }}</p>
+        </div>
+        <a href="{{ hero.cta_url }}" class="gs-button gs-button--ghost-light gs-hero__cta">
+            {{ hero.cta_label }} <span class="gs-button__arrow" aria-hidden="true">&rarr;</span>
+        </a>
+    </div>
+</section>
+
+{# ─── Tab strip (DNA §8.7) ──────────────────────────────────────── #}
+<nav class="gs-tabs" aria-label="Section tabs">
+    <ul class="gs-tabs__list">
+        {% for tab in tabs %}
+        <li class="gs-tabs__item {% if tab.active %}gs-tabs__item--active{% endif %}">
+            <a href="{{ tab.url }}">{{ tab.label }}</a>
+        </li>
+        {% endfor %}
+    </ul>
+</nav>
+
+{# ─── Deal spotlights (overlay-card variant) ────────────────────── #}
+<section class="gs-section" id="stay-informed">
+    <div class="gs-container">
+        <div class="gs-grid gs-grid--2">
+            {% for deal in deal_spotlights %}
+            <a href="#" class="gs-card gs-card--overlay">
+                <div class="gs-card__image">{% gs_placeholder tint=deal.image_tint aspect="16x9" label=deal.title %}</div>
+                <div class="gs-card__body">
+                    <span class="gs-overline">{{ deal.eyebrow }}</span>
+                    <h3 class="gs-card__title">{{ deal.title }}</h3>
+                    <p>{{ deal.body }}</p>
+                    <span class="gs-card__cta">{{ deal.cta }} <span aria-hidden="true">&rarr;</span></span>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+{# ─── What We Do (4-up cards) ───────────────────────────────────── #}
+<section class="gs-section gs-section--subtle">
+    <div class="gs-container">
+        <header class="gs-section-heading">
+            <span class="gs-overline">What We Do</span>
+            <h2 class="gs-headline gs-headline--04">Delivering for Our Clients</h2>
+        </header>
+        <div class="gs-grid gs-grid--4">
+            {% for card in what_we_do_cards %}
+            <a href="/what-we-do/" class="gs-card">
+                <div class="gs-card__image">{% gs_placeholder tint=card.image_tint aspect="16x9" label=card.title %}</div>
+                <div class="gs-card__body">
+                    <span class="gs-overline">{{ card.eyebrow }}</span>
+                    <h3 class="gs-card__title">{{ card.title }}</h3>
+                    <p class="gs-body--sm">{{ card.body }}</p>
+                    <span class="gs-card__cta">Learn More <span aria-hidden="true">&rarr;</span></span>
+                </div>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+{# ─── Insights two-up ───────────────────────────────────────────── #}
+<section class="gs-section">
+    <div class="gs-container">
+        <div class="gs-two-up">
+            <div class="gs-two-up__media">{% gs_placeholder tint=insights_two_up.image_tint aspect="1x1" label=insights_two_up.title %}</div>
+            <div class="gs-two-up__content">
+                <span class="gs-overline">{{ insights_two_up.eyebrow }}</span>
+                <h2 class="gs-headline gs-headline--04">{{ insights_two_up.title }}</h2>
+                <p class="gs-body--lg">{{ insights_two_up.body }}</p>
+                <a href="{{ insights_two_up.cta_url }}" class="gs-button gs-button--ghost-dark gs-two-up__cta">
+                    {{ insights_two_up.cta }} <span class="gs-button__arrow" aria-hidden="true">&rarr;</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+{# ─── Careers two-up (reverse) ──────────────────────────────────── #}
+<section class="gs-section gs-section--subtle">
+    <div class="gs-container">
+        <div class="gs-two-up gs-two-up--reverse">
+            <div class="gs-two-up__media">{% gs_placeholder tint=careers_two_up.image_tint aspect="1x1" label=careers_two_up.title %}</div>
+            <div class="gs-two-up__content">
+                <span class="gs-overline">{{ careers_two_up.eyebrow }}</span>
+                <h2 class="gs-headline gs-headline--04">{{ careers_two_up.title }}</h2>
+                <p class="gs-body--lg">{{ careers_two_up.body }}</p>
+                <a href="{{ careers_two_up.cta_url }}" class="gs-button gs-button--ghost-dark gs-two-up__cta">
+                    {{ careers_two_up.cta }} <span class="gs-button__arrow" aria-hidden="true">&rarr;</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+{# ─── Stats row (DNA §8.6) ──────────────────────────────────────── #}
+<section class="gs-section">
+    <div class="gs-container">
+        <div class="gs-stat-row">
+            {% for stat in stats %}
+            <div class="gs-stat">
+                <span class="gs-stat__numeral">{{ stat.numeral }}<sup class="gs-stat__numeral-sup">{{ stat.footnote_n }}</sup></span>
+                <p class="gs-stat__caption">{{ stat.caption }}</p>
+            </div>
+            {% endfor %}
+        </div>
+        <div style="margin-top: var(--gs-uitk-space-7); padding-top: var(--gs-uitk-space-5); border-top: 1px solid var(--gs-uitk-color-border-neutral-minimal);">
+            {% for fn in footnotes %}
+            <p class="gs-body--sm" style="color: var(--gs-uitk-color-text-neutral-minimal); margin-bottom: var(--gs-uitk-space-2);">{{ fn }}</p>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+{# ─── Our Firm two-up ───────────────────────────────────────────── #}
+<section class="gs-section gs-section--subtle">
+    <div class="gs-container">
+        <div class="gs-two-up">
+            <div class="gs-two-up__media">{% gs_placeholder tint=our_firm_two_up.image_tint aspect="1x1" label=our_firm_two_up.title %}</div>
+            <div class="gs-two-up__content">
+                <span class="gs-overline">{{ our_firm_two_up.eyebrow }}</span>
+                <h2 class="gs-headline gs-headline--04">{{ our_firm_two_up.title }}</h2>
+                <p class="gs-body--lg">{{ our_firm_two_up.body }}</p>
+                <a href="{{ our_firm_two_up.cta_url }}" class="gs-button gs-button--ghost-dark gs-two-up__cta">
+                    {{ our_firm_two_up.cta }} <span class="gs-button__arrow" aria-hidden="true">&rarr;</span>
+                </a>
+            </div>
+        </div>
+    </div>
+</section>
+
+{% endblock %}

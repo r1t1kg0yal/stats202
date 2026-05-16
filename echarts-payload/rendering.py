@@ -1375,6 +1375,154 @@ DASHBOARD_SHELL = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>__TITLE__</title>
 <script>
+/* Browser-side telemetry beacon. Captures uncaught errors, unhandled
+   promise rejections, console.error / console.warn calls, and resource-
+   load failures, and POSTs them to /api/dashboard/telemetry/ via
+   navigator.sendBeacon. The endpoint append-writes JSONL to
+   users/{kerberos}/dashboards/{dashboard_id}/console_log.jsonl. PRISM
+   reads that file as the single best signal of what the user actually
+   saw in their browser. See dashboards_hub.md §H.5 for the schema,
+   read recipe, and 3-step diagnostic playbook. */
+(function() {
+    var BUFFER = [];
+    var FLUSH_DELAY_MS = 2000;
+    var MAX_BUFFER = 50;
+    var endpoint = null;
+    var flushTimer = null;
+
+    function captureEvent(evt) {
+        if (BUFFER.length >= MAX_BUFFER) return;
+        BUFFER.push(Object.assign({
+            ts: new Date().toISOString(),
+            url: window.location.pathname,
+            ua: navigator.userAgent.substring(0, 200)
+        }, evt));
+        scheduleFlush();
+    }
+
+    function scheduleFlush() {
+        if (flushTimer) return;
+        flushTimer = setTimeout(flush, FLUSH_DELAY_MS);
+    }
+
+    function flush() {
+        flushTimer = null;
+        if (!endpoint) return;
+        if (!BUFFER.length) return;
+        var events = BUFFER.splice(0, BUFFER.length);
+        var payload = {
+            kerberos: window.PRISM_DASHBOARD_OWNER || null,
+            viewer: window.PRISM_VIEWER || null,
+            dashboard_id: window.PRISM_DASHBOARD_ID || null,
+            events: events
+        };
+        try {
+            var blob = new Blob([JSON.stringify(payload)],
+                {type: 'application/json'});
+            if (navigator.sendBeacon) {
+                if (!navigator.sendBeacon(endpoint, blob)) {
+                    fetch(endpoint, {method: 'POST', body: blob, keepalive: true});
+                }
+            } else {
+                fetch(endpoint, {method: 'POST', body: blob, keepalive: true});
+            }
+        } catch (e) {/* telemetry must never break the page */}
+    }
+
+    window.addEventListener('error', function(e) {
+        captureEvent({
+            kind: 'error',
+            message: (e.message || '').substring(0, 500),
+            source: e.filename || null,
+            line: e.lineno || null,
+            col: e.colno || null,
+            stack: (e.error && e.error.stack || '').substring(0, 2000)
+        });
+    });
+
+    window.addEventListener('unhandledrejection', function(e) {
+        var reason = e.reason;
+        captureEvent({
+            kind: 'unhandled_rejection',
+            message: ((reason && reason.message) ||
+                      String(reason || '')).substring(0, 500),
+            stack: (reason && reason.stack || '').substring(0, 2000)
+        });
+    });
+
+    var __inCapture = false;
+    ['error', 'warn'].forEach(function(level) {
+        var orig = console[level];
+        console[level] = function() {
+            if (!__inCapture) {
+                __inCapture = true;
+                try {
+                    var msg = Array.prototype.map.call(arguments, function(a) {
+                        if (a instanceof Error) return a.message + "\\n" + a.stack;
+                        if (typeof a === 'object') {
+                            try {
+                                return JSON.stringify(a);
+                            } catch (e) {
+                                return '[' + (a && a.constructor && a.constructor.name || 'Object') + ']';
+                            }
+                        }
+                        return String(a);
+                    }).join(' ').substring(0, 1000);
+                    captureEvent({kind: 'console_' + level, message: msg});
+                } catch (e) {/* never break */}
+                __inCapture = false;
+            }
+            return orig.apply(console, arguments);
+        };
+    });
+
+    window.addEventListener('error', function(e) {
+        var t = e.target;
+        if (t && t !== window && (t.src || t.href)) {
+            captureEvent({
+                kind: 'resource_404',
+                tag: (t.tagName || '').toLowerCase(),
+                url: (t.src || t.href || '').substring(0, 500)
+            });
+        }
+    }, true);
+
+    function bindEndpoint() {
+        endpoint = window.PRISM_TELEMETRY_ENDPOINT || null;
+        captureEvent({kind: 'page_view'});
+        if (BUFFER.length) scheduleFlush();
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bindEndpoint);
+    } else {
+        bindEndpoint();
+    }
+
+    window.addEventListener('beforeunload', function() {
+        if (endpoint) {
+            flush();
+            return;
+        }
+        if (!BUFFER.length) return;
+        // Last-ditch: try the conventional path. If the URL is wrong, the
+        // browser silently drops it -- same outcome as not firing at all.
+        try {
+            var fallback = '/api/dashboard/telemetry/';
+            var payload = {
+                kerberos: window.PRISM_DASHBOARD_OWNER || null,
+                viewer: window.PRISM_VIEWER || null,
+                dashboard_id: window.PRISM_DASHBOARD_ID || null,
+                events: BUFFER.splice(0, BUFFER.length),
+                unbound: true
+            };
+            var blob = new Blob([JSON.stringify(payload)],
+                {type: 'application/json'});
+            if (navigator.sendBeacon) navigator.sendBeacon(fallback, blob);
+        } catch (e) {/* swallow */}
+    });
+})();
+</script>
+<script>
 /* Apply persisted dark-mode preference before paint to avoid a
    light-mode flash. Falls back to the OS-level prefers-color-scheme
    when the user has never toggled the button. The same key is
@@ -13712,7 +13860,7 @@ def _tile_footer_html(w: Dict[str, Any]) -> str:
 # function below. ``_RENDERERS`` is the dispatch table. Adding a new
 # widget kind = one render function + one entry in ``_RENDERERS`` +
 # (separately) one entry in ``echart_dashboard.WIDGETS`` for validation
-# and one entry in ``dashboards.md`` section 4.1 for the catalog.
+# and one entry in ``dashboards_hub.md`` section 4.1 for the catalog.
 #
 # The ``_RENDERERS`` keys must match ``echart_dashboard.VALID_WIDGETS``
 # byte-for-byte; a drift-prevention test in ``dev/tests.py`` asserts
@@ -14519,8 +14667,15 @@ _ECHARTS_JS_CACHE = None
 def _get_echarts_js() -> str:
     global _ECHARTS_JS_CACHE
     if _ECHARTS_JS_CACHE is None:
+        # Anchor to ai_development.REPO_ROOT (anchored to __file__) rather than
+        # os.getcwd(), which can drift mid-process if any caller (notably
+        # pyttkclient.__init__) does an unrestored chdir.
+        try:
+            from ai_development import REPO_ROOT as _REPO_ROOT
+        except Exception:
+            _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         js_path = os.path.join(
-            os.getcwd(),
+            _REPO_ROOT,
             "ai_development", "mysite", "news", "static", "js", "echarts.js",
         )
         try:
