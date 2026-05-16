@@ -157,8 +157,14 @@ DimensionPreset = Literal[
 # ``_auto_downsample_timeseries`` in chart_functions.py itself.
 alt.data_transformers.disable_max_rows()
 
-# Cardinality guard rails.
-MAX_COLOR_CARDINALITY = 12          # Max unique values in a color encoding
+# Cardinality guard rails. ``MAX_COLOR_CARDINALITY`` is tied to the
+# default categorical palette (``GS_PRIMARY["colors"]``) which has 10
+# slots. Above 10 unique values, slot 10 cycles back to slot 0 and slot
+# 11 to slot 1, producing duplicate hues that read as "two slices the
+# same colour" -- the canonical failure mode flagged in the 2026-05-16
+# triage report. The cap is enforced HARD because the alternative
+# (silently ship an unreadable chart) is the worst outcome.
+MAX_COLOR_CARDINALITY = 10          # Max unique values in a color encoding
 MAX_FACET_CARDINALITY = 16          # Max facets in a small-multiples chart
 MAX_ROWS_INTERACTIVE = 50_000       # Above this, warn (do not block)
 
@@ -936,11 +942,10 @@ def validate_plot_ready_df(
             )
 
     # ---- cardinality guards ------------------------------------------------
-    # Color cardinality is a HARD error: the GS palette has 12 colors. Beyond
-    # that, hues repeat and the chart becomes visually ambiguous (two series
-    # render as the same color). Reject up-front rather than silently produce
-    # an unreadable chart. Donut is exempt because its slices are always
-    # visually grouped + labelled by the legend.
+    # Color cardinality is a HARD error: the default GS_PRIMARY palette has
+    # MAX_COLOR_CARDINALITY (=10) colors. Beyond that, hues repeat and the
+    # chart becomes visually ambiguous (two series render as the same color).
+    # Reject up-front rather than silently produce an unreadable chart.
     #
     # TEMPORAL / NUMERIC color columns are also exempt because the engine
     # auto-switches them to a sequential gradient palette (viridis / turbo /
@@ -19763,7 +19768,7 @@ def render_all(
 # palette, and Liberation Sans font stack as the chart engine, so a table
 # drops into the same UI cell a same-preset chart would.
 #
-# PRISM-facing surface (the only names documented in chart_context_tables.md):
+# PRISM-facing surface (the only names documented in chart_context.md §13):
 #   make_table(df=df OR rows=[...], *, ...) — render a single table to PNG
 #   TableResult                            — dataclass returned by make_table
 #
@@ -20079,10 +20084,61 @@ def _tbl_hard_break(text: str, font, max_width_px: int) -> List[str]:
     return pieces or [text]
 
 
-def _tbl_normalize_mode(spec: Union[str, Dict[str, Any]]) -> Dict[str, Any]:
+_TBL_RAG_THRESHOLD_KEYS = frozenset({
+    "amber_above", "red_above", "amber_below", "red_below",
+})
+_TBL_VALID_MODE_VALUES = frozenset({
+    "rwg", "bw", "rag", "highlight", "none", "heatmap",
+    "diverging", "diverging_at_zero", "sequential",
+})
+
+
+def _tbl_normalize_mode(
+    spec: Union[str, Dict[str, Any]],
+    col_name: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Normalise a column_color_modes value to the internal {mode, ...} dict.
+
+    Accepted spec shapes (per chart_context.md §13.4):
+      str  -- one of {'rwg', 'bw', 'rag', 'highlight', 'none'}
+      dict -- engine-internal full spec with required 'mode' key
+
+    Reject loudly: dict shapes that PRISM naturally tries but are not
+    the canonical form (e.g. dict carrying rag thresholds directly).
+    These previously rendered SILENTLY UNCOLOURED -- the engine
+    returned success=True but every cell in the column got no colour
+    because the spec lacked a 'mode' key.
+    """
     if isinstance(spec, dict):
-        return {**spec}
+        if "mode" in spec:
+            return {**spec}
+        col_hint = f"column_color_modes[{col_name!r}]" if col_name else "column_color_modes value"
+        spec_keys = set(spec.keys())
+        if spec_keys & _TBL_RAG_THRESHOLD_KEYS:
+            raise ValidationError(
+                f"{col_hint} looks like rag thresholds passed directly as "
+                f"the colour-mode value: {spec!r}. The two are separate "
+                f"kwargs: set the mode in `column_color_modes`, set the "
+                f"thresholds in `rag_thresholds`. Canonical shape:\n"
+                f"  column_color_modes={{'{col_name or '<col>'}': 'rag'}},\n"
+                f"  rag_thresholds={{'{col_name or '<col>'}': {dict(spec)!r}}}\n"
+                f"See chart_context.md §13.4."
+            )
+        raise ValidationError(
+            f"{col_hint}={spec!r} is a dict without a 'mode' key. "
+            f"column_color_modes values must be one of the strings "
+            f"{sorted(_TBL_VALID_MODE_VALUES)} (per chart_context.md §13.4). "
+            f"For full per-column control use an internal-shape dict "
+            f"with an explicit 'mode' key."
+        )
     s = str(spec)
+    if s not in _TBL_VALID_MODE_VALUES:
+        col_hint = f"column_color_modes[{col_name!r}]" if col_name else "column_color_modes value"
+        raise ValidationError(
+            f"{col_hint}={s!r} is not a recognised colour mode. Valid "
+            f"PRISM-facing modes: 'rwg' / 'bw' / 'rag' / 'highlight' / "
+            f"'none' (per chart_context.md §13.4)."
+        )
     if s == "rwg":
         return {"mode": "diverging", "palette": "rwg", "center": 0.0}
     if s == "bw":
@@ -20950,14 +21006,106 @@ def make_table(
     total_rows = list(total_rows or [])
     subtotal_rows = list(subtotal_rows or [])
     row_colors = dict(row_colors or {})
+    # Detect heatmap_groups dict-keyed-by-mode shape BEFORE list() coercion
+    # (which would discard the values, leaving only the mode keys).
+    if isinstance(heatmap_groups, dict):
+        return TableResult(
+            success=False,
+            error_message=(
+                f"heatmap_groups={heatmap_groups!r} was passed as a "
+                f"dict-keyed-by-mode. Canonical shape is list-of-dicts: "
+                f"heatmap_groups=[{{'columns': [...], 'scope': 'column'/'row'/'group', "
+                f"'mode': 'sequential'/'diverging'}}, ...] per chart_context.md §13.5."
+            ),
+            warnings=warnings,
+        )
     heatmap_groups = list(heatmap_groups or [])
 
     raw_modes = column_color_modes or {}
-    column_color_modes = {col: _tbl_normalize_mode(spec) for col, spec in raw_modes.items()}
+    try:
+        column_color_modes = {
+            col: _tbl_normalize_mode(spec, col_name=col)
+            for col, spec in raw_modes.items()
+        }
+    except ValidationError as exc:
+        return TableResult(
+            success=False,
+            error_message=str(exc),
+            warnings=warnings,
+        )
+
+    # Warn loudly when a column is set to 'rag' but no rag_thresholds entry
+    # exists for it -- previously the cells rendered silently uncoloured
+    # (per A2.d in the 2026-05-16 friction audit). The render still
+    # succeeds so the table is usable, but PRISM gets a clear signal.
+    for col, spec in column_color_modes.items():
+        if spec.get("mode") != "rag":
+            continue
+        if "thresholds" in spec:
+            continue
+        if col in rag_thresholds:
+            continue
+        warnings.append(
+            f"column_color_modes[{col!r}]='rag' set but no rag_thresholds[{col!r}] "
+            f"provided -- cells will render uncoloured. Add e.g. "
+            f"rag_thresholds={{{col!r}: {{'amber_above': X, 'red_above': Y}}}} "
+            f"(higher-is-bad) or {{{col!r}: (red_max, amber_max)}} (lower-is-bad)."
+        )
 
     theme = dict(_TABLE_THEME)
 
+    # ---- Shape validation + defensive int() coercion at the boundary ----
+    # The engine internals expect (label, span)-tuple form for both
+    # header_levels rows and row_groups, with plain int counts (NOT
+    # numpy scalars from .value_counts() / .groupby().size()). PRISM
+    # naturally reaches for shorthand shapes -- the boundary either
+    # coerces them or rejects with a typed error pointing at the
+    # canonical form. Never let an unknown shape silently corrupt the
+    # downstream geometry / colouring paths.
     if header_levels:
+        normalised_levels: List[List[Tuple[str, int]]] = []
+        for level_idx, level in enumerate(header_levels):
+            if not isinstance(level, (list, tuple)):
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"header_levels[{level_idx}] must be a list of "
+                        f"(label, span) tuples; got {type(level).__name__}. "
+                        f"Canonical shape: header_levels=[[(label, span), ...]] "
+                        f"per chart_context.md §13.6.1."
+                    ),
+                )
+            normalised_level: List[Tuple[str, int]] = []
+            for entry_idx, entry in enumerate(level):
+                if isinstance(entry, dict):
+                    if "label" in entry and "span" in entry:
+                        normalised_level.append((str(entry["label"]), int(entry["span"])))
+                        continue
+                    return TableResult(
+                        success=False,
+                        error_message=(
+                            f"header_levels[{level_idx}][{entry_idx}]={entry!r} "
+                            f"is a dict without both 'label' and 'span' keys. "
+                            f"Canonical shape: header_levels=[[(label, span), ...]] "
+                            f"per chart_context.md §13.6.1; the engine accepts "
+                            f"dict form ONLY when both 'label' and 'span' are present."
+                        ),
+                    )
+                if isinstance(entry, (tuple, list)) and len(entry) == 2:
+                    label, span = entry
+                    normalised_level.append((str(label), int(span)))
+                    continue
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"header_levels[{level_idx}][{entry_idx}]={entry!r} "
+                        f"is not a (label, span) tuple. Canonical shape: "
+                        f"header_levels=[[(label, span), ...]] per "
+                        f"chart_context.md §13.6.1."
+                    ),
+                )
+            normalised_levels.append(normalised_level)
+        header_levels = normalised_levels
         for level_idx, level in enumerate(header_levels):
             total_span = sum(span for _, span in level)
             if total_span != len(df.columns):
@@ -20966,7 +21114,23 @@ def make_table(
                     error_message=f"header_levels[{level_idx}] spans sum to "
                                   f"{total_span}, expected {len(df.columns)}",
                 )
+
     if row_groups:
+        normalised_groups: List[Tuple[str, int]] = []
+        for grp_idx, grp in enumerate(row_groups):
+            if not isinstance(grp, (tuple, list)) or len(grp) != 2:
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"row_groups[{grp_idx}]={grp!r} is not a (label, count) "
+                        f"tuple. Canonical shape: "
+                        f"row_groups=[(label, n_rows), ...] per "
+                        f"chart_context.md §13.6.2."
+                    ),
+                )
+            label, count = grp
+            normalised_groups.append((str(label), int(count)))
+        row_groups = normalised_groups
         total = sum(c for _, c in row_groups)
         if total != len(df):
             return TableResult(
@@ -20974,6 +21138,38 @@ def make_table(
                 error_message=f"row_groups counts sum to {total}, "
                               f"expected len(df)={len(df)}",
             )
+
+    # heatmap_groups list elements: each must be a dict carrying at least
+    # 'columns' (per chart_context.md §13.5). The outer dict-keyed-by-mode
+    # case was already rejected above (before list() coercion).
+    if heatmap_groups:
+        normalised_hg: List[Dict[str, Any]] = []
+        for hg_idx, hg in enumerate(heatmap_groups):
+            if not isinstance(hg, dict):
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"heatmap_groups[{hg_idx}]={hg!r} must be a dict "
+                        f"with 'columns' (and optional 'scope', 'mode', 'palette'). "
+                        f"See chart_context.md §13.5."
+                    ),
+                    warnings=warnings,
+                )
+            if "columns" not in hg:
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"heatmap_groups[{hg_idx}] is missing required 'columns' key. "
+                        f"See chart_context.md §13.5."
+                    ),
+                    warnings=warnings,
+                )
+            normalised_hg.append(dict(hg))
+        heatmap_groups = normalised_hg
+
+    # total_rows / subtotal_rows: coerce numpy scalars to plain int.
+    total_rows = [int(r) for r in total_rows]
+    subtotal_rows = [int(r) for r in subtotal_rows]
 
     geom, _caption_lines = _tbl_layout(
         df, title, subtitle, caption, theme,

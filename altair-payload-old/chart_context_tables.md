@@ -1,8 +1,10 @@
 # Altair Tables (`make_table`)
 
-**Canonical for Prism reports**: All tables in `worker_N_findings.md` and
-`report.md` MUST BE PNG artifacts produced by `make_table()`. Markdown
-tables are prohibited in the report pipeline -- see
+**Canonical for every table PRISM authors.** Across chat / email /
+report / any artifact PRISM produces for the user, all tables MUST be
+PNG artifacts from `make_table()`. **Markdown tables are forbidden
+anywhere in PRISM output.** Report-pipeline workflow specifics
+(`worker_N_findings.md`, `report.md`) live in
 `report_worker_instructions.md` and `report_writer_instructions.md`.
 
 Spoke fetched on demand from `chart_context.md`. Covers `make_table()` —

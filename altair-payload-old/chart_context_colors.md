@@ -9,8 +9,11 @@ Spoke fetched on demand from `chart_context.md`. Covers per-chart palette and co
 | User says | Reach for |
 |---|---|
 | "Use a colourblind-friendly palette" / "make it accessible" | `color_scheme='colorblind'` |
-| "Make the US line red, EU blue, JP green" | `color_map={'US': '#DC143C', 'EU': '#1F77B4', 'JP': '#2CA02C'}` |
-| "Highlight the US line in red, fade the rest" | `color_map={'US': '#DC143C'}` (others fall back to default palette) |
+| "Make the US line red, EU blue, JP green" | `color_map={'US': '#DC143C', 'EU': '#1F77B4', 'JP': '#2CA02C'}` (named) |
+| "Highlight the US line in red, fade the rest" | `color_map={'US': '#DC143C'}` (named; others fall back to default palette) |
+| "Make colour 2 red" / "Change the second colour" / "Slot 3 should be green" | `color_map={2: '#DC143C'}` (1-indexed legend slot; others default) |
+| "Make slot 2 red AND slot 4 grey" | `color_map={2: '#DC143C', 4: '#A6A6A6'}` (multi-slot positional) |
+| "Pin US red AND make slot 3 grey" | `color_map={'US': '#DC143C', 3: '#A6A6A6'}` (mixed name + slot) |
 | "Make this chart [single hex]" | `color_map=['#DC143C']` (single-series) |
 | "Use a navy-only / mono palette" | `color_scheme='mono_navy'` or `'mono_grey'` |
 | "Use bold / vivid colours" | `color_scheme='bold'` |
@@ -76,9 +79,25 @@ Series count exceeds palette length → engine cycles through the palette. The 1
 
 ## 4. Explicit `color_map`
 
-### 4.1 Dict form — pin specific categories
+### 4.1 Dict form — pin specific colours (named OR positional, mix freely)
+
+`color_map` accepts two key types in the same dict:
+
+- **String keys** = category names. Match `df[color_field]` values exactly. Use when the user names the series ("make EU red").
+- **Integer keys** = 1-indexed legend slot positions. Match what the user sees in the rendered legend. Use when the user references the colour by position ("make colour 2 red").
+
+Categories not pinned by either form fall back to `gs_primary` (or the palette named in `color_scheme` when both are set). Named-key wins over integer-key when both apply to the same slot. Integer slots match legend display order (per `mapping['color_sort']` if set, else data insertion order); out-of-range integers raise a validation error naming the legal range.
+
+| User said | Use |
+|---|---|
+| "Make EU red, JP blue" | `color_map={'EU': '#DC143C', 'JP': '#1F77B4'}` |
+| "Highlight US in red, fade the rest" | `color_map={'US': '#DC143C'}` |
+| "Make colour 2 red" / "Change the second colour" | `color_map={2: '#DC143C'}` |
+| "Slot 2 red AND slot 4 grey" | `color_map={2: '#DC143C', 4: '#A6A6A6'}` |
+| "Pin US red AND make slot 3 grey" | `color_map={'US': '#DC143C', 3: '#A6A6A6'}` |
 
 ```python
+# Named: pin specific countries
 make_chart(
     df=df_long, chart_type='multi_line',
     mapping={
@@ -87,18 +106,30 @@ make_chart(
     },
     title='G3 GDP, hand-picked colours',
 )
+
+# Positional: user said "make colour 2 red" — pin slot 2 only,
+# everything else stays on the default GS palette
+make_chart(
+    df=df_long, chart_type='scatter_multi',
+    mapping={
+        'x': 'beta', 'y': 'return_pct', 'color': 'sector',
+        'color_map': {2: '#DC143C'},
+    },
+    title='Factor returns by sector (2nd colour highlighted)',
+)
 ```
 
-Categories not present in the dict fall back to `gs_primary` (or the palette named in `color_scheme` when both are set). Use the dict form for highlight-one patterns:
+Combine with `color_scheme` to set the fallback for unpinned slots:
 
 ```python
 mapping = {
     'x': 'date', 'y': 'value', 'color': 'country',
-    'color_map': {'US': '#DC143C'},   # US red; others on default palette
+    'color_map': {'US': '#DC143C'},
+    'color_scheme': 'colorblind',     # missing categories from Okabe-Ito
 }
 ```
 
-### 4.2 List form — colours in legend order
+### 4.2 List form — full positional override
 
 ```python
 mapping = {
@@ -107,7 +138,7 @@ mapping = {
 }
 ```
 
-Engine cycles through the list; pass at least as many entries as distinct categories.
+Engine cycles through the list when there are more categories than entries. Use the dict form (§4.1) for partial overrides; reach for the list form only when the user wants to specify every slot themselves.
 
 ### 4.3 Single-series colour
 
@@ -120,16 +151,6 @@ make_chart(
     },
     title='Just one red line',
 )
-```
-
-Combine with `color_scheme` to set the fallback for missing dict keys:
-
-```python
-mapping = {
-    'x': 'date', 'y': 'value', 'color': 'country',
-    'color_map': {'US': '#DC143C'},
-    'color_scheme': 'colorblind',     # missing categories from Okabe-Ito
-}
 ```
 
 ---
@@ -191,6 +212,8 @@ Engine validates at the boundary, returns `ChartResult(success=False, error_mess
 | Gradient ramp on categorical chart | `"... is a heatmap / gradient ramp but chart_type='multi_line' needs a categorical palette ..."` |
 | `color_map` on heatmap | `"mapping['color_map'] is for categorical color encodings ..."` |
 | Non-hex value in `color_map` | `"... must be a hex string like '#1A2B3C'."` |
+| `color_map` int key < 1 | `"... integer keys are 1-indexed legend slot positions; got 0 (must be >= 1; slot 1 is the first colour, slot 2 the second, ...)."` |
+| `color_map` int key out of range (e.g. `{5: ...}` on 3-cat chart) | `"... integer slot 5 is out of range; the chart's 'sector' column has 3 categories (legal slots: 1..3). Use the named-key form ({'<category>': '#hex'}) or pick a slot in range."` |
 
 The error message names the right alternative; PRISM should switch and re-render.
 
@@ -204,6 +227,7 @@ The error message names the right alternative; PRISM should switch and re-render
 | `color_scheme='rainbow'` on a categorical chart | `rainbow` is a HEATMAP / gradient ramp — categorical only accepts the names in §3. For "vivid rainbow" categorical use `bold`, or `color_map=[...]` with explicit hexes. Engine validation catches this. |
 | `color_scheme='blue'` (singular) | Not a valid name. Sequential is `blues` (plural). Engine error names the alternatives. |
 | `color_map` with rgb tuples or named CSS colours | Hex strings only (`'#DC143C'`); `'red'` / `(220, 20, 60)` rejected. |
+| List form to "just change one colour" (`color_map=['#003359', '#DC143C']`) | List is a FULL override; with N>2 categories Vega-Lite cycles back to slot 1's colour for slots 3+. To change just one slot, use the dict form with an integer key: `color_map={2: '#DC143C'}`. To change a named series, use the dict form with a string key: `color_map={'EU': '#DC143C'}`. |
 | Per-series `strokeDash` AND `color_map` together | Engine renders both; eye gets overloaded. Pick one encoding per dimension. |
 | `color_scheme='colorblind'` AND `color_map` with non-colourblind hex | Defeats the accessibility goal. Either trust `colorblind`, or hand-pick from the Okabe-Ito set yourself. |
 | Heatmap `color_scheme='spectral'` on sequential data (single-sided range) | Diverging palettes assume a meaningful zero / centre; on 0-100 unsigned data they waste half the range. Use `viridis` / `blues` instead. |

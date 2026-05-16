@@ -7,7 +7,7 @@
 
 `make_chart()`, `make_table()`, the composite/annotation/profile helpers are auto-injected. Raw matplotlib is blocked. Do NOT import chart functions. `s3_manager`, `session_path`, `user_id` are auto-injected at call time -- never pass them.
 
-**Tables are first-class.** Every table PRISM authors goes through `make_table()` — across every interface (chat / email / report / any artifact for the user). **Markdown tables are forbidden anywhere in PRISM output.** The full table surface lives in the `chart_context_tables.md` spoke (fetched on demand); see "Tables vs Charts" below for the trigger.
+> **HARD RULE — markdown tables are forbidden anywhere in PRISM output.** Every structured-data answer the user is meant to read goes through `make_table()` and ships as a static PNG, across every interface (chat / email / report / any artifact for the user). No `|...|...|` pipe tables, no aligned code blocks of values, no prose pretending to be a table, no `print(df)` / `df.to_string()` dumps. Tables are a first-class peer to charts; the entire `make_table()` surface lives in §13 of this hub (no spoke fetch required).
 
 ---
 
@@ -20,7 +20,7 @@
 | Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §8 |
 | Composite functions (5) | `make_2pack_horizontal`, `make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`, `make_6pack_grid` | §10 |
 | Grid mode (small-multiples / facet) | `mapping['facet']`, `facet_cols`, `same_scale`, `share_x` / `share_y` / `share_color` | spoke `chart_context_grids.md` (Spokes index below) |
-| Static tables (PNG) | `make_table` + `TableResult`; content-driven canvas (engine-decided width + height); same navy palette and font as `make_chart` | spoke `chart_context_tables.md` (Spokes index below) |
+| Static tables (PNG) | `make_table` + `TableResult`; data-pulled `df=` or hand-curated `rows=`; 3 color modes (`'rwg'` / `'bw'` / `'rag'`); `heatmap_groups` (col / row / group scope); `header_levels`; `row_groups`; `row_indent`; `total_rows` / `subtotal_rows`; `sparkline_columns`; `minibar_columns`; `signed_columns`; content-driven canvas (engine-decided width + height; never truncated) | §13 |
 | Skin (only published) | `gs_clean` | §1 |
 | Intent values | `'explore'`, `'publish'`, `'monitor'` | §1 |
 | Layer types | `regression`, `rule`, `point` | §8.5 |
@@ -36,13 +36,13 @@ This hub covers the always-needed surface. Deeper specs for narrow topics live i
 | Spoke | Contents | Verbatim tool call (copy-paste) |
 |---|---|---|
 | `chart_context_grids.md` | Grid mode (small-multiples / facet): `mapping['facet']`, `facet_cols`, `same_scale` smart-route, `share_x` / `share_y` / `share_color`, scatter phase-space gradient on a temporal / numeric color column, 36-panel hard cap | `list_ai_repo(file_paths=["context/modules/static/chart_context_grids.md"], mode="full")` |
-| `chart_context_tables.md` | Static-PNG tables — `make_table()` + `TableResult`; the 3 PRISM-facing color modes (`'rwg'` / `'bw'` / `'rag'`); `heatmap_groups` (column / row / group scope); multi-level `header_levels`; `row_groups` navy bands; `row_indent`, `total_rows`, `subtotal_rows`; sparkline + mini-bar cells. Canvas is engine-decided (content-sized; never preset, never truncated). | `list_ai_repo(file_paths=["context/modules/static/chart_context_tables.md"], mode="full")` |
 | `chart_context_colors.md` | Per-chart palette / colour customisation — named palette swap, explicit per-category hex, single-series colour, heatmap ramp override, colourblind-safe set | `list_ai_repo(file_paths=["context/modules/static/chart_context_colors.md"], mode="full")` |
 
 Triggers:
 - **Grids spoke** — any cross-sectional dashboard over 8-30 entities sharing the same shape (G20 GDP per country, 12 sector PMIs, 16 FX pairs, country yield curves). Phase-space scatter plots with time-coloured trails also live in this spoke.
-- **Tables spoke** — any presentation of structured data with ≥2 columns and ≥2 rows where a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, FX cross-rates, sector tapes, calendars, snapshot dashboards, attribution decompositions.
 - **Colors spoke** — any user request to change / customise colours on any chart type: palette swap ("use a colourblind-safe palette"), pin a category to a hex ("make the US line red"), single-series colour ("draw it in green"), heatmap ramp override ("flip to red-blue").
+
+(Static tables — `make_table()` — live in §13 of this hub, NOT in a spoke. No fetch required.)
 
 ---
 
@@ -52,12 +52,12 @@ Two engines, one module. Pick by question shape, not by aesthetic preference.
 
 | Question shape | Reach for |
 |---|---|
-| Time series, distribution, scatter, ranking, regime, co-movement, lead-lag | `make_chart` (this hub, §1-12) |
+| Time series, distribution, scatter, ranking, regime, co-movement, lead-lag | `make_chart` (§1-12) |
 | 8-30 entities sharing one shape (G20 PMIs, country curves, FX cross-rates) | `make_chart` grid mode (`chart_context_grids.md`) |
-| Structured rows × columns where a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, sector tapes, calendars, snapshot dashboards, theme trackers, trade-idea lists | `make_table` (`chart_context_tables.md`) |
+| Structured rows × columns where a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, sector tapes, calendars, snapshot dashboards, theme trackers, trade-idea lists | `make_table` (§13) |
 | Single number / KPI tile | Not in altair — use echarts dashboards |
 
-If the answer is structured tabular content the user wants to read, use `make_table` — never a markdown table, never a code-block dump, never inline prose. Fetch the tables spoke before authoring any non-trivial table (colour modes, heatmap groups, sparkline / mini-bar cells, indent / total / subtotal styling all live there).
+If the answer is structured tabular content the user wants to read, use `make_table` (§13). **Never a markdown table, never a code-block dump of values, never `print(df)` / `df.to_string()`, never inline prose pretending to be a table.** This applies to every interface PRISM produces output for (chat, email, report, any artifact). The full `make_table()` surface — colour modes, heatmap groups, sparkline / mini-bar cells, indent / total / subtotal styling — lives in §13 of this hub.
 
 ---
 
@@ -687,3 +687,376 @@ Override rules: "highest since 2008" -> chart MUST include 2008. Pre-pandemic ->
 ## 12. Failure transparency
 
 Never silently substitute a different layout or rationalize a substitution. If a requested chart shape isn't feasible, tell the user and offer alternatives. Max 2 retries per chart concept; after 2 failures, deliver the best version with a note or ask the user about alternatives.
+
+---
+
+## 13. Static tables (`make_table()`)
+
+**Recap — markdown tables are absolutely forbidden anywhere in PRISM output.** Every structured-data answer the user is meant to read goes through `make_table()` and ships as a static PNG. This applies across chat / email / report / any artifact PRISM produces. No `|...|...|` pipe tables, no aligned code blocks of values, no `print(df)` / `df.to_string()` dumps, no inline prose pretending to be a table. See §0 (top of hub) for the canonical statement.
+
+`make_table()` and `TableResult` are auto-injected (§1 namespace). Same brand palette and Liberation Sans font stack as `make_chart`. **The canvas is engine-decided**: PNG width fits the data (text columns wrap automatically when they would otherwise be too wide; cap is soft) and height grows to fit every row. PRISM never picks a dimension or canvas; nothing is ever truncated.
+
+Reach for `make_table` when the answer is structured rows × columns and a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, FX cross-rates, sector tapes, calendars, snapshot dashboards.
+
+**Two data-source paths.** Tables routinely mix data-pulled content (macro / market / position pulls) with hand-curated content (themes, trade ideas, calendar entries). Both are first-class — pick the one that matches the source:
+
+| Source | Pass to `make_table` |
+|---|---|
+| Real data (Haver / market / CSV / scraper / computed positions) | `df=<DataFrame>` |
+| Hardcoded / hand-curated values | `rows=[{...}, {...}]` (or `rows=[(...), ...]` + `columns=[...]`) |
+
+`df=` and `rows=` are mutually exclusive — the engine errors if you pass both.
+
+### 13.1 Minimal call
+
+```python
+# Data-pulled (df=)
+result = make_table(
+    df=df,                     # DataFrame from pull_*_data() / CSV / scraper
+    title='Macro Snapshot',
+    subtitle='G15 · Q1 2026',
+    column_formats={'GDP YoY (%)': 'pct_signed', 'CPI YoY (%)': 'pct'},
+    signed_columns=['GDP YoY (%)'],
+    column_color_modes={'GDP YoY (%)': 'rwg', 'CPI YoY (%)': 'bw'},
+    save_as='tables/macro_snapshot.png',
+)
+
+# Hardcoded (rows=) — list-of-dicts form, column names from keys
+# Categorical RAG (string buckets like 'High'/'Medium'/'Low') uses
+# cell_colors directly; column_color_modes='rag' is for NUMERIC
+# columns paired with rag_thresholds (see §13.4).
+RAG_HEX = {'High': '#1A8754', 'Medium': '#FFC107', 'Low': '#DC3545'}
+themes = [
+    {'Theme': 'Soft Landing',    'Owner': 'Macro',    'Conviction': 'High'},
+    {'Theme': 'China Property',  'Owner': 'EM',       'Conviction': 'Medium'},
+    {'Theme': 'European Energy', 'Owner': 'Equities', 'Conviction': 'High'},
+]
+result = make_table(
+    rows=themes,
+    title='Theme Tracker',
+    cell_colors={(r, 'Conviction'): RAG_HEX[t['Conviction']]
+                 for r, t in enumerate(themes)},
+    save_as='tables/themes.png',
+)
+
+# Hardcoded (rows=) — list-of-tuples form, explicit columns=
+result = make_table(
+    rows=[
+        ('USTs',   'Long 5Y',         'High',   'Macro'),
+        ('DXY',    'Lower',           'Medium', 'FX'),
+        ('Energy', 'Tactical long',   'Medium', 'Equities'),
+    ],
+    columns=['Asset', 'View', 'Conviction', 'Owner'],
+    title='Trade Ideas',
+)
+```
+
+`make_table` is auto-injected — do NOT import. `s3_manager`, `session_path`, `user_id` are auto-injected at call time; never pass them.
+
+### 13.2 Full kwarg reference
+
+| Kwarg | Type | Purpose |
+|---|---|---|
+| `df` | DataFrame | Data-pulled tables — pass exactly one of `df` or `rows` |
+| `rows` | list[dict] / list[tuple] | Hardcoded tables — pass exactly one of `df` or `rows` |
+| `columns` | list[str] | Header names for `rows=`-as-tuples form; reorders for `rows=`-as-dicts form |
+| `title` / `subtitle` | str | Top labels (left-aligned, FT/Bloomberg style) |
+| `caption` | str | Italic note BELOW the table (auto-wraps) |
+| `column_formats` | dict | `{col: hint}` — see §13.9 number formatting hints |
+| `column_aligns` | dict | `{col: 'left'\|'center'\|'right'}` override (engine default: numeric → right, text → left) |
+| `header_levels` | list | Multi-level column headers — see §13.6.1 |
+| `row_groups` | list | `[(label, n_rows), ...]` navy band sub-headers — see §13.6.2 |
+| `row_indent` | list | Per-row indent levels (first column only) — see §13.6.3 |
+| `row_bands` | bool | Default True; alt-row stripe |
+| `row_colors` | dict | `{row_idx: hex}` per-row tint — see §13.7 |
+| `column_color_modes` | dict | `{col: 'rwg'\|'bw'\|'rag'}` per-column color — see §13.4 |
+| `heatmap_groups` | list | Multi-column shared scale — see §13.5 |
+| `rag_thresholds` | dict | `{col: (red_max, amber_max)}` for `'rag'` mode — see §13.4 |
+| `highlight_columns` | list | Tint full column light blue — see §13.7 |
+| `cell_colors` | dict | `{(row, col): hex}` per-cell background — wins over everything. `col` accepts name (preferred) or integer index. |
+| `cell_text_colors` | dict | `{(row, col): hex}` per-cell text override. Same key shape as `cell_colors`. |
+| `sparkline_columns` | dict | `{col: [list_per_row]}` — see §13.8.1 |
+| `minibar_columns` | dict | `{display_col: source_col}` — see §13.8.2 |
+| `signed_columns` | list | Auto green-positive / red-negative TEXT colour |
+| `total_rows` | list | Row indices to render in inverted navy + bold |
+| `subtotal_rows` | list | Row indices to render bold + subtle band |
+| `show_index` | bool | Include the DataFrame index as the leftmost column |
+
+### 13.3 `TableResult` (dataclass, NOT dict)
+
+Access via dot notation only — `result['png_path']` raises `TypeError`. Always check `r.success` before reading `r.png_path` / `r.download_url`.
+
+| Attribute | Type | Description |
+|---|---|---|
+| `success` | bool | True on render success |
+| `png_path` / `download_url` | str | PNG S3 path / presigned URL |
+| `error_message` | str-None | Failure reason |
+| `warnings` | list | Non-fatal annotations (e.g. dropped `cell_colors` keys with unknown column names) |
+| `n_rows` / `n_cols` | int | Shape after `show_index` adjustment |
+| `truncated_rows` | int | Always 0 — `make_table` never truncates rows |
+| `canvas_size` | tuple | (width, height) the engine actually emitted |
+
+### 13.4 Color modes — three strings, no degrees of freedom
+
+| Mode | Use case | Palette (engine-controlled) |
+|---|---|---|
+| `'rwg'` | Diverging at zero — signed columns where positive = good and negative = bad (P&L, returns, surprises vs forecast) | red(neg) ↔ white(0) ↔ green(pos) |
+| `'bw'` | Sequential — values >= 0 where higher = "more" (CPI %, vol, AUM, market cap, headcount) | white → navy |
+| `'rag'` | Discrete bucketing by author thresholds (Unemp red < 4 < amber < 6 < green) | red / amber / green |
+
+Apply per column via `column_color_modes`:
+
+```python
+column_color_modes={
+    'GDP YoY (%)': 'rwg',          # diverging at 0
+    'CPI YoY (%)': 'bw',           # sequential, white → navy
+    'Unemp (%)':   'rag',          # needs rag_thresholds
+    'Inflation':   'rag',
+}
+rag_thresholds={
+    'Unemp (%)':  (4.0, 6.0),                              # lower-is-bad: <4=red, 4-6=amber, >6=green
+    'Inflation':  {'amber_above': 2.0, 'red_above': 4.0},  # higher-is-bad: <2=green, 2-4=amber, >4=red
+}
+```
+
+| Threshold shape | Direction | Bucket boundaries |
+|---|---|---|
+| `(red_max, amber_max)` (legacy 2-tuple) | lower-is-bad | `< red_max` red, `< amber_max` amber, else green |
+| `{'red_below': X, 'amber_below': Y}` | lower-is-bad (explicit) | same as above with named keys |
+| `{'amber_above': X, 'red_above': Y}` | higher-is-bad (inflation, unemp, default rate) | `> red_above` red, `> amber_above` amber, else green |
+
+Three modes are the entire surface. Anything else (palette tuning, custom centers) falls under engine-controlled defaults — PRISM does not pick.
+
+### 13.5 Heatmap groups (multi-column shared scales)
+
+When several columns belong to the same metric and should share one heatmap scale (e.g. yield curve across countries, correlation matrix, all-numeric block of a snapshot), use `heatmap_groups`:
+
+```python
+heatmap_groups=[
+    {'columns': ['US', 'UK', 'EU', 'JPN'], 'scope': 'row',  'mode': 'sequential'},
+    {'columns': ['Corr A', 'Corr B', 'Corr C'], 'scope': 'group', 'mode': 'diverging'},
+]
+```
+
+Each group dict carries:
+
+| Key | Type | Purpose |
+|---|---|---|
+| `columns` | list[str] | Column names included in the group |
+| `scope` | str | `'column'` (default) / `'row'` / `'group'` — see table below |
+| `mode` | str | `'sequential'` (→ bw palette) or `'diverging'` (→ rwg palette) |
+| `palette` | str | Optional override; PRISM almost always omits this |
+
+Scope semantics:
+
+| Scope | Effect | Use case |
+|---|---|---|
+| `'column'` (default) | Each column scaled to its own min/max | "Within this country, where does this tenor sit?" |
+| `'row'` | Each row scaled across the group's columns | "At this tenor, where does each country sit vs peers?" — yield-curve cross-country comparison |
+| `'group'` | Single shared scale across every cell in the block | "Absolute level — JPN low everywhere, US high everywhere" — correlation matrix, true heatmap-of-numbers |
+
+`heatmap_groups` wins over `column_color_modes` for any column it covers.
+
+### 13.6 Headers, rows, and hierarchy
+
+#### 13.6.1 Multi-level column headers
+
+```python
+header_levels=[
+    [('', 1), ('Yields (%)', 4), ('Changes (bp)', 2)],   # super-header row
+]
+```
+
+Each level is a list of `(label, span)` tuples. Spans must sum to `len(df.columns)` per level. The bottom row is always the column-name row (auto). Up to 3 levels read cleanly; deeper degrades.
+
+#### 13.6.2 Row-group navy bands
+
+```python
+row_groups=[('Americas', 3), ('EMEA', 4), ('Asia-Pac', 5)]
+```
+
+Inserts a navy mini-band labelled per group between row blocks. Counts must sum to `len(df)`.
+
+#### 13.6.3 Indented hierarchical rows
+
+```python
+row_indent=[1, 1, 0, 1, 1, 0, 0, 0, 0]   # 0 = flush, 1 = one indent step (16 px)
+```
+
+Applied to the first column only. Pair with `subtotal_rows` / `total_rows` for attribution layouts.
+
+#### 13.6.4 Total / subtotal rows (auto-styled)
+
+```python
+total_rows=[8],          # → inverted navy + bold + white text
+subtotal_rows=[2, 5],    # → bold + subtle band
+```
+
+Rows in `total_rows` get the navy footer treatment automatically. Rows in `subtotal_rows` get a subtle grey band + bold. Author the totals into the DataFrame; engine handles the styling.
+
+### 13.7 Per-row and per-cell control
+
+| Kwarg | Purpose |
+|---|---|
+| `row_colors={r: hex}` | Per-row tint (flag outliers, sector-code rows). Loses to `heatmap_groups` / `column_color_modes` / `cell_colors` / `total_rows` / `subtotal_rows`; wins over `row_bands`. |
+| `cell_colors={(r, c): hex}` | Per-cell background. Wins over EVERYTHING else. `c` is a column name (preferred) or integer index. |
+| `cell_text_colors={(r, c): hex}` | Per-cell text colour. Same key shape as `cell_colors`. |
+| `highlight_columns=[col, ...]` | Light-blue tint on entire column ("the answer" column). |
+| `signed_columns=[col, ...]` | Auto green text for positive values, red for negative (text colour only — independent of cell background). |
+| `row_bands=True` (default) | Subtle alt-row stripe. Set False for plain look. |
+
+**Color resolution priority (top wins per cell):**
+
+1. `cell_colors[(r, c)]`
+2. `total_rows`
+3. `subtotal_rows`
+4. `heatmap_groups`
+5. `column_color_modes`
+6. `row_colors[r]`
+7. `highlight_columns`
+8. `row_groups` (handled separately as band rows between blocks)
+9. `row_bands`
+
+### 13.8 Special cells
+
+#### 13.8.1 Sparkline column
+
+```python
+sparkline_columns={'Trend (60d)': [
+    [101.2, 102.4, 99.8, ..., 110.5],   # row 0 series
+    [98.0,  97.6, 100.2, ..., 102.1],   # row 1 series
+    ...
+]}
+```
+
+The DataFrame value in the sparkline column is ignored; one list per row of values renders as a tiny navy line + endpoint dot. The series length per row can differ. Use for trailing-N-day price paths, moving-average curves, period returns over time.
+
+#### 13.8.2 Mini-bar column (Bloomberg-style)
+
+```python
+minibar_columns={'MktBar': 'Mkt Cap ($B)'}
+```
+
+`{display_col: source_col}` — the display column becomes a horizontal bar scaled to the source column's max across rows. Negative values render right-aligned in red. Use for at-a-glance ranking by magnitude.
+
+### 13.9 Number formatting hints
+
+Pass via `column_formats` as `{col: hint}`:
+
+| Hint | Format | Example |
+|---|---|---|
+| `'pct'` | `12.3%` | unsigned percent, 1dp |
+| `'pct_signed'` | `+1.5%` | signed percent, 1dp |
+| `'pct2'` / `'pct2_signed'` | `12.34%` | 2dp variants |
+| `'bp'` / `'bp_signed'` | `42bp` / `+42bp` | basis points |
+| `'currency'` | `$1.23B` / `$45.67M` / `$1,234.56` | magnitude-aware |
+| `'ratio'` | `2.45x` | multiples |
+| `'int'` | `12,345` | thousands-separated integer |
+| (none) | magnitude-aware default | falls back to `,.1f` / `.2f` / `.3f` by abs value |
+
+### 13.10 Authoring rules
+
+- **Author totals into the DataFrame.** `total_rows=[8]` styles the row that EXISTS at index 8 — the engine doesn't compute the sum.
+- **Header label spans must sum to `len(df.columns)`.** Engine rejects with the offending `level_idx` and span total.
+- **Row group counts must sum to `len(df)`.** Same rejection pattern.
+- **Color modes are 3 only — `'rwg'` / `'bw'` / `'rag'`.** Pick based on semantic, not aesthetic. Diverging-at-zero ≠ ramp-from-zero.
+- **`signed_columns` colours TEXT, not the cell.** Combine with `column_color_modes={col: 'rwg'}` for both text + cell colour.
+- **Sparkline series can differ in length per row.** Each row's min/max scales independently; faint baseline drawn to give the line context.
+- **Mini-bar source can be the display column itself** (`minibar_columns={'X': 'X'}`) — then both number and bar render in the same cell.
+- **Wide text columns wrap automatically.** The engine detects free-form text content (notes, themes, commentary) and wraps cells to multi-line; row heights grow to fit. PRISM doesn't opt in and doesn't set a wrap-line cap.
+
+### 13.11 Anti-patterns (do NOT)
+
+| Anti-pattern | Why |
+|---|---|
+| Emitting a markdown table / `print(df)` / `df.to_string()` / aligned text-block of values anywhere in PRISM output | Hard rule (see top-of-hub statement + recap above). Use `make_table()`. |
+| Reaching for any colour mode beyond `'rwg'` / `'bw'` / `'rag'` | The PRISM-facing surface is exactly those three. Engine-internal palettes are not for PRISM. |
+| `make_table(df=df, color_mode='rwg')` — top-level `color_mode` kwarg | Engine raises `TypeError`. Modes are per-column: `column_color_modes={'col': 'rwg'}`. |
+| `column_color_modes={'col': {'amber_above': 5, 'red_above': 7}}` — packing thresholds into the mode value | Engine raises `ValidationError` (previously rendered silently uncoloured). Thresholds live in `rag_thresholds={'col': {...}}`; the mode value stays the string `'rag'`. |
+| `heatmap_groups={'sequential': ['col1', 'col2'], 'diverging': ['col3']}` — dict-keyed-by-mode | Engine raises `ValidationError`. Canonical shape is list-of-dicts: `heatmap_groups=[{'columns': [...], 'mode': 'sequential'}, {'columns': [...], 'mode': 'diverging'}]`. |
+| `header_levels=[[{'label': 'Yields', 'span': 4}, ...]]` — list-of-dicts | Engine accepts dicts ONLY when both `label` and `span` keys are present; the canonical (and recommended) shape is list-of-tuples: `header_levels=[[(label, span), ...]]`. |
+| Computing totals in Python and passing as last row WITHOUT `total_rows=[N]` | Loses the inverted-navy footer treatment that signals "this is the answer" |
+| `row_indent=[0, 1, 2, 3, ...]` (deep multi-level) | 2 indent levels read; 3+ degrades. Refactor to row groups. |
+| Heatmap on a column where higher-is-just-different (Country code, Ticker, Sector) | Colour should encode magnitude or sign — not nominal identity |
+| Mixing `cell_colors` with `column_color_modes` on the same cell | `cell_colors` always wins — reserve for one-off highlights, not bulk colouring |
+
+### 13.12 Common shapes (worked examples)
+
+Source column tells PRISM which kwarg to use: `df=` for data-pulled, `rows=` for hardcoded.
+
+| Shape | Source | Pattern |
+|---|---|---|
+| **Macro snapshot** | `df=` (Haver / market pull) | `row_groups=[(region, n), ...]` + `column_color_modes={'GDP YoY': 'rwg', 'CPI': 'bw'}` |
+| **Sovereign curve cross-country** | `df=` (treasury / market pull) | `header_levels=[[('', 1), ('Yields (%)', N), ('Δ (bp)', M)]]` + `heatmap_groups=[{'columns': [yield_cols], 'scope': 'row', 'mode': 'sequential'}]` + `signed_columns=[Δ_cols]` |
+| **P&L attribution** | `df=` (computed from positions) | `row_indent=[...]` + `subtotal_rows=[...]` + `total_rows=[N-1]` + `column_color_modes={'PnL': 'rwg'}` |
+| **Watchlist** | `df=` (real-time market pull) | `sparkline_columns={'Trend': [...]}` + `minibar_columns={'MktCap (bar)': 'Mkt Cap ($B)'}` + `column_color_modes={'YTD %': 'rwg'}` + `signed_columns=[period_pct_cols]` |
+| **Correlation matrix** | `df=` (computed from returns) | `heatmap_groups=[{'columns': [all numeric], 'scope': 'group', 'mode': 'diverging'}]` |
+| **Econ calendar** | `rows=` (hand-curated upcoming events) | `cell_colors={(r, importance_col): RAG_hex}` per importance level + `column_aligns={'Importance': 'center'}` |
+| **Theme tracker (categorical RAG)** | `rows=` (PM-authored narrative) | `cell_colors={(r, 'Conviction'): RAG_HEX[v]}` for string buckets like `'High'/'Medium'/'Low'` (see §13.1). Long `'Note'` columns wrap automatically. Use `column_color_modes={'col': 'rag'}` only on NUMERIC columns paired with `rag_thresholds` |
+| **Trade ideas / curated watchlist** | `rows=` (PM-authored) | `rows=[(asset, view, conviction, owner), ...]` + `columns=[...]` |
+
+Two canonical patterns expanded inline (the rest follow the same shape — pick the row and apply the listed kwargs):
+
+```python
+# Macro snapshot — data-pulled, regional row groups, mixed color modes
+result = make_table(
+    df=macro_df,
+    title='G15 Macro Snapshot',
+    subtitle='Latest Print · Q1 2026',
+    row_groups=[('Americas', 3), ('EMEA', 5), ('Asia-Pac', 7)],
+    column_formats={
+        'GDP YoY (%)': 'pct_signed',
+        'CPI YoY (%)': 'pct',
+        'Unemp (%)':   'pct',
+        'PMI':         None,
+    },
+    column_color_modes={
+        'GDP YoY (%)': 'rwg',
+        'CPI YoY (%)': 'bw',
+        'Unemp (%)':   'rag',
+        'PMI':         'rwg',
+    },
+    rag_thresholds={'Unemp (%)': {'amber_above': 5.0, 'red_above': 7.0}},
+    signed_columns=['GDP YoY (%)'],
+    save_as='tables/macro_snapshot.png',
+)
+
+# Theme tracker — hardcoded, categorical RAG via cell_colors
+RAG_HEX = {'High': '#1A8754', 'Medium': '#FFC107', 'Low': '#DC3545'}
+themes = [
+    {'Theme': 'Soft Landing',     'Sector': 'Macro',    'Conviction': 'High',
+     'Note': 'Disinflation continues, labour cooling without recession.'},
+    {'Theme': 'China Property',   'Sector': 'EM',       'Conviction': 'Medium',
+     'Note': 'Stimulus measures haven\'t fully arrested decline.'},
+    {'Theme': 'European Energy',  'Sector': 'Equities', 'Conviction': 'High',
+     'Note': 'Storage normalised; capex pipeline holds into 2027.'},
+]
+result = make_table(
+    rows=themes,
+    title='Theme Tracker',
+    subtitle='PM Views · Updated Q1 2026',
+    cell_colors={(r, 'Conviction'): RAG_HEX[t['Conviction']]
+                 for r, t in enumerate(themes)},
+    column_aligns={'Conviction': 'center'},
+    save_as='tables/theme_tracker.png',
+)
+```
+
+### 13.13 Failure transparency
+
+`make_table` always returns a `TableResult`. On render failure `success=False` and `error_message` carries the reason; `png_path` and `download_url` are `None`. Common failure modes:
+
+| Error message prefix | Cause | Fix |
+|---|---|---|
+| `header_levels[N] spans sum to X, expected Y` | Multi-level header row span mismatch | Adjust spans to sum to `len(df.columns)` |
+| `header_levels[N][i]=... is not a (label, span) tuple` | Wrong element shape | Use `(label, span)` tuples or `{'label': X, 'span': N}` dicts |
+| `row_groups[N]=... is not a (label, count) tuple` | Wrong element shape | Use `[(label, n_rows), ...]` |
+| `row_groups counts sum to X, expected len(df)=Y` | Row group counts don't match dataframe | Adjust counts |
+| `column_color_modes[col]=... looks like rag thresholds` | Thresholds packed into the mode value | Split: `column_color_modes={col: 'rag'}` + `rag_thresholds={col: {...}}` |
+| `heatmap_groups=... was passed as a dict-keyed-by-mode` | Wrong outer shape | Use list-of-dicts (§13.5) |
+| `DataFrame has no columns` | Empty DataFrame | Filter upstream |
+| `Pass either df= (DataFrame) or rows= (list of dicts/tuples)` | Neither data-source kwarg passed | Pass exactly one |
+| `Pass either df= or rows=, not both` | Both data-source kwargs passed | Pick one |
+| `s3_manager.put failed: ...` | Underlying S3 / FS write failed | Check `session_path`; verify the manager is alive |
+
+`result.warnings` also carries non-fatal annotations -- e.g. `column_color_modes[col]='rag' set but no rag_thresholds[col] provided -- cells will render uncoloured.` Surface them; they catch silent-rendering issues.
