@@ -14,7 +14,7 @@
 | Primitive | Names | Where |
 |---|---|---|
 | Chart types (12) | `multi_line`, `scatter`, `scatter_multi`, `bar`, `bar_horizontal`, `heatmap`, `histogram`, `boxplot`, `area`, `donut`, `bullet`, `waterfall` | §6 |
-| Mapping keys | `x`, `y`, `color`, `value`, `theta`, `y_title`, `y_title_right`, `x_title`, `x_sort`, `y_sort`, `x_type`, `dual_axis_series`, `invert_right_axis`, `dual_axis_config`, `legend`, `trendline`, `trendlines`, `stack`, `strokeDash`, `strokeDashScale`, `strokeDashLegend`, `bins`, `maxbins`, `bin_extent`, `extent`, `scale_type`, `orientation`, `color_scheme`, `color_sort` (alias `legend_sort`), `value_sort`, `x_low`, `x_high`, `color_by`, `label`, `type` | §7 |
+| Mapping keys | `x`, `y`, `color`, `value`, `theta`, `y_title`, `y_title_right`, `x_title`, `x_sort`, `y_sort`, `x_type`, `dual_axis_series`, `invert_right_axis`, `dual_axis_config`, `legend`, `trendline`, `trendlines`, `stack`, `strokeDash`, `strokeDashScale`, `strokeDashLegend`, `bins`, `maxbins`, `bin_extent`, `extent`, `scale_type`, `orientation`, `color_sort` (alias `legend_sort`), `value_sort`, `x_low`, `x_high`, `color_by`, `label`, `type` | §7 |
 | Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §8 |
 | Composite functions (5) | `make_2pack_horizontal`, `make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`, `make_6pack_grid` | §10 |
 | Grid mode (small-multiples / facet) | `mapping['facet']`, `facet_cols`, `same_scale`, `share_x` / `share_y` / `share_color` | spoke `chart_context_grids.md` (Spokes index below) |
@@ -33,12 +33,14 @@ This hub covers the always-needed surface. Deeper specs for narrow topics live i
 
 | Spoke | Contents | Verbatim tool call (copy-paste) |
 |---|---|---|
-| `chart_context_grids.md` | Grid mode (small-multiples / facet): `mapping['facet']`, `facet_cols`, `same_scale` smart-route, `share_x` / `share_y` / `share_color`, scatter phase-space gradient (`mapping['color']` + `color_scheme`), 36-panel hard cap | `list_ai_repo(file_paths=["context/modules/static/chart_context_grids.md"], mode="full")` |
+| `chart_context_grids.md` | Grid mode (small-multiples / facet): `mapping['facet']`, `facet_cols`, `same_scale` smart-route, `share_x` / `share_y` / `share_color`, scatter phase-space gradient on a temporal / numeric color column, 36-panel hard cap | `list_ai_repo(file_paths=["context/modules/static/chart_context_grids.md"], mode="full")` |
 | `chart_context_tables.md` | Static-PNG tables — `make_table()` + `TableResult`; the 3 PRISM-facing color modes (`'rwg'` / `'bw'` / `'rag'`); `heatmap_groups` (column / row / group scope); multi-level `header_levels`; `row_groups` navy bands; `row_indent`, `total_rows`, `subtotal_rows`; sparkline + mini-bar cells. Canvas is engine-decided (content-sized; never preset, never truncated). | `list_ai_repo(file_paths=["context/modules/static/chart_context_tables.md"], mode="full")` |
+| `chart_context_colors.md` | Per-chart palette / colour customisation — named palette swap, explicit per-category hex, single-series colour, heatmap ramp override, colourblind-safe set | `list_ai_repo(file_paths=["context/modules/static/chart_context_colors.md"], mode="full")` |
 
 Triggers:
 - **Grids spoke** — any cross-sectional dashboard over 8-30 entities sharing the same shape (G20 GDP per country, 12 sector PMIs, 16 FX pairs, country yield curves). Phase-space scatter plots with time-coloured trails also live in this spoke.
 - **Tables spoke** — any presentation of structured data with ≥2 columns and ≥2 rows where a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, FX cross-rates, sector tapes, calendars, snapshot dashboards, attribution decompositions.
+- **Colors spoke** — any user request to change / customise colours on any chart type: palette swap ("use a colourblind-safe palette"), pin a category to a hex ("make the US line red"), single-series colour ("draw it in green"), heatmap ramp override ("flip to red-blue").
 
 ---
 
@@ -56,12 +58,14 @@ result = make_chart(
     side_right='...',             # (str or {'text': ..., 'italic': True, ...})
     save_as='charts/name.png',    # Optional fixed path (overwrites, no timestamp)
     auto_beautify=True,           # Date format, label angle, y-domain
-    x_label=None, y_label=None,   # Aliases for mapping['x_title' / 'y_title']
+    x_title=None, y_title=None,   # Top-level axis-title kwargs (canonical;
+    y_title_right=None,           #   equivalent to mapping[...] — see §7.1)
+    x_label=None, y_label=None,   # Legacy aliases for x_title / y_title
     filename_prefix=None, filename_suffix=None,
 )
 ```
 
-Canvas size is engine-decided per `chart_type` — PRISM never picks a dimension. `output_dir` is local-mode only; `interactive=True` is reserved.
+Canvas size is engine-decided per `chart_type` — PRISM never picks a dimension. `output_dir` is local-mode only; `interactive=True` (default) auto-emits an interactive HTML companion alongside the PNG, exposed on the result via `editor_html_path` / `editor_download_url` / `editor_chart_id`.
 
 **Auto-injected names:** `make_chart`, `make_table` (tables spoke), `profile_df` (§5), `ChartResult`/`ChartSpec`/`TableResult` (tables spoke), `check_charts_quality` (§2), composite functions (§10), all 11 annotation classes (§8).
 
@@ -72,12 +76,15 @@ Access via dot notation only -- `result['png_path']` raises `TypeError`.
 | Attribute | Type | Description |
 |---|---|---|
 | `png_path` / `download_url` | str | PNG S3 path / presigned URL |
+| `editor_html_path` / `editor_download_url` | str | Interactive HTML companion S3 path / presigned URL — surface alongside the PNG when the user might want to tweak |
+| `editor_chart_id` | str | Stable handle for the editor instance |
 | `vegalite_json` | dict | Final Vega-Lite spec |
 | `chart_type` / `skin` | str | Echoed |
 | `success` / `error_message` | bool / str-None | Render succeeded + details |
-| `warnings` | list | Non-fatal (auto-melt, downsample, beautify failures) |
+| `warnings` | list | Fail-soft annotations (auto-melt, dropped annotations, beautify failures) — caller may want to surface |
+| `audit_trail` | list | Informational engine decisions (auto-recovered dual-axis, auto-downsampled, alias resolution) — render-was-fine signals; do NOT surface as failures |
 
-`CompositeResult` (from `make_Npack_*`) adds `layout`, `n_charts`, `chart_errors` (per-sub-chart `df_shape`, `error_type`, `error_message`).
+`CompositeResult` (from `make_Npack_*`) adds `layout`, `n_charts`, `chart_errors` (per-sub-chart `df_shape`, `error_type`, `error_message`); `editor_html_path` / `editor_download_url` work the same way for the composite PNG.
 
 ---
 
@@ -128,7 +135,7 @@ Default-include the annotation that makes the chart's point legible at-a-glance.
 
 | Intent | Reach for |
 |---|---|
-| Threshold (Fed 2%, recession 0%, PMI 50) | `HLine` |
+| Threshold (Fed 2%, recession 0%, PMI 50) | `HLine` — drop or minimise the label; the line + a directional title carry the meaning (see §8.2) |
 | Regime / shaded period | `Band` |
 | Point at latest / max / min / event | `Callout` |
 | Event date | `VLine` |
@@ -158,8 +165,8 @@ For correlation stories with disparate magnitudes (gold + WTI) or disparate leve
 
 ## 4. Authoring rules
 
-- **Max 4 lines per `multi_line`** (5+ clutters). For >4, use a composite (§10).
-- **`y_title` plain English, max 16 chars.** Set if column is coded or >16 chars (`JXCHF@USECON` -> `Core CPI (YoY %)`; `Population (Millions)` (21) -> `Pop. (Millions)`).
+- **Max 4 lines per `multi_line`** (5+ clutters). For >4, use a composite (§10) — yield-curve overlays with 5+ dates: drop a date or split into 2 panels.
+- **`y_title` plain English; aim for ≤16 chars (engine hard-fails at 24).** Set if column is coded or wide of the visual sweet spot (`JXCHF@USECON` -> `Core CPI (YoY %)`; `Population (Millions)` (21 chars, fits but reads tight) -> `Pop. (Millions)`). Same 24-char cap applies to `x_title` and `y_title_right`. Series names (the `color` column values on `multi_line` / `timeseries`) get a separate 25-char cap (§6.1) — rename in the DataFrame before melting.
 - **X column must be `'date'` for time series, as a column not just index.** `df.rename(columns={'datetime': 'date'}).reset_index()`.
 - **Multi-line long format: rename FIRST, then melt.** Or use auto-melt.
 
@@ -244,16 +251,14 @@ For datetime x prefer `multi_line`/`area`. If using `bar` + datetime, engine han
 | `value` dtype | Color scale | Cell label | Cap |
 |---|---|---|---|
 | numeric | quantitative; sequential, OR diverging-at-zero when min<0<max (correlation matrix, P&L matrix) | `_smart_number_format` (magnitude-aware) | grid size warned >500 cells |
-| categorical / string | nominal sequential ramp indexed by sort order; `'blues'` default | the bin label itself | <=12 distinct bins (engine rejects above) |
-
-For BOTH paths `mapping['color_scheme']` overrides the default palette (named Vega-Lite ramps: `blues`, `greens`, `reds`, `oranges`, `purples`, `greys`, `viridis`, `plasma`, `magma`, `redblue`, `redyellowblue`, `redyellowgreen`, `spectral`, `browngreen`).
+| categorical / string | nominal sequential ramp indexed by sort order | the bin label itself | <=12 distinct bins (engine rejects above) |
 
 For the categorical recipe (continuous data binned into labelled buckets), bin via `pd.cut()` or `np.digitize()` and pass the bin column as `mapping['value']`. Override sort order with `mapping['value_sort']=[...]`.
 
 ```python
 df['prob_bucket'] = pd.cut(df['Probability'], bins=10,
     labels=[f'{i*10}-{(i+1)*10}%' for i in range(10)])
-mapping = {'x': 'meeting_date', 'y': 'fed_funds_rate', 'value': 'prob_bucket', 'color_scheme': 'blues'}
+mapping = {'x': 'meeting_date', 'y': 'fed_funds_rate', 'value': 'prob_bucket'}
 ```
 
 ### 6.4 Bullet chart
@@ -295,19 +300,20 @@ Haver stores many monthly/quarterly series at business-daily granularity (same v
 
 ## 7. Mapping reference
 
-### 7.1 Axis-title keys live INSIDE `mapping={}`
+### 7.1 Axis-title kwargs
 
-`y_title`, `y_title_right`, `x_title` are NEVER top-level kwargs on `make_chart()` or `ChartSpec(...)` -- raises `TypeError: __init__() got an unexpected keyword argument 'y_title'`. Composite-level `title=`/`subtitle=` describe the COMPOSITE; per-panel axis titles live inside each panel's `ChartSpec.mapping`.
+`x_title` / `y_title` / `y_title_right` are accepted both INSIDE `mapping={}` and as TOP-LEVEL kwargs on `make_chart()` and `ChartSpec(...)`. The engine routes the top-level form into `mapping` automatically; `mapping[...]` wins when both are set. `x_label` / `y_label` are legacy aliases for the top-level form.
 
 ```python
-# CORRECT (both make_chart and ChartSpec):
 make_chart(df=df, chart_type='multi_line',
            mapping={'x': 'date', 'y': 'value', 'y_title': 'Yield (%)'})
-
-# WRONG -- raises TypeError:
-ChartSpec(df=df, chart_type='multi_line', y_title='Yield (%)',
-          mapping={'x': 'date', 'y': 'value'})
+make_chart(df=df, chart_type='multi_line',
+           mapping={'x': 'date', 'y': 'value'}, y_title='Yield (%)')
+ChartSpec(df=df, chart_type='multi_line',
+          mapping={'x': 'date', 'y': 'value'}, y_title='Yield (%)')
 ```
+
+Composite-level `title=`/`subtitle=` describe the COMPOSITE; per-panel axis titles set on each panel's `ChartSpec` (top-level OR mapping; never on the composite wrapper).
 
 ### 7.2 Basic patterns
 
@@ -335,7 +341,7 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',
 | `x` | str | X-axis column |
 | `y` | str / list | Y-axis column(s); list triggers auto-melt |
 | `color` | str | Grouping column for multi-series |
-| `y_title` / `y_title_right` / `x_title` | str | Y (max 20 chars) / right Y (dual only) / X labels |
+| `y_title` / `y_title_right` / `x_title` | str | Axis labels (≤24 chars hard cap, aim ≤16); right Y dual-axis only |
 | `x_sort` / `y_sort` | list | Explicit ordinal sort (x) / heatmap y-axis sort |
 | `x_type` | str | Force `'ordinal'` on datetime |
 | `dual_axis_series` / `invert_right_axis` | list / bool | Right-axis series / flip right axis (higher = bottom) |
@@ -352,7 +358,6 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',
 | `extent` | float | Boxplot whisker IQR multiplier (default `1.5`) |
 | `scale_type` | str | `'linear'` / `'log'` override on auto log-scale detection (multi_line / timeseries) |
 | `orientation` | str | `'vertical'` opt-out from `bar`'s auto-flip to `bar_horizontal` on long category labels |
-| `color_scheme` | str | Heatmap palette / scatter phase-space gradient |
 | `color_sort` (alias `legend_sort`) | list | Explicit category order in legend (multi-series, bar, area) |
 | `value_sort` | list | Heatmap value-driven sort |
 | `facet_order` | list | Explicit panel-id order in grid mode (overrides first-appearance) |
@@ -381,7 +386,7 @@ Annotations must be EXTREMELY useful and core to the chart's argument -- otherwi
 ```python
 T = pd.Timestamp
 annotations = [
-    HLine(y=2.0, label='Target', color='#00AA00'),
+    HLine(y=2.0),                                                # threshold; no label per §8.2
     VLine(x=T('2022-03'), label='Hike start'),
     Segment(x1=T('2015-01'), x2=T('2019-12'), y1=2.0, y2=2.0, label='2015-2019 avg'),
     Band(x1=T('2020-03'), x2=T('2020-06'), label='Recession', opacity=0.3),
@@ -398,11 +403,11 @@ annotations = [
 |---|---|
 | `Segment(x1=v, y1=v, x2=w, y2=w)` "y=x / 45-deg / identity" on scatter | Macro/rates axes are different units (bp vs %, $ vs index pts) -- y=x has no analytical meaning AND endpoints stretch frame. Engine drops silently on `scatter`/`scatter_multi`. Use `Trendline` (or `mapping['trendline']=True`) |
 | Any annotation outside the visible plot domain (`Band` edge above data; `Segment`/`Arrow` endpoint off-data; `PointLabel`/`PointHighlight`/`Callout` off-data coord) | Vega-Lite's shared scale expands to include the coord, stretching frame and pushing title up. Engine drops silently. Keep coords inside data; for narrative thresholds outside use title/subtitle. For "highlight above X" clamp: `Band(y1=X, y2=df['value'].max())`. `HLine` drops if y outside but doesn't stretch |
-| `HLine(y=2.0, label='Fed 2% Target')` on inflation | Every reader knows it. Use title: "Core PCE Still 80bp Above Target" |
+| `HLine(y=2.0, label='Fed 2% Target')` — redundant label on a known threshold | The HLine itself is fine. Drop the label (or shrink to `'2%'`) and let the title carry the directional claim ("Core PCE Still 80bp Above Target") |
 | `VLine` at right edge labeled "Today"/"Now" | Right edge IS today |
 | `PointLabel`/`Callout` describing slope ("rising"/"falling") | Geometry conveys this. Use title for directional claim |
 | `Band` covering entire visible range labeled "Sample period" | The whole chart IS the sample |
-| Round-number threshold lines (`HLine(y=50)`, `HLine(y=100)`) | Round numbers carry no info unless policy/regime/target |
+| Round-number `HLine` on data without regime/target meaning (`HLine(y=100)` on a price chart) | Round numbers carry no info unless policy/regime/target. Fed 2%, PMI 50, recession 0% ARE regime / target lines and welcome (§3.2) |
 | Multiple annotations crowding < 6 months of x-axis | Pick most important; demote rest to subtitle |
 
 **Principle:** annotate regime changes, policy shifts, event dates, structural breaks, threshold crossings that change interpretation. Never decorate. If you cannot finish "this annotation shows [X], which the reader would not otherwise see", omit.
@@ -415,9 +420,9 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 |---|---|
 | `VLine` | `x`, `style` (`'solid'`/`'dashed'`/`'dotted'`), `stroke_dash`, `stroke_width`. Full y-axis rule; auto-staggers labels when multiple cluster. Default color `"#666666"` |
 | `HLine` | `y`, `axis` (`'left'`/`'right'`, default `'left'`; right only for dual), `style`, `stroke_dash`, `stroke_width`. Full x-axis. Default `stroke_dash=[4,4]` |
-| `Segment` | `x1`/`x2`, `y1`/`y2`, `style`, `stroke_dash`, `stroke_width`, `label_position` (`'start'`/`'middle'`/`'end'`), `label_offset_x`/`_y`. Finite line (NOT full-axis). Patterns: `y1==y2` windowed avg, `x1==x2` finite event, diagonal connector. Aliases: `x_start`/`x_end`, `y_start`/`y_end` |
-| `Band` | `x1`/`x2` (vertical) OR `y1`/`y2` (horizontal), `opacity` (default `0.3`), `axis` (horizontal only). Aliases: `x_start`/`x_end`, `y_start`/`y_end`, `start_x`/`end_x` |
-| `Arrow` | `x1`/`y1`, `x2`/`y2`, `stroke_width`, `stroke_dash`, `head_size`, `head_type` (`'triangle'`/`'none'`), `label_position`. Same aliases as Segment |
+| `Segment` | `x1`/`x2`, `y1`/`y2`, `style`, `stroke_dash`, `stroke_width`, `label_position` (`'start'`/`'middle'`/`'end'`), `label_offset_x`/`_y`. Finite line (NOT full-axis). Patterns: `y1==y2` windowed avg, `x1==x2` finite event, diagonal connector |
+| `Band` | `x1`/`x2` (vertical) OR `y1`/`y2` (horizontal), `opacity` (default `0.3`), `axis` (horizontal only) |
+| `Arrow` | `x1`/`y1`, `x2`/`y2`, `stroke_width`, `stroke_dash`, `head_size`, `head_type` (`'triangle'`/`'none'`), `label_position` |
 | `PointLabel` | `x`, `y`, `dx`/`dy` (pixel offsets), `font_size`, `align`. Plain floating text. Use sparingly |
 | `PointHighlight` | `x`, `y`, `size` (default `100`), `opacity`, `shape` (`'circle'`/`'square'`/`'diamond'`/`'triangle'`/`'cross'`/`'stroke'`), `filled`, `stroke_color`, `stroke_width`. Default color `"#C00000"`. Often combined with Callout/PointLabel |
 | `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`), `background_color` (default `'#FFFFFF'`), `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. Default `'halo'` keeps the label legible against chart lines and dense data. `dx` 0-60; `abs(dx)>80` risks off-canvas (warns) |
@@ -469,7 +474,7 @@ result = make_chart(
 | **Flatness** | any single series's data span < 10% of visible y-axis | `Y-AXIS SCALE MISMATCH` | gold ($2000) + WTI ($70) -- WTI ~2% of span; equity index + 2Y yield |
 | **Level disparity** | every series has visible variation, but gap between two series's means > 3x the largest individual span | `Y-AXIS LEVEL DISPARITY` | corporate saving (~2.5%) vs investment (~9.9%) of GDP -- each spans ~0.8 pp, gap ~7.4 |
 
-**2-series cases auto-recover.** When exactly two series trigger either gate, the engine routes the smaller-|mean| series to a right axis (`dual_axis_series=[smallest]` + `y_title_right=<smallest>`), re-renders, and emits an `AUTO-RECOVERED:` warning in `result.warnings`. PRISM doesn't have to do anything; override by setting `dual_axis_series` explicitly or switching shape (`make_2pack_*`).
+**2-series cases auto-recover.** When exactly two series trigger either gate, the engine routes the smaller-|mean| series to a right axis (`dual_axis_series=[smallest]` + `y_title_right=<smallest>`), re-renders, and emits an `AUTO-RECOVERED:` entry on `result.audit_trail` (NOT `result.warnings` — chart is fine; do not surface as a failure; see §1.1). PRISM doesn't have to do anything; override by setting `dual_axis_series` explicitly or switching shape (`make_2pack_*`).
 
 **3+ series cases stay rejected.** The choice between the four reshape options below is editorial -- the engine refuses to silently transform 3+ series. Pick one:
 
@@ -613,7 +618,7 @@ spec = ChartSpec(df=df, chart_type='multi_line',
     annotations=[...], layers=[...])
 ```
 
-Per-panel axis titles (`y_title`, `y_title_right`, `x_title`) live INSIDE each `ChartSpec.mapping` (top-level `ChartSpec(...)` kwarg raises TypeError, see §7.1). Composite-level `title=`/`subtitle=` describe the COMPOSITE.
+Per-panel axis titles (`y_title`, `y_title_right`, `x_title`) work either INSIDE each `ChartSpec.mapping` OR as top-level `ChartSpec(...)` kwargs (engine routes top-level into mapping; see §7.1). Composite-level `title=`/`subtitle=` describe the COMPOSITE.
 
 | Function | Layout | Args |
 |---|---|---|

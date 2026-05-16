@@ -6,12 +6,11 @@ tables are prohibited in the report pipeline -- see
 `report_worker_instructions.md` and `report_writer_instructions.md`.
 
 Spoke fetched on demand from `chart_context.md`. Covers `make_table()` —
-the static-PNG table renderer. Same GS_PRIMARY navy palette and
-Liberation Sans font stack as `make_chart`. **The canvas is engine-
-decided**: PNG width fits the data (text columns wrap automatically when
-they would otherwise be too wide; cap is soft) and height grows to fit
-every row. PRISM never picks a dimension or canvas; nothing is ever
-truncated.
+the static-PNG table renderer. Same brand palette and Liberation Sans
+font stack as `make_chart`. **The canvas is engine-decided**: PNG
+width fits the data (text columns wrap automatically when they would
+otherwise be too wide; cap is soft) and height grows to fit every row.
+PRISM never picks a dimension or canvas; nothing is ever truncated.
 
 Reach for a table when the answer is structured rows × columns and a
 chart can't visualise the relationship cleanly: watchlists, term
@@ -71,15 +70,20 @@ of tuples/lists with `columns=[...]` naming the headers:
 
 ```python
 # list-of-dicts form — column names from keys
+# Categorical RAG (string buckets like 'High'/'Medium'/'Low') uses
+# cell_colors directly; column_color_modes='rag' is for numeric
+# columns + rag_thresholds (see §3 + §6).
+RAG_HEX = {'High': '#1A8754', 'Medium': '#FFC107', 'Low': '#DC3545'}
+themes = [
+    {'Theme': 'Soft Landing',    'Owner': 'Macro',    'Conviction': 'High'},
+    {'Theme': 'China Property',  'Owner': 'EM',       'Conviction': 'Medium'},
+    {'Theme': 'European Energy', 'Owner': 'Equities', 'Conviction': 'High'},
+]
 result = make_table(
-    rows=[
-        {'Theme': 'Soft Landing',     'Owner': 'Macro',    'Conviction': 'High'},
-        {'Theme': 'China Property',   'Owner': 'EM',       'Conviction': 'Medium'},
-        {'Theme': 'European Energy',  'Owner': 'Equities', 'Conviction': 'High'},
-    ],
+    rows=themes,
     title='Theme Tracker',
-    column_color_modes={'Conviction': 'rag'},
-    rag_thresholds={'Conviction': (0, 0)},   # (categorical RAG via cell_colors instead)
+    cell_colors={(r, 'Conviction'): RAG_HEX[t['Conviction']]
+                 for r, t in enumerate(themes)},
     save_as='tables/themes.png',
 )
 
@@ -160,9 +164,19 @@ column_color_modes={
     'GDP YoY (%)': 'rwg',          # diverging at 0
     'CPI YoY (%)': 'bw',           # sequential, white → navy
     'Unemp (%)':   'rag',          # needs rag_thresholds
+    'Inflation':   'rag',
 }
-rag_thresholds={'Unemp (%)': (4.0, 6.0)}   # (red_max, amber_max)
+rag_thresholds={
+    'Unemp (%)':  (4.0, 6.0),                              # lower-is-bad: <4=red, 4-6=amber, >6=green
+    'Inflation':  {'amber_above': 2.0, 'red_above': 4.0},  # higher-is-bad: <2=green, 2-4=amber, >4=red
+}
 ```
+
+| Threshold shape | Direction | Bucket boundaries |
+|---|---|---|
+| `(red_max, amber_max)` (legacy 2-tuple) | lower-is-bad | `< red_max` red, `< amber_max` amber, else green |
+| `{'red_below': X, 'amber_below': Y}` | lower-is-bad (explicit) | same as above with named keys |
+| `{'amber_above': X, 'red_above': Y}` | higher-is-bad (inflation, unemp, default rate) | `> red_above` red, `> amber_above` amber, else green |
 
 Three modes are the entire surface. Anything else (palette tuning,
 custom centers) falls under engine-controlled defaults — PRISM does
@@ -370,7 +384,7 @@ Source column tells PRISM which kwarg to use: `df=` for data-pulled,
 | **Watchlist** | `df=` (real-time market pull) | `sparkline_columns={'Trend': [...]}` + `minibar_columns={'MktCap (bar)': 'Mkt Cap ($B)'}` + `column_color_modes={'YTD %': 'rwg'}` + `signed_columns=[period_pct_cols]` |
 | **Correlation matrix** | `df=` (computed from returns) | `heatmap_groups=[{'columns': [all numeric], 'scope': 'group', 'mode': 'diverging'}]` |
 | **Econ calendar** | `rows=` (hand-curated upcoming events) | `cell_colors={(r, importance_col): RAG_hex}` per importance level + `column_aligns={'Importance': 'center'}` |
-| **Theme tracker** | `rows=` (PM-authored narrative) | `column_color_modes={'Conviction': 'rag'}` — long `'Note'` column wraps automatically |
+| **Theme tracker (categorical RAG)** | `rows=` (PM-authored narrative) | `cell_colors={(r, 'Conviction'): RAG_HEX[v]}` for string buckets like `'High'/'Medium'/'Low'` (see §2.2). Long `'Note'` columns wrap automatically. Use `column_color_modes={'col': 'rag'}` only on NUMERIC columns paired with `rag_thresholds` |
 | **Trade ideas / curated watchlist** | `rows=` (PM-authored) | `rows=[(asset, view, conviction, owner), ...]` + `columns=[...]` |
 
 ---

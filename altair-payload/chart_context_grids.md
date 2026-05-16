@@ -52,7 +52,6 @@ dimension preset to pick.
 | `same_scale` | `False` | Smart-routes per chart_type (§4) — preferred over individual `share_*` |
 | `share_x` / `share_y` / `share_color` | `False` | Lower-level locks; reach for these only when `same_scale` is too coarse |
 | `mapping['facet_order']` | first-appearance in df | Optional explicit list of panel ids |
-| `mapping['color_scheme']` | `'viridis'` | For gradient color: `'turbo'`, `'plasma'`, `'inferno'`, `'magma'`, `'cividis'`, `'rainbow'` |
 | `edge_only_ticks` / `edge_only_axis_titles` | `False` | Opt-in; suppress tick labels / titles on inner panels (tight-paper mode) |
 
 ### Limits
@@ -111,8 +110,7 @@ result = make_chart(
     mapping={
         'x': 'cpi', 'y': 'gdp',
         'facet': 'country',
-        'color': 'quarter',           # temporal column -> viridis gradient
-        'color_scheme': 'turbo',      # optional: more rainbow-y
+        'color': 'quarter',           # temporal column -> sequential gradient
     },
     facet_cols=4,
     same_scale=True,
