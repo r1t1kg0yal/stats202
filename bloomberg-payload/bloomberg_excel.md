@@ -4,6 +4,7 @@
 - **Audience:** PRISM (all interfaces)
 - **Tier:** 2 (on-demand)
 - **Scope:** Authoring Bloomberg formula strings into Excel cells via `openpyxl`. The formulas evaluate when the user opens the workbook in Excel-with-Bloomberg-add-in. PRISM never executes BQL or blpapi itself — it ships a workbook the user evaluates locally.
+- **PRISM filesystem:** Hub and spokes are siblings under `ai_development/context/modules/static/bloomberg/` (flat directory — no subfolder per spoke group). Mid-session spoke fetches use repo-relative paths from that root, e.g. `context/modules/static/bloomberg/bbg_equities.md`, inside `list_ai_repo(..., mode="full")`.
 
 PRISM already knows `openpyxl`. This module teaches the formula catalog: legacy DAPI (`BDP` / `BDH` / `BDS` / `BEQS` / `BCURVE` / `BSRCH`), the modern BQL family (`BQL` / `BQL.Query` / `BQL.Dates` / `BQL.Params` / `BQL.Expr`), override flags, the universal cross-asset field surface, yellow-key security syntax, and the openpyxl-specific quirks.
 
@@ -1067,20 +1068,20 @@ The hub above is sufficient for cross-asset price/ID work. Anything that depends
 
 | Spoke | What it carries | Pick when... |
 |---|---|---|
-| `bloomberg_excel/bbg_equities.md` | Equity-specific fields (fundamentals, ratios, estimates, holdings), GICS / BICS classification, BEQS screens, INDX_MEMBERS conventions, peers / segments, factor / momentum signals | User asks about a stock, ETF, sector, index members, screening, fundamentals, valuation ratios, holders |
-| `bloomberg_excel/bbg_fixed_income.md` | Govt / Corp / Mtge / Muni yellow keys, on-the-run conventions (CT*, GT*), yields (YLD_YTM_*, YLD_TO_WORST), spreads (OAS, Z-spread, ASW), duration / convexity / DV01, BCURVE swap-curve IDs, BQL `bondsuniv` / `bonds` patterns, issue-level data (calls, ratings, sinking funds), cash-flow schedules | Bond pricing, yield curves, duration / risk metrics, issue-level analysis, sovereign curves |
-| `bloomberg_excel/bbg_credit.md` | CDS instruments (RED codes, SR / SUB tiers), CDX / iTraxx index series (CDX HY, CDX IG, iTraxx Main, Crossover, SubFin, SovX), Bloomberg HY / IG cash-bond indices (LF98TRUU, LUACTRUU, LUACTRPP), ratings (RTG_SP / RTG_MOODY / RTG_FITCH), default / recovery fields | Credit derivatives, IG / HY index analysis, ratings work, credit-curve work |
-| `bloomberg_excel/bbg_macro.md` | ECO release index tickers (CPI YOY Index, NFP P Index, USURTOT Index, etc.), Bloomberg survey fields (ACTUAL_RELEASE, BN_SURVEY_MEDIAN, BN_SURVEY_HIGH/LOW, FORECAST_STANDARD_DEVIATION), surprise indices (CESI* family), central-bank meeting fields, WIRP / OIS-implied policy paths, CFTC COT, nowcast indices. Includes the canonical pattern for pulling release-actuals-vs-surveys history | Macro release work, surprise indices, central-bank expectations, positioning data |
-| `bloomberg_excel/bbg_fx.md` | Spot / forward / NDF security syntax (`EURUSD Curncy`, `EURUSD1M Curncy`, `USDIDR1M NDF Curncy`), pricing sources (`BGN`, `CMPN`, `BFIX`), forward-points fields, implied-vol surface (`EURUSDV1M Curncy`, risk reversals `EURUSD25R1M Curncy`, butterflies `EURUSD25B1M Curncy`), carry / IR differentials | FX spot / forward, FX vol surface, NDFs, carry analysis |
-| `bloomberg_excel/bbg_commodities.md` | Futures-generic conventions (`CL1`, `CL2`, ... vs specific `CLZ4`), month-code calendar, continuous-roll variants, contract-spec fields (`FUT_CONTRACT_SIZE`, `FUT_TICK_SIZE`, `FUT_VAL_PT`), inventory / supply data (DOE_*, USDA_*), CFTC positioning fields, calendar-spread helpers | Futures contracts, term structure, inventories, COT positioning |
-| `bloomberg_excel/bbg_events.md` | Earnings calendar + actuals + estimates (`ANR_EARNINGS_DATE_TIME_HIST`, `ERN_ANN_DT_TIME_HIST_WITH_EPS`, `DY895`, BQL `actual_eps()` / `estimate_eps()`), dividend history (`DVD_HIST_ALL` with `DVD_START_DT` / `DVD_END_DT`), SEC filings (`RR_LIST_OF_FILINGS_WITH_DATES`, `RR_FILING_DOC_URL`), earnings transcript availability via `EVT<GO>` event tracker (URL-bearing, terminal-gated content), corporate actions (splits, spinoffs, IPOs, buybacks), M&A status fields. Includes the canonical pattern for pulling filings + earnings history for one company | Earnings work, filings / 10-K / 10-Q discovery, transcripts, dividend history, corporate actions, M&A status |
-| `bloomberg_excel/bbg_options.md` | Per-option security syntax across underlying classes (stock / ETF / index / futures), `OPT_CHAIN` BDS field + filters, Greeks (`OPT_DELTA_MID` / `OPT_GAMMA_MID` / `OPT_THETA_MID` / `OPT_VEGA_MID` / `OPT_RHO_MID`), implied volatility (`IMPLIED_VOLATILITY_MID`), vol-surface index tickers (`SPXVV3M Index`, `SPX25R1M Index` skew, `VIX Index` / `VVIX Index`, VIX futures `UX1`/`UX2 Index`). Includes the canonical chain-with-Greeks and vol-surface dashboard patterns | Options chain, Greeks, IV history, vol-surface time series, VIX term structure, skew analysis |
+| `context/modules/static/bloomberg/bbg_equities.md` | Equity-specific fields (fundamentals, ratios, estimates, holdings), GICS / BICS classification, BEQS screens, INDX_MEMBERS conventions, peers / segments, factor / momentum signals | User asks about a stock, ETF, sector, index members, screening, fundamentals, valuation ratios, holders |
+| `context/modules/static/bloomberg/bbg_fixed_income.md` | Govt / Corp / Mtge / Muni yellow keys, on-the-run conventions (CT*, GT*), yields (YLD_YTM_*, YLD_TO_WORST), spreads (OAS, Z-spread, ASW), duration / convexity / DV01, BCURVE swap-curve IDs, BQL `bondsuniv` / `bonds` patterns, issue-level data (calls, ratings, sinking funds), cash-flow schedules | Bond pricing, yield curves, duration / risk metrics, issue-level analysis, sovereign curves |
+| `context/modules/static/bloomberg/bbg_credit.md` | CDS instruments (RED codes, SR / SUB tiers), CDX / iTraxx index series (CDX HY, CDX IG, iTraxx Main, Crossover, SubFin, SovX), Bloomberg HY / IG cash-bond indices (LF98TRUU, LUACTRUU, LUACTRPP), ratings (RTG_SP / RTG_MOODY / RTG_FITCH), default / recovery fields | Credit derivatives, IG / HY index analysis, ratings work, credit-curve work |
+| `context/modules/static/bloomberg/bbg_macro.md` | ECO release index tickers (CPI YOY Index, NFP P Index, USURTOT Index, etc.), Bloomberg survey fields (ACTUAL_RELEASE, BN_SURVEY_MEDIAN, BN_SURVEY_HIGH/LOW, FORECAST_STANDARD_DEVIATION), surprise indices (CESI* family), central-bank meeting fields, WIRP / OIS-implied policy paths, CFTC COT, nowcast indices. Includes the canonical pattern for pulling release-actuals-vs-surveys history | Macro release work, surprise indices, central-bank expectations, positioning data |
+| `context/modules/static/bloomberg/bbg_fx.md` | Spot / forward / NDF security syntax (`EURUSD Curncy`, `EURUSD1M Curncy`, `USDIDR1M NDF Curncy`), pricing sources (`BGN`, `CMPN`, `BFIX`), forward-points fields, implied-vol surface (`EURUSDV1M Curncy`, risk reversals `EURUSD25R1M Curncy`, butterflies `EURUSD25B1M Curncy`), carry / IR differentials | FX spot / forward, FX vol surface, NDFs, carry analysis |
+| `context/modules/static/bloomberg/bbg_commodities.md` | Futures-generic conventions (`CL1`, `CL2`, ... vs specific `CLZ4`), month-code calendar, continuous-roll variants, contract-spec fields (`FUT_CONTRACT_SIZE`, `FUT_TICK_SIZE`, `FUT_VAL_PT`), inventory / supply data (DOE_*, USDA_*), CFTC positioning fields, calendar-spread helpers | Futures contracts, term structure, inventories, COT positioning |
+| `context/modules/static/bloomberg/bbg_events.md` | Earnings calendar + actuals + estimates (`ANR_EARNINGS_DATE_TIME_HIST`, `ERN_ANN_DT_TIME_HIST_WITH_EPS`, `DY895`, BQL `actual_eps()` / `estimate_eps()`), dividend history (`DVD_HIST_ALL` with `DVD_START_DT` / `DVD_END_DT`), SEC filings (`RR_LIST_OF_FILINGS_WITH_DATES`, `RR_FILING_DOC_URL`), earnings transcript availability via `EVT<GO>` event tracker (URL-bearing, terminal-gated content), corporate actions (splits, spinoffs, IPOs, buybacks), M&A status fields. Includes the canonical pattern for pulling filings + earnings history for one company | Earnings work, filings / 10-K / 10-Q discovery, transcripts, dividend history, corporate actions, M&A status |
+| `context/modules/static/bloomberg/bbg_options.md` | Per-option security syntax across underlying classes (stock / ETF / index / futures), `OPT_CHAIN` BDS field + filters, Greeks (`OPT_DELTA_MID` / `OPT_GAMMA_MID` / `OPT_THETA_MID` / `OPT_VEGA_MID` / `OPT_RHO_MID`), implied volatility (`IMPLIED_VOLATILITY_MID`), vol-surface index tickers (`SPXVV3M Index`, `SPX25R1M Index` skew, `VIX Index` / `VVIX Index`, VIX futures `UX1`/`UX2 Index`). Includes the canonical chain-with-Greeks and vol-surface dashboard patterns | Options chain, Greeks, IV history, vol-surface time series, VIX term structure, skew analysis |
 
 ### 10.2 The single fetch call
 
 ```python
 list_ai_repo(
-    file_paths=["bloomberg_excel/bbg_equities.md", "bloomberg_excel/bbg_events.md"],
+    file_paths=["context/modules/static/bloomberg/bbg_equities.md", "context/modules/static/bloomberg/bbg_events.md"],
     mode="full",
 )
 ```
@@ -1091,19 +1092,19 @@ Pass ONLY `file_paths` and `mode` actively; omit every other parameter. **Do NOT
 
 | Build shape | Single call to copy |
 |---|---|
-| Single-asset equity workbook | `list_ai_repo(file_paths=["bloomberg_excel/bbg_equities.md"], mode="full")` |
-| Index member fundamentals | `list_ai_repo(file_paths=["bloomberg_excel/bbg_equities.md"], mode="full")` |
-| Earnings preview / filings inheritance | `list_ai_repo(file_paths=["bloomberg_excel/bbg_equities.md", "bloomberg_excel/bbg_events.md"], mode="full")` |
-| Bond cash-flow / duration workbook | `list_ai_repo(file_paths=["bloomberg_excel/bbg_fixed_income.md"], mode="full")` |
-| HY / IG spread time series | `list_ai_repo(file_paths=["bloomberg_excel/bbg_fixed_income.md", "bloomberg_excel/bbg_credit.md"], mode="full")` |
-| CDS / CDX positioning workbook | `list_ai_repo(file_paths=["bloomberg_excel/bbg_credit.md"], mode="full")` |
-| Macro release calendar / surprise history | `list_ai_repo(file_paths=["bloomberg_excel/bbg_macro.md"], mode="full")` |
-| FX vol surface dashboard | `list_ai_repo(file_paths=["bloomberg_excel/bbg_fx.md"], mode="full")` |
-| Commodity term structure | `list_ai_repo(file_paths=["bloomberg_excel/bbg_commodities.md"], mode="full")` |
-| Cross-asset macro dashboard (releases + rates + FX) | `list_ai_repo(file_paths=["bloomberg_excel/bbg_macro.md", "bloomberg_excel/bbg_fixed_income.md", "bloomberg_excel/bbg_fx.md"], mode="full")` |
-| Options chain + Greeks workbook | `list_ai_repo(file_paths=["bloomberg_excel/bbg_options.md"], mode="full")` |
-| Vol-surface dashboard (SPX / NDX / VIX term structure) | `list_ai_repo(file_paths=["bloomberg_excel/bbg_options.md"], mode="full")` |
-| Single stock with options overlay (cash + options chain) | `list_ai_repo(file_paths=["bloomberg_excel/bbg_equities.md", "bloomberg_excel/bbg_options.md"], mode="full")` |
+| Single-asset equity workbook | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_equities.md"], mode="full")` |
+| Index member fundamentals | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_equities.md"], mode="full")` |
+| Earnings preview / filings inheritance | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_equities.md", "context/modules/static/bloomberg/bbg_events.md"], mode="full")` |
+| Bond cash-flow / duration workbook | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_fixed_income.md"], mode="full")` |
+| HY / IG spread time series | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_fixed_income.md", "context/modules/static/bloomberg/bbg_credit.md"], mode="full")` |
+| CDS / CDX positioning workbook | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_credit.md"], mode="full")` |
+| Macro release calendar / surprise history | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_macro.md"], mode="full")` |
+| FX vol surface dashboard | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_fx.md"], mode="full")` |
+| Commodity term structure | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_commodities.md"], mode="full")` |
+| Cross-asset macro dashboard (releases + rates + FX) | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_macro.md", "context/modules/static/bloomberg/bbg_fixed_income.md", "context/modules/static/bloomberg/bbg_fx.md"], mode="full")` |
+| Options chain + Greeks workbook | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_options.md"], mode="full")` |
+| Vol-surface dashboard (SPX / NDX / VIX term structure) | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_options.md"], mode="full")` |
+| Single stock with options overlay (cash + options chain) | `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_equities.md", "context/modules/static/bloomberg/bbg_options.md"], mode="full")` |
 
 When in doubt, lean toward including more spokes. The marginal cost of an extra spoke is small; the cost of a forbidden second `list_ai_repo` call (or worse, authoring against guessed field names) is large.
 
