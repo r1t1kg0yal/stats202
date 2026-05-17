@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>gs_reference companion: sky nav alignment</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1.5rem; line-height: 1.5; color: #111; }
+    h1 { font-size: 1.25rem; margin-top: 0; }
+    .meta { font-size: 0.9rem; color: #444; margin-bottom: 1.5rem; }
+    .files { background: #f5f5f7; padding: 12px 16px; border-radius: 4px; font-family: ui-monospace, monospace; font-size: 0.85rem; word-break: break-all; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 1.5rem 0; }
+    @media (max-width: 640px) { .pair { grid-template-columns: 1fr; } }
+    .swatch { border: 1px solid #ccc; border-radius: 4px; overflow: hidden; }
+    .swatch-top { height: 48px; }
+    .swatch-top.utility-before { background: #0B1624; }
+    .swatch-top.utility-after { background: #7297C5; }
+    .swatch-mid { height: 56px; display: flex; align-items: center; padding: 0 12px; font-size: 0.75rem; font-weight: 600; }
+    .swatch-mid.nav-before { background: #fff; color: #000; border-top: 1px solid rgba(0,0,0,0.12); }
+    .swatch-mid.nav-after { background: #7297C5; color: rgba(255,255,255,0.95); }
+    .swatch-cap { padding: 10px 12px; font-size: 0.8rem; background: #fafafa; }
+    kbd { font-family: ui-monospace, monospace; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+
+  <h1>gs_reference companion header: match frontend sky chrome</h1>
+  <p class="meta">
+    The companion mock used a deep-navy utility ribbon (<kbd>#0B1624</kbd>) and a white primary nav, with link accents on <kbd>#446EA6</kbd> (reads navy beside the portal).
+    <strong>Frontend</strong> uses <kbd>--gs-sky-blue</kbd> / UITK <kbd>--gs-uitk-color-surface-brand-bold</kbd> (<kbd>#7297C5</kbd>) for <kbd>body &gt; nav</kbd> with inverse text.
+    Companion utility + primary nav now use that same sky surface and UITK inverse text / borders so the top chrome matches the portal.
+  </p>
+
+  <p><strong>Files touched</strong></p>
+  <p class="files">/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/projects/gs_reference/gs_reference-payload/gs_reference_companion.py</p>
+
+  <p><strong>What to verify</strong></p>
+  <p>Load any companion route: utility band + sticky nav should read as continuous <strong>#7297C5</strong> with light nav typography (no white bar, no <kbd>#0B1624</kbd> ribbon).</p>
+
+  <h2 style="font-size:1rem;margin-top:2rem;">Before / after (schematic)</h2>
+  <div class="pair">
+    <div class="swatch">
+      <div class="swatch-top utility-before"></div>
+      <div class="swatch-mid nav-before">Primary nav (was white; links navy-ink on hover)</div>
+      <div class="swatch-cap"><strong>BEFORE</strong> utility <code>#0B1624</code> + nav <code>#FFFFFF</code></div>
+    </div>
+    <div class="swatch">
+      <div class="swatch-top utility-after"></div>
+      <div class="swatch-mid nav-after">Primary nav (sky + inverse text, matches frontend)</div>
+      <div class="swatch-cap"><strong>AFTER</strong> utility + nav <code>var(--gs-uitk-color-surface-brand-bold)</code> &equiv; <code>#7297C5</code></div>
+    </div>
+  </div>
+
+</body>
+</html>

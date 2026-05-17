@@ -1395,10 +1395,15 @@ button { font-family: inherit; cursor: pointer; }
 .gsv2-eyebrow--inverse { color: rgba(255, 255, 255, 0.82); }
 
 /* ───────── utility ribbon (slim top bar) ───────── */
+/*
+   Sky chrome matches `projects/frontend` `body > nav` / `--gs-sky-blue`
+   (`--gs-uitk-color-surface-brand-bold` / #7297C5), not GS marketing
+   deep-navy ribbons (#0B1624).
+*/
 .gsv2-utility {
-    background: #0B1624;
-    color: rgba(255, 255, 255, 0.85);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    background: var(--gs-uitk-color-surface-brand-bold);
+    color: var(--gs-uitk-color-text-inverse-regular);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.22);
 }
 .gsv2-utility__inner {
     max-width: 1440px;
@@ -1423,20 +1428,20 @@ button { font-family: inherit; cursor: pointer; }
     letter-spacing: 0.4px;
 }
 .gsv2-utility__list a {
-    color: rgba(255, 255, 255, 0.78);
+    color: var(--gs-uitk-color-text-inverse-subtle);
     transition: color 200ms ease;
 }
-.gsv2-utility__list a:hover { color: #FFFFFF; }
+.gsv2-utility__list a:hover { color: var(--gs-uitk-color-text-inverse-bold); }
 .gsv2-utility__sep {
     width: 1px;
     height: 12px;
-    background: rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.22);
 }
 .gsv2-utility__cta {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    color: #FFFFFF;
+    color: var(--gs-uitk-color-text-inverse-bold);
 }
 @media (max-width: 767px) {
     .gsv2-utility { display: none; }
@@ -1447,13 +1452,14 @@ button { font-family: inherit; cursor: pointer; }
     position: sticky;
     top: 0;
     z-index: 90;
-    background: #FFFFFF;
-    border-bottom: 1px solid var(--gs-uitk-color-border-neutral-minimal);
+    background: var(--gs-uitk-color-surface-brand-bold);
+    border-bottom: none;
     transition: box-shadow 220ms ease;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
 }
-.gsv2-nav.is-scrolled { box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08); }
+.gsv2-nav.is-scrolled { box-shadow: 0 1px 4px rgba(0, 0, 0, 0.22); }
 .gsv2-nav.is-mega-open { box-shadow: 0 24px 60px rgba(0, 0, 0, 0.12); }
-.gsv2-nav__bar { position: relative; z-index: 2; background: #FFFFFF; }
+.gsv2-nav__bar { position: relative; z-index: 2; background: var(--gs-uitk-color-surface-brand-bold); }
 .gsv2-nav__inner {
     max-width: 1440px;
     margin: 0 auto;
@@ -1473,7 +1479,7 @@ button { font-family: inherit; cursor: pointer; }
     align-items: center;
     gap: 12px;
     font: 500 18px/22px var(--gs-font-sans);
-    color: var(--gs-uitk-color-text-neutral-bold);
+    color: var(--gs-uitk-color-text-inverse-bold);
     flex-shrink: 0;
 }
 .gsv2-nav__logo-mark {
@@ -1507,7 +1513,7 @@ button { font-family: inherit; cursor: pointer; }
     border: none;
     padding: 12px 18px;
     font: 500 15px/20px var(--gs-font-sans);
-    color: var(--gs-uitk-color-text-neutral-bold);
+    color: var(--gs-uitk-color-text-inverse-subtle);
     display: inline-flex;
     align-items: center;
     gap: 4px;
@@ -1521,14 +1527,14 @@ button { font-family: inherit; cursor: pointer; }
 .gsv2-nav__link:focus-visible,
 .gsv2-nav__item--active > .gsv2-nav__link,
 .gsv2-nav__item.is-open > .gsv2-nav__link {
-    color: var(--gs-uitk-color-text-brand);
+    color: var(--gs-uitk-color-text-inverse-bold);
     outline: none;
 }
 .gsv2-nav__item--active > .gsv2-nav__link {
-    border-bottom-color: var(--gs-uitk-color-text-brand);
+    border-bottom-color: var(--gs-uitk-color-text-inverse-bold);
 }
 .gsv2-nav__item.is-open > .gsv2-nav__link {
-    border-bottom-color: var(--gs-uitk-color-text-brand);
+    border-bottom-color: var(--gs-uitk-color-text-inverse-bold);
 }
 .gsv2-nav__caret {
     display: inline-flex;
@@ -1552,11 +1558,11 @@ button { font-family: inherit; cursor: pointer; }
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: var(--gs-uitk-color-text-neutral-bold);
+    color: var(--gs-uitk-color-text-inverse-bold);
     border-radius: 0;
     transition: background 180ms ease, color 180ms ease;
 }
-.gsv2-nav__icon-btn:hover { background: rgba(0, 0, 0, 0.04); }
+.gsv2-nav__icon-btn:hover { background: var(--gs-uitk-color-interaction-hover-on-dark); }
 .gsv2-nav__icon-btn--mobile { display: inline-flex; }
 @media (min-width: 1024px) { .gsv2-nav__icon-btn--mobile { display: none; } }
 
@@ -1567,13 +1573,13 @@ button { font-family: inherit; cursor: pointer; }
     height: 40px;
     padding: 0 20px;
     background: transparent;
-    color: var(--gs-uitk-color-text-neutral-bold);
-    border: 1px solid var(--gs-uitk-color-border-neutral-bold);
+    color: var(--gs-uitk-color-text-inverse-bold);
+    border: 1px solid var(--gs-uitk-color-border-inverse-bold);
     font: 500 14px/1 var(--gs-font-sans);
     letter-spacing: 0;
     transition: background 180ms ease;
 }
-.gsv2-nav__login:hover { background: rgba(0, 0, 0, 0.04); }
+.gsv2-nav__login:hover { background: var(--gs-uitk-color-interaction-hover-on-dark); }
 @media (min-width: 1024px) { .gsv2-nav__login { display: inline-flex; } }
 
 /* ───────── MEGA-MENU PANELS ───────── */
