@@ -1,6 +1,6 @@
 # Altair Colours (`mapping['color_scheme']` / `mapping['color_map']`)
 
-Spoke fetched on demand from `chart_context.md`. Covers per-chart palette and colour customisation across every chart type. Default behaviour (no kwarg passed) renders in the GS_PRIMARY brand palette — fetch this spoke ONLY when the user explicitly asks to change colours.
+Spoke fetched on demand from `chart_context.md`. Covers per-chart palette, colour, and opacity customisation. **PRISM MUST fetch this file (via `list_ai_repo`, see hub Spokes index) before authoring any `mapping['color_scheme']`, `color_map`, `opacity`, or `opacity_map` when the user asks to change colours, palette, hex, fade, highlight, or transparency on a chart.** Default behaviour (no kwarg passed) renders in the GS_PRIMARY brand palette — skip this spoke only when the user did not ask for any colour/opacity change.
 
 ---
 
@@ -12,8 +12,8 @@ Spoke fetched on demand from `chart_context.md`. Covers per-chart palette and co
 | "Make the US line red, EU blue, JP green" | `color_map={'US': '#DC143C', 'EU': '#1F77B4', 'JP': '#2CA02C'}` (named) |
 | "Highlight the US line in red, fade the rest" | `color_map={'US': '#DC143C'}` (named; others fall back to default palette) |
 | "Fade the EU cluster, keep US opaque" | `opacity_map={'EU': 0.25}` on `scatter_multi` (others keep the engine density default) |
-| "Make cluster 2 faint" / "slot 3 at 30% opacity" | `opacity_map={2: 0.3}` (1-indexed legend slot; scatter_multi only) |
-| "All dots at 50% opacity" | `opacity=0.5` in mapping (uniform override on scatter) |
+| "Make cluster 2 faint" / "slot 3 at 30% opacity" | `opacity_map={2: 0.3}` (1-indexed legend slot) |
+| "All dots at 50% opacity" | `opacity=0.5` in mapping (uniform override) |
 | "Make colour 2 red" / "Change the second colour" / "Slot 3 should be green" | `color_map={2: '#DC143C'}` (1-indexed legend slot; others default) |
 | "Make slot 2 red AND slot 4 grey" | `color_map={2: '#DC143C', 4: '#A6A6A6'}` (multi-slot positional) |
 | "Pin US red AND make slot 3 grey" | `color_map={'US': '#DC143C', 3: '#A6A6A6'}` (mixed name + slot) |

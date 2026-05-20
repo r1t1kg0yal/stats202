@@ -20,6 +20,7 @@
 | Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §8 |
 | Composite functions (5) | `make_2pack_horizontal`, `make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`, `make_6pack_grid` | §10 |
 | Grid mode (small-multiples / facet) | `mapping['facet']`, `facet_cols`, `same_scale`, `share_x` / `share_y` / `share_color` | spoke `chart_context_grids.md` (Spokes index below) |
+| Chart colour / opacity | `mapping['color_scheme']`, `color_map`, `opacity`, `opacity_map` | spoke `chart_context_colors.md` — **MUST fetch** before authoring when the user asks (Spokes index below) |
 | Static tables (PNG) | `make_table` + `TableResult`; data-pulled `df=` or hand-curated `rows=`; 3 color modes (`'rwg'` / `'bw'` / `'rag'`); `heatmap_groups` (col / row / group scope); `header_levels`; `row_groups`; `row_indent`; `total_rows` / `subtotal_rows`; `sparkline_columns`; `minibar_columns`; `signed_columns`; content-driven canvas (engine-decided width + height; never truncated) | §13 |
 | Skin (only published) | `gs_clean` | §1 |
 | Intent values | `'explore'`, `'publish'`, `'monitor'` | §1 |
@@ -36,11 +37,20 @@ This hub covers the always-needed surface. Deeper specs for narrow topics live i
 | Spoke | Contents | Verbatim tool call (copy-paste) |
 |---|---|---|
 | `chart_context_grids.md` | Grid mode (small-multiples / facet): `mapping['facet']`, `facet_cols`, `same_scale` smart-route, `share_x` / `share_y` / `share_color`, scatter phase-space gradient on a temporal / numeric color column, 36-panel hard cap | `list_ai_repo(file_paths=["context/modules/static/chart_context_grids.md"], mode="full")` |
-| `chart_context_colors.md` | Per-chart palette / colour customisation — named palette swap, explicit per-category hex, single-series colour, heatmap ramp override, colourblind-safe set | `list_ai_repo(file_paths=["context/modules/static/chart_context_colors.md"], mode="full")` |
+| `chart_context_colors.md` | Chart `mapping` colour + opacity: `color_scheme`, `color_map`, `opacity`, `opacity_map`; named vs slot keys; heatmap ramps; validation errors | `list_ai_repo(file_paths=["context/modules/static/chart_context_colors.md"], mode="full")` |
 
-Triggers:
-- **Grids spoke** — any cross-sectional dashboard over 8-30 entities sharing the same shape (G20 GDP per country, 12 sector PMIs, 16 FX pairs, country yield curves). Phase-space scatter plots with time-coloured trails also live in this spoke.
-- **Colors spoke** — any user request to change / customise colours on any chart type: palette swap ("use a colourblind-safe palette"), pin a category to a hex ("make the US line red"), single-series colour ("draw it in green"), heatmap ramp override ("flip to red-blue").
+### When you MUST fetch (do not guess from this hub)
+
+> **Colours spoke — mandatory before authoring.** If the user's request touches **chart** palette, per-series colour, hex, emphasis, fade, highlight, transparency, or opacity on `make_chart`, PRISM **MUST** call `list_ai_repo` for `chart_context_colors.md` **before** writing `mapping['color_scheme']`, `mapping['color_map']`, `mapping['opacity']`, or `mapping['opacity_map']`. This hub does **not** define those kwargs; inventing palette names, slot indices, or opacity values from memory produces validation failures or off-brand renders. Fetch even when the change sounds trivial ("make the US line red", "fade the rest", "slot 2 fainter").
+>
+> **Table styling stays here.** `make_table()` cell/row/column colour (`column_color_modes`, `cell_colors`, `heatmap_groups`, etc.) is §13 only — **not** the colours spoke.
+
+Triggers (fetch **then** author):
+
+- **Grids spoke** — cross-sectional dashboard over 8-30 entities sharing one shape (G20 GDP per country, 12 sector PMIs, 16 FX pairs, country yield curves); phase-space scatter with time-coloured `color` column.
+- **Colours spoke** — any chart colour/opacity ask, including: palette swap ("colourblind", "bold", "mono navy", "business"); pin category or legend slot to hex ("US red", "second colour green"); single-series colour; heatmap ramp ("red-blue", "viridis"); uniform opacity (`opacity=0.5`); per-series fade/highlight (`opacity_map={'US': 1.0, 'EU': 0.2}` or `{2: 0.15}`); combined colour + opacity ("highlight US in red, fade others").
+
+Skip both spokes for a plain "make me a chart" with no colour/opacity/facet language — defaults are already on-brand.
 
 (Static tables — `make_table()` — live in §13 of this hub, NOT in a spoke. No fetch required.)
 
@@ -378,6 +388,8 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',
 | `color_sort` (alias `legend_sort`) | list | Explicit category order in legend (multi-series, bar, area) |
 | `value_sort` | list | Heatmap value-driven sort |
 | `facet_order` | list | Explicit panel-id order in grid mode (overrides first-appearance) |
+
+**Not in this table (colours spoke only):** `color_scheme`, `color_map`, `opacity`, `opacity_map`. They live in `mapping={}` but are documented exclusively in `chart_context_colors.md`. If the user asked for any chart colour or opacity adjustment, **fetch that spoke first** (see Spokes index) — do not add these keys from memory.
 
 ### 7.4 strokeDash: per-series line styles
 
