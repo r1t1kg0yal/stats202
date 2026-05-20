@@ -11,6 +11,9 @@ Spoke fetched on demand from `chart_context.md`. Covers per-chart palette and co
 | "Use a colourblind-friendly palette" / "make it accessible" | `color_scheme='colorblind'` |
 | "Make the US line red, EU blue, JP green" | `color_map={'US': '#DC143C', 'EU': '#1F77B4', 'JP': '#2CA02C'}` (named) |
 | "Highlight the US line in red, fade the rest" | `color_map={'US': '#DC143C'}` (named; others fall back to default palette) |
+| "Fade the EU cluster, keep US opaque" | `opacity_map={'EU': 0.25}` on `scatter_multi` (others keep the engine density default) |
+| "Make cluster 2 faint" / "slot 3 at 30% opacity" | `opacity_map={2: 0.3}` (1-indexed legend slot; scatter_multi only) |
+| "All dots at 50% opacity" | `opacity=0.5` in mapping (uniform override on scatter) |
 | "Make colour 2 red" / "Change the second colour" / "Slot 3 should be green" | `color_map={2: '#DC143C'}` (1-indexed legend slot; others default) |
 | "Make slot 2 red AND slot 4 grey" | `color_map={2: '#DC143C', 4: '#A6A6A6'}` (multi-slot positional) |
 | "Pin US red AND make slot 3 grey" | `color_map={'US': '#DC143C', 3: '#A6A6A6'}` (mixed name + slot) |
@@ -25,14 +28,16 @@ Skip this spoke (use defaults) for any "make me a chart" request that does NOT m
 
 ---
 
-## 2. The two kwargs
+## 2. The colour + opacity kwargs
 
-Both live INSIDE `mapping={}`. Engine routes them per chart type.
+All live INSIDE `mapping={}`. Engine routes them per chart type.
 
 | Kwarg | Type | Use |
 |---|---|---|
 | `color_scheme` | str | Named palette (categorical OR heatmap; engine validates context) |
 | `color_map` | list[hex] / dict[cat: hex] | Explicit per-category colours; categorical only |
+| `opacity` | float `0.0`–`1.0` | Uniform mark alpha (overrides skin default on any chart type that supports it) |
+| `opacity_map` | list[float] / dict[cat: float] | Per-series alpha on categorical charts (`multi_line`, `area`, `bar`, `boxplot`, `donut`, `histogram`, `scatter`, `scatter_multi`); same named / 1-indexed slot keys as `color_map` |
 
 **Anti-patterns:**
 
@@ -137,7 +142,58 @@ mapping = {
 }
 ```
 
-### 4.2 List form — full positional override
+### 4.2 Per-series opacity (`opacity_map` / `opacity`)
+
+On any chart with categorical `mapping['color']` (or `category` on donut), use `opacity_map` with the **same key shapes as `color_map`** to set different transparencies per series / cluster / slice:
+
+- **Categorical scatters** also auto-scale default point opacity with point count when `opacity_map` is omitted (density curve). Other chart types use the skin mark default unless `opacity` / `opacity_map` overrides it.
+
+When the user wants **different transparencies per cluster**, use `opacity_map` with the **same key shapes as `color_map`**:
+
+- **String keys** = category names (`'EU': 0.25`)
+- **Integer keys** = 1-indexed legend slots (`2: 0.3` = second cluster in the legend)
+- Unpinned clusters keep the engine density default unless `opacity` is also set — then that scalar is the fallback for unpinned slots
+
+`opacity` alone sets one alpha for **every** point (single-colour or multi-colour). Combine `color_map` + `opacity_map` to highlight one cluster in colour while fading the rest.
+
+```python
+# Highlight US in brand red; fade every other sector to 25% alpha
+make_chart(
+    df=df, chart_type='scatter_multi',
+    mapping={
+        'x': 'beta', 'y': 'return_pct', 'color': 'sector',
+        'color_map': {'US': '#DC143C'},
+        'opacity_map': {'US': 0.95, 'EU': 0.2, 'APAC': 0.2},
+    },
+    title='Factor returns — US highlighted',
+)
+
+# User said "make the second cluster faint" (legend order, not name)
+make_chart(
+    df=df, chart_type='scatter_multi',
+    mapping={
+        'x': 'x', 'y': 'y', 'color': 'group',
+        'opacity_map': {2: 0.15},
+    },
+    title='Second cluster de-emphasised',
+)
+```
+
+Gradient scatters (temporal / numeric `color` column) accept `opacity` only, not `opacity_map` — there is no discrete series to target.
+
+```python
+# Fade every series except US on a multi-line
+make_chart(
+    df=df_long, chart_type='multi_line',
+    mapping={
+        'x': 'date', 'y': 'value', 'color': 'country',
+        'opacity_map': {'US': 1.0, 'EU': 0.25, 'JP': 0.25},
+    },
+    title='G3 CPI — US emphasized',
+)
+```
+
+### 4.3 List form — full positional colour override
 
 ```python
 mapping = {
@@ -148,7 +204,7 @@ mapping = {
 
 Engine cycles through the list when there are more categories than entries. Use the dict form (§4.1) for partial overrides; reach for the list form only when the user wants to specify every slot themselves.
 
-### 4.3 Single-series colour
+### 4.4 Single-series colour
 
 ```python
 make_chart(
@@ -219,7 +275,10 @@ Engine validates at the boundary, returns `ChartResult(success=False, error_mess
 | Categorical palette on heatmap | `"... is a categorical palette but chart_type='heatmap' needs a gradient ramp ..."` |
 | Gradient ramp on categorical chart | `"... is a heatmap / gradient ramp but chart_type='multi_line' needs a categorical palette ..."` |
 | `color_map` on heatmap | `"mapping['color_map'] is for categorical color encodings ..."` |
+| `opacity_map` on heatmap | `"mapping['opacity_map'] is for categorical scatter clusters ..."` |
 | Non-hex value in `color_map` | `"... must be a hex string like '#1A2B3C'."` |
+| Opacity outside 0–1 | `"mapping['opacity'] must be between 0.0 and 1.0; got ..."` |
+| `opacity_map` int key out of range | Same slot-range message shape as `color_map` |
 | `color_map` int key < 1 | `"... integer keys are 1-indexed legend slot positions; got 0 (must be >= 1; slot 1 is the first colour, slot 2 the second, ...)."` |
 | `color_map` int key out of range (e.g. `{5: ...}` on 3-cat chart) | `"... integer slot 5 is out of range; the chart's 'sector' column has 3 categories (legal slots: 1..3). Use the named-key form ({'<category>': '#hex'}) or pick a slot in range."` |
 

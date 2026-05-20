@@ -9045,6 +9045,242 @@ def _resolve_categorical_color_scale(
     return _get_color_scale(skin_config)
 
 
+def _validate_opacity_value(value: Any, label: str) -> float:
+    """Validate a single opacity in [0.0, 1.0]; return as float."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(
+            f"{label} must be a number between 0.0 and 1.0; "
+            f"got {type(value).__name__} {value!r}."
+        )
+    opacity = float(value)
+    if opacity < 0.0 or opacity > 1.0:
+        raise ValidationError(
+            f"{label} must be between 0.0 and 1.0; got {opacity}."
+        )
+    return opacity
+
+
+def _validate_opacity_kwargs(
+    mapping: Dict[str, Any], chart_type: str,
+    df: Optional[pd.DataFrame] = None,
+) -> None:
+    """Validate ``mapping['opacity']`` and ``mapping['opacity_map']``.
+
+    Mirrors ``_validate_color_kwargs`` key shapes (named category strings
+    and 1-indexed legend slot integers). ``opacity_map`` targets
+    categorical ``mapping['color']`` series on multi_line, area, bar,
+    boxplot, donut, scatter, and related chart types; heatmap rejects
+    it like ``color_map``.
+    """
+    opacity = mapping.get("opacity")
+    if opacity is not None:
+        _validate_opacity_value(opacity, "mapping['opacity']")
+
+    opacity_map = mapping.get("opacity_map")
+    if opacity_map is None:
+        return
+
+    color_field = mapping.get("color") or mapping.get("category")
+    _categorical_opacity_types = {
+        "multi_line", "timeseries", "scatter", "scatter_multi",
+        "bar", "bar_horizontal", "area", "boxplot", "donut",
+        "histogram",
+    }
+    if chart_type in _categorical_opacity_types and not color_field:
+        raise ValidationError(
+            "mapping['opacity_map'] needs mapping['color'] (or "
+            "'category' on donut) to target per-series transparency. "
+            f"chart_type={chart_type!r} has no color/category field. "
+            f"Pass mapping['opacity']=<0.0-1.0> for uniform alpha, or "
+            f"add mapping['color']='<series_col>'."
+        )
+
+    is_heatmap_path = chart_type == "heatmap"
+    if is_heatmap_path:
+        raise ValidationError(
+            "mapping['opacity_map'] is for categorical color encodings "
+            "(multi_line, scatter_multi, bar+color, area+color, donut). "
+            "On heatmap, override the ramp with mapping['color_scheme'] "
+            "or pass mapping['opacity'] for uniform cell alpha."
+        )
+
+    if isinstance(opacity_map, dict):
+        for key, alpha_val in opacity_map.items():
+            if isinstance(key, bool) or (
+                not isinstance(key, str) and not isinstance(key, int)
+            ):
+                raise ValidationError(
+                    f"mapping['opacity_map'] dict keys must be category "
+                    f"strings (e.g. 'US') or positive integer legend slot "
+                    f"positions (e.g. 2 for the second cluster); got "
+                    f"{type(key).__name__} {key!r}."
+                )
+            if isinstance(key, int) and key < 1:
+                raise ValidationError(
+                    f"mapping['opacity_map'] integer keys are 1-indexed "
+                    f"legend slot positions; got {key} (must be >= 1; "
+                    f"slot 1 is the first cluster, slot 2 the second, ...)."
+                )
+            _validate_opacity_value(
+                alpha_val, f"mapping['opacity_map'][{key!r}]",
+            )
+        color_field = mapping.get("color")
+        if df is not None and color_field and color_field in df.columns:
+            n_categories = (
+                df[color_field].dropna().astype(str).nunique()
+            )
+            if n_categories > 0:
+                for key in opacity_map.keys():
+                    if isinstance(key, int) and not isinstance(key, bool):
+                        if key > n_categories:
+                            raise ValidationError(
+                                f"mapping['opacity_map'] integer slot {key} "
+                                f"is out of range; the chart's "
+                                f"{color_field!r} column has "
+                                f"{n_categories} categories (legal slots: "
+                                f"1..{n_categories}). Use the named-key "
+                                f"form ({{'<category>': 0.5}}) or pick a "
+                                f"slot in range."
+                            )
+    elif isinstance(opacity_map, (list, tuple)):
+        for alpha_val in opacity_map:
+            _validate_opacity_value(
+                alpha_val, "mapping['opacity_map'] entry",
+            )
+    else:
+        raise ValidationError(
+            f"mapping['opacity_map'] must be a list of opacity values "
+            f"(0.0-1.0) or a dict {{category: opacity}}; got "
+            f"{type(opacity_map).__name__}."
+        )
+
+
+def _resolve_categorical_opacity_encoding(
+    mapping: Dict[str, Any],
+    color_field: str,
+    df: pd.DataFrame,
+    default_opacity: float,
+) -> Optional[alt.Opacity]:
+    """Per-cluster opacity encoding when ``mapping['opacity_map']`` is set.
+
+  Unpinned categories receive ``default_opacity`` (the auto density
+  curve for scatters, or ``mapping['opacity']`` when that scalar is set).
+  Returns ``None`` when no ``opacity_map`` — caller keeps mark-level opacity.
+    """
+    opacity_map = mapping.get("opacity_map")
+    if opacity_map is None:
+        return None
+
+    categories = df[color_field].dropna().astype(str).unique().tolist()
+    sort_order = _resolve_color_sort(
+        df, color_field, mapping.get("color_sort"),
+    )
+    legend_order = sort_order if sort_order is not None else list(categories)
+
+    cat_to_opacity: Dict[str, float] = {}
+    if isinstance(opacity_map, dict):
+        for slot_idx, cat in enumerate(legend_order):
+            if cat in opacity_map:
+                cat_to_opacity[cat] = _validate_opacity_value(
+                    opacity_map[cat], f"mapping['opacity_map'][{cat!r}]",
+                )
+            elif (slot_idx + 1) in opacity_map:
+                cat_to_opacity[cat] = _validate_opacity_value(
+                    opacity_map[slot_idx + 1],
+                    f"mapping['opacity_map'][{slot_idx + 1}]",
+                )
+            else:
+                cat_to_opacity[cat] = default_opacity
+    else:
+        for slot_idx, cat in enumerate(legend_order):
+            cat_to_opacity[cat] = _validate_opacity_value(
+                opacity_map[slot_idx % len(opacity_map)],
+                "mapping['opacity_map'] entry",
+            )
+
+    range_opacities = [
+        cat_to_opacity.get(cat, default_opacity) for cat in categories
+    ]
+    return alt.Opacity(
+        color_field,
+        type="nominal",
+        scale=alt.Scale(domain=categories, range=range_opacities),
+        legend=None,
+    )
+
+
+def _prepare_categorical_opacity(
+    mapping: Dict[str, Any],
+    color_field: Optional[str],
+    df: pd.DataFrame,
+    base_mark_opacity: float,
+) -> Tuple[float, Optional[alt.Opacity]]:
+    """Resolve mark opacity + optional per-category ``opacity`` encoding.
+
+    Honors ``mapping['opacity']`` (uniform) and ``mapping['opacity_map']``
+    (per category / legend slot). When ``opacity_map`` is active the mark
+    should use the returned ``1.0`` so the encoded channel controls alpha.
+    """
+    mark_opacity = base_mark_opacity
+    scalar = mapping.get("opacity")
+    if scalar is not None:
+        mark_opacity = _validate_opacity_value(scalar, "mapping['opacity']")
+
+    if not color_field or color_field not in df.columns:
+        return mark_opacity, None
+    if mapping.get("opacity_map") is None:
+        return mark_opacity, None
+
+    opacity_encoding = _resolve_categorical_opacity_encoding(
+        mapping, color_field, df, mark_opacity,
+    )
+    if opacity_encoding is None:
+        return mark_opacity, None
+    return 1.0, opacity_encoding
+
+
+def _categorical_legend(
+    opacity_encoding: Optional[alt.Opacity],
+    **kwargs: Any,
+) -> alt.Legend:
+    """Build a color legend; keep swatches opaque when marks use opacity_map."""
+    if opacity_encoding is not None:
+        kwargs["symbolOpacity"] = 1.0
+    kwargs.setdefault("title", None)
+    return alt.Legend(**_safe_legend_kwargs(**kwargs))
+
+
+def _encode_categorical_color_and_opacity(
+    chart: alt.Chart,
+    mapping: Dict[str, Any],
+    skin_config: Dict[str, Any],
+    color_field: str,
+    df: pd.DataFrame,
+    *,
+    color_sort: Optional[List[str]] = None,
+    opacity_encoding: Optional[alt.Opacity] = None,
+    legend_kwargs: Optional[Dict[str, Any]] = None,
+) -> alt.Chart:
+    """Attach categorical ``color`` (+ optional ``opacity``) encodings."""
+    legend = _categorical_legend(
+        opacity_encoding, **(legend_kwargs or {}),
+    )
+    chart = chart.encode(
+        color=alt.Color(
+            color_field,
+            type="nominal",
+            scale=_resolve_categorical_color_scale(
+                mapping, skin_config, color_field, df,
+            ),
+            sort=color_sort,
+            legend=legend,
+        ),
+    )
+    if opacity_encoding is not None:
+        chart = chart.encode(opacity=opacity_encoding)
+    return chart
+
+
 def _scatter_multi_color_opacity(n: int) -> float:
     """Point opacity for the categorical multi-color scatter path.
 
@@ -9923,6 +10159,12 @@ def _build_timeseries(
     mark_config = skin_config.get("mark_config", {}).get("line", {})
     primary_color = _resolve_single_series_color(mapping, skin_config)
     tooltips = _build_tooltip(mapping, "multi_line", df)
+    line_opacity, opacity_encoding = _prepare_categorical_opacity(
+        mapping,
+        color_field if (color_field and color_field in df.columns) else None,
+        df,
+        mark_config.get("opacity", 1.0),
+    )
 
     chart = (
         alt.Chart(df)
@@ -9931,6 +10173,7 @@ def _build_timeseries(
             interpolate=mark_config.get("interpolate", "linear"),
             clip=True,
             color=primary_color,
+            opacity=line_opacity,
         )
         .encode(
             x=alt.X(x_field, type="temporal", axis=x_axis),
@@ -9954,21 +10197,19 @@ def _build_timeseries(
         color_sort = _resolve_color_sort(
             df, color_field, mapping.get("color_sort") or mapping.get("legend_sort"),
         )
-        chart = chart.encode(
-            color=alt.Color(
-                color_field,
-                type="nominal",
-                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                sort=color_sort,
-                legend=alt.Legend(
-                    **_safe_legend_kwargs(
-                        title=None,
-                        labelLimit=dynamic_legend_cfg.get("labelLimit", 300),
-                        rowPadding=dynamic_legend_cfg.get("rowPadding", 2),
-                        clipHeight=dynamic_legend_cfg.get("clipHeight"),
-                    )
-                ),
-            )
+        chart = _encode_categorical_color_and_opacity(
+            chart,
+            mapping,
+            skin_config,
+            color_field,
+            df,
+            color_sort=color_sort,
+            opacity_encoding=opacity_encoding,
+            legend_kwargs={
+                "labelLimit": dynamic_legend_cfg.get("labelLimit", 300),
+                "rowPadding": dynamic_legend_cfg.get("rowPadding", 2),
+                "clipHeight": dynamic_legend_cfg.get("clipHeight"),
+            },
         )
         logger.debug(
             "[_build_timeseries] color encoding: %s (title=%r) sort=%s",
@@ -10193,8 +10434,8 @@ def _build_multi_line_dual_axis(
 
     # ---- titles ----------------------------------------------------------
     mark_config = skin_config.get("mark_config", {}).get("line", {})
-    color_scale = _resolve_categorical_color_scale(
-        mapping, skin_config, color_field, df,
+    line_opacity, opacity_encoding = _prepare_categorical_opacity(
+        mapping, color_field, df, mark_config.get("opacity", 1.0),
     )
 
     y_title_left = mapping.get("y_title") or _format_label(y_field, mapping, "y")
@@ -10238,6 +10479,7 @@ def _build_multi_line_dual_axis(
             strokeWidth=mark_config.get("strokeWidth", 2),
             interpolate=mark_config.get("interpolate", "linear"),
             clip=True,
+            opacity=line_opacity,
         )
         .encode(
             x=alt.X(x_field, type="temporal", axis=alt.Axis(title=None)),
@@ -10250,17 +10492,19 @@ def _build_multi_line_dual_axis(
                 ),
                 scale=alt.Scale(domain=[left_min, left_max]),
             ),
-            color=alt.Color(
-                color_field,
-                type="nominal",
-                scale=color_scale,
-                sort=color_sort_left,
-                legend=alt.Legend(title=None),
-            ),
             tooltip=_build_tooltip(
                 {**mapping, "y": safe_left_field}, "multi_line", df_left,
             ),
         )
+    )
+    left_chart = _encode_categorical_color_and_opacity(
+        left_chart,
+        mapping,
+        skin_config,
+        color_field,
+        df,
+        color_sort=color_sort_left,
+        opacity_encoding=opacity_encoding,
     )
 
     # ---- right axis chart ------------------------------------------------
@@ -10270,6 +10514,7 @@ def _build_multi_line_dual_axis(
             strokeWidth=mark_config.get("strokeWidth", 2),
             interpolate=mark_config.get("interpolate", "linear"),
             clip=True,
+            opacity=line_opacity,
         )
         .encode(
             x=alt.X(x_field, type="temporal", axis=alt.Axis(title=None)),
@@ -10283,17 +10528,20 @@ def _build_multi_line_dual_axis(
                 ),
                 scale=alt.Scale(domain=right_domain),
             ),
-            color=alt.Color(
-                color_field,
-                type="nominal",
-                scale=color_scale,
-                sort=color_sort_right,
-                legend=alt.Legend(title=None),
-            ),
             tooltip=_build_tooltip(
                 {**mapping, "y": safe_right_field}, "multi_line", df_right,
             ),
         )
+    )
+    right_chart = _encode_categorical_color_and_opacity(
+        right_chart,
+        mapping,
+        skin_config,
+        color_field,
+        df,
+        color_sort=color_sort_right,
+        opacity_encoding=opacity_encoding,
+        legend_kwargs={},
     )
 
     # Layer + resolve scales independently so each y-axis keeps its own
@@ -10379,6 +10627,12 @@ def _build_profile_line(
     _validate_y_axis_label(y_title, mapping)
 
     mark_config = skin_config.get("mark_config", {}).get("line", {})
+    line_opacity, opacity_encoding = _prepare_categorical_opacity(
+        mapping,
+        color_field if (color_field and color_field in df.columns) else None,
+        df,
+        mark_config.get("opacity", 1.0),
+    )
 
     # High-cardinality numeric x: use quantitative encoding so Vega-Lite
     # auto-thins ticks. Otherwise (categorical / low-cardinality) use
@@ -10417,6 +10671,7 @@ def _build_profile_line(
             interpolate="monotone",  # Smooth curves for profile charts.
             clip=True,
             point=True,  # Show knot points on each tenor.
+            opacity=line_opacity,
         )
         .encode(
             x=x_encoding,
@@ -10434,21 +10689,19 @@ def _build_profile_line(
         color_sort = _resolve_color_sort(
             df, color_field, mapping.get("color_sort") or mapping.get("legend_sort"),
         )
-        chart = chart.encode(
-            color=alt.Color(
-                color_field,
-                type="nominal",
-                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                sort=color_sort,
-                legend=alt.Legend(
-                    **_safe_legend_kwargs(
-                        title=None,
-                        labelLimit=legend_cfg.get("labelLimit", 300),
-                        rowPadding=legend_cfg.get("rowPadding", 2),
-                        clipHeight=legend_cfg.get("clipHeight"),
-                    )
-                ),
-            )
+        chart = _encode_categorical_color_and_opacity(
+            chart,
+            mapping,
+            skin_config,
+            color_field,
+            df,
+            color_sort=color_sort,
+            opacity_encoding=opacity_encoding,
+            legend_kwargs={
+                "labelLimit": legend_cfg.get("labelLimit", 300),
+                "rowPadding": legend_cfg.get("rowPadding", 2),
+                "clipHeight": legend_cfg.get("clipHeight"),
+            },
         )
         logger.debug(
             "[_build_profile_line] color encoding: %s (n=%d) sort=%s",
@@ -10708,18 +10961,27 @@ def _build_scatter(
         _is_gradient_color = False
 
     if has_color and not _is_gradient_color:
-        point_opacity = _scatter_multi_color_opacity(len(df))
+        base_opacity = _scatter_multi_color_opacity(len(df))
     elif has_color and _is_gradient_color:
-        point_opacity = 0.85
+        base_opacity = 0.85
     else:
-        point_opacity = mark_config.get("opacity", 1.0)
+        base_opacity = mark_config.get("opacity", 1.0)
+
+    opacity_field = (
+        color_field
+        if (has_color and not _is_gradient_color and color_field)
+        else None
+    )
+    mark_opacity, opacity_encoding = _prepare_categorical_opacity(
+        mapping, opacity_field, df, base_opacity,
+    )
 
     point = (
         alt.Chart(df)
         .mark_point(
             size=mark_config.get("size", 60),
             filled=mark_config.get("filled", True),
-            opacity=point_opacity,
+            opacity=mark_opacity,
             color=primary_color,
             clip=True,  # Issue #2b: clip points at axis boundaries.
         )
@@ -10775,22 +11037,20 @@ def _build_scatter(
                 color_field, color_type, scheme,
             )
         else:
-            # Force the legend swatches back to full opacity so the
-            # color -> category mapping stays crisp even when the data
-            # points themselves are translucent (the
-            # ``_scatter_multi_color_opacity`` curve can push points
-            # down to alpha 0.20 for dense scatters; without the
-            # ``symbolOpacity`` override the legend dots inherit that
-            # same alpha and become a faded color-key that defeats the
-            # purpose of the legend).
-            point = point.encode(
-                color=alt.Color(
-                    color_field,
-                    type="nominal",
-                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                    sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                    legend=alt.Legend(title=None, symbolOpacity=1.0),
-                )
+            # Always symbolOpacity=1.0 on the legend for categorical
+            # scatters: data points use the density curve (often <0.85)
+            # but the color key must stay crisp (pre-opacity_map behaviour).
+            point = _encode_categorical_color_and_opacity(
+                point,
+                mapping,
+                skin_config,
+                color_field,
+                df,
+                color_sort=_resolve_color_sort(
+                    df, color_field, mapping.get("color_sort"),
+                ),
+                opacity_encoding=opacity_encoding,
+                legend_kwargs={"symbolOpacity": 1.0},
             )
 
     if size_field and size_field in df.columns:
@@ -11155,6 +11415,9 @@ def _build_bar(
         bar_x_label_separation = alt.Undefined
 
     primary_color = _resolve_single_series_color(mapping, skin_config)
+    bar_opacity, bar_opacity_enc = _prepare_categorical_opacity(
+        mapping, color_field, df, mark_config.get("opacity", 1.0),
+    )
 
     # ---- bar width cap for low-cardinality data --------------------------
     # Vega-Lite divides the plot width across all bars, so a single bar
@@ -11178,7 +11441,7 @@ def _build_bar(
             .mark_bar(
                 cornerRadiusTopLeft=mark_config.get("cornerRadius", 0),
                 cornerRadiusTopRight=mark_config.get("cornerRadius", 0),
-                opacity=mark_config.get("opacity", 1.0),
+                opacity=bar_opacity,
                 clip=True,
                 color=primary_color if not color_field else alt.Undefined,
                 size=bar_size_override,
@@ -11228,15 +11491,18 @@ def _build_bar(
             # channel encoded after data embedding) -- see the comment
             # block there. ``alt.Color`` keeps the kwarg form for
             # readability; only ``alt.Order`` had the bug.
-            chart = chart.encode(
-                color=alt.Color(
-                    color_field,
-                    type="nominal",
-                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                    sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                    legend=alt.Legend(title=None),
+            chart = _encode_categorical_color_and_opacity(
+                chart,
+                mapping,
+                skin_config,
+                color_field,
+                df,
+                color_sort=_resolve_color_sort(
+                    df, color_field, mapping.get("color_sort"),
                 ),
-                # Stable ordering across stacked segments.
+                opacity_encoding=bar_opacity_enc,
+            )
+            chart = chart.encode(
                 order=alt.Order(f"{color_field}:N", sort="ascending"),
             )
 
@@ -11511,7 +11777,7 @@ def _build_bar(
             .mark_bar(
                 cornerRadiusTopLeft=mark_config.get("cornerRadius", 0),
                 cornerRadiusTopRight=mark_config.get("cornerRadius", 0),
-                opacity=mark_config.get("opacity", 1.0),
+                opacity=bar_opacity,
                 clip=True,
             )
             .encode(
@@ -11538,16 +11804,20 @@ def _build_bar(
                     scale=y_scale,
                     axis=alt.Axis(titleFontWeight="normal", grid=False),
                 ),
-                color=alt.Color(
-                    color_field,
-                    type="nominal",
-                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                    sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                    legend=alt.Legend(title=None),
-                ),
                 tooltip=tooltips,
             )
             .properties(width=facet_width, height=height)
+        )
+        chart = _encode_categorical_color_and_opacity(
+            chart,
+            mapping,
+            skin_config,
+            color_field,
+            df,
+            color_sort=_resolve_color_sort(
+                df, color_field, mapping.get("color_sort"),
+            ),
+            opacity_encoding=bar_opacity_enc,
         )
 
     chart = _force_data_embedding(chart, df)
@@ -11636,6 +11906,9 @@ def _build_bar_horizontal(
     _validate_y_axis_label(x_title, mapping)  # x is the value axis here
 
     primary_color = _resolve_single_series_color(mapping, skin_config)
+    bar_opacity, bar_opacity_enc = _prepare_categorical_opacity(
+        mapping, color_field, df, mark_config.get("opacity", 1.0),
+    )
 
     # ---- bar height cap for low-cardinality data -----------------------
     # Vega-Lite divides plot height across categories; with one or two
@@ -11681,7 +11954,7 @@ def _build_bar_horizontal(
             .mark_bar(
                 cornerRadiusTopRight=mark_config.get("cornerRadius", 0),
                 cornerRadiusBottomRight=mark_config.get("cornerRadius", 0),
-                opacity=mark_config.get("opacity", 1.0),
+                opacity=bar_opacity,
                 color=primary_color if not color_field else alt.Undefined,
                 size=bar_size_override,
             )
@@ -11709,14 +11982,16 @@ def _build_bar_horizontal(
             .properties(width=width, height=height)
         )
         if color_field:
-            chart = chart.encode(
-                color=alt.Color(
-                    color_field,
-                    type="nominal",
-                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                    sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                    legend=alt.Legend(title=None),
-                )
+            chart = _encode_categorical_color_and_opacity(
+                chart,
+                mapping,
+                skin_config,
+                color_field,
+                df,
+                color_sort=_resolve_color_sort(
+                    df, color_field, mapping.get("color_sort"),
+                ),
+                opacity_encoding=bar_opacity_enc,
             )
 
         # Horizontal bar value labels (F5 fix from Phase 2 stress probe).
@@ -11848,7 +12123,7 @@ def _build_bar_horizontal(
             .mark_bar(
                 cornerRadiusTopRight=mark_config.get("cornerRadius", 0),
                 cornerRadiusBottomRight=mark_config.get("cornerRadius", 0),
-                opacity=mark_config.get("opacity", 1.0),
+                opacity=bar_opacity,
             )
             .encode(
                 row=alt.Row(
@@ -11873,16 +12148,20 @@ def _build_bar_horizontal(
                     title=x_title,
                     axis=alt.Axis(titleFontWeight="normal", grid=False),
                 ),
-                color=alt.Color(
-                    color_field,
-                    type="nominal",
-                    scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                    sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                    legend=alt.Legend(title=None),
-                ),
                 tooltip=tooltips,
             )
             .properties(width=width, height=facet_height)
+        )
+        chart = _encode_categorical_color_and_opacity(
+            chart,
+            mapping,
+            skin_config,
+            color_field,
+            df,
+            color_sort=_resolve_color_sort(
+                df, color_field, mapping.get("color_sort"),
+            ),
+            opacity_encoding=bar_opacity_enc,
         )
 
     chart = _force_data_embedding(chart, df)
@@ -11934,6 +12213,12 @@ def _build_area(
     _validate_y_axis_label(y_title, mapping)
 
     mark_config = skin_config.get("mark_config", {}).get("area", {})
+    area_opacity, area_opacity_enc = _prepare_categorical_opacity(
+        mapping,
+        color_field if (color_field and color_field in df.columns) else None,
+        df,
+        mark_config.get("opacity", 0.7),
+    )
 
     # For stacked areas, set an explicit scale.domain that covers the
     # per-x stacked sum so the y-axis frame includes the full stack
@@ -11954,7 +12239,7 @@ def _build_area(
     chart = (
         alt.Chart(df)
         .mark_area(
-            opacity=mark_config.get("opacity", 0.7),
+            opacity=area_opacity,
             interpolate=mark_config.get("interpolate", "linear"),
             clip=True,
         )
@@ -11981,14 +12266,16 @@ def _build_area(
     )
 
     if color_field and color_field in df.columns:
-        chart = chart.encode(
-            color=alt.Color(
-                color_field,
-                type="nominal",
-                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                legend=alt.Legend(title=None),
-            )
+        chart = _encode_categorical_color_and_opacity(
+            chart,
+            mapping,
+            skin_config,
+            color_field,
+            df,
+            color_sort=_resolve_color_sort(
+                df, color_field, mapping.get("color_sort"),
+            ),
+            opacity_encoding=area_opacity_enc,
         )
 
     chart = _force_data_embedding(chart, df)
@@ -12524,10 +12811,17 @@ def _build_histogram(
         v for v in hist_tick_values if ext_lo - step / 2 <= v <= ext_hi + step / 2
     ]
 
+    hist_opacity, hist_opacity_enc = _prepare_categorical_opacity(
+        mapping,
+        color_field if (color_field and color_field in df.columns) else None,
+        df,
+        mark_config.get("opacity", 0.8),
+    )
+
     chart = (
         alt.Chart(df)
         .mark_bar(
-            opacity=mark_config.get("opacity", 0.8),
+            opacity=hist_opacity,
             cornerRadius=mark_config.get("cornerRadius", 0),
         )
         .encode(
@@ -12555,13 +12849,16 @@ def _build_histogram(
     )
 
     if color_field and color_field in df.columns:
-        chart = chart.encode(
-            color=alt.Color(
-                color_field, type="nominal",
-                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                legend=alt.Legend(title=None),
-            )
+        chart = _encode_categorical_color_and_opacity(
+            chart,
+            mapping,
+            skin_config,
+            color_field,
+            df,
+            color_sort=_resolve_color_sort(
+                df, color_field, mapping.get("color_sort"),
+            ),
+            opacity_encoding=hist_opacity_enc,
         )
     else:
         chart = chart.encode(color=alt.value(primary_color))
@@ -12668,6 +12965,12 @@ def _build_boxplot(
 
     mark_config = skin_config.get("mark_config", {}).get("boxplot", {})
     primary_color = _resolve_single_series_color(mapping, skin_config)
+    box_opacity, box_opacity_enc = _prepare_categorical_opacity(
+        mapping,
+        color_field if (color_field and color_field in df.columns) else None,
+        df,
+        mark_config.get("opacity", 1.0),
+    )
     encodings: Dict[str, Any] = {
         "y": alt.Y(
             y_field,
@@ -12699,6 +13002,7 @@ def _build_boxplot(
         extent=extent,
         size=mark_config.get("size", 40),
         clip=True,
+        opacity=box_opacity,
     )
     if not (color_field and color_field in df.columns):
         boxplot_kwargs["color"] = primary_color
@@ -12711,13 +13015,16 @@ def _build_boxplot(
     )
 
     if color_field and color_field in df.columns:
-        chart = chart.encode(
-            color=alt.Color(
-                color_field, type="nominal",
-                scale=_resolve_categorical_color_scale(mapping, skin_config, color_field, df),
-                sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
-                legend=alt.Legend(title=None),
-            )
+        chart = _encode_categorical_color_and_opacity(
+            chart,
+            mapping,
+            skin_config,
+            color_field,
+            df,
+            color_sort=_resolve_color_sort(
+                df, color_field, mapping.get("color_sort"),
+            ),
+            opacity_encoding=box_opacity_enc,
         )
 
     chart = _force_data_embedding(chart, df)
@@ -12793,6 +13100,10 @@ def _build_donut(
     outer_radius = radius_budget
     inner_radius = outer_radius * 0.6
 
+    arc_opacity, arc_opacity_enc = _prepare_categorical_opacity(
+        mapping, category_field, df, mark_config.get("opacity", 1.0),
+    )
+
     chart = (
         alt.Chart(df)
         .mark_arc(
@@ -12800,26 +13111,25 @@ def _build_donut(
             outerRadius=outer_radius,
             padAngle=mark_config.get("padAngle", 0.02),
             cornerRadius=mark_config.get("cornerRadius", 3),
+            opacity=arc_opacity,
         )
         .encode(
             theta=alt.Theta(theta_field, type="quantitative"),
-            color=alt.Color(
-                category_field,
-                type="nominal",
-                scale=_resolve_categorical_color_scale(
-                    mapping, skin_config, category_field, df,
-                ),
-                sort=_resolve_color_sort(df, category_field, mapping.get("color_sort")),
-                # ``offset=8`` pulls the legend in tight against the arc.
-                # Default is ~18 -- with a frame whose inner margin is
-                # already ~4% (≈18px on a 450 frame), the default offset
-                # leaves a perceptible gulf the user sees as wasted
-                # whitespace.
-                legend=alt.Legend(title=None, offset=8),
-            ),
             tooltip=_build_tooltip(mapping, "donut", df),
         )
         .properties(width=width, height=height)
+    )
+    chart = _encode_categorical_color_and_opacity(
+        chart,
+        mapping,
+        skin_config,
+        category_field,
+        df,
+        color_sort=_resolve_color_sort(
+            df, category_field, mapping.get("color_sort"),
+        ),
+        opacity_encoding=arc_opacity_enc,
+        legend_kwargs={"offset": 8},
     )
     return _force_data_embedding(chart, df)
 
@@ -14701,6 +15011,7 @@ def make_chart(
     # ``color_map`` keys against the actual category count.
     try:
         _validate_color_kwargs(mapping, chart_type, df)
+        _validate_opacity_kwargs(mapping, chart_type, df)
     except ValidationError as exc:
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
