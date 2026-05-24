@@ -3113,7 +3113,14 @@ class LastValueLabel(Annotation):
 
         df_use = df.copy()
 
-        df_clean = df_use.dropna(subset=[x_col, y_field])
+        # Reset to a unique RangeIndex before idxmax/loc. PRISM often
+        # stacks duplicate time-series pulls via concat/append without
+        # ignore_index=True; a non-unique index makes df.loc[idxmax()]
+        # return every row sharing each index label, duplicating LVL
+        # marks (2 copies -> 2 labels, 4 copies -> 4 labels, etc.).
+        df_clean = df_use.dropna(subset=[x_col, y_field]).reset_index(
+            drop=True
+        )
         if df_clean.empty:
             return alt.Chart(pd.DataFrame({"_": []})).mark_point()
 
@@ -3287,7 +3294,7 @@ class LastValueLabel(Annotation):
         mapping: Optional[Dict[str, Any]] = None,
         skin: Optional[Dict[str, Any]] = None,
     ) -> alt.Chart:
-        df_clean = df.dropna(subset=[x_col, y_field])
+        df_clean = df.dropna(subset=[x_col, y_field]).reset_index(drop=True)
         if df_clean.empty:
             return alt.Chart(pd.DataFrame({"_": []})).mark_point()
         last_row = df_clean.loc[df_clean[x_col].idxmax()]
