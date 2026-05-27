@@ -125,7 +125,7 @@ SCHEMA_VERSION = 1
 
 VALID_TOOL_INPUT_KINDS = {"scalar", "sweep", "expression", "matrix"}
 VALID_TOOL_INPUT_TYPES = {
-    "number", "date", "text", "select", "radio", "toggle",
+    "number", "range", "date", "text", "select", "radio", "toggle",
     "list_of_strings",
 }
 VALID_TOOL_OUTPUT_KINDS = {
@@ -354,6 +354,30 @@ def load_tool_def(ref: Any) -> Dict[str, Any]:
     )
 
 
+def _normalize_tool_output(out: Dict[str, Any]) -> Dict[str, Any]:
+    """Canonicalise one tool output declaration.
+
+    Absorbs author-facing aliases so the runtime JS sees one shape:
+      * ``kind: "bar"`` / ``"bar_horizontal"`` -> ``series`` + ``chart_type``
+      * ``kind: "scalar"`` -> ``stat`` (legacy alias)
+      * ``x_key`` / ``y_key`` / ``color_key`` -> ``x`` / ``y`` / ``color``
+    """
+    o = dict(out)
+    kind = o.get("kind")
+    if kind in ("bar", "bar_horizontal"):
+        o["kind"] = "series"
+        o.setdefault("chart_type", kind)
+    elif kind == "scalar":
+        o["kind"] = "stat"
+    if o.get("x_key") and not o.get("x"):
+        o["x"] = o["x_key"]
+    if o.get("y_key") and not o.get("y"):
+        o["y"] = o["y_key"]
+    if o.get("color_key") and not o.get("color"):
+        o["color"] = o["color_key"]
+    return o
+
+
 def normalize_tool_def(d: Dict[str, Any]) -> Dict[str, Any]:
     """Fill defaults + rewrite the ``compute_js`` shortcut to the
     canonical ``compute = {"kind": "js", "source": ...}`` shape so
@@ -367,7 +391,11 @@ def normalize_tool_def(d: Dict[str, Any]) -> Dict[str, Any]:
     """
     d = dict(d)
     d.setdefault("inputs", [])
-    d.setdefault("outputs", [])
+    raw_outputs = d.get("outputs") or []
+    d["outputs"] = [
+        _normalize_tool_output(o) if isinstance(o, dict) else o
+        for o in raw_outputs
+    ]
     d.setdefault("display", {})
     if "compute_js" in d:
         flat = d.pop("compute_js")
@@ -1012,6 +1040,12 @@ def _validate_tool_widget(w: Dict[str, Any], wbase: str,
                 errs.append(_err(
                     f"{ipath}.options",
                     "required for select/radio scalar"))
+            if ty == "range":
+                for k in ("min", "max"):
+                    if k not in inp:
+                        errs.append(_err(
+                            f"{ipath}.{k}",
+                            f"required for scalar type 'range'"))
         elif kind == "matrix":
             rows_from = inp.get("rows_from")
             cols      = inp.get("cols")

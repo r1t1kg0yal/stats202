@@ -189,6 +189,7 @@ Four kinds. Every input is a row in the input panel.
 | `type` | UI | Notes |
 |--------|----|-------|
 | `number` | numeric input | `step` / `min` / `max` honored |
+| `range` | slider + value readout | `min` / `max` required; `step` / `decimals` / `suffix` optional. Compute receives a number identical to `type: "number"` |
 | `date` | date picker | ISO `YYYY-MM-DD` value |
 | `text` | text input | free-form string |
 | `select` | dropdown | requires `options`: list of primitives or `{value, label}` |
@@ -214,12 +215,13 @@ Matrix rows are STATIC at compile time when `rows_from.dataset` is given (the da
 
 | Kind | Routes to | Compute fn returns |
 |------|-----------|--------------------|
-| `stat` / `param` / `kpi` | Headline stat cell | scalar number |
+| `stat` / `param` / `kpi` | Headline stat cell (or secondary stat row when not in `headline_stats`) | scalar number or text |
 | `table` | HTML table inside the tile | `{columns:[{field,label,align?,format?}], rows:[{...}]}` OR bare row-array (columns from def) |
-| `series` | ECharts line / multi-line | `[{x_key, y_key, color_key?}, ...]` long-form OR `{rows:[...]}` |
+| `series` | ECharts line / bar / multi-line | `[{x, y, color?}, ...]` long-form OR `{rows:[...]}`. Set `chart_type: "bar"` or `"bar_horizontal"` for categorical bars. Aliases `x_key` / `y_key` / `color_key` accepted |
 | `distribution` | ECharts histogram-style line | `[{x, density}, ...]` |
+| `stat_grid` | Dense stat grid inside the tile | `[{label, value, sub?, format?, decimals?}, ...]` OR `{stats: [...]}` |
 
-Series outputs declare `x` / `y` / `color?` keys plus `x_format` (`date` / `number`) / `y_format` (`percent` / `bps` / `number`). Annotations of type `vline` accept `x_from: "input.<id>"` to track a scalar input live.
+Series outputs declare `x` / `y` / `color?` keys (aliases `x_key` / `y_key` / `color_key`) plus `chart_type` (`line` default, `bar`, `bar_horizontal`), `x_format` (`date` / `number`) / `y_format` (`percent` / `bps` / `number`). Output kind `bar` is normalised to `series` + `chart_type: "bar"`. Annotations of type `vline` accept `x_from: "input.<id>"` to track a scalar input live.
 
 Stat outputs declare `format` (`number` / `percent` / `bps` / `currency` / `integer`), `decimals`, `prefix`, `suffix`. Numeric precision is clamped to the global decimal cap (see hub).
 

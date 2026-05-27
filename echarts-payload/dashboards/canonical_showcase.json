@@ -2237,7 +2237,7 @@
               "widget": "markdown",
               "id": "tool_md",
               "w": 12,
-              "content": "## Tab 7 -- Tool widgets\n\n- `widget: tool (form-driven compute)`\n- `input kinds: scalar / sweep / expression / matrix (scalar covers number / date / text / select / radio / toggle)`\n- `output kinds: stat / scalar / param / kpi / series / table / stat_grid / distribution`\n- `inline tool_def (no registry; def + JS travel with manifest)`\n\nThree canonical tool patterns. Bond pricer (scalars + radio toggle + table output). Black-Scholes (scalars + stat headline + series chart with `x_from: input.K`). Fed scenarios (scalar dates + 24x3 matrix input + series + table outputs)."
+              "content": "## Tab 7 -- Tool widgets\n\n- `widget: tool (form-driven compute)`\n- `input kinds: scalar / sweep / expression / matrix (scalar covers number / range / date / text / select / radio / toggle)`\n- `output kinds: stat / scalar / param / kpi / series / table / stat_grid / distribution`\n- `inline tool_def (no registry; def + JS travel with manifest)`\n\nThree canonical tool patterns. Bond pricer (scalars + radio toggle + table output). Black-Scholes (range sliders for vol + sweep width, stat headline + series chart with `x_from: input.K`). Fed scenarios (scalar dates + 24x3 matrix input + series + table outputs)."
             }
           ],
           [
@@ -2525,7 +2525,7 @@
                   {
                     "id": "vol",
                     "kind": "scalar",
-                    "type": "number",
+                    "type": "range",
                     "label": "Vol (%)",
                     "default": 20,
                     "step": 1,
@@ -2558,7 +2558,7 @@
                   {
                     "id": "sweep_pct",
                     "kind": "scalar",
-                    "type": "number",
+                    "type": "range",
                     "label": "P&L sweep ± (%)",
                     "default": 20,
                     "step": 1,

@@ -3475,6 +3475,18 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
   min-width: 140px;
   font-family: inherit;
 }
+.tool-input-row.tool-range .tool-range-row {
+  display: flex; align-items: center; gap: 8px;
+}
+.tool-input-row.tool-range input[type=range] {
+  flex: 1; min-width: 0; accent-color: var(--gs-navy, #002F6C);
+}
+.tool-input-row.tool-range .tool-range-val {
+  min-width: 44px; text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--gs-navy, #002F6C);
+  font-weight: 600; font-size: 0.82rem;
+}
 .tool-input-row input:focus, .tool-input-row select:focus {
   outline: none; border-color: var(--gs-navy, #002F6C);
   box-shadow: 0 0 0 2px rgba(0,47,108,0.12);
@@ -3642,6 +3654,29 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
 .tool-output-chart-host {
   width: 100%; min-height: 200px;
 }
+.tool-chart-empty {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 180px; padding: 16px;
+  border: 1px dashed var(--border, #ccd1da);
+  border-radius: 4px;
+  color: var(--text-secondary, #777);
+  font-size: 0.82rem; text-align: center;
+}
+.tool-output-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+.tool-output-stat-grid .tool-stat-cell {
+  background: var(--surface-2, #f9fafc);
+  border: 1px solid var(--border, #eef0f4);
+  border-radius: 4px;
+}
+.tool-stat-section .tool-stat-cell {
+  background: var(--surface-2, #f9fafc);
+  border: 1px solid var(--border, #eef0f4);
+  border-radius: 4px;
+}
 .tool-error {
   padding: 10px 14px;
   background: rgba(180, 30, 30, 0.06);
@@ -3655,6 +3690,9 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
 
 :root[data-theme="dark"] .tool-tile .tool-input-panel {
   border-right-color: var(--border, #2a2f3a);
+}
+:root[data-theme="dark"] .tool-input-row.tool-range .tool-range-val {
+  color: var(--text, #e8eaed);
 }
 :root[data-theme="dark"] .tool-input-row input,
 :root[data-theme="dark"] .tool-input-row select,
@@ -12746,6 +12784,8 @@ DASHBOARD_APP_JS = r"""
 
   function _toolFmtStat(out, val){
     if (val == null) return '--';
+    if (typeof val === 'string' && !out.format) return val;
+    if (typeof val === 'string' && isNaN(+val)) return val;
     var fmt = out.format || 'number';
     var dec = out.decimals;
     var s;
@@ -12955,13 +12995,19 @@ DASHBOARD_APP_JS = r"""
     rows.forEach(function(row){
       var iid = row.getAttribute('data-input-id');
       if (!iid) return;
-      // Number / date / text / select / toggle:
+      // Number / date / text / select / toggle / range:
       var el = row.querySelector(
-        'input[type=number], input[type=date], input[type=text], select, input[type=checkbox]'
+        'input[type=number], input[type=date], input[type=text], input[type=range], select, input[type=checkbox]'
       );
       if (el) {
-        el.addEventListener('input',  function(){ _toolOnScalarChange(tile, wid, iid); });
-        el.addEventListener('change', function(){ _toolOnScalarChange(tile, wid, iid); });
+        el.addEventListener('input',  function(){
+          if (el.type === 'range') _toolUpdateRangeDisplay(el);
+          _toolOnScalarChange(tile, wid, iid);
+        });
+        el.addEventListener('change', function(){
+          if (el.type === 'range') _toolUpdateRangeDisplay(el);
+          _toolOnScalarChange(tile, wid, iid);
+        });
         return;
       }
       // Radio:
@@ -12972,11 +13018,51 @@ DASHBOARD_APP_JS = r"""
     });
   }
 
+  function _toolFormatRangeDisplay(val, inp){
+    if (val == null || val === '') return '';
+    var n = +val;
+    if (isNaN(n)) return String(val);
+    var dec = inp && inp.decimals;
+    if (dec == null || dec === '') {
+      var step = inp && inp.step;
+      if (step != null && step !== '') {
+        var stepStr = String(step);
+        var dot = stepStr.indexOf('.');
+        dec = dot >= 0 ? (stepStr.length - dot - 1) : 0;
+      } else {
+        dec = 2;
+      }
+    }
+    dec = (+dec | 0);
+    if (dec < 0) dec = 0;
+    if (dec > __MAX_DEC) dec = __MAX_DEC;
+    return _toolHumanFmt(n, dec);
+  }
+
+  function _toolUpdateRangeDisplay(el){
+    if (!el || el.type !== 'range') return;
+    var disp = document.getElementById(el.id + '-val');
+    if (!disp) return;
+    var wid = el.closest('[data-tool-id]');
+    wid = wid ? wid.getAttribute('data-tool-id') : null;
+    var inp = null;
+    if (wid && TOOLS[wid]){
+      var iid = el.closest('.tool-input-row');
+      iid = iid ? iid.getAttribute('data-input-id') : null;
+      if (iid){
+        inp = (TOOLS[wid].def.inputs || []).filter(function(x){
+          return x.id === iid;
+        })[0];
+      }
+    }
+    disp.textContent = _toolFormatRangeDisplay(el.value, inp);
+  }
+
   function _toolReadScalarValue(tile, inp){
     var iid = inp.id;
     var typ = inp.type || 'number';
     var nid = 'tool-' + tile.getAttribute('data-tool-id') + '-in-' + iid;
-    if (typ === 'number'){
+    if (typ === 'number' || typ === 'range'){
       var el = document.getElementById(nid);
       if (!el) return inp.default;
       var v = el.value;
@@ -13105,6 +13191,9 @@ DASHBOARD_APP_JS = r"""
         case 'distribution':
           _toolRenderDistribution(tile, wid, out, val);
           break;
+        case 'stat_grid':
+          _toolRenderStatGrid(tile, out, val);
+          break;
         default: break;
       }
     });
@@ -13159,42 +13248,83 @@ DASHBOARD_APP_JS = r"""
       '<table class="tool-output-table">' + thead.join('') + tbody.join('') + '</table>';
   }
 
+  function _toolShowChartEmpty(host, msg){
+    if (!host) return;
+    host.innerHTML = '<div class="tool-chart-empty">' + _he(msg) + '</div>';
+    var inst = TOOL_CHARTS[host.id];
+    if (inst){
+      try { inst.dispose(); } catch(e){}
+      delete TOOL_CHARTS[host.id];
+    }
+  }
+
+  function _toolClearChartHost(host){
+    if (!host) return;
+    if (host.querySelector('.tool-chart-empty')) host.innerHTML = '';
+  }
+
+  function _toolInitChart(host){
+    var inst = TOOL_CHARTS[host.id];
+    if (!inst){
+      var theme = MANIFEST.theme;
+      try {
+        inst = echarts.init(host, (DARK_MODE ? theme + '_dark' : theme), {renderer: 'canvas'});
+      } catch (e) {
+        inst = echarts.init(host, null, {renderer: 'canvas'});
+      }
+      TOOL_CHARTS[host.id] = inst;
+    }
+    return inst;
+  }
+
+  function _toolRenderStatGrid(tile, out, val){
+    var host = tile.querySelector(
+      '[data-output-id="' + out.id + '"] .tool-output-stat-grid-host'
+    );
+    if (!host) return;
+    var stats = Array.isArray(val) ? val : ((val && val.stats) || []);
+    if (!stats.length){
+      host.innerHTML = '<div class="tool-chart-empty">No stats returned.</div>';
+      return;
+    }
+    var cells = stats.map(function(st){
+      var lbl = _he(st.label || st.id || '');
+      var v = (st.value != null) ? _toolFmtStat(
+        {format: st.format, decimals: st.decimals, prefix: st.prefix, suffix: st.suffix},
+        st.value
+      ) : '--';
+      var sub = st.sub ? ('<div class="label" style="font-weight:400;text-transform:none">' +
+                          _he(String(st.sub)) + '</div>') : '';
+      return '<div class="tool-stat-cell"><div class="label">' + lbl +
+             '</div><div class="value">' + _he(String(v)) + '</div>' + sub + '</div>';
+    });
+    host.innerHTML = '<div class="tool-output-stat-grid">' + cells.join('') + '</div>';
+  }
+
   function _toolRenderSeries(tile, wid, out, val, allOutputs){
     var hostId = 'tool-' + wid + '-out-' + out.id;
     var host = document.getElementById(hostId);
-    if (!host || !val) return;
-    var rows = Array.isArray(val) ? val : (val.rows || []);
-    if (rows.length === 0) return;
-
-    var xKey = out.x || 'x';
-    var yKey = out.y || 'y';
-    var colorKey = out.color || null;
-
-    // Group by color if present.
-    var seriesData = [];
-    var xSet = new Set();
-    if (colorKey){
-      var groups = {};
-      rows.forEach(function(r){
-        var c = String(r[colorKey]);
-        if (!groups[c]) groups[c] = [];
-        groups[c].push([r[xKey], r[yKey]]);
-        xSet.add(r[xKey]);
-      });
-      Object.keys(groups).forEach(function(k){
-        seriesData.push({name: k, type: 'line', smooth: false, showSymbol: false,
-                          step: 'end', data: groups[k]});
-      });
-    } else {
-      var data = rows.map(function(r){ return [r[xKey], r[yKey]]; });
-      seriesData.push({name: out.label || out.id, type: 'line',
-                        smooth: false, showSymbol: false, data: data});
+    if (!host) return;
+    if (val == null || val === ''){
+      _toolShowChartEmpty(host, 'Compute returned no data for "' + out.id + '".');
+      return;
     }
+    var rows = Array.isArray(val) ? val : (val.rows || []);
+    if (!rows.length){
+      var xHint = out.x || out.x_key || 'x';
+      var yHint = out.y || out.y_key || 'y';
+      _toolShowChartEmpty(
+        host,
+        'No rows for "' + out.id + '". Expected array of {' + xHint + ', ' + yHint + '} objects.'
+      );
+      return;
+    }
+    _toolClearChartHost(host);
 
-    // x-axis type heuristic
-    var xType = (out.x_format === 'date') ? 'time' : (
-      (typeof rows[0][xKey] === 'number') ? 'value' : 'category'
-    );
+    var xKey = out.x || out.x_key || 'x';
+    var yKey = out.y || out.y_key || 'y';
+    var colorKey = out.color || out.color_key || null;
+    var chartType = String(out.chart_type || 'line').toLowerCase();
 
     // y format
     var yFmt = function(v){
@@ -13202,6 +13332,82 @@ DASHBOARD_APP_JS = r"""
       if (out.y_format === 'bps')     return _toolHumanFmt(10000 * +v, 1) + 'bp';
       return _toolHumanFmt(+v, 2);
     };
+
+    var seriesData = [];
+    var opt;
+
+    if (chartType === 'bar' || chartType === 'bar_horizontal'){
+      var categories = rows.map(function(r){ return String(r[xKey]); });
+      var values = rows.map(function(r){ return r[yKey]; });
+      var barSeries = {
+        name: out.label || out.id,
+        type: 'bar',
+        data: values,
+        animation: false,
+      };
+      if (chartType === 'bar_horizontal'){
+        opt = {
+          grid: {left: 80, right: 24, top: 24, bottom: 24, containLabel: true},
+          xAxis: {type: 'value', axisLabel: {formatter: yFmt}},
+          yAxis: {type: 'category', data: categories, axisLabel: {hideOverlap: true}},
+          tooltip: {trigger: 'axis', valueFormatter: yFmt},
+          legend: {show: false},
+          animation: false,
+          series: [barSeries],
+        };
+      } else {
+        opt = {
+          grid: {left: 60, right: 24, top: 24, bottom: 36, containLabel: true},
+          xAxis: {type: 'category', data: categories, axisLabel: {hideOverlap: true, rotate: categories.length > 8 ? 35 : 0}},
+          yAxis: {type: 'value', axisLabel: {formatter: yFmt}},
+          tooltip: {trigger: 'axis', valueFormatter: yFmt},
+          legend: {show: false},
+          animation: false,
+          series: [barSeries],
+        };
+      }
+    } else if (colorKey){
+      var groups = {};
+      rows.forEach(function(r){
+        var c = String(r[colorKey]);
+        if (!groups[c]) groups[c] = [];
+        groups[c].push([r[xKey], r[yKey]]);
+      });
+      Object.keys(groups).forEach(function(k){
+        seriesData.push({name: k, type: 'line', smooth: false, showSymbol: false,
+                          step: 'end', data: groups[k]});
+      });
+      var xType = (out.x_format === 'date') ? 'time' : (
+        (typeof rows[0][xKey] === 'number') ? 'value' : 'category'
+      );
+      opt = {
+        grid: {left: 60, right: 24, top: 30, bottom: 36, containLabel: true},
+        xAxis: {type: xType, axisLabel: {hideOverlap: true}},
+        yAxis: {type: 'value', axisLabel: {formatter: yFmt}},
+        tooltip: {trigger: 'axis', valueFormatter: yFmt},
+        legend: (seriesData.length > 1)
+          ? {top: 0, type: 'plain', textStyle: {fontSize: 11}}
+          : {show: false},
+        animation: false,
+        series: seriesData,
+      };
+    } else {
+      var data = rows.map(function(r){ return [r[xKey], r[yKey]]; });
+      seriesData.push({name: out.label || out.id, type: 'line',
+                        smooth: false, showSymbol: false, data: data});
+      var xType2 = (out.x_format === 'date') ? 'time' : (
+        (typeof rows[0][xKey] === 'number') ? 'value' : 'category'
+      );
+      opt = {
+        grid: {left: 60, right: 24, top: 30, bottom: 36, containLabel: true},
+        xAxis: {type: xType2, axisLabel: {hideOverlap: true}},
+        yAxis: {type: 'value', axisLabel: {formatter: yFmt}},
+        tooltip: {trigger: 'axis', valueFormatter: yFmt},
+        legend: {show: false},
+        animation: false,
+        series: seriesData,
+      };
+    }
 
     // Annotations (vline x_from input.something) -> markLine on first series
     var markLines = [];
@@ -13221,42 +13427,31 @@ DASHBOARD_APP_JS = r"""
         markLines.push({xAxis: x, label: {formatter: a.label || ''}});
       }
     });
-    if (markLines.length > 0) {
-      seriesData[0].markLine = {symbol: 'none', silent: true,
+    if (markLines.length > 0 && opt.series && opt.series[0]) {
+      opt.series[0].markLine = {symbol: 'none', silent: true,
                                   lineStyle: {type: 'dashed', color: '#888'},
                                   data: markLines};
     }
 
-    var opt = {
-      grid: {left: 60, right: 24, top: 30, bottom: 36, containLabel: true},
-      xAxis: {type: xType, axisLabel: {hideOverlap: true}},
-      yAxis: {type: 'value', axisLabel: {formatter: yFmt}},
-      tooltip: {trigger: 'axis', valueFormatter: yFmt},
-      legend: (seriesData.length > 1)
-        ? {top: 0, type: 'plain', textStyle: {fontSize: 11}}
-        : {show: false},
-      animation: false,
-      series: seriesData
-    };
-
-    var inst = TOOL_CHARTS[hostId];
-    if (!inst) {
-      var theme = MANIFEST.theme;
-      try {
-        inst = echarts.init(host, (DARK_MODE ? theme + '_dark' : theme), {renderer: 'canvas'});
-      } catch (e) {
-        inst = echarts.init(host, null, {renderer: 'canvas'});
-      }
-      TOOL_CHARTS[hostId] = inst;
-    }
+    var inst = _toolInitChart(host);
     inst.setOption(opt, true);
+    try { inst.resize(); } catch(e){}
   }
 
   function _toolRenderDistribution(tile, wid, out, val){
     var hostId = 'tool-' + wid + '-out-' + out.id;
     var host = document.getElementById(hostId);
-    if (!host || !val) return;
+    if (!host) return;
+    if (!val){
+      _toolShowChartEmpty(host, 'Compute returned no data for "' + out.id + '".');
+      return;
+    }
     var rows = Array.isArray(val) ? val : (val.rows || []);
+    if (!rows.length){
+      _toolShowChartEmpty(host, 'No distribution rows for "' + out.id + '".');
+      return;
+    }
+    _toolClearChartHost(host);
     var data = rows.map(function(r){ return [r.x, r.density]; });
     var opt = {
       grid: {left: 50, right: 16, top: 24, bottom: 30, containLabel: true},
@@ -13267,15 +13462,9 @@ DASHBOARD_APP_JS = r"""
       series: [{type: 'line', step: 'middle', areaStyle: {opacity: 0.18},
                   showSymbol: false, smooth: false, data: data}]
     };
-    var inst = TOOL_CHARTS[hostId];
-    if (!inst) {
-      try {
-        var theme = MANIFEST.theme;
-        inst = echarts.init(host, (DARK_MODE ? theme + '_dark' : theme), {renderer: 'canvas'});
-      } catch(e){ inst = echarts.init(host, null, {renderer: 'canvas'}); }
-      TOOL_CHARTS[hostId] = inst;
-    }
+    var inst = _toolInitChart(host);
     inst.setOption(opt, true);
+    try { inst.resize(); } catch(e){}
   }
 
   function _he(s){
@@ -13313,6 +13502,9 @@ DASHBOARD_APP_JS = r"""
             if (el && (inp.type === 'number' || inp.type === 'date' ||
                         inp.type === 'text' || !inp.type)){
               el.value = v;
+            } else if (el && inp.type === 'range'){
+              el.value = v;
+              _toolUpdateRangeDisplay(el);
             } else if (el && inp.type === 'toggle'){
               el.checked = !!v;
             } else if (el && inp.type === 'select'){
@@ -14473,6 +14665,23 @@ def _render_tool_widget(w: Dict[str, Any], cols: int, wid: str, style: str) -> s
                 f'<div class="tool-output-chart-host" id="tool-{_html_escape(wid)}-out-{_html_escape(oid)}" style="height:240px"></div>'
                 f'</div>'
             )
+        elif okind == "stat_grid":
+            outputs_html.append(
+                f'<div class="tool-output-section" data-output-id="{_html_escape(oid)}" data-output-kind="stat_grid">'
+                f'<div class="section-label">{_html_escape(label)}</div>'
+                f'<div class="tool-output-stat-grid-host"></div>'
+                f'</div>'
+            )
+        elif okind in ("stat", "param", "kpi", "scalar"):
+            outputs_html.append(
+                f'<div class="tool-output-section tool-stat-section" '
+                f'data-output-id="{_html_escape(oid)}" data-output-kind="stat">'
+                f'<div class="tool-stat-cell" data-output-id="{_html_escape(oid)}">'
+                f'<div class="label">{_html_escape(label)}</div>'
+                f'<div class="value">--</div>'
+                f'</div>'
+                f'</div>'
+            )
         else:
             outputs_html.append(
                 f'<div class="tool-output-section" data-output-id="{_html_escape(oid)}" data-output-kind="{_html_escape(str(okind))}">'
@@ -14586,6 +14795,31 @@ def _render_tool_scalar_input(inp: Dict[str, Any], wid: str) -> str:
             f'<div class="tool-input-row" data-input-id="{_html_escape(iid)}"{sw_attr}>'
             f'<label>{_html_escape(label)}</label>'
             f'<input type="text" id="{nid}" value="{_html_escape(str(default))}"/>'
+            f'</div>'
+        )
+    if typ == "range":
+        mn = inp.get("min", 0)
+        mx = inp.get("max", 100)
+        step = inp.get("step", 1)
+        val = default if default != "" else mn
+        dec = inp.get("decimals")
+        if dec is not None:
+            try:
+                disp_val = f"{float(val):.{int(dec)}f}"
+            except (TypeError, ValueError):
+                disp_val = str(val)
+        else:
+            disp_val = str(val)
+        step_attr = f' step="{step}"'
+        return (
+            f'<div class="tool-input-row tool-range" data-input-id="{_html_escape(iid)}"{sw_attr}>'
+            f'<label>{_html_escape(label)}</label>'
+            f'<div class="tool-range-row">'
+            f'<input type="range" id="{nid}" min="{mn}" max="{mx}"{step_attr} '
+            f'value="{_html_escape(str(val))}"/>'
+            f'<span id="{nid}-val" class="tool-range-val">{_html_escape(disp_val)}</span>'
+            f'{suffix_html}'
+            f'</div>'
             f'</div>'
         )
     # default: number
