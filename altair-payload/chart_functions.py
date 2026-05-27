@@ -290,6 +290,11 @@ _FACET_VALID_CHART_TYPES: frozenset = frozenset({
     "histogram",
 })
 
+# Minimum panel count for facet mode. Below this PRISM should use
+# make_*pack_* composites (max 6 cells). Grids are for cross-sectional
+# dashboards (G20, 12 sectors, 16 FX pairs), not 2-4 panel arguments.
+_FACET_MIN_PANELS: int = 12
+
 # Hard cap on grid size. Beyond 6x6, per-panel readability collapses;
 # PRISM should aggregate or switch to a heatmap.
 _FACET_HARD_CAP: int = 36
@@ -480,6 +485,52 @@ class LvlSeriesNameTooLongError(ValidationError):
         )
 
 
+class BarCategoryLabelTooLongError(ValidationError):
+    """Raised when bar chart category labels exceed the configured cap.
+
+    Mirrors ``YAxisLabelTooLongError`` / ``LvlSeriesNameTooLongError``:
+    rather than silently truncate (vertical / horizontal labelLimit
+    ellipsis) or catastrophically collide (grouped-bar y-axis rotated-90
+    overlap), the engine fails up-front so PRISM rewrites the category
+    labels into a form that renders cleanly in every bar context.
+
+    Applies to all bar chart types: plain vertical, plain horizontal,
+    grouped (``color`` + ``stack=False``), stacked (``color`` +
+    ``stack=True``), and composite cells of all of the above. Same cap
+    regardless of orientation so PRISM has a single rule to follow.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        offending_labels: Optional[List[str]] = None,
+        category_field: Optional[str] = None,
+        mapping: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        Exception.__init__(self, message)
+        self.context = {
+            "offending_labels": list(offending_labels or []),
+            "category_field": category_field,
+            "mapping": mapping,
+        }
+        send_error_email(
+            error_message=f"BarCategoryLabelTooLongError: {message}",
+            traceback_info=traceback.format_exc(),
+            tool_name="chart_functions",
+            metadata={
+                "error_type": "BarCategoryLabelTooLongError",
+                "offending_labels": list(offending_labels or []),
+                "category_field": category_field,
+                "mapping_keys": list(mapping.keys()) if mapping else None,
+            },
+            context=(
+                "Bar chart category labels exceeded the character limit. "
+                "User should shorten category labels in the DataFrame "
+                "before make_chart()."
+            ),
+        )
+
+
 # Soft cap on y-axis label length. The PRISM style guide says ~16 chars is
 # the visual sweet spot; we hard-fail past 24 to surface obvious abuses
 # (raw column names, generated tokens) without being too pedantic about
@@ -495,6 +546,29 @@ _Y_AXIS_LABEL_MAX_CHARS = 24
 # titles (``"S&P 500 Energy"`` 14 vs ``"Energy ($/bbl)"`` 14 -- the
 # series carries the entity, the y-title carries the unit).
 _LVL_SERIES_NAME_MAX_CHARS = 25
+
+# Hard cap on bar-chart category label length. Long labels surface
+# multiple failure modes that no labelLimit / labelOverlap setting can
+# fix cleanly:
+#   - Vertical bar at angle -45 with default labelLimit ~180 px truncates
+#     mid-label at ~17 chars (A03 in the audit).
+#   - Horizontal bar's labelLimit cap (max(180, min(width*0.45, ...))) is
+#     plot-region-protective, not label-aware: 22+ ch labels truncate at
+#     width=700 (B04), 14+ ch labels truncate at composite width=350
+#     (D04 / E05).
+#   - Grouped bar (``color`` + ``stack=False``) inside the horizontal
+#     handler renders y-axis category labels rotated 90 deg and stacked
+#     on the same anchor, overlapping into illegible noise (F03 / F04 /
+#     F05 / H01). This is an underlying rendering bug in the column-
+#     faceted bar_horizontal path; the cap prevents the caller from ever
+#     exercising it.
+# 15 ch is the largest cap that keeps EVERY bar context (vertical /
+# horizontal / grouped / stacked / single / composite) rendering cleanly
+# without truncation or collision. Verified by the long-label audit
+# gallery at projects/altair/dev/build_long_label_audit.py (42 cards;
+# every CLEAN render has max_len <= 15; every TRUNC / COLLIDE has
+# max_len > 15).
+_BAR_CATEGORY_LABEL_MAX_CHARS = 15
 
 # Minimum distinct (x, y) coordinates that fall inside the visible plot
 # region for a scatter to read as a relationship rather than an anecdote.
@@ -542,6 +616,95 @@ def _validate_y_axis_label(y_title: Optional[str], mapping: Dict[str, Any]) -> N
             y_title=y_title,
             mapping=mapping,
         )
+
+
+def _suggest_bar_label_abbreviations(label: str) -> str:
+    """Produce 1-2 abbreviation suggestions for an over-cap bar category label.
+
+    Strategy:
+      1. Acronym from word initials (e.g. 'Information Technology' -> 'IT').
+      2. First word + acronymised rest (e.g. 'Manufacturing PMI Composite'
+         -> 'Mfg PMI').
+    Returns both joined with ' / '; falls back to a hard truncation when
+    neither acronym strategy stays under the cap.
+    """
+    cap = _BAR_CATEGORY_LABEL_MAX_CHARS
+    words = label.split()
+
+    initials = "".join(w[0].upper() for w in words if w and w[0].isalpha())
+    if 2 <= len(initials) <= cap:
+        first_suggestion = initials
+    else:
+        first_suggestion = label[:cap]
+
+    if len(words) >= 2:
+        first_word = words[0]
+        rest_initials = "".join(
+            w[0].upper() for w in words[1:] if w and w[0].isalpha()
+        )
+        candidate = f"{first_word} {rest_initials}".strip()
+        second_suggestion = (
+            candidate if len(candidate) <= cap else label[:cap]
+        )
+    else:
+        second_suggestion = label[:cap]
+
+    if first_suggestion == second_suggestion:
+        return f"'{first_suggestion}'"
+    return f"'{first_suggestion}' / '{second_suggestion}'"
+
+
+def _validate_bar_category_labels(
+    labels: List[str],
+    category_field: str,
+    mapping: Dict[str, Any],
+) -> None:
+    """Validate bar chart category label lengths. Raises if any label exceeds
+    the configured cap (15 chars).
+
+    Applies to all bar chart types -- plain vertical, plain horizontal,
+    grouped (``color`` + ``stack=False``), stacked (``color`` +
+    ``stack=True``), and composite cells. Same cap regardless of
+    orientation, called from the top of ``_build_bar`` (for nominal x)
+    and ``_build_bar_horizontal`` (for nominal y).
+    """
+    str_labels = [str(label) for label in labels]
+    offenders = sorted(
+        {label for label in str_labels if len(label) > _BAR_CATEGORY_LABEL_MAX_CHARS},
+        key=lambda s: -len(s),
+    )
+    if not offenders:
+        return
+
+    max_len = max(len(label) for label in str_labels)
+    n_offenders = len(offenders)
+    # Cap the offender list shown in the message so we don't dump 50
+    # labels into the error. 5 covers any practical bar chart.
+    shown_offenders = offenders[:5]
+
+    offender_block = "\n".join(
+        f"  - '{label}' ({len(label)} ch)" for label in shown_offenders
+    )
+    suggestion_block = "\n".join(
+        f"  '{label}' -> {_suggest_bar_label_abbreviations(label)}"
+        for label in shown_offenders[:3]
+    )
+
+    raise BarCategoryLabelTooLongError(
+        (
+            f"Bar category labels in field '{category_field}' exceed the "
+            f"{_BAR_CATEGORY_LABEL_MAX_CHARS}-character cap "
+            f"({n_offenders} offender(s), longest is {max_len} ch). "
+            f"Shorten the labels in the DataFrame before make_chart().\n"
+            f"Offenders ({len(shown_offenders)} of {n_offenders} shown, longest first):\n"
+            f"{offender_block}\n"
+            f"Suggested abbreviations:\n"
+            f"{suggestion_block}"
+        ),
+        offending_labels=offenders,
+        category_field=category_field,
+        mapping=mapping,
+    )
 
 
 def _get_field(mapping: Dict[str, Any], key: str) -> Optional[str]:
@@ -3113,14 +3276,7 @@ class LastValueLabel(Annotation):
 
         df_use = df.copy()
 
-        # Reset to a unique RangeIndex before idxmax/loc. PRISM often
-        # stacks duplicate time-series pulls via concat/append without
-        # ignore_index=True; a non-unique index makes df.loc[idxmax()]
-        # return every row sharing each index label, duplicating LVL
-        # marks (2 copies -> 2 labels, 4 copies -> 4 labels, etc.).
-        df_clean = df_use.dropna(subset=[x_col, y_field]).reset_index(
-            drop=True
-        )
+        df_clean = df_use.dropna(subset=[x_col, y_field]).reset_index(drop=True)
         if df_clean.empty:
             return alt.Chart(pd.DataFrame({"_": []})).mark_point()
 
@@ -4907,6 +5063,22 @@ def _should_auto_inject_lvl(
     if annotations and any(isinstance(a, LastValueLabel) for a in annotations):
         return False
     return True
+
+
+def _strip_lvl_annotations(
+    annotations: Optional[List["Annotation"]],
+) -> Optional[List["Annotation"]]:
+    """Silently remove all ``LastValueLabel`` annotations.
+
+    Grid and composite layouts prohibit end-of-line labels -- panel
+    density and shared-axis comparison make LVL collide or steal margin.
+    PRISM may pass explicit LVL annotations; the engine drops them
+    without warning in multipanel contexts.
+    """
+    if not annotations:
+        return annotations
+    stripped = [a for a in annotations if not isinstance(a, LastValueLabel)]
+    return stripped or None
 
 
 def _values_match_for_endpoint(a: Any, b: Any) -> bool:
@@ -6818,6 +6990,35 @@ def _temporal_tick_step(interval: str, step: int) -> Dict[str, Any]:
 # estimate matches reality.
 _DEFAULT_AXIS_LABEL_FONT_SIZE = 18
 
+# Minimum y-axis tick label size for horizontal bars when categories
+# outrun cell height (composite sub-charts, dense standalone charts).
+_BAR_HORIZONTAL_Y_LABEL_FONT_MIN = 8
+
+
+def _bar_horizontal_y_label_font_size(
+    chart_height: int,
+    n_categories: int,
+    base_font_size: int = _DEFAULT_AXIS_LABEL_FONT_SIZE,
+) -> int:
+    """Shrink horizontal-bar y-axis tick labels when rows are packed tight.
+
+    Composite sub-charts (~280px tall) with 18-20 categories leave ~12-14
+    px per row at the default 18pt skin label size, which guarantees
+    vertical overlap. Scale font size down from ``base_font_size`` so
+    each label fits its row budget; floor at
+    ``_BAR_HORIZONTAL_Y_LABEL_FONT_MIN``.
+    """
+    if n_categories <= 0:
+        return base_font_size
+    # Reserve chrome: sub-chart title, x-axis title, x tick labels.
+    usable = max(int(chart_height - 48), int(chart_height * 0.78))
+    px_per_row = usable / n_categories
+    # One horizontal label row ~= font_size * 1.2 line height + 2px gap.
+    fit_font = int((px_per_row - 2) / 1.2)
+    if fit_font >= base_font_size:
+        return base_font_size
+    return max(_BAR_HORIZONTAL_Y_LABEL_FONT_MIN, fit_font)
+
 
 def _max_ticks_for_width(
     chart_width: int,
@@ -8227,6 +8428,8 @@ def get_axis_beautification(
                 chart_width,
                 estimated_tick_count=len(unique_vals),
             )
+            if mapping.get("_facet_panel"):
+                label_angle = -45
             configs["x"] = AxisConfig(
                 label_angle=label_angle,
                 label_limit=150 if label_angle != 0 else 200,
@@ -8492,6 +8695,22 @@ TYPOGRAPHY_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "axis_labelFontSize": 24,
         "axis_titleFontSize": 22,
         "axis_tickCount": 6,
+        "legend_labelFontSize": 18,
+        "legend_titleFontSize": 22,
+        "line_strokeWidth": 2,
+    },
+    "facet_grid": {
+        # Facet (small-multiples) grids always use this preset regardless
+        # of per-panel pixel size. Standalone ``teams`` / ``thumbnail``
+        # presets were designed for embed canvases and shrink labels
+        # past readability when a 5x4 country grid lands at ~200px
+        # cells. Large axis labels + sparse ticks (3) keep dense grids
+        # scannable at letter-portrait arm's length.
+        "title_fontSize": 28,
+        "title_subtitleFontSize": 18,
+        "axis_labelFontSize": 24,
+        "axis_titleFontSize": 22,
+        "axis_tickCount": 3,
         "legend_labelFontSize": 18,
         "legend_titleFontSize": 22,
         "line_strokeWidth": 2,
@@ -11325,12 +11544,18 @@ def _build_bar(
         x_type = "quantitative"
     else:
         x_type = "nominal"
+        # Validate category label lengths BEFORE the auto-flip branch:
+        # the cap applies regardless of orientation, so we raise here
+        # rather than letting auto-flip route long labels into the
+        # bar_horizontal handler (which has its own truncation /
+        # collision modes for long category labels).
+        raw_labels = [str(v) for v in df[x_field].unique()]
+        _validate_bar_category_labels(raw_labels, x_field, mapping)
         # Auto-switch to horizontal-bar when category labels are too long
         # to render vertically without ellipsis truncation. Heuristic:
         # average label > 12 chars or any label > 20 chars on a normal-
         # density bar chart (n_bars * 100 > width). Caller can disable via
         # mapping['orientation'] = 'vertical'.
-        raw_labels = [str(v) for v in df[x_field].unique()]
         avg_len = sum(len(l) for l in raw_labels) / max(len(raw_labels), 1)
         max_len = max((len(l) for l in raw_labels), default=0)
         n_bars = len(raw_labels)
@@ -11392,6 +11617,8 @@ def _build_bar(
         bar_label_angle = calculate_optimal_label_angle(
             bar_labels, width, estimated_tick_count=len(bar_labels),
         )
+        if mapping.get("_facet_panel"):
+            bar_label_angle = -45
     else:
         bar_label_angle = 0
 
@@ -11537,7 +11764,11 @@ def _build_bar(
         # PointLabel / Arrow annotation. The annotation's text takes
         # priority; the redundant numeric label would just collide.
         suppress_x_set = mapping.get("_suppress_bar_value_at_x") or set()
-        if not color_field and df[x_field].nunique() <= 15:
+        if (
+            not mapping.get("_facet_panel")
+            and not color_field
+            and df[x_field].nunique() <= 15
+        ):
             df_for_labels = df
             if suppress_x_set:
                 # Coerce the comparison values to a set of strings so we
@@ -11895,6 +12126,21 @@ def _build_bar_horizontal(
     if y_non_null == 0:
         raise ValidationError(f"y_field '{y_field}' has no valid values.")
 
+    # Validate category label lengths. The same cap as _build_bar applies
+    # because the failure modes are symmetric: 22+ ch labels truncate at
+    # width=700 (B04 / G05 in the audit), 14+ ch labels truncate at
+    # composite width=350 (D04 / E05), and grouped horizontal (color +
+    # stack=False) collapses long labels into illegible y-axis overlap
+    # at any width (F04 / F05 / H01). When _build_bar auto-flipped here,
+    # its validation already passed -- this call is a no-op then. When
+    # the caller invokes bar_horizontal explicitly, this is the only
+    # validation site, so it must live here.
+    _validate_bar_category_labels(
+        [str(v) for v in df[y_field].unique()],
+        category_field=y_field,
+        mapping=mapping,
+    )
+
     mark_config = skin_config.get("mark_config", {}).get("bar", {})
     tooltips = _build_tooltip(mapping, "bar_horizontal", df)
 
@@ -11944,6 +12190,9 @@ def _build_bar_horizontal(
         180,
         min(int(width * 0.45), longest_y_label * px_per_char + 16),
     )
+    h_y_label_font_size = _bar_horizontal_y_label_font_size(
+        height, n_unique_y, label_font_size,
+    )
 
     # ---- high-cardinality y-axis thinning (horizontal bars) -------------
     # Mirror the vertical-bar thinning: beyond ~45 rows the y-axis label
@@ -11951,6 +12200,13 @@ def _build_bar_horizontal(
     if df[y_field].nunique() >= 45:
         h_y_label_overlap: Any = "greedy"
         h_y_label_separation: Any = 4
+    elif (
+        h_y_label_font_size <= _BAR_HORIZONTAL_Y_LABEL_FONT_MIN + 1
+        and n_unique_y >= 15
+    ):
+        # Still packed after font shrink -- thin every other label.
+        h_y_label_overlap = "greedy"
+        h_y_label_separation = 2
     else:
         h_y_label_overlap = alt.Undefined
         h_y_label_separation = alt.Undefined
@@ -11973,6 +12229,8 @@ def _build_bar_horizontal(
                     title=y_title,
                     axis=alt.Axis(
                         titleFontWeight="normal", labelLimit=y_label_limit,
+                        labelAngle=0,
+                        labelFontSize=h_y_label_font_size,
                         labelOverlap=h_y_label_overlap,
                         labelSeparation=h_y_label_separation,
                     ),
@@ -12016,6 +12274,7 @@ def _build_bar_horizontal(
         #     user reads first.
         if not color_field and df[y_field].nunique() <= 25:
             value_fmt = _smart_number_format(df[x_field])
+            value_label_fs = max(8, min(11, h_y_label_font_size + 1))
             df_pos = df[df[x_field] >= 0]
             df_neg = df[df[x_field] < 0].copy()
 
@@ -12026,7 +12285,7 @@ def _build_bar_horizontal(
                         align="left",
                         baseline="middle",
                         dx=4,
-                        fontSize=11,
+                        fontSize=value_label_fs,
                         fontWeight="bold",
                         color="#222222",
                     )
@@ -12056,7 +12315,7 @@ def _build_bar_horizontal(
                         align="right",
                         baseline="middle",
                         dx=-4,
-                        fontSize=11,
+                        fontSize=value_label_fs,
                         fontWeight="bold",
                         color="white",
                     )
@@ -12115,12 +12374,21 @@ def _build_bar_horizontal(
             list(df[y_field].unique()),
             total_strip_px=n_y_cats * facet_height + spacing_overhead,
         )
+        # Horizontal-bar category labels are NEVER rotated -- always
+        # horizontal text adjacent to their row group. Vega-Lite's
+        # default row-facet header orientation rotates labels 90 deg
+        # (running vertically up the gutter), which is unreadable and
+        # was the underlying cause of the F04 / F05 / H01 / H03 / H04
+        # collision observed in the pre-cap long-label audit. ``labelAngle=0``
+        # forces horizontal text; right-align + middle-baseline anchors
+        # the label flush against the bars to its right.
         row_header_kwargs: Dict[str, Any] = dict(
             orient="left",
+            labelAngle=0,
+            labelAlign="right",
+            labelBaseline="middle",
             labelPadding=10,
-            labelFontSize=skin_config.get("axis_config", {}).get(
-                "labelFontSize", 14,
-            ),
+            labelFontSize=h_y_label_font_size,
         )
         if row_label_expr is not None:
             row_header_kwargs["labelExpr"] = row_label_expr
@@ -12761,7 +13029,10 @@ def _build_histogram(
     series = pd.to_numeric(df[x_field], errors="coerce").dropna()
     auto_bin_extent: Optional[List[float]] = None
     n_clipped = 0
-    if mapping.get("bin_extent") is not None:
+    if mapping.get("_histogram_bin_extent") is not None:
+        be = mapping["_histogram_bin_extent"]
+        auto_bin_extent = [float(be[0]), float(be[1])]
+    elif mapping.get("bin_extent") is not None:
         be = mapping["bin_extent"]
         auto_bin_extent = [float(be[0]), float(be[1])]
     elif len(series) >= 20:
@@ -14969,6 +15240,11 @@ def make_chart(
     # validation, panel build, layout, PNG render, and S3 upload, then
     # returns a ``ChartResult`` with ``chart_type=<base>_facet``.
     if "facet" in mapping:
+        # Histogram facets always share x so bin ranges are comparable
+        # across panels (return distributions, etc.). Independent
+        # per-panel x scales are never meaningful for facet histograms.
+        if chart_type == "histogram":
+            share_x = True
         # Smart-route ``same_scale=True`` per chart_type.
         if same_scale:
             if chart_type in {"scatter", "scatter_multi"}:
@@ -15721,9 +15997,17 @@ def make_chart(
         title, chart_type, filename_prefix, filename_suffix
     )
     if save_as:
-        png_path = (
-            f"{session_path}/{save_as}" if session_path else save_as
-        )
+        # Passthrough: if save_as is already rooted at a canonical S3
+        # prefix, honour it exactly. Mirrors _tbl_resolve_path() and
+        # matches s3_manager.put() / save_artifact(output_path=...)
+        # behavior so PRISM can pass either a leaf filename or a
+        # fully-rooted path without producing double-nested paths.
+        if save_as.startswith(_PASSTHROUGH_PREFIXES):
+            png_path = save_as
+        else:
+            png_path = (
+                f"{session_path}/{save_as}" if session_path else save_as
+            )
     else:
         if session_path:
             png_path = f"{session_path}/{filename_base}.png"
@@ -16054,6 +16338,7 @@ def _build_single_chart(
     reserve_side_right_w: Optional[int] = None,
     title_fontsize_override: Optional[int] = None,
     subtitle_fontsize_override: Optional[int] = None,
+    suppress_lvl: bool = False,
 ) -> alt.Chart:
     """Build a single Altair chart from a ``ChartSpec`` for composite use.
 
@@ -16168,31 +16453,25 @@ def _build_single_chart(
     # same slot -- next-available fallback per
     # ``_route_plottext_to_panels`` semantics.
     cell_annotations = spec.annotations
+    if suppress_lvl:
+        cell_annotations = _strip_lvl_annotations(cell_annotations)
 
-    # Auto-default LastValueLabel for multi_line / timeseries sub-charts.
-    # Mirrors the standalone branch in ``make_chart`` so a composite
-    # sub-chart inherits the same end-of-line labelling default. The
-    # legend would compete with the sibling cells' axis labels in a
-    # tight hconcat anyway, so the LVL default is even more useful in
-    # composites than standalone. Gating is identical to the standalone
-    # path -- see ``_should_auto_inject_lvl``.
-    if _should_auto_inject_lvl(chart_type, mapping, cell_annotations):
+    # Auto-default LastValueLabel for standalone multi_line only.
+    # Grid and composite cells suppress LVL entirely (see
+    # ``suppress_lvl``); end-of-line labels collide in tight panels.
+    if not suppress_lvl and _should_auto_inject_lvl(
+        chart_type, mapping, cell_annotations,
+    ):
         cell_annotations = list(cell_annotations or [])
         cell_annotations.append(LastValueLabel())
 
-    # Silent endpoint-annotation strip; mirrors the standalone branch in
-    # ``make_chart``. Composite cells inherit the same LVL-absorption
-    # default so a sub-chart with a hand-rolled "highlight latest"
-    # Callout doesn't render with stacked right-edge labels.
-    cell_annotations = _strip_endpoint_annotations_redundant_to_lvl(
-        df, chart_type, mapping, cell_annotations,
-    )
-
-    # Mirror the standalone-path validation: long series names raise
-    # loudly so a single composite cell doesn't silently degrade. The
-    # ChartSpec error propagates through ``make_composite``'s per-cell
-    # try/except and lands in ``CompositeResult.chart_errors``.
-    _validate_lvl_series_names(cell_annotations, df, mapping)
+    if not suppress_lvl:
+        # Silent endpoint-annotation strip; mirrors the standalone branch
+        # in ``make_chart``.
+        cell_annotations = _strip_endpoint_annotations_redundant_to_lvl(
+            df, chart_type, mapping, cell_annotations,
+        )
+        _validate_lvl_series_names(cell_annotations, df, mapping)
 
     cell_caption = spec.caption
     cell_side_left = spec.side_left
@@ -16746,7 +17025,7 @@ def _wrap_with_text_panels(
             cap_cfg, width=chart_width, height=None,
             skin_config=skin_config, chart_edge="top",
         )
-        body = alt.vconcat(body, cap_panel, spacing=0).resolve_scale(
+        body = alt.vconcat(body, cap_panel, spacing=6).resolve_scale(
             color="independent", x="independent", y="independent",
         ).resolve_legend(color="independent")
 
@@ -16995,7 +17274,7 @@ def _apply_text_panels_to_spec(
         cap_spec = _panel_spec(
             cfg_to_use, chart_width, cap_h, chart_edge="top",
         )
-        body = {"vconcat": [body, cap_spec], "spacing": 0}
+        body = {"vconcat": [body, cap_spec], "spacing": 6}
 
     if needs_left or needs_right:
         h_parts: List[Dict[str, Any]] = []
@@ -17833,6 +18112,18 @@ def _render_facet_grid(
         )
     n_panels = len(panel_order)
 
+    if n_panels < _FACET_MIN_PANELS:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                f"Facet grid requires at least {_FACET_MIN_PANELS} panels; "
+                f"got {n_panels}. For fewer comparisons use "
+                f"make_2pack_horizontal, make_2pack_vertical, "
+                f"make_4pack_grid, or make_6pack_grid (composites "
+                f"support up to 6 panels)."
+            ),
+        )
+
     if n_panels > _FACET_HARD_CAP:
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
@@ -17860,6 +18151,14 @@ def _render_facet_grid(
     # ---- Drop facet from per-panel mapping (each panel is one panel id)
     panel_mapping = dict(mapping)
     panel_mapping.pop("facet", None)
+
+    # Strip LVL annotations at the grid level; per-panel build also
+    # passes ``suppress_lvl=True`` so auto-injection is off.
+    annotations = _strip_lvl_annotations(annotations)
+
+    # Histogram facets always share x (also enforced at make_chart dispatch).
+    if chart_type == "histogram":
+        share_x = True
 
     # ---- Compute shared scales (if requested) ---------------------------
     # Field resolution: x, y, color come from mapping. ``y`` may be a list
@@ -17909,6 +18208,14 @@ def _render_facet_grid(
     if share_color and isinstance(color_field, str):
         shared_color_domain = _compute_shared_color_domain(df, color_field)
 
+    # Facet histograms: one bin extent across all panels so x-axes align.
+    if chart_type == "histogram" and share_x and isinstance(x_field, str):
+        facet_hist_extent = _compute_shared_numeric_domain(
+            df, x_field, padding_frac=0.02,
+        )
+        if facet_hist_extent:
+            panel_mapping["_histogram_bin_extent"] = facet_hist_extent
+
     # ---- Build skin config ---------------------------------------------
     if skin not in AVAILABLE_SKINS:
         return ChartResult(
@@ -17937,6 +18244,8 @@ def _render_facet_grid(
         # is the panel id stringified (short -- "US", "Canada", etc.).
         sub_mapping = dict(panel_mapping)
         sub_mapping.pop("facet", None)
+        if chart_type == "bar":
+            sub_mapping["_facet_panel"] = True
 
         sub_spec = ChartSpec(
             df=sub_df,
@@ -17952,6 +18261,7 @@ def _render_facet_grid(
             chart = _build_single_chart(
                 sub_spec, skin_config, panel_w, panel_h,
                 title_fontsize_override=26,
+                suppress_lvl=True,
             )
         except Exception as exc:  # noqa: BLE001
             panel_errors.append({
@@ -18134,9 +18444,9 @@ def _render_facet_grid(
             title_block["subtitleFontSize"] = 22
         composite_spec["title"] = title_block
 
-    # ---- Typography overrides (auto-pick from panel size) ---------------
-    typography_preset = _resolve_typography_for_panel_size(panel_w, panel_h)
-    if typography_preset and auto_beautify:
+    # ---- Typography overrides (facet_grid preset: large labels, sparse ticks)
+    typography_preset = "facet_grid"
+    if auto_beautify:
         try:
             composite_spec = _apply_typography_overrides(
                 composite_spec, typography_preset,
@@ -18151,9 +18461,17 @@ def _render_facet_grid(
         title, f"{chart_type}_facet", filename_prefix, filename_suffix,
     )
     if save_as:
-        png_path = (
-            f"{session_path}/{save_as}" if session_path else save_as
-        )
+        # Passthrough: if save_as is already rooted at a canonical S3
+        # prefix, honour it exactly. Mirrors _tbl_resolve_path() and
+        # matches s3_manager.put() / save_artifact(output_path=...)
+        # behavior so PRISM can pass either a leaf filename or a
+        # fully-rooted path without producing double-nested paths.
+        if save_as.startswith(_PASSTHROUGH_PREFIXES):
+            png_path = save_as
+        else:
+            png_path = (
+                f"{session_path}/{save_as}" if session_path else save_as
+            )
     else:
         if session_path:
             png_path = f"{session_path}/{filename_base}.png"
@@ -18422,6 +18740,7 @@ def make_composite(
                     reserve_caption_h=reserve_cap_h_arg,
                     reserve_side_left_w=reserve_left_w_arg,
                     reserve_side_right_w=reserve_right_w_arg,
+                    suppress_lvl=True,
                 )
             )
             logger.info(
@@ -18576,9 +18895,14 @@ def make_composite(
         filename_prefix, filename_suffix,
     )
     if save_as:
-        png_path = (
-            f"{session_path}/{save_as}" if session_path else save_as
-        )
+        # Passthrough: if save_as is already rooted at a canonical S3
+        # prefix, honour it exactly (see make_chart for full rationale).
+        if save_as.startswith(_PASSTHROUGH_PREFIXES):
+            png_path = save_as
+        else:
+            png_path = (
+                f"{session_path}/{save_as}" if session_path else save_as
+            )
     elif session_path:
         png_path = f"{session_path}/{filename_base}.png"
     else:
@@ -20150,7 +20474,36 @@ _TABLE_PALETTES: Dict[str, Tuple] = {
 _TBL_SIDE_PAD = 12          # Left/right canvas margin (px)
 _TBL_TEXT_COL_MAX = 280     # Cap text-col natural width before wrapping
 _TBL_TEXT_COL_FLOOR = 160   # Lower bound when compressing text cols
-_TBL_MAX_TABLE_W = 1400     # Soft upper bound on canvas width
+_TBL_MAX_TABLE_W = 1400
+
+# -------------------------------------------------------------------------
+# Option-C canvas normalization constants for ``make_table()``.
+#
+# Display constraints for table PNGs: HTML report/email pipelines display
+# table PNGs inside a bounded box (720px for reports, 600px for emails).
+# When a content-driven canvas is forced into that box at preserved aspect
+# ratio, text renders at native canvas scale -- tall portraits explode in
+# height, wide ribbons collapse to microscopic text. These bounds clamp the
+# native canvas so on-screen body text lands near ~11px at display width.
+#
+# _TBL_MAX_TABLE_H: hard ceiling on native canvas height (1080px -> ~800px
+#   tall at 720px display width).
+# _TBL_MAX_ASPECT_RATIO: max canvas_h / canvas_w; portraits above this shrink.
+# _TBL_MIN_ASPECT_RATIO: min canvas_h / canvas_w; ribbons below this grow fonts.
+# _TBL_TARGET_HTML_WIDTH_PX: display width make_table() targets (720 default;
+#   override via target_html_width kwarg for email at 600).
+# _TBL_TARGET_TEXT_PX_AT_DISPLAY: target on-screen body-text size in CSS px.
+# _TBL_NORMALIZE_MAX_ITERATIONS: safety cap so a pathological table can't
+#   bounce font sizes forever.
+# -------------------------------------------------------------------------
+_TBL_MAX_TABLE_H = 1080
+_TBL_MAX_ASPECT_RATIO = 2.0
+_TBL_MIN_ASPECT_RATIO = 0.30
+_TBL_TARGET_HTML_WIDTH_PX = 720
+_TBL_TARGET_TEXT_PX_AT_DISPLAY = 11.0
+_TBL_NORMALIZE_MAX_ITERATIONS = 4
+_TBL_FONT_TIER_FLOOR = 9   # do not shrink body font below this
+_TBL_FONT_TIER_CEIL = 22   # do not grow body font above this
 _TBL_CELL_PAD_X = 10        # Per-cell horizontal padding
 _TBL_BODY_PAD_BOTTOM = 6    # Padding between last row and caption / edge
 
@@ -20694,6 +21047,118 @@ def _tbl_row_heights(
     return out
 
 
+def _tbl_normalize_theme_for_display(
+    df: pd.DataFrame, title: Optional[str], subtitle: Optional[str],
+    caption: Optional[str],
+    base_theme: Dict[str, Any],
+    header_levels: Optional[List[List[Tuple[str, int]]]],
+    column_formats: Dict[str, str],
+    sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
+    row_groups: Optional[List[Tuple[str, int]]],
+    target_html_width: int,
+) -> Tuple[Dict[str, Any], _TableLayoutGeom, List[str], List[str]]:
+    """Adapt ``theme`` font sizes so the rendered canvas hits the target
+    display-width text size and stays within bounded aspect ratio.
+
+    Iteratively runs ``_tbl_layout()`` and inspects the resulting canvas:
+
+    * If the canvas is too portrait (``canvas_h / canvas_w >
+      _TBL_MAX_ASPECT_RATIO``), shrink fonts one tier and re-layout.
+    * If the on-screen body text size at ``target_html_width`` would fall
+      below ``_TBL_TARGET_TEXT_PX_AT_DISPLAY``, grow fonts one tier.
+    * If the canvas exceeds ``_TBL_MAX_TABLE_H``, shrink fonts one tier.
+
+    Caps iterations at ``_TBL_NORMALIZE_MAX_ITERATIONS``. Records every
+    adjustment in the returned warnings list so PRISM can surface to the
+    user that the rendered text size was auto-adjusted.
+
+    Returns (adapted_theme, geom, caption_lines, warnings).
+    """
+    theme = dict(base_theme)
+    warnings: List[str] = []
+    last_geom: Optional[_TableLayoutGeom] = None
+    last_caption_lines: List[str] = []
+
+    for iteration in range(_TBL_NORMALIZE_MAX_ITERATIONS + 1):
+        geom, caption_lines = _tbl_layout(
+            df, title, subtitle, caption, theme,
+            header_levels, column_formats,
+            sparkline_columns, minibar_columns, row_groups,
+        )
+        last_geom, last_caption_lines = geom, caption_lines
+
+        canvas_w = geom.canvas_w
+        canvas_h = geom.canvas_h
+        if canvas_w <= 0:
+            break
+        aspect = canvas_h / canvas_w  # >1 = portrait; <1 = landscape
+
+        if iteration >= _TBL_NORMALIZE_MAX_ITERATIONS:
+            break
+
+        body_fs = theme["body_font_size"]
+        header_fs = theme["header_font_size"]
+
+        # Case 1: too portrait (tall).
+        if aspect > _TBL_MAX_ASPECT_RATIO and body_fs > _TBL_FONT_TIER_FLOOR:
+            new_body = max(_TBL_FONT_TIER_FLOOR, body_fs - 1)
+            new_header = max(_TBL_FONT_TIER_FLOOR + 1, header_fs - 1)
+            if new_body == body_fs and new_header == header_fs:
+                break
+            theme["body_font_size"] = new_body
+            theme["header_font_size"] = new_header
+            warnings.append(
+                f"make_table canvas was too portrait "
+                f"({canvas_w}x{canvas_h}, aspect={aspect:.2f}); "
+                f"shrinking body font {body_fs}->{new_body} to fit display "
+                f"width {target_html_width}px. Consider transposing or "
+                f"splitting the table for a cleaner result."
+            )
+            continue
+
+        # Case 2: too tall outright.
+        if canvas_h > _TBL_MAX_TABLE_H and body_fs > _TBL_FONT_TIER_FLOOR:
+            new_body = max(_TBL_FONT_TIER_FLOOR, body_fs - 1)
+            new_header = max(_TBL_FONT_TIER_FLOOR + 1, header_fs - 1)
+            if new_body == body_fs and new_header == header_fs:
+                break
+            theme["body_font_size"] = new_body
+            theme["header_font_size"] = new_header
+            warnings.append(
+                f"make_table canvas height {canvas_h}px exceeded ceiling "
+                f"{_TBL_MAX_TABLE_H}px; shrinking body font "
+                f"{body_fs}->{new_body}."
+            )
+            continue
+
+        # Case 3: rendered text size at display width too small.
+        scale = target_html_width / canvas_w
+        effective_text_px = body_fs * scale
+        if (effective_text_px < _TBL_TARGET_TEXT_PX_AT_DISPLAY
+                and aspect < _TBL_MIN_ASPECT_RATIO
+                and body_fs < _TBL_FONT_TIER_CEIL):
+            new_body = min(_TBL_FONT_TIER_CEIL, body_fs + 1)
+            new_header = min(_TBL_FONT_TIER_CEIL + 2, header_fs + 1)
+            if new_body == body_fs and new_header == header_fs:
+                break
+            theme["body_font_size"] = new_body
+            theme["header_font_size"] = new_header
+            warnings.append(
+                f"make_table canvas was very wide / short "
+                f"({canvas_w}x{canvas_h}, aspect={aspect:.2f}); "
+                f"growing body font {body_fs}->{new_body} so text reads at "
+                f"{_TBL_TARGET_TEXT_PX_AT_DISPLAY:.0f}px at display "
+                f"width {target_html_width}px "
+                f"(was ~{effective_text_px:.1f}px)."
+            )
+            continue
+
+        # Canvas is within bounds.
+        break
+
+    return theme, last_geom, last_caption_lines, warnings
+
+
 def _tbl_layout(
     df: pd.DataFrame, title: Optional[str], subtitle: Optional[str],
     caption: Optional[str],
@@ -21166,9 +21631,22 @@ def _tbl_png_bytes(img: Image.Image) -> bytes:
     return buf.getvalue()
 
 
+_PASSTHROUGH_PREFIXES = (
+    "sessions/", "users/", "threads/", "secondary/", "primary/",
+    "development/", "context_cache/", "subprocess_logs/",
+    "tickets/", "indexes/",
+)
+
+
 def _tbl_resolve_path(save_as: Optional[str], session_path: Optional[str],
                        df: pd.DataFrame, title: Optional[str]) -> str:
     if save_as:
+        # Passthrough: if save_as is already rooted at a canonical S3
+        # prefix, honour it exactly. This mirrors the convention used by
+        # _resolve_session_path() in script_exec_tools.py and matches the
+        # behaviour of s3_manager.put() / save_artifact(output_path=...).
+        if save_as.startswith(_PASSTHROUGH_PREFIXES):
+            return save_as
         rel = save_as
     else:
         slug = re.sub(r"[^A-Za-z0-9_-]+", "_", (title or "table").lower()).strip("_") or "table"
@@ -21211,6 +21689,7 @@ def make_table(
     s3_manager: Optional[Any] = None,
     output_dir: str = "",
     user_id: Optional[str] = None,
+    target_html_width: int = _TBL_TARGET_HTML_WIDTH_PX,
 ) -> TableResult:
     """Render a DataFrame as a content-sized PNG table.
 
@@ -21489,11 +21968,21 @@ def make_table(
     total_rows = [int(r) for r in total_rows]
     subtotal_rows = [int(r) for r in subtotal_rows]
 
-    geom, _caption_lines = _tbl_layout(
-        df, title, subtitle, caption, theme,
-        header_levels, column_formats,
-        sparkline_columns, minibar_columns, row_groups,
+    # Option-C canvas normalization. _tbl_normalize_theme_for_display
+    # adapts theme font sizes so the rendered canvas hits the target
+    # display-width text size AND stays within bounded aspect ratio.
+    # Falls through to a single _tbl_layout() call when the natural
+    # canvas is already well-proportioned (the common case). See the
+    # constants block above for the bounds.
+    theme, geom, _caption_lines, normalize_warnings = (
+        _tbl_normalize_theme_for_display(
+            df, title, subtitle, caption, theme,
+            header_levels, column_formats,
+            sparkline_columns, minibar_columns, row_groups,
+            target_html_width=target_html_width,
+        )
     )
+    warnings.extend(normalize_warnings)
     canvas = (geom.canvas_w, geom.canvas_h)
 
     img = Image.new("RGB", canvas, theme["background_color"])

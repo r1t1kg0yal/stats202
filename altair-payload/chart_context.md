@@ -15,8 +15,8 @@
 
 | Primitive | Names | Where |
 |---|---|---|
-| Chart types (12) | `multi_line`, `scatter`, `scatter_multi`, `bar`, `bar_horizontal`, `heatmap`, `histogram`, `boxplot`, `area`, `donut`, `bullet`, `waterfall` | §6 |
-| Mapping keys | `x`, `y`, `color`, `value`, `theta`, `y_title`, `y_title_right`, `x_title`, `x_sort`, `y_sort`, `x_type`, `dual_axis_series`, `invert_right_axis`, `dual_axis_config`, `legend`, `trendline`, `trendlines`, `stack`, `strokeDash`, `strokeDashScale`, `strokeDashLegend`, `bins`, `maxbins`, `bin_extent`, `extent`, `scale_type`, `orientation`, `color_sort` (alias `legend_sort`), `value_sort`, `x_low`, `x_high`, `color_by`, `label`, `type`, `facet_order` | §7 |
+| Chart types (11) | `multi_line`, `scatter`, `scatter_multi`, `bar`, `bar_horizontal`, `heatmap`, `histogram`, `boxplot`, `area`, `donut`, `waterfall` | §6 |
+| Mapping keys | `x`, `y`, `color`, `value`, `theta`, `y_title`, `y_title_right`, `x_title`, `x_sort`, `y_sort`, `x_type`, `dual_axis_series`, `invert_right_axis`, `dual_axis_config`, `legend`, `trendline`, `trendlines`, `stack`, `strokeDash`, `strokeDashScale`, `strokeDashLegend`, `bins`, `maxbins`, `bin_extent`, `extent`, `scale_type`, `orientation`, `color_sort` (alias `legend_sort`), `value_sort`, `type`, `facet_order` | §7 |
 | Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §8 |
 | Composite functions (5) | `make_2pack_horizontal`, `make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`, `make_6pack_grid` | §10 |
 | Grid mode | `mapping['facet']`, `facet_cols`, `same_scale`, `share_x` / `share_y` / `share_color` | spoke `chart_context_grids.md` |
@@ -195,7 +195,6 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 | `boxplot` | Distribution comparison | `x` (cat), `y` |
 | `area` | Stacked time series | `x`, `y`, `color` |
 | `donut` | Part-to-whole | `theta`, `color` |
-| `bullet` | Range dot / percentile | `y` (cat), `x`, `x_low`, `x_high` |
 | `waterfall` | Additive decomposition | `x` (cat), `y`, `type` (opt) |
 
 `timeseries` is an alias for `multi_line`. `multi_line` auto-detects non-datetime x → ordinal mode; tenor values (`1M`, `2Y`, `10Y`) auto-sort by maturity.
@@ -210,6 +209,8 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 mapping = {'x': 'Region', 'y': 'Revenue', 'color': 'Product'}                  # stacked
 mapping = {'x': 'Region', 'y': 'Revenue', 'color': 'Product', 'stack': False}  # grouped
 ```
+
+**Category labels ≤15 chars** on every bar chart (`bar`, `bar_horizontal`, grouped, stacked, single, composite -- same cap regardless of orientation or context). Longer raises `BarCategoryLabelTooLongError`; shorten in the DataFrame (`'Information Technology'` → `'Info Tech'` / `'IT'`, `'Manufacturing PMI Composite'` → `'Mfg PMI'`). The engine names the offending labels and suggests abbreviations in the error message.
 
 Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact, ~200+ standalone) engine raises `GROUPED BAR CELL-BUDGET ERROR` -- switch to `stack=True`, reduce categories, or render standalone. `bar_horizontal` same on height. For datetime x prefer `multi_line` / `area`; for period bars convert to string labels (`"Q1 2025"`).
 
@@ -237,17 +238,7 @@ df['prob_bucket'] = pd.cut(df['Probability'], bins=10,
 mapping = {'x': 'meeting_date', 'y': 'fed_funds_rate', 'value': 'prob_bucket'}
 ```
 
-### 6.4 Bullet chart
-
-Current values within historical ranges; marker colour encodes severity (z-score / percentile). Required: `y` (cat), `x`, `x_low`, `x_high`. Optional: `color_by`, `label`.
-
-```python
-mapping = {'y': 'variable', 'x': 'current_value',
-           'x_low': 'range_low', 'x_high': 'range_high',
-           'color_by': 'z_score', 'label': 'percentile'}
-```
-
-### 6.5 Waterfall
+### 6.4 Waterfall
 
 Additive decomposition (CPI/GDP, P&L, FCI impulse): bars float, each starts where previous ended. `type` optional -- absent means first/last rows are totals, intermediates signed by value. Colour: positive green (`#2EB857`), negative red (`#DC143C`), totals skin primary. Engine warns if intermediates don't sum to `(last - first)` within 15%.
 
@@ -260,7 +251,7 @@ df = pd.DataFrame({
 mapping = {'x': 'component', 'y': 'contribution', 'type': 'type', 'y_title': 'CPI YoY (%)'}
 ```
 
-### 6.6 Haver frequency hygiene
+### 6.5 Haver frequency hygiene
 
 Haver stores many monthly/quarterly at business-daily granularity (same value ~22 days). Symptom: stair-step lines. Resample to native frequency BEFORE charting. Merging mixed-frequency creates NaN gaps -- resample to lowest common frequency before `concat` / `merge`.
 
@@ -308,7 +299,6 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',                        
 | `stack` | bool | Bar+color: `True` stacked (default), `False` grouped |
 | `strokeDash` / `strokeDashScale` / `strokeDashLegend` | str/dict/bool | Line-style col / `{domain, range}` / show legend (default `False`) |
 | `value` / `theta` | str | Heatmap cell value / donut magnitude |
-| `x_low` / `x_high` / `color_by` / `label` | str | Bullet: range bounds / severity / label |
 | `type` | str | Waterfall bar type (`total`/`positive`/`negative`) |
 | `bins` / `maxbins` | int | Histogram bin count (aliases) |
 | `bin_extent` | list | Histogram bin range `[lo, hi]` |
@@ -389,7 +379,7 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 
 ### 8.4 Compatibility & layers
 
-Rule-style annotations (`HLine`, `VLine`, `Band`, `Callout`, `PointLabel`, `PointHighlight`) silently dropped on non-Cartesian charts (`donut`, `pie`, `bullet`) -- use `title`/`subtitle`. `LastValueLabel` only on `multi_line`/`area`; `Trendline` only on scatter. Bar compatibility: §6.2.
+Rule-style annotations (`HLine`, `VLine`, `Band`, `Callout`, `PointLabel`, `PointHighlight`) silently dropped on non-Cartesian charts (`donut`, `pie`) -- use `title`/`subtitle`. `LastValueLabel` only on `multi_line`/`area`; `Trendline` only on scatter. Bar compatibility: §6.2.
 
 `annotations=[...]` for VLine/HLine/Band/Arrow; `layers=[...]` only for regression / threshold rule / secondary point cloud.
 

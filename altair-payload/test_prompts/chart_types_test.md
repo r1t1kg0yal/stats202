@@ -22,7 +22,7 @@ Pull the latest US Treasury debt-to-penny record and produce a donut chart of th
 
 ---
 
-Build a bullet chart for current US headline CPI YoY against the Fed's 2% target with a tolerance band of plus or minus 50bp. Let me know if frictions.
+Pull US headline CPI YoY and core CPI YoY for the last 10 years and chart both as a stacked area. Use plain-English y-axis labels. Let me know if frictions.
 
 ---
 

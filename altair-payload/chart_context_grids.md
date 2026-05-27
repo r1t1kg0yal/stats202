@@ -8,8 +8,8 @@ Spoke fetched on demand from `chart_context.md`. Covers `make_chart()` in grid m
 
 | Situation | Reach for |
 |---|---|
-| 8-30 entities sharing one shape (G20 GDP, 12 sectors, 16 FX pairs, 20 country curves) | grid mode (this spoke) |
-| 2-4 panels making a single ARGUMENT (US vs EU, level + change) | `make_2pack_*` / `make_4pack_grid` (hub §10) |
+| 12-30 entities sharing one shape (G20 GDP, 12 sectors, 16 FX pairs, 20 country curves) | grid mode (this spoke) |
+| 2-6 panels making a single ARGUMENT (US vs EU, level + change) | `make_2pack_*` / `make_4pack_grid` / `make_6pack_grid` (hub §10) |
 | One canvas with one comparison | single `make_chart()` + `mapping['color']` |
 | 30+ entities or matrix-of-values | `chart_type='heatmap'` |
 
@@ -46,7 +46,7 @@ Grid mode triggered ONLY by `mapping['facet']`. Without it, normal single-canvas
 
 - `n_panels > 36` → hard reject (aggregate to group level or use `chart_type='heatmap'`)
 - `n_panels >= 25` → render + warning ("consider aggregating")
-- `n_panels < 2` → reject (use single canvas)
+- `n_panels < 12` → hard reject (use `make_2pack_*` / `make_4pack_grid` / `make_6pack_grid`)
 
 ---
 
@@ -54,7 +54,7 @@ Grid mode triggered ONLY by `mapping['facet']`. Without it, normal single-canvas
 
 Allowed: `multi_line`, `timeseries`, `scatter`, `scatter_multi`, `bar`, `bar_horizontal`, `area`, `histogram`.
 
-Rejected: `heatmap`, `donut`, `boxplot`, `bullet`, `waterfall` -- single-canvas by design; grid mode raises `ValidationError` pointing at the right alternative.
+Rejected: `heatmap`, `donut`, `boxplot`, `waterfall` -- single-canvas by design; grid mode raises `ValidationError` pointing at the right alternative.
 
 ---
 
@@ -64,9 +64,9 @@ Rejected: `heatmap`, `donut`, `boxplot`, `bullet`, `waterfall` -- single-canvas 
 |---|---|
 | `multi_line` / `timeseries` / `area` / `bar` / `bar_horizontal` | `share_y=True` |
 | `scatter` / `scatter_multi` | `share_x=True` AND `share_y=True` |
-| `histogram` | `share_x=True` (count axis per-panel) |
+| `histogram` | `share_x=True` always in facet mode (count axis stays per-panel); `same_scale=True` is a no-op extra |
 
-Set `same_scale=True` for direct cross-panel comparison (G20 GDP in same y-range; (CPI, GDP) scatters on single 8x8 grid). Default `False` keeps per-panel scales -- better when each panel's own range matters more than cross-panel level comparison.
+Set `same_scale=True` for direct cross-panel comparison (G20 GDP in same y-range; (CPI, GDP) scatters on single 8x8 grid). Default `False` keeps per-panel scales -- better when each panel's own range matters more than cross-panel level comparison (except histogram x, which is always shared in facet mode).
 
 `share_color=True` is separate -- locks categorical color domain across panels + renders a SINGLE shared legend below the grid (gradient color uses the gradient bar, §5).
 
@@ -91,7 +91,7 @@ make_chart(df=df,                            # cols: country, quarter, cpi, gdp
 
 ## 6. Engine defaults
 
-PRISM passes none of these. Panels are square (squareness > canvas-fill). Y-axis title strip stripped on line/multi_line/bar/area/histogram (composite title carries metric); KEPT on scatter/scatter_multi (x and y are different variables). Per-panel legends always stripped; `share_color=True` rebuilds a single composite legend. Typography auto-sized for letter-portrait at arm's length. Up to N-1 panels can fail and survivors render (failures in `result.warnings`). No kwarg for `panel_width`, `panel_height`, `spacing`, or typography.
+PRISM passes none of these. Panels are square (squareness > canvas-fill). Y-axis title strip stripped on line/multi_line/bar/area/histogram (composite title carries metric); KEPT on scatter/scatter_multi (x and y are different variables). Per-panel legends always stripped; `share_color=True` rebuilds a single composite legend. Typography uses the `facet_grid` preset (24pt axis labels, 3 tick budget) on every panel regardless of pixel size. `LastValueLabel` is never rendered in facet grids or composites -- the engine silently strips any LVL PRISM passes. Bar value labels are suppressed in facet panels. Up to N-1 panels can fail and survivors render (failures in `result.warnings`). No kwarg for `panel_width`, `panel_height`, `spacing`, or typography.
 
 ---
 
