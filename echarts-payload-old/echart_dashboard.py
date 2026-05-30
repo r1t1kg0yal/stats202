@@ -190,7 +190,7 @@ VALID_TABLE_FORMATS = {
 # ``test_chart_type_dispatch_covers_valid_chart_types`` in
 # ``dev/tests.py``. Adding a new chart type means: (1) one entry
 # here, (2) one entry in ``_BUILDER_DISPATCH`` pointing to the
-# builder, (3) a documentation row in ``dashboards.md`` Section 3.1.
+# builder, (3) a documentation row in ``dashboards_hub.md`` Section 3.1.
 #
 # Finance-flavoured additions:
 #   waterfall  -- P&L attribution / decomposition
@@ -330,7 +330,7 @@ VALID_KPI_AGGREGATORS = {
 # field is the canonical authoring form going forward; the nested
 # ``compute.kind`` shape is retained for back-compat with manifests
 # already on S3. PRISM-side authoring guidance lives in
-# ``dashboards.md`` section 4.11.
+# ``dashboards_hub.md`` section 4.11.
 
 def load_tool_def(ref: Any) -> Dict[str, Any]:
     """Resolve a tool_def reference to a fully-populated def dict.
@@ -347,7 +347,7 @@ def load_tool_def(ref: Any) -> Dict[str, Any]:
         f"tool_def must be an inline dict, got {type(ref).__name__}: "
         f"{ref!r}. The engine does not resolve string refs to a tool "
         f"library -- bake the def into the manifest. See "
-        f"`dashboards.md` section 4.11 for the inline pattern; "
+        f"`dashboards_hub.md` section 4.11 for the inline pattern; "
         f"canonical reference templates live at "
         f"`projects/echarts/dev/tool_examples/<name>/` (staging-only) "
         f"for cribbing."
@@ -5875,7 +5875,7 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
 # Line / multi_line / area widgets with too many overlaid series collapse
 # into spaghetti: the legend wraps to multiple rows, palette colors stop
 # being distinguishable past ~5 categorical entries, and no single series
-# is traceable across the canvas. The hub's `dashboards.md` §9 anti-
+# is traceable across the canvas. The hub's `dashboards_hub.md` §9 anti-
 # patterns table cross-references the cap; the corrective action is to
 # drop the count, split into small multiples (one widget per category),
 # or pivot to a different framing (Index=100 normalisation,
@@ -9495,10 +9495,11 @@ def _exec_dashboard_script(folder: str, stem: str, *, s3_manager) -> Dict[str, A
     """Fetch <folder>/scripts/<stem>.py from S3, exec it, return the namespace.
 
     Injects the standard PRISM data-layer namespace so pull_data.py / build.py
-    can reference s3_manager, pull_market_data, pull_haver_data, etc. without
-    explicit imports -- matching the sandbox contract. Scripts MAY still
-    import these names explicitly; the import will simply rebind to the same
-    canonical objects.
+    can reference ``s3_manager``, ``pull_market_data``, ``pull_haver_data``,
+    etc. without explicit imports -- matching the sandbox contract. Scripts
+    MAY still import these names explicitly; the import will simply rebind
+    to the same canonical objects. Callers read PULLS / TRANSFORMS /
+    SESSION_PATH out of the returned namespace.
     """
     path = f"{folder}/scripts/{stem}.py".replace("//", "/")
     src = s3_manager.get(path).decode("utf-8")
@@ -9529,9 +9530,10 @@ def _exec_dashboard_script(folder: str, stem: str, *, s3_manager) -> Dict[str, A
     exec(compile(src, path, "exec"), ns)
     return ns
 
+
 # ---------------------------------------------------------------------------
 # Refresh-attachment audit: enforces the compile <-> refresh-attach
-# invariant from ``dashboards.md`` §H. A compiling dashboard MUST be
+# invariant from ``dashboards_hub.md`` §H. A compiling dashboard MUST be
 # correctly attached to the refresh pipeline; the audit raises with a
 # clean diagnostic naming each gap so PRISM can heal silently and retry.
 # ---------------------------------------------------------------------------
@@ -9545,7 +9547,7 @@ class RefreshAttachmentError(ValueError):
     — a failed audit prevents a broken dashboard from going live) and at
     the start of ``refresh_dashboard`` (before any pull runs — fail
     fast). Each line of ``self.gaps`` is a discrete heal target; PRISM
-    reads, heals via ``dashboards.md`` §H, retries.
+    reads, heals via ``dashboards_hub.md`` §H, retries.
     """
 
     def __init__(self, folder: str, gaps: List[str]) -> None:
@@ -9555,12 +9557,12 @@ class RefreshAttachmentError(ValueError):
         super().__init__(
             f"_audit_refresh_attachment: {folder} has "
             f"refresh-attachment gap(s):\n{body}\n"
-            f"Heal each gap per dashboards.md §H, then retry."
+            f"Heal each gap per dashboards_hub.md §H, then retry."
         )
 
 
 # Pull primitives recognized by the static-parse stem inference. See
-# ``dashboards.md`` §6 for the stem rules: pull_market_data appends
+# ``dashboards_hub.md`` §6 for the stem rules: pull_market_data appends
 # ``_eod`` / ``_intraday`` based on ``mode=``; the other four use
 # ``name=`` verbatim.
 _PULL_PRIMITIVES: frozenset = frozenset({
@@ -9643,7 +9645,7 @@ def _infer_pull_stems_from_source(src: str) -> set:
     Two detection paths cover the realistic write patterns:
 
     1. **Pull-primitive calls** (the canonical PRISM idiom per
-       ``dashboards.md`` §6). For each call to ``pull_market_data`` /
+       ``dashboards_hub.md`` §6). For each call to ``pull_market_data`` /
        ``pull_haver_data`` / ``pull_plottool_data`` / ``pull_fred_data`` /
        ``save_artifact``, reads the literal ``name=`` and (for
        ``pull_market_data``) ``mode=`` kwargs to compute the on-disk CSV
@@ -9702,7 +9704,7 @@ def _infer_pull_stems_from_source(src: str) -> set:
 
         if fn_name in _PULL_PRIMITIVES:
             name: Optional[str] = None
-            mode: str = "eod"  # pull_market_data default per dashboards.md §6
+            mode: str = "eod"  # pull_market_data default per dashboards_hub.md §6
             for kw in node.keywords:
                 if kw.arg == "name" and isinstance(kw.value, ast.Constant) \
                         and isinstance(kw.value.value, str):
@@ -9804,7 +9806,7 @@ def _audit_refresh_attachment(
     """Verify that a compiling dashboard is structurally refresh-attachable.
 
     Enforces the compile <-> refresh-attach invariant from
-    ``dashboards.md`` §H: ``build_dashboard(folder)`` succeeded implies
+    ``dashboards_hub.md`` §H: ``build_dashboard(folder)`` succeeded implies
     ``refresh_dashboard(folder)`` will also succeed (network availability
     aside). Runs at the end of ``build_dashboard`` (after compile, BEFORE
     S3 persistence — a failed audit prevents a broken dashboard from
@@ -9859,7 +9861,7 @@ def _audit_refresh_attachment(
     RefreshAttachmentError
         Carries ``folder`` + the full list of ``gaps``. Each gap line
         is a discrete heal target; PRISM reads, heals via
-        ``dashboards.md`` §H, retries.
+        ``dashboards_hub.md`` §H, retries.
     """
     s3 = _resolve_s3_manager(s3_manager)
     folder = folder.rstrip("/")
@@ -10381,7 +10383,7 @@ def build_dashboard(folder: str, *, s3_manager=None,
     if not r.success:
         raise ValueError(f"build_dashboard: compile failed: {r.error_message}")
 
-    # Enforce the compile <-> refresh-attach invariant from dashboards.md §H.
+    # Enforce the compile <-> refresh-attach invariant from dashboards_hub.md §H.
     # Runs BEFORE S3 persistence so a failed audit does not produce a
     # broken-but-live dashboard. `strict=False` carves out Tool 2 of
     # Recipe 1 (build_dashboard runs BEFORE Tool 3's registry write);
@@ -10425,7 +10427,7 @@ def refresh_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
 
     s3 = _resolve_s3_manager(s3_manager)
 
-    # Enforce the compile <-> refresh-attach invariant from dashboards.md
+    # Enforce the compile <-> refresh-attach invariant from dashboards_hub.md
     # §H. Runs at the start so structural drift fails fast — before any
     # expensive pull function is invoked. `strict=True` requires the
     # registry entry to exist (cron path; registration must already have

@@ -188,8 +188,8 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 | `multi_line` | Time series, curve evolution | `x`, `y`, `color` (opt) |
 | `scatter` | X-Y relationships | `x`, `y` |
 | `scatter_multi` | Grouped scatter + trendlines | `x`, `y`, `color` |
-| `bar` | Category comparisons (stacked/grouped via `stack`) | `x` (cat), `y`, `color` (opt) |
-| `bar_horizontal` | Horizontal bars | `x`, `y` (cat) |
+| `bar` | Category comparisons only -- NEVER time series (stacked/grouped via `stack`) | `x` (cat), `y`, `color` (opt) |
+| `bar_horizontal` | Horizontal category comparisons -- NEVER time series | `x`, `y` (cat) |
 | `heatmap` | Matrices | `x`, `y`, `value` (NOT `'color'`) |
 | `histogram` | Distributions | `x` |
 | `boxplot` | Distribution comparison | `x` (cat), `y` |
@@ -203,6 +203,8 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 
 ### 6.2 Bar family
 
+**Bars are categorical-only.** `bar` / `bar_horizontal` require a categorical (string / ordinal) `x` -- NEVER a datetime / temporal axis. There is no bar-chart time series: continuous time series route to `multi_line` / `area` (additive decomposition → `waterfall`), including signed flow / issuance / surprise / net-position tapes that might otherwise read as thin bars over time. Discrete periods (quarters, months) belong on bars ONLY as string labels (`"Q1 2025"`, `"Jan"`), which makes them categorical -- never pass the raw datetime.
+
 `stack=True` (default with color) for parts-of-whole; `stack=False` for grouped side-by-side. Don't sign-key colour (`'Positive'`/`'Negative'`) -- bar position vs zero conveys sign.
 
 ```python
@@ -212,7 +214,7 @@ mapping = {'x': 'Region', 'y': 'Revenue', 'color': 'Product', 'stack': False}  #
 
 **Category labels ≤15 chars** on every bar chart (`bar`, `bar_horizontal`, grouped, stacked, single, composite -- same cap regardless of orientation or context). Longer raises `BarCategoryLabelTooLongError`; shorten in the DataFrame (`'Information Technology'` → `'Info Tech'` / `'IT'`, `'Manufacturing PMI Composite'` → `'Mfg PMI'`). The engine names the offending labels and suggests abbreviations in the error message.
 
-Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact, ~200+ standalone) engine raises `GROUPED BAR CELL-BUDGET ERROR` -- switch to `stack=True`, reduce categories, or render standalone. `bar_horizontal` same on height. For datetime x prefer `multi_line` / `area`; for period bars convert to string labels (`"Q1 2025"`).
+Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact, ~200+ standalone) engine raises `GROUPED BAR CELL-BUDGET ERROR` -- switch to `stack=True`, reduce categories, or render standalone. `bar_horizontal` same on height.
 
 | Bar mode | Annotation support |
 |---|---|

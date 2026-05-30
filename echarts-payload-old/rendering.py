@@ -1371,7 +1371,18 @@ def render_editor_html(
 DASHBOARD_SHELL = """<!doctype html>
 <html lang="en">
 <head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>__TITLE__</title>
 <script>
+/* Browser-side telemetry beacon. Captures uncaught errors, unhandled
+   promise rejections, console.error / console.warn calls, and resource-
+   load failures, and POSTs them to /api/dashboard/telemetry/ via
+   navigator.sendBeacon. The endpoint append-writes JSONL to
+   users/{kerberos}/dashboards/{dashboard_id}/console_log.jsonl. PRISM
+   reads that file as the single best signal of what the user actually
+   saw in their browser. See dashboards_hub.md §H.5 for the schema,
+   read recipe, and 3-step diagnostic playbook. */
 (function() {
     var BUFFER = [];
     var FLUSH_DELAY_MS = 2000;
@@ -1396,7 +1407,7 @@ DASHBOARD_SHELL = """<!doctype html>
 
     function flush() {
         flushTimer = null;
-        if (!endpoint) return;     // KEY CHANGE: do not splice BUFFER if no endpoint yet
+        if (!endpoint) return;
         if (!BUFFER.length) return;
         var events = BUFFER.splice(0, BUFFER.length);
         var payload = {
@@ -1511,9 +1522,6 @@ DASHBOARD_SHELL = """<!doctype html>
     });
 })();
 </script>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>__TITLE__</title>
 <script>
 /* Apply persisted dark-mode preference before paint to avoid a
    light-mode flash. Falls back to the OS-level prefers-color-scheme
@@ -2068,43 +2076,6 @@ header.app-header {
   box-shadow: 0 6px 18px rgba(0,0,0,0.4);
 }
 :root[data-theme="dark"] .download-menu-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-.share-dd { position: relative; display: inline-flex; }
-.share-dd .share-caret { font-size: 10px; line-height: 1; margin-left: 2px; opacity: 0.7; }
-.share-dd[data-open="true"] #share-btn { background: var(--bg-soft, #f4f6fa); }
-.share-menu {
-  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
-  min-width: 280px; padding: 4px; margin: 0; list-style: none;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.08);
-}
-.share-menu[hidden] { display: none; }
-.share-menu li { padding: 0; margin: 0; }
-.share-menu-item {
-  display: flex; width: 100%; align-items: flex-start; gap: 10px;
-  padding: 9px 12px; border: 0; background: transparent;
-  color: var(--text); font-size: 12px;
-  font-family: var(--gs-font-sans); text-align: left;
-  cursor: pointer; border-radius: 3px;
-}
-.share-menu-item:hover { background: var(--bg-soft, #f0f3f8); }
-.share-menu-item .share-menu-icon { font-size: 16px; line-height: 1; padding-top: 1px; }
-.share-menu-item .share-menu-label { display: flex; flex-direction: column; gap: 2px; }
-.share-menu-item .share-menu-label strong { font-weight: 600; }
-.share-menu-item .share-menu-label .share-menu-sub {
-  font-size: 11px; color: var(--text-dim); font-weight: 400;
-}
-.share-menu-item.danger:hover { color: var(--neg); }
-.share-menu-item[data-active="true"] { background: var(--accent-soft); }
-.share-menu-item[data-active="true"] .share-menu-label strong { color: var(--accent); }
-
-:root[data-theme="dark"] .share-menu {
-  background: var(--surface); border-color: var(--border);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.4);
-}
-:root[data-theme="dark"] .share-menu-item:hover {
   background: rgba(255, 255, 255, 0.06);
 }
 .icon-btn {
@@ -3788,50 +3759,10 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
                 style="display:none">
           ! Error details
         </button>
-        <div class="share-dd" id="share-dd" style="display:none">
-          <button class="icon-btn" id="share-btn" type="button"
-                  title="Share this dashboard"
-                  aria-haspopup="menu" aria-expanded="false">
-            <span id="share-btn-label">Share</span>
-            <span class="share-caret" aria-hidden="true">&#x25BE;</span>
-          </button>
-          <ul class="share-menu" id="share-menu" role="menu"
-              aria-label="Share options" hidden>
-            <li role="none">
-              <button type="button" role="menuitem"
-                      class="share-menu-item" id="share-mode-public"
-                      title="Anyone in Goldman can find this in the Community gallery.">
-                <span class="share-menu-icon">&#x1F310;</span>
-                <span class="share-menu-label">
-                  <strong>Make public</strong>
-                  <span class="share-menu-sub">Anyone can find this in the Community gallery</span>
-                </span>
-              </button>
-            </li>
-            <li role="none">
-              <button type="button" role="menuitem"
-                      class="share-menu-item" id="share-mode-link"
-                      title="Anyone with the link can open this dashboard. Not listed in the gallery.">
-                <span class="share-menu-icon">&#x1F517;</span>
-                <span class="share-menu-label">
-                  <strong>Share with link</strong>
-                  <span class="share-menu-sub">Anyone with the link can view; not listed publicly</span>
-                </span>
-              </button>
-            </li>
-            <li role="none">
-              <button type="button" role="menuitem"
-                      class="share-menu-item danger" id="share-mode-private"
-                      title="Make private. Existing share links stop working.">
-                <span class="share-menu-icon">&#x1F512;</span>
-                <span class="share-menu-label">
-                  <strong>Stop sharing</strong>
-                  <span class="share-menu-sub">Make private; existing links break</span>
-                </span>
-              </button>
-            </li>
-          </ul>
-        </div>
+        <button class="icon-btn" id="share-btn"
+                title="Share this dashboard with the community" style="display:none">
+          <span id="share-btn-label">Share</span>
+        </button>
         <div class="download-dd" id="download-dd">
           <button class="icon-btn" id="download-btn"
                   type="button"
@@ -11513,12 +11444,6 @@ DASHBOARD_APP_JS = r"""
     var url = LIVE_DATA_URL
               + '?dashboard_id=' + encodeURIComponent(LIVE_DASHBOARD_ID)
               + '&kerberos='     + encodeURIComponent(LIVE_KERBEROS);
-    // If the page itself was loaded with ?share=<token> (link-mode viewer),
-    // propagate the token to the live-data poll so the ACL passes on refresh.
-    try {
-      var shareTok = new URLSearchParams(window.location.search).get('share');
-      if (shareTok) url += '&share=' + encodeURIComponent(shareTok);
-    } catch(e) { /* URLSearchParams unavailable -- skip */ }
     var headers = {};
     if (LAST_KNOWN_REFRESHED){
       headers['If-None-Match'] = '"' + LAST_KNOWN_REFRESHED + '"';
@@ -12623,220 +12548,118 @@ DASHBOARD_APP_JS = r"""
     };
   }
 
-  // ----- share dropdown (3-state: private | link | public) -----
+  // ----- share button (community publish toggle) -----
+  //
+  // Lives in the standard top-right header row alongside Methodology /
+  // Refresh / Download. Visible only to the dashboard's author.
+  //
+  // The viewer's identity is injected into the served HTML by the
+  // PRISM Django dashboard-serving view as `window.PRISM_VIEWER`
+  // (string). The current registry-truth share state is optionally
+  // injected as `window.PRISM_DASHBOARD_SHARED` (bool); when absent
+  // the manifest's compile-time `metadata.shared` snapshot is used as
+  // the initial value (acceptable staleness -- one click corrects it).
+  //
+  // For local file:// preview neither global is set; the button stays
+  // hidden because viewer != author. This is the correct safe default.
+  //
+  // Click flips state. Going public is one click. Going private opens
+  // a confirm modal because the public URL stops resolving on
+  // un-share, and any link people have shared with each other breaks
+  // immediately. Re-share is always available (idempotent on the
+  // server).
+  //
+  // The share endpoint is author-only by construction on the server:
+  // the registry it touches is always the viewer's own
+  // (users/{viewer}/dashboards/...), so a non-author cannot toggle
+  // someone else's share state even if they craft the API call by
+  // hand. The button visibility check here is a UX gate; the auth
+  // gate is server-side.
   (function(){
-    var ddWrap = document.getElementById('share-dd');
     var btn   = document.getElementById('share-btn');
-    var menu  = document.getElementById('share-menu');
-    var lbl   = document.getElementById('share-btn-label');
-    if (!ddWrap || !btn || !menu) return;
+    var label = document.getElementById('share-btn-label');
+    if (!btn || !label) return;
 
-    var viewer = window.PRISM_VIEWER || null;
-    var author = window.PRISM_DASHBOARD_AUTHOR || null;
-    // Only the owner sees the share control.
-    if (!viewer || !author || viewer !== author) {
-      ddWrap.style.display = 'none';
-      return;
-    }
-    ddWrap.style.display = '';
+    var author      = MD.kerberos;
+    var dashboardId = MD.dashboard_id || MANIFEST.id;
+    if (!author || !dashboardId) return;
 
-    // Initial state -- prefer the 3-state global, fall back to legacy bool.
-    var state = window.PRISM_DASHBOARD_SHARE_MODE;
-    if (state !== 'private' && state !== 'link' && state !== 'public') {
-      state = window.PRISM_DASHBOARD_SHARED ? 'public' : 'private';
-    }
-    var currentToken = window.PRISM_DASHBOARD_SHARE_TOKEN || null;
+    var viewer = (typeof window !== 'undefined') ? window.PRISM_VIEWER : null;
+    if (!viewer || viewer !== author) return;
 
-    var SHARE_API = (window.MD && window.MD.share_api_url) || '/api/dashboard/share/';
-    var DASHBOARD_ID = window.PRISM_DASHBOARD_ID || null;
+    var shareApi = MD.share_api_url || '/api/dashboard/share/';
 
-    var items = {
-      'public':  document.getElementById('share-mode-public'),
-      'link':    document.getElementById('share-mode-link'),
-      'private': document.getElementById('share-mode-private')
-    };
+    var state = (typeof window.PRISM_DASHBOARD_SHARED !== 'undefined')
+                  ? !!window.PRISM_DASHBOARD_SHARED
+                  : (MD.shared === true);
 
     function paint(){
-      if (state === 'public') {
-        lbl.textContent = 'Sharing';
-        btn.classList.add('shared');
-      } else if (state === 'link') {
-        lbl.textContent = 'Sharing (link)';
-        btn.classList.add('shared');
-      } else {
-        lbl.textContent = 'Share';
-        btn.classList.remove('shared');
-      }
-      Object.keys(items).forEach(function(k){
-        if (!items[k]) return;
-        if (k === state) items[k].setAttribute('data-active', 'true');
-        else items[k].removeAttribute('data-active');
-      });
+      label.textContent = state ? 'Sharing' : 'Share';
+      btn.title = state
+        ? 'This dashboard is shared with the community. Click to make private.'
+        : 'Share this dashboard with the community.';
+      btn.classList.toggle('shared', state);
     }
-    paint();
 
-    // ----- dropdown open/close (mirrors download-dd pattern verbatim) -----
-    function openMenu(){
-      menu.hidden = false;
-      btn.setAttribute('aria-expanded', 'true');
-      ddWrap.setAttribute('data-open', 'true');
-    }
-    function closeMenu(){
-      menu.hidden = true;
-      btn.setAttribute('aria-expanded', 'false');
-      ddWrap.removeAttribute('data-open');
-    }
-    btn.addEventListener('click', function(e){
-      e.stopPropagation();
-      if (menu.hidden) openMenu(); else closeMenu();
-    });
-    document.addEventListener('click', function(e){
-      if (!ddWrap.contains(e.target)) closeMenu();
-    });
-    document.addEventListener('keydown', function(e){
-      if (e.key === 'Escape') closeMenu();
-    });
-
-    // ----- API call -----
-    function postShareMode(target_mode, opts){
-      opts = opts || {};
-      var body = {
-        dashboard_id: DASHBOARD_ID,
-        share_mode: target_mode
-      };
-      if (opts.reset_token) body.reset_token = true;
-      return fetch(SHARE_API, {
+    function postShareToggle(target){
+      btn.disabled = true;
+      var prev = label.textContent;
+      label.textContent = target ? 'Sharing...' : 'Unsharing...';
+      fetch(shareApi, {
         method: 'POST',
-        credentials: 'same-origin',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(body)
-      }).then(function(r){
-        if (!r.ok) throw new Error('share api status ' + r.status);
-        return r.json();
-      });
-    }
-
-    // ----- link modal (built lazily on first "Share with link") -----
-    function showLinkModal(fullUrl){
-      var prior = document.getElementById('share-link-modal');
-      if (prior) prior.remove();
-      var modal = document.createElement('div');
-      modal.id = 'share-link-modal';
-      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);'
-                + 'display:flex;align-items:center;justify-content:center;z-index:9999;';
-      modal.innerHTML = ''
-       + '<div style="background:var(--surface);color:var(--text);'
-       +     'padding:20px 24px;border-radius:6px;min-width:420px;'
-       +     'max-width:560px;box-shadow:0 8px 32px rgba(0,0,0,0.25);">'
-       + '<h3 style="margin:0 0 12px;font-size:14px;font-weight:600;">Share with link</h3>'
-       + '<p style="margin:0 0 12px;font-size:12px;color:var(--text-dim);">'
-       +   'Anyone with this link can view the dashboard. It is not listed in the Community gallery.'
-       + '</p>'
-       + '<div style="display:flex;gap:6px;margin-bottom:14px;">'
-       +   '<input type="text" id="share-link-input" readonly value="' + fullUrl.replace(/"/g,'&quot;') + '" '
-       +      'style="flex:1;padding:6px 8px;font-size:12px;font-family:monospace;'
-       +         'border:1px solid var(--border);border-radius:3px;background:var(--bg-soft);'
-       +         'color:var(--text);" />'
-       +   '<button type="button" id="share-link-copy" '
-       +      'style="padding:6px 12px;font-size:12px;border:1px solid var(--border);'
-       +         'border-radius:3px;background:var(--accent);color:#fff;cursor:pointer;">Copy</button>'
-       + '</div>'
-       + '<div style="display:flex;justify-content:flex-end;">'
-       +   '<button type="button" id="share-link-close" '
-       +      'style="padding:6px 14px;font-size:12px;border:1px solid var(--border);'
-       +         'border-radius:3px;background:transparent;color:var(--text);cursor:pointer;">Done</button>'
-       + '</div>'
-       + '</div>';
-      document.body.appendChild(modal);
-      var input = modal.querySelector('#share-link-input');
-      var copy  = modal.querySelector('#share-link-copy');
-      var close = modal.querySelector('#share-link-close');
-      copy.addEventListener('click', function(){
-        input.select();
-        try { document.execCommand('copy'); copy.textContent = 'Copied!'; }
-        catch(e){ /* clipboard blocked; user can still ctrl-c */ }
-        setTimeout(function(){ copy.textContent = 'Copy'; }, 1800);
-      });
-      function dismiss(){ modal.remove(); }
-      close.addEventListener('click', dismiss);
-      modal.addEventListener('click', function(e){ if (e.target === modal) dismiss(); });
-    }
-
-    // ----- confirm modal for "Stop sharing" (links will break) -----
-    function confirmStopSharing(onConfirm){
-      var prior = document.getElementById('share-stop-modal');
-      if (prior) prior.remove();
-      var modal = document.createElement('div');
-      modal.id = 'share-stop-modal';
-      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);'
-                + 'display:flex;align-items:center;justify-content:center;z-index:9999;';
-      modal.innerHTML = ''
-       + '<div style="background:var(--surface);color:var(--text);'
-       +     'padding:20px 24px;border-radius:6px;min-width:380px;max-width:480px;'
-       +     'box-shadow:0 8px 32px rgba(0,0,0,0.25);">'
-       + '<h3 style="margin:0 0 12px;font-size:14px;font-weight:600;">Stop sharing?</h3>'
-       + '<p style="margin:0 0 16px;font-size:12px;color:var(--text-dim);">'
-       +   'The dashboard becomes private. Any existing share links will stop working immediately.'
-       + '</p>'
-       + '<div style="display:flex;justify-content:flex-end;gap:8px;">'
-       +   '<button type="button" id="share-stop-cancel" '
-       +      'style="padding:6px 14px;font-size:12px;border:1px solid var(--border);'
-       +         'border-radius:3px;background:transparent;color:var(--text);cursor:pointer;">Cancel</button>'
-       +   '<button type="button" id="share-stop-ok" '
-       +      'style="padding:6px 14px;font-size:12px;border:0;'
-       +         'border-radius:3px;background:var(--neg,#c0392b);color:#fff;cursor:pointer;">Stop sharing</button>'
-       + '</div>'
-       + '</div>';
-      document.body.appendChild(modal);
-      modal.querySelector('#share-stop-cancel').addEventListener('click', function(){ modal.remove(); });
-      modal.querySelector('#share-stop-ok').addEventListener('click', function(){
-        modal.remove();
-        onConfirm();
-      });
-      modal.addEventListener('click', function(e){ if (e.target === modal) modal.remove(); });
-    }
-
-    // ----- menu-item handlers -----
-    if (items['public']) {
-      items['public'].addEventListener('click', function(){
-        closeMenu();
-        postShareMode('public').then(function(res){
-          state = res.share_mode || 'public';
-          currentToken = res.share_token || null;
+        body: JSON.stringify({dashboard_id: dashboardId, shared: !!target})
+      })
+        .then(function(r){ return r.json().then(function(j){ return [r.status, j]; }); })
+        .then(function(pair){
+          var code = pair[0], result = pair[1] || {};
+          if (code !== 200 || result.ok !== true){
+            alert('Share toggle failed: ' + (result.error || ('HTTP ' + code)));
+            label.textContent = prev;
+            return;
+          }
+          state = !!result.shared;
           paint();
-        }).catch(function(err){
-          alert('Could not change share mode: ' + err.message);
-        });
-      });
+        })
+        .catch(function(e){
+          alert('Share toggle network error: ' + e);
+          label.textContent = prev;
+        })
+        .then(function(){ btn.disabled = false; });
     }
-    if (items['link']) {
-      items['link'].addEventListener('click', function(){
-        closeMenu();
-        postShareMode('link').then(function(res){
-          state = res.share_mode || 'link';
-          currentToken = res.share_token || null;
-          paint();
-          var fullUrl = window.location.origin + (res.share_url || window.location.pathname);
-          showLinkModal(fullUrl);
-        }).catch(function(err){
-          alert('Could not change share mode: ' + err.message);
-        });
-      });
-    }
-    if (items['private']) {
-      items['private'].addEventListener('click', function(){
-        closeMenu();
-        confirmStopSharing(function(){
-          postShareMode('private').then(function(res){
-            state = res.share_mode || 'private';
-            currentToken = null;
-            paint();
-          }).catch(function(err){
-            alert('Could not change share mode: ' + err.message);
+
+    function onClick(){
+      if (state){
+        var body =
+          '<p>This dashboard is currently visible to every PRISM user in the ' +
+            '<strong>Community</strong> section.</p>' +
+          '<p>If you make it private, ' +
+            '<code>/community/dashboards/' + _he(author) + '/' + _he(dashboardId) + '/</code> ' +
+            'will return 404 and the tile will disappear from <code>/dashboards/</code>.</p>' +
+          '<p>You can re-share at any time.</p>' +
+          '<div style="display:flex; justify-content:flex-end; gap:8px; margin-top:16px;">' +
+            '<button id="share-cancel"  class="icon-btn">Cancel</button>' +
+            '<button id="share-confirm" class="icon-btn">Make private</button>' +
+          '</div>';
+        showModal('Make this dashboard private?', body);
+        var modal = document.getElementById('ed-modal-backdrop');
+        if (modal){
+          var c = modal.querySelector('#share-cancel');
+          var p = modal.querySelector('#share-confirm');
+          if (c) c.addEventListener('click', hideModal);
+          if (p) p.addEventListener('click', function(){
+            hideModal();
+            postShareToggle(false);
           });
-        });
-      });
+        }
+      } else {
+        postShareToggle(true);
+      }
     }
+
+    btn.style.display = 'inline-flex';
+    paint();
+    btn.addEventListener('click', onClick);
   })();
 
   // ----- init -----
@@ -14229,7 +14052,7 @@ def _tile_footer_html(w: Dict[str, Any]) -> str:
 # function below. ``_RENDERERS`` is the dispatch table. Adding a new
 # widget kind = one render function + one entry in ``_RENDERERS`` +
 # (separately) one entry in ``echart_dashboard.WIDGETS`` for validation
-# and one entry in ``dashboards.md`` section 4.1 for the catalog.
+# and one entry in ``dashboards_hub.md`` section 4.1 for the catalog.
 #
 # The ``_RENDERERS`` keys must match ``echart_dashboard.VALID_WIDGETS``
 # byte-for-byte; a drift-prevention test in ``dev/tests.py`` asserts
@@ -15080,7 +14903,7 @@ def _get_echarts_js() -> str:
     if _ECHARTS_JS_CACHE is None:
         # Anchor to ai_development.REPO_ROOT (anchored to __file__) rather than
         # os.getcwd(), which can drift mid-process if any caller (notably
-        # pytickclient.__init__) does an unrestored chdir.
+        # pyttkclient.__init__) does an unrestored chdir.
         try:
             from ai_development import REPO_ROOT as _REPO_ROOT
         except Exception:

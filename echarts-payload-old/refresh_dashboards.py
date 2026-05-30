@@ -316,29 +316,14 @@ def _spawn_runner(folder: str) -> dict:
     """
     spawn_ts = utcnow()
     slug = folder.replace("/", "_")
-    folder_key, log_key, metadata_key, _completion_key = S3LogPathBuilder.build(
+    folder_key, log_key, metadata_key = S3LogPathBuilder.build(
         kind=_SPAWN_KIND,
         session_description=slug,
         ts=spawn_ts,
     )
 
-    # Option A — dual-write: the dashboard FOLDER itself is the auditable
-    # session-side destination. A user inspecting
-    # users/<kerb>/dashboards/<name>/ should see the refresh subprocess
-    # log right next to dashboard.html / refresh_status.json instead of
-    # having to chase a centralized subprocess_logs/ key.
-    (session_folder_key,
-     session_log_key,
-     session_metadata_key,
-     _session_completion_key) = S3LogPathBuilder.build_session_side(
-         session_path=folder,
-         kind=_SPAWN_KIND,
-         ts=spawn_ts,
-     )
-
     env = os.environ.copy()
     env["PRISM_SUBPROCESS_S3_FOLDER_KEY"] = folder_key
-    env["PRISM_SUBPROCESS_SESSION_FOLDER_KEY"] = session_folder_key
 
     header = (
         f"=== refresh_runner spawn ===\n"
@@ -365,14 +350,8 @@ def _spawn_runner(folder: str) -> dict:
         os.close(pipe_w)
         pipe_w = -1
 
-        # Dual-write: session-side key FIRST (canonical/auditable),
-        # centralized key SECOND (dev-team triage convenience). The
-        # streamer's _flush() PUTs the same bytes to every key in the
-        # list with per-key failure isolation.
         streamer = S3LogStreamer(
-            fd=pipe_r,
-            s3_log_key=[session_log_key, log_key],
-            header=header,
+            fd=pipe_r, s3_log_key=log_key, header=header,
         )
         streamer.start()
         # streamer's daemon thread now owns pipe_r -- it closes the fd
@@ -380,30 +359,23 @@ def _spawn_runner(folder: str) -> dict:
         # double-close.
         pipe_r = -1
 
-        # Best-effort metadata sidecar. Dual-written to BOTH the
-        # centralized and session-side folders so a reader inspecting
-        # either copy can cross-reference the other. Per-key failures
-        # are isolated.
-        metadata_blob = {
-            "pid":            proc.pid,
-            "started_at":     spawn_ts.isoformat(),
-            "folder":         folder,
-            "s3_log_key":     log_key,
-            "s3_folder_key":  folder_key,
-            "session_s3_log_key":      session_log_key,
-            "session_s3_folder_key":   session_folder_key,
-            "session_s3_metadata_key": session_metadata_key,
-            "kind":           _SPAWN_KIND,
-        }
-        for _md_key in (metadata_key, session_metadata_key):
-            try:
-                s3_manager.put(metadata_blob, _md_key)
-            except Exception as meta_err:
-                print(
-                    f"WARN metadata sidecar write failed "
-                    f"{_md_key}: {meta_err}",
-                    file=sys.stderr, flush=True,
-                )
+        # Best-effort metadata sidecar. If this fails, the spawn still
+        # proceeds -- the metadata blob is observability-only.
+        try:
+            s3_manager.put({
+                "pid":            proc.pid,
+                "started_at":     spawn_ts.isoformat(),
+                "folder":         folder,
+                "s3_log_key":     log_key,
+                "s3_folder_key":  folder_key,
+                "kind":           _SPAWN_KIND,
+            }, metadata_key)
+        except Exception as meta_err:
+            print(
+                f"WARN metadata sidecar write failed "
+                f"{metadata_key}: {meta_err}",
+                file=sys.stderr, flush=True,
+            )
 
         rc = proc.wait()
         elapsed = round(time.time() - started, 2)
@@ -411,11 +383,9 @@ def _spawn_runner(folder: str) -> dict:
             "folder":          folder,
             "returncode":      rc,
             "elapsed_seconds": elapsed,
-            "log_path":        session_log_key,  # session-side is canonical
+            "log_path":        log_key,   # alias; lands in refresh_status.json
             "s3_log_key":      log_key,
             "s3_folder_key":   folder_key,
-            "session_s3_log_key":      session_log_key,
-            "session_s3_folder_key":   session_folder_key,
             "pid":             proc.pid,
         }
     except BaseException as exc:
@@ -431,11 +401,9 @@ def _spawn_runner(folder: str) -> dict:
             "folder":          folder,
             "returncode":      -1,  # sentinel for spawn-time failure
             "elapsed_seconds": 0.0,
-            "log_path":        session_log_key,
+            "log_path":        log_key,
             "s3_log_key":      log_key,
             "s3_folder_key":   folder_key,
-            "session_s3_log_key":      session_log_key,
-            "session_s3_folder_key":   session_folder_key,
             "pid":             None,
             "error":           f"{type(exc).__name__}: {exc}",
         }

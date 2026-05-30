@@ -6817,6 +6817,14 @@ class AxisConfig:
     domain_min: Optional[float] = None
     domain_max: Optional[float] = None
     scale_type: str = "linear"  # 'linear', 'log', 'sqrt'
+    # Explicit subset of axis values whose ticks/labels should render.
+    # Used to thin a dense ordinal x-axis (profile / yield-curve charts)
+    # so labels stop colliding without dropping any of the plotted data.
+    tick_values: Optional[List[Any]] = None
+    # When set, forces a Vega-Lite ``labelOverlap`` strategy even on
+    # nominal / ordinal axes (which the renderer leaves un-thinned by
+    # default). ``'greedy'`` drops residual colliding labels.
+    label_overlap: Optional[str] = None
 
 
 @dataclass
@@ -6945,6 +6953,92 @@ def calculate_optimal_label_angle(
         return -45
         
     return -90
+
+
+# Profile (ordinal-x) tick-label collision avoidance. House rule for
+# yield curves / forward curves / vol smiles / cross-sectional profiles:
+# tick labels are NEVER vertical -- only horizontal (0) or diagonal (-45).
+# When even -45 would collide, the visible tick labels are thinned to an
+# evenly-spaced subset (the plotted line keeps every knot point; only the
+# label frequency drops).
+_PROFILE_LABEL_CHAR_PX = 8          # per-char width at the skin label font
+_PROFILE_LABEL_PAD_PX = 12          # inter-label padding when horizontal
+_PROFILE_MIN_PITCH_45_PX = 22       # min horizontal pitch for non-overlapping -45 labels
+_PROFILE_MIN_HORIZONTAL_TICKS = 8   # keep horizontal while >= this many fit; else rotate to -45
+
+
+def _evenly_spaced_subset(values: List[Any], k: int) -> List[Any]:
+    """Pick ``k`` evenly-spaced items from ``values`` (first + last kept)."""
+    n = len(values)
+    if k >= n:
+        return list(values)
+    if k <= 1:
+        return [values[0]]
+    step = (n - 1) / (k - 1)
+    idx = sorted({int(round(i * step)) for i in range(k)})
+    return [values[i] for i in idx if 0 <= i < n]
+
+
+def _resolve_profile_x_order(
+    df: pd.DataFrame,
+    x_field: str,
+    mapping: Dict[str, Any],
+) -> List[Any]:
+    """Return the profile x categories in display order (actual values).
+
+    Mirrors ``_build_profile_line``'s sort resolution (explicit
+    ``mapping['x_sort']`` -> tenor ladder -> relative-time -> ascending)
+    but keeps the ORIGINAL data values so an ``axis.values`` subset built
+    from this order matches the rendered ordinal domain exactly.
+    """
+    uniques = [v for v in df[x_field].unique()]
+    explicit = mapping.get("x_sort")
+    if explicit:
+        rank = {v: i for i, v in enumerate(explicit)}
+        return sorted(uniques, key=lambda v: rank.get(v, len(rank)))
+    if _infer_tenor_sort(uniques) is not None:
+        return sorted(uniques, key=lambda v: _tenor_sort_key(str(v).strip().upper()))
+    if _infer_relative_time_sort(uniques) is not None:
+        return sorted(uniques, key=lambda v: _relative_time_sort_key(v))
+    return sorted(uniques, key=lambda v: str(v))
+
+
+def _profile_ordinal_axis_plan(
+    ordered_vals: List[Any],
+    chart_width: int,
+) -> Tuple[int, Optional[List[Any]]]:
+    """Decide ``(label_angle, tick_values)`` for a profile/yield-curve ordinal x.
+
+    House rule: labels are NEVER vertical -- only horizontal (``0``) or
+    diagonal (``-45``). Frequency is reduced (an evenly-spaced subset of
+    tick labels is shown) only when labels would otherwise collide.
+
+    Ladder:
+      1. Every label fits horizontally          -> ``0``, keep all.
+      2. A useful number fits horizontally       -> ``0``, thin to fit.
+      3. Labels too wide for a useful 0-deg axis  -> ``-45``, keep all.
+      4. Even -45 collides                        -> ``-45``, thin to fit.
+
+    Returns ``(angle, values)`` where ``values`` is ``None`` to keep every
+    tick label, else the subset of x values whose labels should render.
+    """
+    vals = [str(v) for v in ordered_vals]
+    n = len(vals)
+    if n == 0:
+        return 0, None
+    max_len = max(len(v) for v in vals)
+    needed_h = max_len * _PROFILE_LABEL_CHAR_PX + _PROFILE_LABEL_PAD_PX
+
+    horiz_capacity = max(1, int(chart_width // needed_h))
+    diag_capacity = max(1, int(chart_width // _PROFILE_MIN_PITCH_45_PX))
+
+    if horiz_capacity >= n:
+        return 0, None
+    if horiz_capacity >= _PROFILE_MIN_HORIZONTAL_TICKS:
+        return 0, _evenly_spaced_subset(ordered_vals, horiz_capacity)
+    if diag_capacity >= n:
+        return -45, None
+    return -45, _evenly_spaced_subset(ordered_vals, diag_capacity)
 
 
 def detect_label_collision(
@@ -8415,6 +8509,23 @@ def get_axis_beautification(
             )
         elif pd.api.types.is_numeric_dtype(x_data):
             configs["x"] = AxisConfig(label_angle=0)
+        elif chart_type in {"multi_line", "timeseries", "line"}:
+            # Profile / yield-curve / vol-smile path (non-temporal,
+            # non-numeric x routes to ``_build_profile_line``). House
+            # rule: tick labels are NEVER vertical -- horizontal or -45
+            # only -- and the label frequency is reduced when they would
+            # collide. Bars / boxplots / waterfalls keep their own
+            # (vertical-allowed) angle logic in the branch below.
+            ordered_vals = _resolve_profile_x_order(df, x_field, mapping)
+            label_angle, tick_values = _profile_ordinal_axis_plan(
+                ordered_vals, chart_width,
+            )
+            configs["x"] = AxisConfig(
+                label_angle=label_angle,
+                label_limit=150 if label_angle != 0 else 200,
+                tick_values=tick_values,
+                label_overlap="greedy",
+            )
         else:
             unique_vals = list(x_data.unique())
             # Pass the actual unique-value count as estimated_tick_count
@@ -8558,14 +8669,25 @@ def apply_beautification_to_spec(
             if x_config.label_limit:
                 enc["x"]["axis"]["labelLimit"] = x_config.label_limit
             enc["x"]["axis"]["labelFont"] = "Liberation Sans, Arial, sans-serif"
+            # Explicit tick-label subset (profile / yield-curve thinning):
+            # show ticks/labels only at these values so a dense ordinal
+            # axis stops colliding. The plotted line keeps every knot.
+            if x_config.tick_values is not None:
+                enc["x"]["axis"]["values"] = x_config.tick_values
             # Safety net: even when ``tick_step`` is honoured, a
             # narrow composite sub-chart can still ask for too many
             # ticks. ``labelOverlap='greedy'`` drops every other label
             # until they fit; ``labelSeparation`` adds a minimum gap
             # so neighbouring labels don't visually merge. Applied to
-            # temporal and quantitative axes only -- categorical /
-            # nominal axes need every label intact.
-            if enc["x"].get("type") in ("temporal", "quantitative"):
+            # temporal / quantitative axes by default, and to any axis
+            # whose config explicitly opts in via ``label_overlap``
+            # (the profile ordinal path does, since the house rule
+            # forbids the vertical fallback that would otherwise let
+            # every nominal label render intact).
+            if x_config.label_overlap:
+                enc["x"]["axis"].setdefault("labelOverlap", x_config.label_overlap)
+                enc["x"]["axis"].setdefault("labelSeparation", 8)
+            elif enc["x"].get("type") in ("temporal", "quantitative"):
                 enc["x"]["axis"].setdefault("labelOverlap", "greedy")
                 enc["x"]["axis"].setdefault("labelSeparation", 8)
 
@@ -10862,8 +10984,11 @@ def _build_profile_line(
 
     # High-cardinality numeric x: use quantitative encoding so Vega-Lite
     # auto-thins ticks. Otherwise (categorical / low-cardinality) use
-    # ordinal with the resolved sort order and a 45-deg label angle so
-    # tenor labels don't collide.
+    # ordinal with the resolved sort order. House rule for profile charts:
+    # tick labels are NEVER vertical -- horizontal or -45 only -- and the
+    # label frequency is thinned when they would collide. The same plan is
+    # re-derived (and is authoritative) in ``get_axis_beautification``;
+    # setting it here keeps the builder correct on its own.
     if pd.api.types.is_numeric_dtype(df[x_field]) and df[x_field].nunique() > 15:
         x_encoding = alt.X(
             x_field,
@@ -10874,13 +10999,29 @@ def _build_profile_line(
             "[_build_profile_line] high-cardinality numeric x -> quantitative",
         )
     else:
+        x_label_angle, x_tick_values = _profile_ordinal_axis_plan(
+            _resolve_profile_x_order(df, x_field, mapping), width,
+        )
+        x_axis_kwargs: Dict[str, Any] = dict(
+            title=x_title,
+            titleFontWeight="normal",
+            labelAngle=x_label_angle,
+            labelOverlap="greedy",
+            labelSeparation=8,
+        )
+        if x_tick_values is not None:
+            x_axis_kwargs["values"] = x_tick_values
         x_encoding = alt.X(
             x_field,
             type="ordinal",
             sort=x_sort,
-            axis=alt.Axis(
-                title=x_title, titleFontWeight="normal", labelAngle=45,
-            ),
+            axis=alt.Axis(**x_axis_kwargs),
+        )
+        logger.debug(
+            "[_build_profile_line] ordinal x: angle=%s, thinned=%s of %d",
+            x_label_angle,
+            "all" if x_tick_values is None else len(x_tick_values),
+            df[x_field].nunique(),
         )
 
     y_encoding = alt.Y(

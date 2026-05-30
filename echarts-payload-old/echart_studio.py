@@ -986,18 +986,19 @@ def _normalize_annotations(
     Items that don't carry the required positional key (e.g. an
     event_line missing ``x``) are skipped silently rather than
     silently emitting a broken markLine entry.
+
+    For the canonical flat list-of-typed-dicts shape, the compiler also
+    accepts the author-friendly aliases ``value`` / ``at`` / ``x_value`` /
+    ``y_value`` and folds them to the canonical positional key (so
+    ``{"type": "hline", "value": 0}`` is treated as
+    ``{"type": "hline", "y": 0}``). Items missing the required positional
+    key (and no alias) are silently dropped rather than emitted as broken
+    markLine entries that crash ECharts' renderSeries with
+    ``"Cannot read properties of undefined (reading 'coord')"``.
     """
     if raw is None:
         return []
     if isinstance(raw, list):
-        # Same contract as the dict-of-classes branch below: silently
-        # skip items missing the required positional key for their
-        # type, rather than letting them through to _apply_annotations
-        # where they produce a broken markLine entry (no `coord`, no
-        # `yAxis`/`xAxis`) that crashes ECharts' renderSeries with
-        # `Cannot read properties of undefined (reading 'coord')`.
-        # Also accept author-friendly aliases (`value`, `at`, `x_value`,
-        # `y_value`) and fold them to the canonical positional key.
         cleaned: List[Dict[str, Any]] = []
         for a in raw:
             if not isinstance(a, dict):

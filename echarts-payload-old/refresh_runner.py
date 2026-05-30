@@ -68,33 +68,6 @@ from ai_development.dashboards.dashboards_time import (
 from ai_development.mcp.utils.subprocess_completion import (
     register_completion_marker,
 )
-from ai_development.mcp.utils.data_functions import (
-    pull_market_data, pull_haver_data, pull_plottool_data,
-    pull_fred_data, save_artifact,
-)
-
-
-def _build_exec_namespace() -> dict:
-    """Canonical exec namespace for user-authored pull_data.py and build.py
-    scripts. Mirrors what the in-session sandbox pre-injects (s3_manager,
-    pull_market_data, pull_haver_data, pull_plottool_data, pull_fred_data,
-    save_artifact) so scripts authored in the sandbox are portable to the
-    clean subprocess interpreter the refresh runner uses.
-
-    Without this, user pull_data.py scripts that omit explicit imports raise
-    NameError on the first refresh_runner tick (see ticket signature
-    refresh_runner:pull_data.py:NameError:pull_market_data, recurring across
-    9+ tickets as of 2026-05-16)."""
-    return {
-        '__name__': '__main__',
-        '__builtins__': __builtins__,
-        's3_manager': s3_manager,
-        'pull_market_data': pull_market_data,
-        'pull_haver_data': pull_haver_data,
-        'pull_plottool_data': pull_plottool_data,
-        'pull_fred_data': pull_fred_data,
-        'save_artifact': save_artifact,
-    }
 
 
 # Phase tags used in the per-error ``script`` field so the \u00a78.1 modal +
@@ -233,8 +206,7 @@ def _list_pulls(folder: str) -> list:
     per pull so a per-pull failure surfaces the failing pull's name in
     the ``script`` field of the \u00a78.1 ``errors[]`` entry."""
     src = s3_manager.get(f"{folder}/scripts/pull_data.py").decode("utf-8")
-    ns: dict = _build_exec_namespace()
-    ns["__name__"] = "_runner_introspect"
+    ns: dict = {"__name__": "_runner_introspect", "__builtins__": __builtins__}
     exec(compile(src, f"{folder}/scripts/pull_data.py", "exec"), ns)
     pulls = ns.get("PULLS")
     if not isinstance(pulls, dict):

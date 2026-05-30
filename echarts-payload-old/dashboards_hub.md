@@ -13,59 +13,6 @@ One visual style only — Goldman Sachs brand: GS Navy `#002F6C`, PMS 652 Sky Bl
 
 The engine surfaces three folder-operation entry points (`run_pull`, `build_dashboard`, `refresh_dashboard`) plus the compile primitives (`compile_dashboard`, `populate_template`, `manifest_template`, `validate_manifest`). Together they carry every dashboard operation. PRISM uses real Python imports — no namespace-injection gymnastics.
 
----
-
-## The invisibility principle (CROSS-CUTTING — governs EVERY user-facing message)
-
-**Dashboards are an outcome the user owns; their construction is plumbing the user must never see.** Every concept in this hub — `pull_data.py`, `build.py`, `manifest_template.json`, `TRANSFORMS`, `PULLS`, `s3_manager`, `compile_dashboard`, `populate_template`, `refresh_runner.py`, `_audit_dashboard_layout`, `_audit_refresh_attachment`, `SESSION_PATH`, the cron scheduler, `refresh_status.json`, `console_log.jsonl`, the v3.0 contract, the heal lexicon, the spoke menu, dataset stems, the `_eod` suffix gotcha, the registry shape, the 5 canonical files, the §A.2 / §C / §D / §H recipe table, validator codes (`kpi_source_column_missing`, `chart_too_many_series`, `refresh_frequency_mismatch`, etc.), the attachment auditor, namespace injection, the refresh runner re-execing in a clean Python interpreter — is **PRISM's internal vocabulary, not the user's**.
-
-### The hard rule
-
-**PRISM MUST NOT mention ANY dashboard-internal concept in user-facing messages unless the user has EXPLICITLY asked for the code, the file, the architecture, or the implementation detail.** Hard prohibition, every medium.
-
-Verbatim signals that open the door: "show me the code", "send me pull_data.py", "what's in build.py?", "how does the refresh work under the hood?", "walk me through the architecture", "explain the TRANSFORMS contract", or the user is themselves a developer working ON the dashboard engine (distinct from a desk user CONSUMING dashboards as a product).
-
-Every other case — including bug reports, error reports, build requests, edit requests, refresh failures, "my dashboard is broken", forwarded stack traces — gets product language only.
-
-### PRISM picks the implementation path; the user never chooses between refactor options
-
-When a fix has two valid implementation paths (e.g. refactor `build.py` to declare `TRANSFORMS` vs push derivations into `pull_data.py` and save as CSVs; surgical CRUD vs full rewrite; in-process recompile vs subprocess refresh; §C manifest-only edit vs §D script edit), **PRISM picks the better one and ships it**. The §A.2 path-decision table, the §3 spoke menu, the §H heal lexicon, the §C / §D mutation patterns are PRISM's decision aids — NOT user-facing menus. The user does not know what `TRANSFORMS` is, does not know which path the framework is moving toward, and should not have to learn either to get their dashboard back online.
-
-The ONLY questions that ever reach the user are about the dashboard as a PRODUCT: which tenors / tabs / charts / refresh cadence / data sources. Never about HOW the implementation gets done.
-
-### What a user-facing dashboard message CAN contain when something failed
-
-1. **Acknowledgement** in product terms: "I see the refresh failure on your USD Swaps RV monitor."
-2. **Action being taken** in product language, past or present tense (NEVER future-deferred per Rule 7.1): "Fixing it now" / "Patched and re-running" / "Back online — one of the charts was wedged on a stale field reference."
-3. **Product-level input from the user** (only if genuinely needed): "While I'm in there, want me to also add the 30Y tenor we discussed last week?"
-
-### What a user-facing dashboard message MUST NOT contain when something failed
-
-- File names: `pull_data.py`, `build.py`, `manifest_template.json`, `manifest.json`, `dashboard.html`, `refresh_runner.py`, `data_functions.py`, `refresh_status.json`, `console_log.jsonl`, `dashboards_registry.json`
-- Function / class / variable names: `PULLS`, `TRANSFORMS`, `s3_manager`, `populate_template`, `compile_dashboard`, `build_dashboard`, `refresh_dashboard`, `run_pull`, `_audit_dashboard_layout`, `_audit_refresh_attachment`, `update_user_manifest`, `SESSION_PATH`
-- Engine internals: "namespace injection", "the refresh runner re-execs", "clean Python interpreter", "the attachment auditor", "validator codes", "contract drift", "v3.0 contract", "TRANSFORMS contract", "the canonical import block", "the 5 canonical files"
-- Validator code names: `kpi_source_column_missing`, `chart_too_many_series`, `refresh_frequency_mismatch`, `dataset_silent_stale`, `chart_mapping_column_missing`, `tool_compute_python_literal_in_js`, etc.
-- Stack-trace fragments, error codes, line numbers (unless the user PASTED them and is asking what they mean)
-- Choices between implementation strategies ("two ways to fix it: (1) refactor X to declare Y, (2) push the derivations into Z — reply with which one")
-- Tickets filed about the underlying issue (PRISM files those silently; mentioning them is engineering-team plumbing)
-
-### Worked translations (rewrite every message through this lens)
-
-| Engineering-leak draft | Product rewrite |
-|------------------------|-----------------|
-| "Diagnosed two issues. Issue 1: `pull_data.py` was missing the canonical import block; the daily refresh runner re-execs in a clean Python interpreter with no namespace injection, so when `data_functions.py` tries to write via `s3_manager.put(...)`, `s3_manager` is unbound. Patched. Issue 2: `build.py` predates the TRANSFORMS contract — it builds 13 frames inline and hands them to `populate_template`. Two ways to fix it: (1) refactor `build.py` to declare TRANSFORMS, (2) push the derivations into `pull_data.py` and save as CSVs. Reply with which one you want." | "I'm fixing the refresh failure on your USD Swaps RV monitor now. There are a couple of mechanical issues underneath — I'll handle both and ping you when it's back online. Anything you want me to look at on the dashboard itself while I'm in there?" |
-| "I'll edit `manifest_template.json` to add a new chart widget, then extend `PULLS` in `pull_data.py` to add a `pull_swap_30y` function, then add a `derive_swap_spread_30y` transform to `build.py`'s TRANSFORMS list, then call `build_dashboard(folder)` to recompile, then spawn `refresh_runner.py` as a subprocess." | "Adding 30Y now. Live in a moment." |
-| "Pulled `refresh_status.json` and `console_log.jsonl`. Refresh succeeded but the beacon log shows ECharts option-validation errors on `series[0].data`. The bug is in the chart spec, not the data pull. Will heal via §C surgical CRUD on `manifest_template.json`." | "I see it — one of the charts is misconfigured. Fixing now." |
-| "I filed a ticket noting both issues for the dev team — the `pull_data.py` failure mode in particular is a contract gap worth fixing upstream so other dashboards don't hit the same wall." | (omit entirely — tickets file silently) |
-
-### When the failure genuinely needs user input
-
-If the blocker is a PRODUCT-LEVEL ambiguity ("the data source you wanted no longer exists — want me to substitute X, Y, or build without that panel?"), surface it in product language. If the blocker is an IMPLEMENTATION ambiguity ("refactor option 1 or option 2"), PRISM picks and ships. The user only sees the failure when there is genuinely no defensible default AND the choice changes what they SEE.
-
-### Mental test before sending any dashboard message
-
-**"Could I send this to someone who has never opened a code editor in their life and have it still make sense as an answer about their dashboard?"** If the message references file names, function names, contract names, framework internals, or asks them to choose between implementation strategies — rewrite. The internal vocabulary stays internal.
-
 For refresh-pipeline operations / failure modal / runner internals see `prism/dashboard-refresh.md`. This file is purely about authoring + the in-folder edit lifecycle.
 
 This hub covers the always-needed contract, schema, recipes, and pre-flight. Per-primitive depth (chart specs, widget specs, filter mechanics, archetypes) lives in spoke files fetched on demand — see §3.
@@ -205,7 +152,7 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 
 ### Rule 6 — hand off the portal URL, never the HTML file
 
-- The deliverable PRISM surfaces is the **portal URL** (`http://reports.prism-ai.url.gs.com:8501/users/{kerberos}/dashboards/{dashboard_id}/`). Lead with it on the first line of the build success message.
+- The deliverable PRISM surfaces is the **portal URL** (`http://reports.prism-ai.url.gs.com:8501/profile/dashboards/{dashboard_id}/`). Lead with it on the first line of the build success message.
 - The S3 path of `dashboard.html` is internal plumbing. Surface it ONLY if the user explicitly asks ("give me the raw HTML", "where on S3 does this land"). Even then, surface the portal URL alongside.
 - The portal URL is load-bearing because the serving Django view injects the `window.PRISM_VIEWER` / `PRISM_DASHBOARD_AUTHOR` / `PRISM_DASHBOARD_SHARED` JS globals before `</head>` (§2.3.1). Those globals drive the always-on chrome — Refresh / Share visibility, owner vs viewer state, observatory suppression. Opening the bare `dashboard.html` directly from S3 (or downloading it) skips that injection and the chrome silently degrades.
 - The portal URL is also the only path that picks up the hourly refresh runner's updates, the structured failure modal, the share-toggle endpoint, and the per-user community visibility. The bare HTML is a one-shot snapshot.
@@ -215,46 +162,31 @@ All eight absolute. A dashboard violating any of them is broken even if `dashboa
 - The four steps of Recipe 1 (Tools 1, 2, 3, 4 in §B) are **non-divisible**. PRISM does not return to the user between Tool 1 and Tool 4. The dashboard does not exist as a deliverable until every artefact in §2.2 is on S3, the entry sits in `registry["dashboards"][]` (not as a top-level key), the user-manifest pointer reflects it, the §2.5 audit passes, AND Tool 4's subprocess refresh exits 0 with `refresh_status.json.status == "success"`.
 - Failure handling: if any tool raises, the response to the user is the failure (with its diagnostic), not a rendered HTML preview gated behind a registration question. Do not paper over a failed build by surfacing partial output and asking permission to "complete" it.
 
-#### 7.1 The execution model: once you respond, you terminate
+#### Rule 7.1 — the execution model: once you respond, you terminate
 
 When PRISM sends a response (especially in email mode), the pipeline TERMINATES. There is no background process. There is no autonomous follow-up. PRISM does not "keep working" after the response is sent. The next time PRISM touches this dashboard is when the user sends another message.
 
 This means there are exactly two acceptable patterns when a user asks PRISM to build a dashboard:
 
-**Pattern A — Build it this turn (DEFAULT, preferred).** Author all three surfaces, run Tools 1-4 atomically, hand back the portal URL. Describe what was built in past tense ("The dashboard is live at...", "I built X with tabs Y and Z"). This is the right choice for >95% of dashboard asks because PRISM has 20+ tool calls per turn and the typical full build fits comfortably in that budget.
+- **Pattern A — Build it this turn (DEFAULT, preferred).** Author all three surfaces, run Tools 1-4 atomically, hand back the portal URL. Describe what was built in past tense ("The dashboard is live at...", "I built X with tabs Y and Z"). This is the right choice for >95% of dashboard asks because PRISM has 20+ tool calls per turn and the typical full build fits comfortably in that budget.
+- **Pattern B — Hand control back to the user.** If the build genuinely cannot complete this turn (one of the Rule 8 "genuine blocker" conditions), surface the blocker plainly, build the slice that IS deliverable as a registered dashboard at a portal URL, and ask the specific question that unblocks the next slice. The user's reply triggers the next turn.
 
-**Pattern B — Hand control back to the user.** If the build genuinely cannot complete this turn (one of the Rule 8 "genuine blocker" conditions), surface the blocker plainly, build the slice that IS deliverable as a registered dashboard at a portal URL, and ask the specific question that unblocks the next slice. The user's reply triggers the next turn.
+#### Rule 7.2 — forbidden phrasing (any future-tense PRISM action)
 
-#### 7.2 Forbidden phrasing — TWO categories
-
-The phrases below either imply autonomous future work that will not happen (Category 1), or leak engineering internals the user did not ask about (Category 2). Strip every one of them from any user-facing message. Category 2 is the operationalization of the invisibility principle stated near the top of this hub — if a draft contains a file name, function name, contract name, validator code, or asks the user to choose between two implementation paths, rewrite in product language before sending.
-
-##### Category 1 — future-tense leaks (autonomous work that will not happen)
+The phrases below imply autonomous future work that will not happen. Strip every one of them from any user-facing message:
 
 | Forbidden | Why it's a lie |
-|-----------|----------------|
+|---|---|
 | "Kicking off the build now in this turn" / "Running the build atomically now" | Implies PRISM will continue working after the message sends. PRISM is about to terminate — there is no "now" after the response |
 | "Next steps" / "would you like me to" / "I can also create / register / set up" | Implies opt-in phases the user can decline. There are no phases |
-| "To make this fully persistent / auto-refreshing" | Implies the current state is a preview that needs another turn to finalize. There is no preview state |
+| "To make this build persistent / auto-refreshing" | Implies the current state is transient and needs another turn to finalize. There is no preview state |
 | "I'll send you the portal URL once the build completes" / "the next reply lands the portal URL" | The next reply only happens if the user emails again. PRISM cannot self-trigger |
-| "Building lean v1 in your folder now" (when no Tools 1-4 sequence is about to execute in this same response) | Same lie — announces work PRISM will not do |
+| "Building lean V1 in your folder now" (when no Tools 1-4 sequence is about to execute in this same response) | Same lie — announces work PRISM will not do |
 | "If anything blocks mid-build I'll surface it" | There is no mid-build. Either the build happened in this response or it didn't |
-| "I'll continue this in the next turn" / "will iterate further" | The next turn is user-triggered, not PRISM-triggered |
+| "I'll continue this in the next turn" / "I will iterate further" | The next turn is user-triggered, not PRISM-triggered |
 | "Working on it now — update to follow" | No update will follow |
 
-##### Category 2 — engineering-detail leaks (vocabulary the user did not ask about)
-
-| Forbidden phrase / pattern | Why it's a leak |
-|----------------------------|-----------------|
-| Any file name (`pull_data.py`, `build.py`, `manifest_template.json`, `manifest.json`, `dashboard.html`, `refresh_runner.py`, `data_functions.py`, `refresh_status.json`, `console_log.jsonl`, `dashboards_registry.json`) | User asked for a dashboard, not a directory listing. Describe what changed in product terms ("added the 30Y tenor", "fixed the chart that was wedged") |
-| Any function / class / variable name from the engine (`PULLS`, `TRANSFORMS`, `s3_manager`, `populate_template`, `compile_dashboard`, `build_dashboard`, `refresh_dashboard`, `run_pull`, `_audit_dashboard_layout`, `_audit_refresh_attachment`, `update_user_manifest`, `SESSION_PATH`) | Same as above — internal vocabulary |
-| Engine mechanics: "namespace injection", "the refresh runner re-execs in a clean Python interpreter", "the attachment auditor rejected the dashboard", "contract drift", "the v3.0 contract", "the TRANSFORMS contract", "the canonical import block", "the 5 canonical files" | The user does not know what these are, and explaining them does not help them get their dashboard back |
-| Validator code names (`kpi_source_column_missing`, `chart_too_many_series`, `refresh_frequency_mismatch`, `dataset_silent_stale`, `chart_mapping_column_missing`, `tool_compute_python_literal_in_js`, etc.) | These are PRISM's diagnostic targets, not user-facing labels |
-| "Two ways to fix it: (1) refactor X to declare Y — (2) push the derivations into Z — reply with which one you want" | PRISM owns implementation decisions. Pick the better path and ship it; never make the user choose between refactor options |
-| "I filed a ticket noting the contract gap for the dev team" | Tickets file silently; mentioning them is engineering-team plumbing, not user value |
-| Stack-trace fragments, error codes, line numbers (UNLESS the user pasted them and is asking what they mean) | Forwarded back to the user as confirmation that PRISM read them — but the response is in product language, not a recital of the trace |
-
-#### 7.3 Self-check before sending any dashboard-related response
+#### Rule 7.3 — self-check before sending any dashboard-related response
 
 Read the drafted message. If it contains any of:
 
@@ -265,9 +197,9 @@ Read the drafted message. If it contains any of:
 
 …STOP and rewrite. Either complete the Tools 1-4 sequence in THIS response and describe it in past tense ("The dashboard is live at <portal_url>"), or explicitly hand control back to the user via Pattern B ("Reply and I'll build X in the next turn").
 
-The acknowledgment-then-defer pattern ("Got it, kicking off the build now, the next reply lands the URL") is the worst case. It consumes a turn, sends an email, promises future work, and delivers nothing — because the moment the response sends, PRISM terminates. If the user asked for a build, build it this turn. If you genuinely can't, ask plainly and wait for the reply.
+The acknowledgement-then-defer pattern ("Got it, kicking off the build now, the next reply lands the URL") is the worst case. It consumes a turn, sends an email, promises future work, and delivers nothing — because the moment the response sends, PRISM terminates. If the user asked for a build, build it this turn. If you genuinely can't, ask plainly and wait for the reply.
 
-#### 7.4 The clarifying-questions trap
+#### Rule 7.4 — the clarifying-questions trap
 
 A common failure mode: PRISM receives a build request, identifies real but solvable design questions in the spec ("the spec mentions feature X but the engine doesn't support it cleanly"), and pauses to ask the user 2-3 clarifying questions BEFORE attempting the build. The user replies "do as much as you can" or "just the essence". PRISM then says "Got it, building lean v1 now, the next reply lands the URL" — and terminates without building anything. The user is now two turns in with zero artifacts.
 
@@ -282,13 +214,13 @@ The user can always ask for changes in a follow-up turn. They cannot get back th
 
 ### Rule 8 — one-shot the build; slice only when a real blocker forces it
 
-**Default disposition: one-shot the entire dashboard the user asked for.** PRISM has 20+ tool calls available in a single turn and should use them strategically — pull every data source, run the canonical Tools 1-4 sequence, debug compile errors in place, heal drift as it appears, and hand off the finished portal URL. A 4-tab / 12-widget / 5-pull dashboard is well within one-turn reach when PRISM works deliberately. Slicing is a fallback for when PRISM hits a genuine blocker, not the default posture.
+**Default disposition: one-shot the entire dashboard the user asked for.** PRISM has 20+ tool calls available in a single turn and should use them strategically: pull every data source, run the canonical Tools 1-4 sequence, debug compile errors in place, heal drift as it appears, and hand off the finished portal URL. A 4-tab / 12-widget / 5-pull dashboard is well within one-turn reach when PRISM works deliberately. Slicing is a fallback for when PRISM hits a genuine blocker, not the default posture.
 
 **The discipline that actually matters:**
 
 - **One-shot when you can.** If the user asked for 4 tabs with charts, KPIs, and a data table, build all 4 tabs in this turn. Pull the data, author the scripts, compile, register, run the subprocess refresh, hand back the portal URL. The user did not ask for an artificial check-in halfway through; they asked for a dashboard.
 - **Use the tool budget.** 20+ tool calls per turn is a lot. A typical full build is: ~3-5 data pulls (Tool 1) + 1 compile (Tool 2) + 1 register (Tool 3) + 1 subprocess refresh (Tool 4) + 2-4 debug iterations as compile errors surface = 8-12 tool calls. There is plenty of headroom for fixing bugs, healing drift, and verifying CSV shapes along the way.
-- **Debug in place.** When `build_dashboard()` raises a validator error mid-build, don't bail out and ask the user. Read the diagnostic, surgically fix the spec via §C (or the script via §D), recompile, move on. Same for empty-pull diagnostics, column-mismatch heals, retired-catalog substitutions — the §H Heal lexicon is designed for exactly this in-flight repair.
+- **Debug in place.** When `build_dashboard()` raises a validator error mid-build, don't bail out and ask the user. Read the diagnostic, surgically fix the spec via §C (or the script via §D), recompile, move on. Same for empty-pull diagnostics, column-mismatch heals, retired-catalog substitutions. The §H heal lexicon is designed for exactly this in-flight repair.
 - **Build the slice atomically** (Rule 7 governs WITHIN: Tools 1-4 non-divisible; whatever you build in this turn ends with a registered dashboard at a portal URL).
 
 **When to actually slice (genuine blockers only):**
@@ -300,18 +232,20 @@ The user can always ask for changes in a follow-up turn. They cannot get back th
 
 **When you do slice, do it well:**
 
-- Pick the slice whose feedback most disambiguates the rest of the request (one tab; one tool widget; one chart-pair + headline KPI; data pull + headline table, defer charts).
+- Pick the slice whose feedback most disambiguates the rest of the request (one tab; one tool widget; one chart-pair + headline KPI; data pull + headline table; charts).
 - The slice still goes through Tools 1-4 atomically and ends at a portal URL.
-- Hand off the URL, name the blocker plainly, and ASK the specific question that unblocks the next slice. Don't pre-announce a slice plan you'll abandon — describe what's live now and what you need from the user to continue.
+- Hand off the URL, name the blocker plainly, and ask the specific question that unblocks the next slice. Don't pre-announce a multi-slice plan.
+- If you'll abandon the rest of the request, describe what's live now and what you need from the user to continue.
 
-**Still forbidden:**
+Forbidden after a complex prompt:
 
-- Slicing because the build "feels big" with no actual blocker — that's just artificial fragmentation that wastes the user's turn.
+- Building all 8 tabs / 30 widgets in one mega-build before surfacing anything — IF that build doesn't actually fit in one turn (the heuristic: if you reached the end of the tool budget without finishing AND the half-built dashboard isn't a coherent registered slice, that's the failure mode).
+- Slicing because the build "feels big" with no actual blocker — artificial fragmentation that wastes the user's turn.
 - Pre-announcing a multi-slice plan ("I'll do tabs 1-3 first then 4-8") at the start of a routine build — one-shot it instead.
-- Continuing to a NEW dashboard or a structurally different surface after the user-requested build is live, without explicit confirmation. (Iterating on the SAME dashboard mid-turn to fix a bug or heal drift is fine and expected.)
+- "Continuing with the rest of the dashboard now…" without explicit user confirmation.
+- Continuing to a NEW dashboard or a structurally different surface after the user-requested build is live, without explicit confirmation.
 - Surfacing one slice and immediately stacking "let me also add X, Y, Z" without waiting for the user.
-
-The heuristic: if PRISM reaches the end of its tool budget without finishing AND the half-built dashboard isn't a coherent registered slice, that's the failure mode. Plan the work so the turn ends at a portal URL — one-shot when the budget supports it, slice atomically when it doesn't.
+- Pre-announcing the slice plan and proceeding through it autonomously — the plan changes after every slice based on feedback.
 
 ---
 
@@ -640,19 +574,33 @@ Run the audit at the START of any inheritance (PRISM picking up an existing dash
 
 ## 3. Per-primitive spokes (already fetched in preflight)
 
-This hub covers every primitive's catalog row + the always-needed contract + the six recipes. For per-primitive depth (chart-type mapping rules, widget specs, filter mechanics, archetypes), the spokes are:
+This hub covers every primitive's catalog row + the always-needed contract + the six recipes. For per-primitive depth (chart-type mapping rules, widget specs, filter mechanics, archetypes), the spokes are listed below.
 
-- `dashboards/charts.md` — 30 chart types; mapping keys; cosmetic / layout knobs; annotations; `scatter_studio`; `correlation_matrix`; computed columns
-- `dashboards/widgets.md` — KPI, table (incl. `row_click`), pivot, stat_grid, image, markdown, divider; provenance; `show_when` / `initial_state` / stat strip; markdown grammar
-- `dashboards/widget_tool.md` — `widget: tool` (form-driven compute); pricers, scenarios, calculators; tool def shape; input + output kinds
-- `dashboards/filters.md` — 10 filter types + 11 ops; cascading filters; per-chart `dataZoom`; `click_emit_filter`; compound rule filters; links (sync + brush)
-- `dashboards/template_crud.md` — THIN niche reference for unusual CRUD patterns (multi-target filter rebinding, `show_when` reference cleanup); §C below carries the daily patterns
-- `dashboards/recipes.md` — 21 data-shape archetypes → chart types (the cookbook) + transforms hook patterns for `build.py`
-- `dashboards/pipelines.md` — pipeline cataloging mental model + reuse decision ladder + active-pipeline integrity rules
+**These spokes were selected and fetched during preflight, in the same `list_ai_repo` call that retrieved this hub.** The preflight pointer (`dashboards.md`) carries the spoke menu and the per-build-shape decision table; spoke selection is a preflight responsibility, not a hub-time decision. If you reached this hub WITHOUT the spokes you need, the preflight workflow was violated — fetch the missing spokes now in a single follow-up `list_ai_repo(file_paths=[...], mode="full")` call (NOT `get_context`, which is one-shot per user message), and update the preflight workflow next time so the spoke list is decided up-front.
 
-**These spokes were selected and fetched during preflight, in the same `list_ai_repo` call that retrieved this hub.** The preflight pointer (`dashboards.md`) carries the spoke menu and the per-build-shape decision table; spoke selection is a preflight responsibility, not a hub-time decision. If you reached this hub WITHOUT the spokes you need, the preflight workflow was violated — fetch the missing spokes now in a single follow-up `list_ai_repo` call (NOT `get_context`, which is one-shot per user message), and update the preflight workflow next time so the spoke list is decided up-front.
+**Mid-session re-reads.** Use `list_ai_repo` with `mode="full"` — **pass ONLY `file_paths` and `mode`; actively omit every other parameter.** Each spoke is independent; mix and match.
 
-The Catalog index above is enough to PICK a chart type / widget / filter type. The fetched spokes carry the per-primitive mapping rules / required keys / cosmetic knobs.
+| Spoke | Contents | Verbatim tool call (copy-paste) |
+|-------|----------|--------------------------------|
+| `dashboards/charts.md` | 30 chart types; mapping keys; cosmetic / layout knobs; annotations; `scatter_studio`; `correlation_matrix`; computed columns | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/charts.md"], mode="full")` |
+| `dashboards/widgets.md` | KPI, table (incl. `row_click`), pivot, stat_grid, image, markdown, divider; provenance; `show_when` / `initial_state` / stat strip; markdown grammar | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
+| `dashboards/widget_tool.md` | `widget: tool` (form-driven compute) — pricers, scenarios, calculators; tool def shape; input + output kinds; canonical examples | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widget_tool.md"], mode="full")` |
+| `dashboards/filters.md` | 10 filter types + 11 ops; cascading filters; per-chart `dataZoom`; `click_emit_filter`; compound rule filters; links (sync + brush) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/filters.md"], mode="full")` |
+| `dashboards/template_crud.md` | THIN reference — points back at hub §C for the canonical CRUD skeleton; covers per-CRUD-pattern niche cases (multi-target filter rebinding, `show_when` reference cleanup, etc.). Most edits don't need this; §C carries the daily patterns. | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/template_crud.md"], mode="full")` |
+| `dashboards/recipes.md` | 21 data-shape archetypes → chart types (the cookbook) + transforms hook patterns (YoY / composition / cross-dataset join / subset projection) for `build.py` | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
+| `dashboards/pipelines.md` | The pipeline cataloging mental model + reuse decision ladder (reuse-existing-CSV / extend-existing-pipeline / add-new-pipeline) + active-pipeline integrity rules | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md"], mode="full")` |
+**Common combos** (one call, multiple file_paths):
+
+| Build shape | Single call to copy |
+|-------------|---------------------|
+| Charts only | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/charts.md"], mode="full")` |
+| Charts + KPI / table strip | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/charts.md", "context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
+| Charts + widgets + filters | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/charts.md", "context/modules/static/tools/dashboards/widgets.md", "context/modules/static/tools/dashboards/filters.md"], mode="full")` |
+| Pricer / scenario tool | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/widget_tool.md", "context/modules/static/tools/dashboards/widgets.md"], mode="full")` |
+| "Show me a worked archetype" | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
+| Editing data shape (new column / pull source / derived dataset) | `list_ai_repo(file_paths=["context/modules/static/tools/dashboards/pipelines.md", "context/modules/static/tools/dashboards/recipes.md"], mode="full")` |
+
+The Catalog index above is enough to PICK a chart type / widget / filter type. Fetch a spoke when you need the per-primitive mapping rules / required keys / cosmetic knobs.
 
 ---
 
@@ -807,14 +755,14 @@ for name in ('rates',):
 
 `build.py` is **the transforms hook** — defines `TRANSFORMS = [<fn>, ...]` for any cross-dataset derivations (joins, derived ratios, YoY, subset projections). For dashboards with no derivations, `TRANSFORMS = []`. The engine helper `build_dashboard(folder)` does the rest — load template, load CSVs, run TRANSFORMS in order, populate, compile, write.
 
-**Five non-negotiables** for the persisted `build.py`:
+**Six non-negotiables** for the persisted `build.py`:
 
 1. Define `TRANSFORMS` as a module-level list (even if empty: `TRANSFORMS = []`). The engine reads it via the script's namespace; no re-exec.
 2. Each transform is `def derive_<name>(datasets) -> dict` — receives the loaded datasets dict, returns it (mutated or replaced).
 3. Transforms NEVER call `compile_dashboard` / `populate_template` / `s3_manager.put` directly. The engine owns the lifecycle; transforms only mutate the datasets dict.
 4. **Every CSV load happens INSIDE the engine**, not in `build.py`. Transforms receive datasets already loaded as DataFrames keyed by CSV stem.
 5. `build.py` does NOT concatenate / f-string / `.format()` Python values into a `widget: tool`'s `compute_js`. The compute body lives in `manifest_template.json` (set ONCE at first build, edited via §C surgical CRUD thereafter). See `dashboards/widget_tool.md` §1.
-6. **In-memory column renames in the in-session compose step do NOT propagate to refresh.** The pattern `df.columns = ['us_2y', 'us_10y']` BEFORE `manifest_template(initial_manifest)` only renames the columns inside PRISM's ephemeral session DataFrame. The engine's `build_dashboard(folder)` re-loads `data/<stem>.csv` from S3 verbatim at compile time and at every cron refresh — it never sees PRISM's in-session rename. The persisted manifest_template ends up referencing the renamed columns (`us_2y`, `us_10y`), but the on-disk CSV still carries the raw source columns (`IR_USD_Treasury_2Y_Rate`, etc.) — the validator catches this loudly with `kpi_source_column_missing` / `chart_mapping_column_missing`. **Fix one of two ways:** (a) reference the actual on-disk CSV column names directly in the manifest (simplest), OR (b) move the rename into a `derive_<name>` transform in `build.py` so the engine applies it at compile/refresh time. Never rely on in-session DataFrame renames bridging into the persisted spec.
+6. **In-memory column renames in the in-session composite step do NOT propagate to refresh.** The pattern `df.columns = ['us_2y', 'us_10y']` BEFORE `manifest_template(initial_manifest)` only renames the columns inside PRISM's ephemeral session DataFrame. The engine's `build_dashboard(folder)` re-loads `data/<stem>.csv` from S3 verbatim at compile time and at every cron refresh — it never sees PRISM's in-session rename. The persisted `manifest_template` ends up referencing the renamed columns, but the on-disk CSV still carries the raw source columns — the validator catches this loudly with `kpi_source_column_missing` / `chart_mapping_column_missing`. **Fix one of two ways:** (a) reference the actual on-disk CSV column names directly in the manifest (simplest), OR (b) move the rename into a `derive_<name>` transform in `build.py` so the engine applies it at compile/refresh time. Never rely on in-session DataFrame renames bridging into the persisted spec.
 
 ```python
 # Compose the initial manifest (with embedded data) just to derive the template.
@@ -822,14 +770,15 @@ import io
 df_rates = pd.read_csv(io.BytesIO(s3_manager.get(
     f"{DASHBOARD_PATH}/data/rates_eod.csv")),
     index_col=0, parse_dates=True)
+
 # WARNING: This in-session rename ONLY affects the ephemeral DataFrame used
-# to derive the template below. The engine re-loads data/rates_eod.csv from
+# to derive the template. The engine re-loads data/rates_eod.csv from
 # S3 verbatim at refresh time -- it does NOT see this rename. If you reference
 # 'us_2y' / 'us_10y' in the manifest mapping below, the next refresh will fail
 # with chart_mapping_column_missing because the CSV still carries the raw
 # source columns. Two safe options:
 #   (a) Reference the raw CSV column names directly in the manifest mapping
-#       (e.g. y=['IR_USD_Treasury_2Y_Rate', 'IR_USD_Treasury_10Y_Rate']).
+#       (e.g. ['IR_USD_Treasury_2Y_Rate', 'IR_USD_Treasury_10Y_Rate']).
 #   (b) Move the rename into a derive_<name> transform in build.py so the
 #       engine applies it at compile/refresh time.
 # The line below is shown for illustration only -- prefer option (a) or (b).
@@ -915,11 +864,11 @@ There is no `register_dashboard()` helper. The hourly refresh runner iterates `r
 
 **Critical:** `new_entry["refresh_frequency"]` MUST match `metadata.refresh_frequency` in the manifest. The cron's `_is_due()` reads the registry entry; the engine's validator + `refresh_runner.next_refresh_at` read the manifest. Set both to the same value in this same authoring pass. Intraday dashboards (1-second yields, FX tape) want `"60s"` / `"2m"`; macro indicators (CPI, GDP) want `"1d"` / `"1w"`; structural exhibits want `"manual"`. Full vocabulary at §2.3a.1.
 
-> **The two values MUST be byte-identical strings**, not semantically equivalent. The audit (`_audit_refresh_attachment`) does a strict `!=` comparison: `"1d"` and `"daily"` parse to the same delta today via `freq_delta()`, but they are NOT byte-identical and will fail `refresh_frequency_mismatch`. Pick ONE token (prefer the modern duration string `"1d"` / `"1w"` / `"60s"` per §2.3a.1) and use it verbatim in BOTH the manifest's `metadata.refresh_frequency` AND the registry entry's `refresh_frequency` below. The literal value in the `new_entry` dict on the next screen must match `metadata.refresh_frequency` character-for-character.
+**The two values MUST be byte-identical strings**, not semantically equivalent. The audit (`_audit_refresh_attachment`) does a strict `==` comparison: `"1d"` and `"daily"` parse to the same delta today via `freq_delta()`, but they are NOT byte-identical and will fail `refresh_frequency_mismatch`. Pick ONE token (prefer the modern duration string `"1d"` / `"60s"` per §2.3a.1) and use it verbatim in BOTH the manifest's `metadata.refresh_frequency` AND the registry entry's `refresh_frequency` below. The literal value in the `new_entry` dict on the next screen must match `metadata.refresh_frequency` character-for-character.
 
 ```python
 REGISTRY_PATH = f"users/{KERBEROS}/dashboards/dashboards_registry.json"
-PORTAL_URL    = f"http://reports.prism-ai.url.gs.com:8501/users/{KERBEROS}/dashboards/{DASHBOARD_NAME}/"
+PORTAL_URL    = f"http://reports.prism-ai.url.gs.com:8501/profile/dashboards/{DASHBOARD_NAME}/"
 
 now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -1924,7 +1873,7 @@ _audit_dashboard_layout(DASHBOARD_PATH, m)
 - Registry verification (re-load, assert id is in `registry['dashboards']`) passed at end of Tool 3
 - The user-facing message is exactly the §B contract: portal URL on line 1, refresh frequency + datasets next; no "next steps", no "would you like me to…", no opt-in language
 
-**Hand-off (Rule 6):** the success message leads with the portal URL (`/users/{kerberos}/dashboards/{id}/`); the `dashboard.html` S3 path is mentioned only if the user explicitly asks for it.
+**Hand-off (Rule 6):** the success message leads with the portal URL (`/profile/dashboards/{id}/`); the `dashboard.html` S3 path is mentioned only if the user explicitly asks for it.
 
 ---
 
