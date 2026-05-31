@@ -163,6 +163,7 @@ Engine rejects scatters with < 8 distinct (x, y) coords in visible region (error
 - **Clean before charting.** `pd.to_numeric(errors='coerce')` + `dropna(subset=['date', 'value'])`. Max 12 color cats, 16 facet cats. >5,000 rows auto-downsample to ~2,000 (warning).
 - **Never plot `np.zeros()` placeholder.** Skip the panel or add text annotation.
 - **Title/subtitle: 2-line cap, auto-wrap.** Engine reports exact char limit on rejection; explicit `\n` honored (counts toward cap).
+- **Never truncate axis / legend / LVL labels.** Vega-Lite ``labelLimit`` ellipsis is forbidden -- overlong nominal labels raise typed errors (`BarCategoryLabelTooLongError`, `HeatmapRowLabelTooLongError`, `LegendLabelTooLongError`, `LvlSeriesNameTooLongError`). Shorten strings in the DataFrame; the engine will not silently clip.
 
 ---
 
@@ -235,6 +236,8 @@ Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact
 | categorical / string | nominal sequential ramp indexed by sort order; cell label is the bin | ≤12 distinct bins (rejected above) |
 
 For categorical recipe (continuous binned to labels), bin via `pd.cut()` / `np.digitize()`. Override sort via `mapping['value_sort']=[...]`.
+
+**Row labels (y-axis):** always horizontal (`labelAngle=0`); never rotated to -45; never ellipsis-truncated. Hard cap **15 chars** (same discipline as bar category labels). Row labels are validated on every heatmap -- overlong values raise `HeatmapRowLabelTooLongError`; shorten in the DataFrame.
 
 ```python
 df['prob_bucket'] = pd.cut(df['Probability'], bins=10,
@@ -547,7 +550,7 @@ spec = ChartSpec(df=df, chart_type='multi_line',
 
 All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`, `spacing`, `filename_prefix`, `filename_suffix`; return `CompositeResult` (`ChartResult` fields + `chart_errors`). `caption` / `side_*` flank the whole pack (same shape as `make_chart`); sub-chart text panels go on each `ChartSpec`.
 
-**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. Up to N-1 sub-charts can fail; survivors render. Failures in `result.chart_errors`. **`multi_line` series names ≤25 chars in every pack-composite cell** (same LVL cap as standalone; see §6.1).
+**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. Up to N-1 sub-charts can fail; survivors render. Failures in `result.chart_errors`. **`multi_line` series names ≤25 chars in every pack-composite cell** (same LVL cap as standalone; see §6.1). **`heatmap` row labels must fit horizontally in composite cells** -- long y-axis category strings raise `HeatmapRowLabelTooLongError`; shorten before `make_*pack_*()` (§6.3).
 
 | Situation | Layout |
 |---|---|

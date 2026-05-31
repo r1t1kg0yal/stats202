@@ -185,7 +185,16 @@ DOWNSAMPLE_TARGET_ROWS = 2_000      # Aim for this row count post-downsample
 # would obsolete the faceting workaround entirely; until PRISM
 # upgrades, this guard stays load-bearing.
 _MIN_GROUPED_BAR_PER_BAR_PX = 3
-_GROUPED_BAR_FACET_SPACING_PX = 2  # tight gap between facets so groups stay distinguishable
+# Inter-facet gap between x-category groups in vertical grouped bars
+# (column-facet path). Kept small so composite cell-budget math still
+# fits, but large enough to read as deliberate whitespace between
+# groups rather than a continuous bar strip.
+_GROUPED_BAR_FACET_SPACING_PX = 6
+# Band-scale padding on the inner (color) x-axis within each facet.
+# paddingOuter is what creates the visible gutter at group boundaries;
+# paddingInner stays tight so bars within a group remain adjacent.
+_GROUPED_BAR_INNER_X_PADDING_OUTER = 0.14
+_GROUPED_BAR_INNER_X_PADDING_INNER = 0.02
 _FACET_LABEL_MIN_PITCH_PX = 28     # min horizontal pitch between visible facet labels
 
 
@@ -321,9 +330,11 @@ _FACET_DEFAULT_SPACING: int = 50
 # typographic hierarchy: a larger composite super-title (32px), a
 # medium super-subtitle (22px), a notably smaller per-chart title
 # (18px) so the per-panel headers defer to the composite header above
-# them, and the existing 10px per-chart subtitle. ``make_chart``'s
-# standalone title still uses the generic ``"title"`` slot at the
-# skin's default 26px.
+# them, and the 12px per-chart subtitle. ``make_chart``'s standalone
+# title still uses the generic ``"title"`` slot at the skin's default
+# 26px.
+_SUBCHART_TITLE_FONT_SIZE: int = 18
+_SUBCHART_SUBTITLE_FONT_SIZE: int = 12
 _TEXT_PX_PER_CHAR: Dict[str, float] = {
     # Generic single-chart slots (make_chart standalone, 26px / 14px).
     "title":    6.8,
@@ -333,7 +344,7 @@ _TEXT_PX_PER_CHAR: Dict[str, float] = {
     "composite_super_title":    8.0,   # 32px bold
     "composite_super_subtitle": 6.0,   # 22px medium
     "subchart_title":           4.5,   # 18px bold inside a panel
-    "subchart_subtitle":        3.5,   # 10px regular inside a panel
+    "subchart_subtitle":        4.2,   # 12px regular inside a panel
 }
 # Hard cap on the number of wrapped lines a single title or subtitle
 # slot may produce. Anything that would wrap to more than this is
@@ -532,6 +543,55 @@ class LegendLabelTooLongError(ValidationError):
         )
 
 
+class HeatmapRowLabelTooLongError(ValidationError):
+    """Raised when heatmap row labels cannot stay horizontal without truncation.
+
+    Heatmap y-axis (row) labels are NEVER rotated to -45 deg and NEVER
+    ellipsis-truncated via Vega-Lite ``labelLimit``. When the longest row
+    label exceeds the validated left-gutter pixel budget (or the row band
+    is too tight for the axis font size), the engine fails up-front so
+    PRISM shortens labels in the DataFrame before ``make_chart()`` /
+    ``make_*pack_*()``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        offending_labels: Optional[List[str]] = None,
+        y_field: Optional[str] = None,
+        mapping: Optional[Dict[str, Any]] = None,
+        max_chars: Optional[int] = None,
+        chart_height: Optional[int] = None,
+    ) -> None:
+        Exception.__init__(self, message)
+        self.context = {
+            "offending_labels": list(offending_labels or []),
+            "y_field": y_field,
+            "mapping": mapping,
+            "max_chars": max_chars,
+            "chart_height": chart_height,
+        }
+        send_error_email(
+            error_message=f"HeatmapRowLabelTooLongError: {message}",
+            traceback_info=traceback.format_exc(),
+            tool_name="chart_functions",
+            metadata={
+                "error_type": "HeatmapRowLabelTooLongError",
+                "offending_labels": list(offending_labels or []),
+                "y_field": y_field,
+                "max_chars": max_chars,
+                "chart_height": chart_height,
+                "mapping_keys": list(mapping.keys()) if mapping else None,
+            },
+            context=(
+                "Heatmap row label exceeded the horizontal budget in a "
+                "composite cell. User should shorten y-axis category labels "
+                "in the DataFrame before make_*pack_*() (budget depends on "
+                "row count and cell height)."
+            ),
+        )
+
+
 class BarCategoryLabelTooLongError(ValidationError):
     """Raised when bar chart category labels exceed the configured cap.
 
@@ -578,11 +638,34 @@ class BarCategoryLabelTooLongError(ValidationError):
         )
 
 
+# ---------------------------------------------------------------------------
+# No-truncation policy (global Altair engine principle)
+# ---------------------------------------------------------------------------
+# Vega-Lite ``labelLimit`` enforces hard ellipsis truncation on axis and
+# legend text. The engine NEVER relies on that silent path: every nominal
+# label surface (bar categories, heatmap rows, legend series names, LVL
+# names, y-axis titles) is validated up-front and raises a typed
+# ``*TooLongError`` so PRISM shortens labels in the DataFrame. After
+# validation passes, per-axis ``labelLimit`` is set to the exact validated
+# pixel budget so inherited config defaults cannot re-truncate.
+
+_AXIS_LABEL_CHAR_WIDTH_RATIO = 0.55  # matches ``_wrap_text_to_width`` heuristic
+
 # Soft cap on y-axis label length. The PRISM style guide says ~16 chars is
 # the visual sweet spot; we hard-fail past 24 to surface obvious abuses
 # (raw column names, generated tokens) without being too pedantic about
 # borderline-long human labels.
 _Y_AXIS_LABEL_MAX_CHARS = 24
+
+# Left-gutter fraction of chart width reserved for heatmap row labels.
+_HEATMAP_ROW_GUTTER_FRAC_STANDALONE = 0.38
+_HEATMAP_ROW_GUTTER_FRAC_COMPOSITE = 0.28
+_HEATMAP_ROW_LABEL_VERTICAL_PAD_PX = 4
+# Absolute char ceiling for heatmap row labels -- aligned with bar
+# category cap so PRISM has one abbreviation discipline across matrix
+# and bar charts. Gutter math may allow more in wide canvases; this cap
+# still wins so labels stay efficient.
+_HEATMAP_ROW_LABEL_MAX_CHARS = 15
 
 # Hard cap on per-series name length for ``LastValueLabel`` on
 # ``multi_line`` / ``timeseries``. End-of-line labels paint INSIDE the
@@ -648,6 +731,27 @@ _MIN_SERIES_VERTICAL_SHARE = 0.10
 # gap ~7.4 pp, ratio ~9x; FCI tenor contributions clustered at 10 / 30 /
 # 60 bp with span ~7 each -- ratio ~4x.
 _LEVEL_DISPARITY_RATIO_THRESHOLD = 3.0
+
+
+def _axis_label_px_per_char(label_font_size: int) -> float:
+    """Average horizontal pixels per character for axis tick labels."""
+    return max(1.0, label_font_size * _AXIS_LABEL_CHAR_WIDTH_RATIO)
+
+
+def _axis_label_pixel_budget(label: str, label_font_size: int) -> float:
+    """Pixel width a single axis label string needs (no ellipsis room)."""
+    return len(str(label)) * _axis_label_px_per_char(label_font_size) + 8
+
+
+def _heatmap_axis_label_font_size(skin_config: Dict[str, Any]) -> int:
+    """Resolve heatmap axis tick label font size from the active skin."""
+    axis_cfg = skin_config.get("config", {}).get("axis", {})
+    return int(
+        axis_cfg.get("labelFontSize")
+        or skin_config.get("axis_config", {}).get("labelFontSize")
+        or skin_config.get("label_font_size")
+        or 18
+    )
 
 
 def _validate_y_axis_label(y_title: Optional[str], mapping: Dict[str, Any]) -> None:
@@ -8584,9 +8688,10 @@ def get_axis_beautification(
     """
     configs: Dict[str, AxisConfig] = {}
 
-    # Heatmaps own their axis label-angle decision entirely (the
-    # builder clamps to {0, -45} via ``_heatmap_label_angle`` and the
-    # spec is patched late by ``_apply_heatmap_config``). Skipping the
+    # Heatmaps own their axis label-angle decision entirely (x clamps to
+    # {0, -45} via ``_heatmap_x_label_angle``; y is always 0 via
+    # ``_heatmap_row_label_angle``; spec patched by ``_apply_heatmap_config``).
+    # Skipping the
     # plan here prevents ``apply_beautification_to_spec`` from
     # overwriting the builder's clamp with the generic
     # ``calculate_optimal_label_angle`` answer (which can return -90).
@@ -12255,8 +12360,8 @@ def _build_bar(
         # panels and demolish the 2x2 grid (regression catalysed
         # 2026-05-02 projects/altair/dev/feedback/2026-05-02_4pack_blowout.md).
         # Subtract the spacing overhead from the budget BEFORE dividing
-        # by n_x_cats so both terms fit; tight 2px inter-facet gap keeps
-        # groups visually distinguishable without consuming budget.
+        # by n_x_cats so both terms fit; the inter-facet gap keeps groups
+        # visually distinguishable without consuming too much budget.
         # Readability gate rejects the unreadable-blur extreme so the
         # LLM sees a clean ValidationError instead of a tiny-bar cell.
         n_x_cats = df[x_field].nunique()
@@ -12369,6 +12474,10 @@ def _build_bar(
                     color_field,
                     type="nominal",
                     sort=_resolve_color_sort(df, color_field, mapping.get("color_sort")),
+                    scale=alt.Scale(
+                        paddingInner=_GROUPED_BAR_INNER_X_PADDING_INNER,
+                        paddingOuter=_GROUPED_BAR_INNER_X_PADDING_OUTER,
+                    ),
                     axis=alt.Axis(
                         ticks=False, labels=False, title="", domain=False,
                     ),
@@ -12896,42 +13005,186 @@ def _build_area(
     return chart
 
 
-def _heatmap_label_angle(
+def _heatmap_axis_labels(
+    df: pd.DataFrame,
+    field: Optional[str],
+    sort_order: Optional[List[Any]],
+) -> List[str]:
+    """Distinct axis label strings for a heatmap nominal field."""
+    if not field or (df is not None and field not in getattr(df, "columns", [])):
+        return []
+    if sort_order:
+        return [str(v) for v in sort_order]
+    return [str(v) for v in df[field].dropna().unique().tolist()]
+
+
+def _heatmap_row_label_plan(
+    df: pd.DataFrame,
+    y_field: Optional[str],
+    sort_order: Optional[List[Any]],
+    *,
+    chart_width: int,
+    chart_height: int,
+    label_font_size: int,
+    composite_cell: bool,
+) -> Tuple[List[str], int, int]:
+    """Return (labels, max_chars, label_limit_px) for validated row labels."""
+    labels = _heatmap_axis_labels(df, y_field, sort_order)
+    if not labels:
+        return [], 0, 16
+    px_per_char = _axis_label_px_per_char(label_font_size)
+    n_rows = max(len(labels), 1)
+    per_row_px = chart_height / n_rows
+    gutter_frac = (
+        _HEATMAP_ROW_GUTTER_FRAC_COMPOSITE
+        if composite_cell
+        else _HEATMAP_ROW_GUTTER_FRAC_STANDALONE
+    )
+    gutter_px = chart_width * gutter_frac
+    max_chars = max(1, int((gutter_px - 8) / px_per_char))
+    max_chars = min(max_chars, _HEATMAP_ROW_LABEL_MAX_CHARS)
+    longest_px = max(_axis_label_pixel_budget(s, label_font_size) for s in labels)
+    label_limit_px = max(16, int(longest_px))
+    return labels, max_chars, label_limit_px
+
+
+def _heatmap_row_labels_fit_horizontal(
+    df: pd.DataFrame,
+    field: Optional[str],
+    sort_order: Optional[List[Any]],
+    *,
+    chart_width: int,
+    chart_height: int,
+    label_font_size: int,
+    composite_cell: bool,
+) -> Tuple[bool, int, List[str], Optional[str]]:
+    """Check whether every row label fits horizontally at angle=0."""
+    labels, max_chars, _ = _heatmap_row_label_plan(
+        df,
+        field,
+        sort_order,
+        chart_width=chart_width,
+        chart_height=chart_height,
+        label_font_size=label_font_size,
+        composite_cell=composite_cell,
+    )
+    if not labels:
+        return True, 0, [], None
+    px_per_char = _axis_label_px_per_char(label_font_size)
+    n_rows = max(len(labels), 1)
+    per_row_px = chart_height / n_rows
+    gutter_frac = (
+        _HEATMAP_ROW_GUTTER_FRAC_COMPOSITE
+        if composite_cell
+        else _HEATMAP_ROW_GUTTER_FRAC_STANDALONE
+    )
+    gutter_px = chart_width * gutter_frac
+
+    vertical_reason: Optional[str] = None
+    if label_font_size + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX > per_row_px:
+        vertical_reason = (
+            f"{n_rows} rows in a {chart_height}px-tall cell leave "
+            f"~{per_row_px:.0f}px/row, below the "
+            f"{label_font_size + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX}px needed "
+            f"for {label_font_size}pt horizontal labels"
+        )
+
+    offending = [
+        s for s in labels
+        if len(s) > max_chars
+        or _axis_label_pixel_budget(s, label_font_size) > gutter_px
+    ]
+    if vertical_reason:
+        return False, max_chars, offending or labels, vertical_reason
+    if offending:
+        return False, max_chars, offending, None
+    return True, max_chars, [], None
+
+
+def _validate_heatmap_row_labels(
+    df: pd.DataFrame,
+    y_field: Optional[str],
+    sort_order: Optional[List[Any]],
+    *,
+    chart_width: int,
+    chart_height: int,
+    label_font_size: int,
+    mapping: Optional[Dict[str, Any]] = None,
+    composite_cell: bool = False,
+) -> int:
+    """Fail fast when row labels would truncate; return exact ``labelLimit`` px."""
+    fits, max_chars, offending, vertical_reason = _heatmap_row_labels_fit_horizontal(
+        df,
+        y_field,
+        sort_order,
+        chart_width=chart_width,
+        chart_height=chart_height,
+        label_font_size=label_font_size,
+        composite_cell=composite_cell,
+    )
+    labels, _, label_limit_px = _heatmap_row_label_plan(
+        df,
+        y_field,
+        sort_order,
+        chart_width=chart_width,
+        chart_height=chart_height,
+        label_font_size=label_font_size,
+        composite_cell=composite_cell,
+    )
+    if fits:
+        return label_limit_px
+
+    if not offending:
+        longest = max(labels, key=len) if labels else ""
+        offending = [longest]
+    sample = offending[0]
+    n_rows = max(len(labels), 1)
+    ctx = "make_*pack_*()" if composite_cell else "make_chart()"
+    abbrev_hint = _suggest_bar_label_abbreviations(sample)
+    if vertical_reason:
+        detail = vertical_reason
+    else:
+        detail = (
+            f"{y_field!r} value {sample!r} ({len(sample)} chars) exceeds the "
+            f"~{max_chars}-char left-gutter budget for a "
+            f"{chart_width}x{chart_height}px canvas"
+        )
+    raise HeatmapRowLabelTooLongError(
+        f"Heatmap row labels must stay horizontal and cannot be truncated, "
+        f"but {detail}. Shorten row labels in the DataFrame before "
+        f"{ctx} (max {_HEATMAP_ROW_LABEL_MAX_CHARS} chars; aim <=~{max_chars} "
+        f"at {n_rows} rows / {chart_width}px width). "
+        f"Try abbreviating {sample!r} -> {abbrev_hint}. "
+        f"Offending: {offending[:4]}"
+        f"{'...' if len(offending) > 4 else ''}.",
+        offending_labels=offending,
+        y_field=y_field,
+        mapping=mapping,
+        max_chars=max_chars,
+        chart_height=chart_height,
+    )
+
+
+def _heatmap_x_label_angle(
     df: pd.DataFrame,
     field: Optional[str],
     sort_order: Optional[List[Any]],
     *,
     axis_pixels: int,
 ) -> int:
-    """Pick a heatmap axis label angle: 0 (flat) or -45.
+    """Pick heatmap column (x) label angle: 0 (flat) or -45.
 
     Vertical (90 deg) labels are forbidden on heatmaps -- Vega-Lite
     auto-rotates straight to 90 when nominal labels can't fit
     horizontally, and the result reads as a wall of stacked text.
-    This helper enforces a binary choice: stay flat when the longest
-    label fits the per-cell pixel budget plus breathing room,
-    otherwise -45.
-
-    Args:
-        df: Source DataFrame; used to enumerate the field's distinct
-            label values when ``sort_order`` isn't supplied.
-        field: Column name whose unique values populate the axis.
-            Returns 0 when ``None`` or when the column is missing.
-        sort_order: Explicit axis ordering (typically what the caller
-            passes via ``mapping['x_sort']`` / ``y_sort'``). Wins over
-            the df-derived order when present so the budget reflects
-            the actual rendered labels.
-        axis_pixels: Total length of the axis in screen pixels (chart
-            width for x, chart height for y). Drives the per-cell
-            budget.
+    Column labels may use -45 when the longest label won't fit the
+    per-cell width budget; row labels never rotate (see
+    ``_heatmap_row_label_angle``).
     """
     if not field or (df is not None and field not in getattr(df, "columns", [])):
         return 0
 
-    if sort_order:
-        labels = [str(v) for v in sort_order]
-    else:
-        labels = [str(v) for v in df[field].dropna().unique().tolist()]
+    labels = _heatmap_axis_labels(df, field, sort_order)
     if not labels:
         return 0
 
@@ -12939,13 +13192,15 @@ def _heatmap_label_angle(
     n_cells = max(len(labels), 1)
     cell_pixels = axis_pixels / n_cells
 
-    # ~7 px per character at the GS skin's default axis font size, plus
-    # 4 px breathing room on either side of the label. If the longest
-    # label fits inside one cell that way, stay flat; otherwise -45.
     horizontal_budget_per_label = max_label_len * 7 + 8
     if horizontal_budget_per_label <= cell_pixels:
         return 0
     return -45
+
+
+def _heatmap_row_label_angle() -> int:
+    """Heatmap row (y-axis) labels are always horizontal."""
+    return 0
 
 
 def _build_heatmap(
@@ -12954,6 +13209,8 @@ def _build_heatmap(
     skin_config: Dict[str, Any],
     width: int,
     height: int,
+    *,
+    composite_cell: bool = False,
 ) -> alt.Chart:
     """2-D heatmap.
 
@@ -13031,21 +13288,28 @@ def _build_heatmap(
     _validate_y_axis_label(y_title, mapping)
     x_sort_order = mapping.get("x_sort")
     y_sort_order = mapping.get("y_sort")
+    row_label_font_size = _heatmap_axis_label_font_size(skin_config)
+
+    row_label_limit_px = _validate_heatmap_row_labels(
+        df,
+        y_field,
+        y_sort_order,
+        chart_width=width,
+        chart_height=height,
+        label_font_size=row_label_font_size,
+        mapping=mapping,
+        composite_cell=composite_cell,
+    )
 
     # ---- label-angle clamp ----------------------------------------------
-    # Heatmap axis labels NEVER render vertical (90 deg). Vega-Lite's
+    # Heatmap column (x) labels NEVER render vertical (90 deg). Vega-Lite's
     # default for nominal axes auto-rotates when labels won't fit
-    # horizontally and overshoots straight to 90 (verbatim "wall of
-    # vertical text" failure mode). The fix is binary: 0 if labels fit
-    # horizontally given the cell width budget, else -45. The clamp
-    # applies to both axes -- matrix-style heatmaps with long row
-    # labels (e.g. ticker names) hit the same Vega-Lite quirk on y.
-    x_label_angle = _heatmap_label_angle(
+    # horizontally and overshoots straight to 90. Column labels may use
+    # -45 when cramped; row (y) labels are ALWAYS horizontal (angle=0).
+    x_label_angle = _heatmap_x_label_angle(
         df, x_field, x_sort_order, axis_pixels=width,
     )
-    y_label_angle = _heatmap_label_angle(
-        df, y_field, y_sort_order, axis_pixels=height,
-    )
+    y_label_angle = _heatmap_row_label_angle()
 
     # Grid-suppressed axes prevent white-line artifacts on cells.
     # ``labelPadding`` adds breathing room so row labels (e.g. "Tech",
@@ -13059,6 +13323,8 @@ def _build_heatmap(
     y_axis = alt.Axis(
         grid=False, domain=False, ticks=False, title=y_title,
         labelPadding=8, labelAngle=y_label_angle,
+        labelFontSize=row_label_font_size,
+        labelLimit=row_label_limit_px,
     )
 
     # ---- value-column dtype dispatch ------------------------------------
@@ -16040,7 +16306,8 @@ def make_chart(
     # ---- Build the chart ------------------------------------------------
     try:
         chart = _dispatch_builder(
-            chart_type, df, mapping, skin_config, width, height, layers
+            chart_type, df, mapping, skin_config, width, height, layers,
+            composite_cell=False,
         )
     except ValidationError as exc:
         return ChartResult(
@@ -16417,6 +16684,8 @@ def _dispatch_builder(
     width: int,
     height: int,
     layers: Optional[List[Dict[str, Any]]],
+    *,
+    composite_cell: bool = False,
 ) -> alt.Chart:
     """Route ``chart_type`` to the appropriate ``_build_*`` function.
 
@@ -16451,7 +16720,10 @@ def _dispatch_builder(
     if chart_type == "area":
         return _build_area(df, mapping, skin_config, width, height)
     if chart_type == "heatmap":
-        return _build_heatmap(df, mapping, skin_config, width, height)
+        return _build_heatmap(
+            df, mapping, skin_config, width, height,
+            composite_cell=composite_cell,
+        )
     if chart_type == "histogram":
         return _build_histogram(df, mapping, skin_config, width, height)
     if chart_type == "boxplot":
@@ -16751,7 +17023,8 @@ def _build_single_chart(
 
     # Build.
     chart = _dispatch_builder(
-        chart_type, df, mapping, skin_config, width, height, spec.layers
+        chart_type, df, mapping, skin_config, width, height, spec.layers,
+        composite_cell=True,
     )
 
     # Per-sub-chart title/subtitle. Length-validated + auto-wrapped so a
@@ -16786,8 +17059,16 @@ def _build_single_chart(
             title_lines if title_lines and len(title_lines) > 1
             else (title_lines[0] if title_lines else spec.title)
         )
-        title_fs = title_fontsize_override if title_fontsize_override else 18
-        subtitle_fs = subtitle_fontsize_override if subtitle_fontsize_override else 10
+        title_fs = (
+            title_fontsize_override
+            if title_fontsize_override
+            else _SUBCHART_TITLE_FONT_SIZE
+        )
+        subtitle_fs = (
+            subtitle_fontsize_override
+            if subtitle_fontsize_override
+            else _SUBCHART_SUBTITLE_FONT_SIZE
+        )
         if subtitle_lines:
             subtitle_text: Any = (
                 subtitle_lines
@@ -20107,7 +20388,7 @@ _V2_UNSET = object()
 # convention; not taught in the skill). Override on v2:
 # ``Chart.with_dimensions(preset)``.
 _AUTO_DIMENSIONS: Dict[str, str] = {
-    "multi_line":      "wide",     # 700x350 - time series default
+    "multi_line":      "wide",     # 700x350 - default standalone canvas
     "timeseries":      "wide",
     "area":            "wide",
     "bar":             "wide",     # vertical bars / categorical comparisons
@@ -20115,11 +20396,11 @@ _AUTO_DIMENSIONS: Dict[str, str] = {
     "boxplot":         "wide",
     "waterfall":       "wide",     # decomposition needs horizontal room
     "bullet":          "wide",
-    "scatter":         "square",   # 450x450 - X-Y relationships
-    "scatter_multi":   "square",
-    "heatmap":         "square",
-    "donut":           "square",
-    "bar_horizontal":  "tall",     # 400x550 - rankings / many categories
+    "scatter":         "wide",
+    "scatter_multi":   "wide",
+    "heatmap":         "wide",
+    "donut":           "wide",
+    "bar_horizontal":  "wide",
 }
 
 
@@ -22540,6 +22821,7 @@ __all__ = [
     "YAxisLabelTooLongError",
     "LvlSeriesNameTooLongError",
     "LegendLabelTooLongError",
+    "HeatmapRowLabelTooLongError",
     "validate_plot_ready_df",
     # ---- Static spec utilities ------------------------------------
     "create_static_spec",
