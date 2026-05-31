@@ -485,6 +485,53 @@ class LvlSeriesNameTooLongError(ValidationError):
         )
 
 
+class LegendLabelTooLongError(ValidationError):
+    """Raised when a colour-legend series name exceeds the pixel budget.
+
+    Vega-Lite treats ``legend.labelLimit`` as a hard ellipsis truncate --
+    there is no wrap. The engine computes the budget as 25%% of
+    ``chart_width`` (``_LEGEND_MAX_WIDTH_FRAC``) and fails up-front when
+    any ``color``-column value would be clipped, so PRISM shortens names
+    in the DataFrame before calling ``make_chart()`` / composites.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        offending_names: Optional[List[str]] = None,
+        color_field: Optional[str] = None,
+        mapping: Optional[Dict[str, Any]] = None,
+        max_chars: Optional[int] = None,
+        chart_width: Optional[int] = None,
+    ) -> None:
+        Exception.__init__(self, message)
+        self.context = {
+            "offending_names": list(offending_names or []),
+            "color_field": color_field,
+            "mapping": mapping,
+            "max_chars": max_chars,
+            "chart_width": chart_width,
+        }
+        send_error_email(
+            error_message=f"LegendLabelTooLongError: {message}",
+            traceback_info=traceback.format_exc(),
+            tool_name="chart_functions",
+            metadata={
+                "error_type": "LegendLabelTooLongError",
+                "offending_names": list(offending_names or []),
+                "color_field": color_field,
+                "max_chars": max_chars,
+                "chart_width": chart_width,
+                "mapping_keys": list(mapping.keys()) if mapping else None,
+            },
+            context=(
+                "Colour-legend series name exceeded the cell-width budget. "
+                "User should shorten names in the color column -- super short "
+                "in composites (aim <=6 chars in 4-pack / 6-pack cells)."
+            ),
+        )
+
+
 class BarCategoryLabelTooLongError(ValidationError):
     """Raised when bar chart category labels exceed the configured cap.
 
@@ -5026,6 +5073,40 @@ def _estimate_lvl_right_margin(
     return margin
 
 
+def _estimate_composite_cell_lvl_pad(
+    spec: "ChartSpec",
+    chart_width: int,
+    *,
+    suppress_lvl: bool = False,
+) -> int:
+    """Right-edge reserve for LVL in a composite sub-chart (pre-compose).
+
+    Mirrors the annotation list ``_build_single_chart`` assembles so
+    ``make_composite`` can apply a single ``padding`` on the composed
+    ``HConcatChart`` / ``VConcatChart`` (per-chart padding breaks
+    ``alt.hconcat``).
+    """
+    if suppress_lvl:
+        return 0
+    if spec.mapping.get("dual_axis_series"):
+        return 0
+    df = spec.df.copy()
+    mapping = dict(spec.mapping)
+    chart_type = spec.chart_type
+    if chart_type in {"multi_line", "area"}:
+        df, mapping = _auto_melt_for_multiline(df, mapping)
+    df, mapping = _sanitize_column_names(df, mapping)
+    cell_annotations = spec.annotations
+    if suppress_lvl:
+        cell_annotations = _strip_lvl_annotations(cell_annotations)
+    if not suppress_lvl and _should_auto_inject_lvl(
+        chart_type, mapping, cell_annotations,
+    ):
+        cell_annotations = list(cell_annotations or [])
+        cell_annotations.append(LastValueLabel())
+    return _estimate_lvl_right_margin(cell_annotations, df, mapping)
+
+
 def _should_auto_inject_lvl(
     chart_type: str,
     mapping: Dict[str, Any],
@@ -5045,8 +5126,8 @@ def _should_auto_inject_lvl(
     Returns True only when ALL of the following hold:
 
     * ``chart_type`` is line-shaped (``multi_line`` / ``timeseries``).
-    * Not dual-axis -- the dual-axis strip prohibits LVL anyway, so
-      auto-injection is wasted work; the colour legend renders.
+    * Not dual-axis -- LVL collides with the right y-axis; colour legend
+      identifies series instead.
     * Caller has not already added a ``LastValueLabel`` annotation --
       the explicit annotation always wins.
     * Caller has not set ``mapping['legend'] = True`` -- this is the
@@ -5065,15 +5146,32 @@ def _should_auto_inject_lvl(
     return True
 
 
+def _strip_dual_axis_lvl_annotations(
+    annotations: Optional[List["Annotation"]],
+    mapping: Dict[str, Any],
+) -> Tuple[Optional[List["Annotation"]], int]:
+    """Drop ``LastValueLabel`` on dual-axis charts.
+
+    End-of-line labels paint past the last x point and collide with the
+    right-hand y-axis scale / ticks. Dual-axis charts use the colour legend
+    for series identification instead.
+    """
+    if not annotations or not mapping.get("dual_axis_series"):
+        return annotations, 0
+    kept = [a for a in annotations if not isinstance(a, LastValueLabel)]
+    removed = len(annotations) - len(kept)
+    return (kept or None), removed
+
+
 def _strip_lvl_annotations(
     annotations: Optional[List["Annotation"]],
 ) -> Optional[List["Annotation"]]:
     """Silently remove all ``LastValueLabel`` annotations.
 
-    Grid and composite layouts prohibit end-of-line labels -- panel
-    density and shared-axis comparison make LVL collide or steal margin.
-    PRISM may pass explicit LVL annotations; the engine drops them
-    without warning in multipanel contexts.
+    Facet grids prohibit end-of-line labels -- panel density and shared-
+    axis comparison make LVL collide or steal margin. PRISM may pass
+    explicit LVL annotations; the engine drops them without warning in
+    facet multipanel contexts.
     """
     if not annotations:
         return annotations
@@ -9788,8 +9886,107 @@ _LEGEND_MAX_WIDTH_FRAC: float = 0.25
 probe T5b finding F2). Without this, 35-50 char series names like
 "United States Treasury 10-Year Constant Maturity Yield" cause
 Vega-Lite to reserve 40-50%% of canvas width for the legend column,
-squashing the plot region. The cap forces Vega-Lite to truncate
-overlong labels with an ellipsis at render time."""
+squashing the plot region. Pair with ``_validate_legend_labels`` so
+overlong names raise ``LegendLabelTooLongError`` instead of silent
+ellipsis truncation."""
+
+_LEGEND_CHAR_WIDTH_PX: int = 7
+"""Pixels per character assumed when deriving a char budget from
+``labelLimit`` (matches the ``labelLimit // 7`` wrap estimate elsewhere)."""
+
+_COMPOSITE_LEGEND_CELL_WIDTH_PX: int = 320
+"""Cell widths at or below this threshold get composite-specific guidance
+in ``LegendLabelTooLongError`` (4-pack compact = 280px, 6-pack = 260px)."""
+
+
+def _legend_label_max_chars(chart_width: int) -> int:
+    """Maximum colour-legend label length before Vega-Lite ellipsizes."""
+    if chart_width <= 0:
+        return 999
+    legend_cap_px = int(chart_width * _LEGEND_MAX_WIDTH_FRAC)
+    return max(1, legend_cap_px // _LEGEND_CHAR_WIDTH_PX)
+
+
+def _color_legend_will_render(
+    chart_type: str,
+    mapping: Dict[str, Any],
+    annotations: Optional[List["Annotation"]],
+    *,
+    suppress_lvl: bool = False,
+) -> bool:
+    """Return True when the categorical colour legend will be visible.
+
+    Standalone ``multi_line`` / ``timeseries`` default to LastValueLabel
+    (legend suppressed). Facet grids pass ``suppress_lvl=True`` (no LVL).
+    Pack composites use LVL in every cell (``suppress_lvl=False``).
+    Dual-axis always uses the colour legend.
+    """
+    color_field = _get_field(mapping, "color")
+    if not color_field:
+        return False
+    if chart_type in {"multi_line", "timeseries", "area"}:
+        if mapping.get("dual_axis_series"):
+            return True
+        if suppress_lvl:
+            return True
+        if mapping.get("legend") is True:
+            return True
+        if annotations and any(isinstance(a, LastValueLabel) for a in annotations):
+            return False
+        if _should_auto_inject_lvl(chart_type, mapping, annotations):
+            return False
+        return True
+    return True
+
+
+def _validate_legend_labels(
+    df: pd.DataFrame,
+    color_field: str,
+    chart_width: int,
+    mapping: Dict[str, Any],
+    *,
+    composite_cell: bool = False,
+) -> None:
+    """Raise ``LegendLabelTooLongError`` when any legend label exceeds budget."""
+    if color_field not in df.columns:
+        return
+    max_chars = _legend_label_max_chars(chart_width)
+    labels = [str(v) for v in df[color_field].unique()]
+    offenders = sorted(
+        {label for label in labels if len(label) > max_chars},
+        key=lambda s: -len(s),
+    )
+    if not offenders:
+        return
+
+    shown = offenders[:5]
+    offender_block = "\n".join(
+        f"  - '{label}' ({len(label)} ch)" for label in shown
+    )
+    composite_hint = (
+        " Composite cells are narrow -- use super-short series names "
+        f"(aim <=6 chars in 4-pack / 6-pack; hard cap {max_chars} ch "
+        f"at {chart_width}px cell width)."
+        if composite_cell or chart_width <= _COMPOSITE_LEGEND_CELL_WIDTH_PX
+        else ""
+    )
+    raise LegendLabelTooLongError(
+        (
+            f"Colour-legend labels in field '{color_field}' exceed the "
+            f"{max_chars}-character budget for a {chart_width}px-wide "
+            f"chart ({len(offenders)} offender(s), longest is "
+            f"{max(offenders, key=len)!r}). Vega-Lite truncates legend "
+            f"text with an ellipsis -- shorten names in the DataFrame "
+            f"before make_chart() / make_*pack_*().{composite_hint}\n"
+            f"Offenders ({len(shown)} of {len(offenders)} shown, longest first):\n"
+            f"{offender_block}"
+        ),
+        offending_names=offenders,
+        color_field=color_field,
+        mapping=mapping,
+        max_chars=max_chars,
+        chart_width=chart_width,
+    )
 
 
 def _calculate_legend_config(
@@ -15822,6 +16019,24 @@ def make_chart(
             except Exception:  # noqa: BLE001
                 pass
 
+    # ---- Colour-legend label validation (when legend will render) ------
+    _legend_color_field = _get_field(mapping, "color")
+    if (
+        _legend_color_field
+        and _legend_color_field in df.columns
+        and _color_legend_will_render(chart_type, mapping, annotations)
+    ):
+        try:
+            _validate_legend_labels(
+                df, _legend_color_field, width, mapping, composite_cell=False,
+            )
+        except ValidationError as exc:
+            return ChartResult(
+                chart_type=chart_type, skin=skin, success=False,
+                error_message=str(exc), warnings=warnings,
+                audit_trail=audit_trail,
+            )
+
     # ---- Build the chart ------------------------------------------------
     try:
         chart = _dispatch_builder(
@@ -15856,37 +16071,25 @@ def make_chart(
         )
 
     # ---- LastValueLabel on dual-axis: prohibited, drop with warning ----
-    # ``LastValueLabel`` is suppressed on dual-axis charts -- the normal
-    # color legend renders instead. Two-axis charts already carry two
-    # title strings + an inverted-domain affordance; bolting end-of-line
-    # labels on top of that overloads the canvas (left/right LVL labels
-    # collide with their own axis ticks, and ``include_right_axis=True``
-    # routes label placement through Vega-Lite's shared-domain layer
-    # which drifts). The strip happens BEFORE render_annotations and
-    # _estimate_lvl_right_margin so both downstream paths see the
-    # cleaned list -- the legend-suppression branch in render_annotations
-    # never fires (LVL is gone) and the right-margin reserve drops to 0
-    # naturally. Mirrors the Trendline-on-dual-axis precedent.
-    if annotations and mapping.get("dual_axis_series"):
-        lvl_count = sum(1 for a in annotations if isinstance(a, LastValueLabel))
-        if lvl_count:
-            logger.warning(
-                "[make_chart] Suppressed %d LastValueLabel annotation"
-                "(s) on a dual-axis chart -- LVL is not supported on "
-                "dual-axis ``multi_line``. The normal color legend "
-                "renders instead.",
-                lvl_count,
-            )
-            warnings.append(
-                f"LastValueLabel suppressed on dual-axis chart "
-                f"({lvl_count} stripped); the normal color legend "
-                f"renders instead. For end-of-line labels, build a "
-                f"single-axis chart per series and combine via "
-                f"``make_2pack_vertical()``."
-            )
-            annotations = [
-                a for a in annotations if not isinstance(a, LastValueLabel)
-            ]
+    # LVL paints past the last data point and collides with the right-hand
+    # y-axis scale. Dual-axis charts use the colour legend for series ID.
+    annotations, lvl_stripped = _strip_dual_axis_lvl_annotations(
+        annotations, mapping,
+    )
+    if lvl_stripped:
+        logger.warning(
+            "[make_chart] Suppressed %d LastValueLabel annotation(s) on a "
+            "dual-axis chart -- LVL collides with the right y-axis. The "
+            "colour legend renders instead.",
+            lvl_stripped,
+        )
+        warnings.append(
+            f"LastValueLabel suppressed on dual-axis chart "
+            f"({lvl_stripped} stripped) -- end-of-line labels collide with "
+            f"the right y-axis; the colour legend renders instead. For "
+            f"end-of-line labels, build single-axis charts and combine "
+            f"via ``make_2pack_vertical()``."
+        )
 
     # ---- Auto-default LastValueLabel for multi_line / timeseries -------
     # Multi-line charts default to end-of-line labelling (FT/Bloomberg
@@ -16490,10 +16693,14 @@ def _build_single_chart(
       3. Validate plot-ready DF + encoding + integrity
       4. Dispatch to ``_build_*``
       5. Apply title/subtitle (per-sub-chart)
-      6. Layer annotations
+      6. Layer annotations (LVL auto-injected on multi_line by default)
       7. Strip ``config`` and ``$schema`` from the spec (they belong at
          the composite level, not per sub-chart -- Altair 4.x rejects
          them inside hconcat/vconcat).
+
+    ``suppress_lvl=True`` is reserved for facet grids only; pack composites
+    (``make_2pack_*``, ``make_4pack_grid``, etc.) leave it False so every
+    multi_line cell gets end-of-line labels instead of a colour legend.
 
     Args:
         force_x_label_angle: When set, overrides the per-chart
@@ -16525,6 +16732,22 @@ def _build_single_chart(
     validate_plot_ready_df(df, chart_type, mapping)
     _validate_encoding_data(df, mapping, chart_type)
     _validate_chart_data_integrity(df, mapping, chart_type)
+
+    _legend_color_field = _get_field(mapping, "color")
+    if (
+        _legend_color_field
+        and _legend_color_field in df.columns
+        and _color_legend_will_render(
+            chart_type, mapping, spec.annotations, suppress_lvl=suppress_lvl,
+        )
+    ):
+        _validate_legend_labels(
+            df,
+            _legend_color_field,
+            width,
+            mapping,
+            composite_cell=suppress_lvl,
+        )
 
     # Build.
     chart = _dispatch_builder(
@@ -16596,10 +16819,21 @@ def _build_single_chart(
     cell_annotations = spec.annotations
     if suppress_lvl:
         cell_annotations = _strip_lvl_annotations(cell_annotations)
+    cell_annotations, _lvl_stripped = _strip_dual_axis_lvl_annotations(
+        cell_annotations, mapping,
+    )
+    if _lvl_stripped:
+        logger.warning(
+            "[_build_single_chart] Stripped %d LastValueLabel annotation(s) "
+            "on dual-axis %r -- LVL collides with the right y-axis; colour "
+            "legend renders instead.",
+            _lvl_stripped, spec.title,
+        )
 
-    # Auto-default LastValueLabel for standalone multi_line only.
-    # Grid and composite cells suppress LVL entirely (see
-    # ``suppress_lvl``); end-of-line labels collide in tight panels.
+    # Auto-default LastValueLabel for multi_line / timeseries (same as
+    # standalone ``make_chart``). Facet grids pass ``suppress_lvl=True``;
+    # pack composites leave it False so end-of-line labels replace the
+    # colour legend in every cell.
     if not suppress_lvl and _should_auto_inject_lvl(
         chart_type, mapping, cell_annotations,
     ):
@@ -18871,8 +19105,13 @@ def make_composite(
     # Build each sub-chart, collecting errors.
     built: List[alt.Chart] = []
     chart_errors: List[Dict[str, Any]] = []
+    max_lvl_right_pad = 0
     for i, spec in enumerate(charts):
         chart_index = i + 1
+        max_lvl_right_pad = max(
+            max_lvl_right_pad,
+            _estimate_composite_cell_lvl_pad(spec, chart_width),
+        )
         try:
             built.append(
                 _build_single_chart(
@@ -18881,7 +19120,7 @@ def make_composite(
                     reserve_caption_h=reserve_cap_h_arg,
                     reserve_side_left_w=reserve_left_w_arg,
                     reserve_side_right_w=reserve_right_w_arg,
-                    suppress_lvl=True,
+                    suppress_lvl=False,
                 )
             )
             logger.info(
@@ -19027,6 +19266,11 @@ def make_composite(
             title_props["subtitleFontSize"] = 22
             title_props["subtitleColor"] = "#666666"
         composite = composite.properties(title=title_props)
+
+    if max_lvl_right_pad > 0:
+        composite = composite.properties(padding={
+            "left": 5, "top": 5, "bottom": 5, "right": max_lvl_right_pad,
+        })
 
     composite = composite.configure(**skin_config.get("config", {}))
 
@@ -22295,6 +22539,7 @@ __all__ = [
     "ValidationError",
     "YAxisLabelTooLongError",
     "LvlSeriesNameTooLongError",
+    "LegendLabelTooLongError",
     "validate_plot_ready_df",
     # ---- Static spec utilities ------------------------------------
     "create_static_spec",

@@ -199,7 +199,9 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 
 `timeseries` is an alias for `multi_line`. `multi_line` auto-detects non-datetime x → ordinal mode; tenor values (`1M`, `2Y`, `10Y`) auto-sort by maturity.
 
-**End-of-line labels (LVL), not colour legend, on `multi_line` / `timeseries`.** Series name paints at line's right end in own colour (FT/Bloomberg). Auto-injected on every single panel + composite cell. **Series names ≤25 chars** -- longer raises `LvlSeriesNameTooLongError`; rename in DataFrame (`'United States Equities Index 500'` → `'S&P 500'`). Customise via explicit `LastValueLabel(dx=..., font_size=..., font_weight=...)` -- your annotation wins. Auto-suppressed on dual-axis where colour legend renders (§9.4).
+**End-of-line labels (LVL), not colour legend, on `multi_line` / `timeseries`.** Series name paints at line's right end in own colour (FT/Bloomberg). Auto-injected on every single panel **and every pack-composite cell** (`make_2pack_*`, `make_3pack_*`, `make_4pack_grid`, `make_6pack_grid`). **Series names ≤25 chars** -- longer raises `LvlSeriesNameTooLongError`; rename in DataFrame (`'United States Equities Index 500'` → `'S&P 500'`). Customise via explicit `LastValueLabel(dx=..., font_size=..., font_weight=...)` -- your annotation wins. **Dual-axis (`dual_axis_series`): no LVL** -- end-of-line text collides with the right y-axis; colour legend renders instead (§9.4). Facet grids (`mapping['facet']`) strip LVL -- see grids spoke.
+
+**Colour-legend series names** apply only when the legend is visible (dual-axis, or explicit `mapping['legend']=True`): must fit the cell-width budget or the engine raises `LegendLabelTooLongError`. Pack composites with LVL do not show a colour legend.
 
 ### 6.2 Bar family
 
@@ -375,7 +377,7 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 | `PointLabel` | `x`, `y`, `dx`/`dy` (pixel offsets), `font_size`, `align`. Use sparingly |
 | `PointHighlight` | `x`, `y`, `size` (default `100`), `opacity`, `shape` (`'circle'`/`'square'`/`'diamond'`/`'triangle'`/`'cross'`/`'stroke'`), `filled`, `stroke_color`, `stroke_width`. Default `"#C00000"` |
 | `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`, default `'halo'`), `background_color`, `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. `dx` 0-60; `abs(dx)>80` risks off-canvas |
-| `LastValueLabel` | `dx`, `font_size` (default 15), `font_weight`. **Auto-injected** on every `multi_line` / `timeseries` single panel + composite cell (§6.1); pass explicit instance to customise. Auto-derives names from color column. **Series names > 25 chars raise `LvlSeriesNameTooLongError`** -- rename in DataFrame. Suppressed on dual-axis. Text-only, no endpoint dot |
+| `LastValueLabel` | `dx`, `font_size` (default 15), `font_weight`. **Auto-injected** on every `multi_line` / `timeseries` single panel + pack-composite cell (§6.1); pass explicit instance to customise. Auto-derives names from color column. **Series names > 25 chars raise `LvlSeriesNameTooLongError`** -- rename in DataFrame. **Stripped on dual-axis** (collides with right y-axis). Text-only, no endpoint dot |
 | `Trendline` | `method` (`'linear'`/`'exp'`/`'log'`/`'pow'`/`'poly'`/`'quad'`), `stroke_width`, `stroke_dash`. Scatter only |
 | `PlotText` | `text` (**≤8 words**, hard cap 10), `position` (`'auto'` / `'left'` / `'right'` / `'bottom'`; auto routes right → bottom → left), `font_size`, `italic`, `color`, `align`, `width_pct`. For longer prose pass `make_chart(caption=...)` / `side_left=...` / `side_right=...` directly. Explicit `caption=` / `side_*=` wins. Inside-plot anchor values removed 2026-05-10 -- now `ValidationError` |
 
@@ -458,7 +460,7 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',
 
 ### 9.4 Annotations against the right axis
 
-`HLine`, `Segment`, `PointHighlight`, `Callout`, `Arrow`, `Band` (horizontal), `PointLabel` accept `axis='right'` -- pass y-values in right-axis units. `VLine` is axis-agnostic. Out-of-domain values silently dropped. `LastValueLabel` and `Trendline` do not apply on dual-axis -- engine strips both (non-fatal warning) and colour legend renders; for end-of-line labels or trendlines alongside two y-scales, build single-axis charts and combine via `make_2pack_vertical()`.
+`HLine`, `Segment`, `PointHighlight`, `Callout`, `Arrow`, `Band` (horizontal), `PointLabel` accept `axis='right'` -- pass y-values in right-axis units. `VLine` is axis-agnostic. Out-of-domain values silently dropped. **`LastValueLabel` does not apply on dual-axis** -- engine strips it (non-fatal warning); end-of-line labels collide with the right y-axis, so the colour legend renders. `Trendline` also stripped on dual-axis. For end-of-line labels alongside two y-scales, build single-axis charts and combine via `make_2pack_vertical()`.
 
 ```python
 annotations = [
@@ -545,7 +547,7 @@ spec = ChartSpec(df=df, chart_type='multi_line',
 
 All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`, `spacing`, `filename_prefix`, `filename_suffix`; return `CompositeResult` (`ChartResult` fields + `chart_errors`). `caption` / `side_*` flank the whole pack (same shape as `make_chart`); sub-chart text panels go on each `ChartSpec`.
 
-**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. Up to N-1 sub-charts can fail; survivors render. Failures in `result.chart_errors`.
+**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. Up to N-1 sub-charts can fail; survivors render. Failures in `result.chart_errors`. **`multi_line` series names ≤25 chars in every pack-composite cell** (same LVL cap as standalone; see §6.1).
 
 | Situation | Layout |
 |---|---|
