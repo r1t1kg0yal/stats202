@@ -67,6 +67,7 @@ import copy
 import hashlib
 import io
 import json
+import colorsys
 import logging
 import math
 import os
@@ -9369,6 +9370,36 @@ def _validate_color_kwargs(
     is_heatmap_path = chart_type == "heatmap"
 
     color_scheme = mapping.get("color_scheme")
+    color_range = mapping.get("color_range")
+    if color_range is not None:
+        if not isinstance(color_range, (list, tuple)) or len(color_range) != 2:
+            raise ValidationError(
+                "mapping['color_range'] must be a 2-element list of hex "
+                "colors [start, end], e.g. ['#DC143C', '#003359']."
+            )
+        for idx, hex_val in enumerate(color_range):
+            if not isinstance(hex_val, str) or not hex_val.startswith("#"):
+                raise ValidationError(
+                    f"mapping['color_range'][{idx}]={hex_val!r} must be a "
+                    f"hex string like '#DC143C'."
+                )
+        if chart_type not in {"scatter", "scatter_multi"}:
+            raise ValidationError(
+                "mapping['color_range'] applies to scatter phase-space "
+                f"gradients only (chart_type='scatter' / 'scatter_multi'); "
+                f"got chart_type={chart_type!r}."
+            )
+        color_field = _get_field(mapping, "color")
+        if df is not None and (
+            not color_field
+            or color_field not in df.columns
+            or not _scatter_color_is_gradient(df, color_field)
+        ):
+            raise ValidationError(
+                "mapping['color_range'] requires mapping['color'] to reference "
+                "a temporal or numeric column (phase-space gradient)."
+            )
+
     if color_scheme is not None and not isinstance(color_scheme, str):
         raise ValidationError(
             f"mapping['color_scheme'] must be a string palette name; "
@@ -9394,12 +9425,20 @@ def _validate_color_kwargs(
                 f"(diverging-at-zero)."
             )
         if (not is_heatmap_path) and in_grad and not in_cat:
-            raise ValidationError(
-                f"mapping['color_scheme']={color_scheme!r} is a heatmap / "
-                f"gradient ramp but chart_type='{chart_type}' needs a "
-                f"categorical palette. Pick from {cat_names}, or pass "
-                f"mapping['color_map'] with explicit hex values."
-            )
+            color_field = _get_field(mapping, "color")
+            if (
+                chart_type in {"scatter", "scatter_multi"}
+                and df is not None
+                and _scatter_color_is_gradient(df, color_field)
+            ):
+                pass
+            else:
+                raise ValidationError(
+                    f"mapping['color_scheme']={color_scheme!r} is a heatmap / "
+                    f"gradient ramp but chart_type='{chart_type}' needs a "
+                    f"categorical palette. Pick from {cat_names}, or pass "
+                    f"mapping['color_map'] with explicit hex values."
+                )
 
     color_map = mapping.get("color_map")
     if color_map is None:
@@ -10018,16 +10057,25 @@ def _color_legend_will_render(
     annotations: Optional[List["Annotation"]],
     *,
     suppress_lvl: bool = False,
+    df: Optional[pd.DataFrame] = None,
 ) -> bool:
     """Return True when the categorical colour legend will be visible.
 
     Standalone ``multi_line`` / ``timeseries`` default to LastValueLabel
     (legend suppressed). Facet grids pass ``suppress_lvl=True`` (no LVL).
     Pack composites use LVL in every cell (``suppress_lvl=False``).
-    Dual-axis always uses the colour legend.
+    Dual-axis always uses the colour legend. Scatter phase-space gradient
+    (temporal/numeric ``color``) uses a continuous ramp, not a categorical
+    legend -- returns False so label-length validation is skipped.
     """
     color_field = _get_field(mapping, "color")
     if not color_field:
+        return False
+    if (
+        chart_type in {"scatter", "scatter_multi"}
+        and df is not None
+        and _scatter_color_is_gradient(df, color_field)
+    ):
         return False
     if chart_type in {"multi_line", "timeseries", "area"}:
         if mapping.get("dual_axis_series"):
@@ -10711,6 +10759,27 @@ def _build_timeseries(
             f"{list(df.columns)}"
         )
 
+    zero_fill = bool(mapping.get("zero_fill"))
+    if zero_fill:
+        if color_field and color_field in df.columns:
+            raise ValidationError(
+                "mapping['zero_fill']=True requires a single-series chart; "
+                "omit mapping['color'] or melt to one y column."
+            )
+        if mapping.get("dual_axis_series"):
+            raise ValidationError(
+                "mapping['zero_fill']=True is incompatible with "
+                "dual_axis_series; use a single y-axis line."
+            )
+        if mapping.get("strokeDash"):
+            raise ValidationError(
+                "mapping['zero_fill']=True is incompatible with strokeDash."
+            )
+        if mapping.get("scale_type") == "log":
+            raise ValidationError(
+                "mapping['zero_fill']=True is incompatible with log y-scale."
+            )
+
     df = df.copy()
 
     # NaN interpolation for visual continuity. Lines should always be
@@ -10766,9 +10835,15 @@ def _build_timeseries(
         )
 
     # ---- y-axis domain (prevent zero-start flattening) ------------------
+    fill_baseline = float(mapping.get("zero_fill_baseline", 0)) if zero_fill else None
     y_min, y_max = calculate_y_axis_domain(
-        df[y_field], handle_outliers=False, prevent_zero_start=True
+        df[y_field],
+        handle_outliers=False,
+        prevent_zero_start=not zero_fill,
     )
+    if zero_fill and fill_baseline is not None:
+        y_min = min(y_min, fill_baseline)
+        y_max = max(y_max, fill_baseline)
     logger.debug(
         "[_build_timeseries] y-axis domain: [%.4f, %.4f]", y_min, y_max
     )
@@ -10783,6 +10858,10 @@ def _build_timeseries(
         scale_override == "log"
         or (scale_override is None and should_use_log_scale(df[y_field]))
     )
+    if zero_fill and use_log:
+        raise ValidationError(
+            "mapping['zero_fill']=True is incompatible with log y-scale."
+        )
     if use_log:
         logger.info(
             "[_build_timeseries] auto-applying log y-scale (max/min > 100)"
@@ -10864,6 +10943,28 @@ def _build_timeseries(
         logger.debug(
             "[_build_timeseries] color encoding: %s (title=%r) sort=%s",
             color_field, legend_title, color_sort,
+        )
+
+    if zero_fill:
+        pos_color = mapping.get("zero_fill_positive", _DEFAULT_ZERO_FILL_POSITIVE)
+        neg_color = mapping.get("zero_fill_negative", _DEFAULT_ZERO_FILL_NEGATIVE)
+        area_neg, area_pos = _build_baseline_fill_layers(
+            df,
+            x_field,
+            y_field,
+            fill_baseline,
+            y_scale,
+            x_axis,
+            y_axis,
+            pos_color,
+            neg_color,
+            width,
+            height,
+        )
+        chart = alt.layer(area_neg, area_pos, chart)
+        logger.debug(
+            "[_build_timeseries] zero_fill baseline=%.4g pos=%s neg=%s",
+            fill_baseline, pos_color, neg_color,
         )
 
     chart = _force_data_embedding(chart, df)
@@ -11382,6 +11483,253 @@ def _build_profile_line(
     return chart
 
 
+_DEFAULT_ZERO_FILL_POSITIVE = "#C0392B"
+_DEFAULT_ZERO_FILL_NEGATIVE = "#1A8A7A"
+
+
+def _scatter_color_is_gradient(df: pd.DataFrame, color_field: Optional[str]) -> bool:
+    if not color_field or color_field not in df.columns:
+        return False
+    series = df[color_field]
+    return pd.api.types.is_datetime64_any_dtype(series) or (
+        pd.api.types.is_numeric_dtype(series)
+        and not pd.api.types.is_bool_dtype(series)
+    )
+
+
+def _resolve_scatter_order_field(
+    mapping: Dict[str, Any],
+    df: pd.DataFrame,
+    color_field: Optional[str],
+) -> Optional[str]:
+    order_field = _get_field(mapping, "order")
+    if order_field and order_field in df.columns:
+        return order_field
+    if _scatter_color_is_gradient(df, color_field):
+        return color_field
+    return None
+
+
+def _scatter_gradient_legend(
+    df: pd.DataFrame,
+    color_field: str,
+    color_type: str,
+) -> alt.Legend:
+    """Gradient legend with only the first and last scale endpoints."""
+    series = df[color_field].dropna()
+    if series.empty:
+        return alt.Legend(title=None)
+    lo = series.min()
+    hi = series.max()
+    if color_type == "temporal":
+        lo_label = pd.Timestamp(lo).strftime("%b %d, %Y").replace("'", "\\'")
+        hi_label = pd.Timestamp(hi).strftime("%b %d, %Y").replace("'", "\\'")
+    else:
+        lo_label = f"{float(lo):g}".replace("'", "\\'")
+        hi_label = f"{float(hi):g}".replace("'", "\\'")
+    if lo == hi:
+        return alt.Legend(title=None, values=[0], labelExpr=f"'{lo_label}'")
+    return alt.Legend(
+        title=None,
+        values=[0, 1],
+        labelExpr=f"datum.value == 0 ? '{lo_label}' : '{hi_label}'",
+    )
+
+
+def _scatter_gradient_norm_series(series: pd.Series) -> pd.Series:
+    """Map a temporal/numeric color column to ``[0, 1]`` for gradient scales.
+
+    Vega-Lite temporal color scales only interpolate between the first two
+    entries of a multi-stop ``range``; encoding normalized position as
+    quantitative avoids that and uses the full HSV rainbow.
+    """
+    if pd.api.types.is_datetime64_any_dtype(series):
+        t = pd.to_datetime(series)
+        lo, hi = t.min(), t.max()
+        if lo == hi:
+            return pd.Series(0.0, index=series.index)
+        return ((t - lo) / (hi - lo)).astype(float)
+    vals = pd.to_numeric(series, errors="coerce")
+    lo, hi = float(vals.min()), float(vals.max())
+    if lo == hi:
+        return pd.Series(0.0, index=series.index)
+    return ((vals - lo) / (hi - lo)).astype(float)
+
+
+_SCATTER_GRADIENT_DEFAULT_START = "#DC143C"
+_SCATTER_GRADIENT_DEFAULT_END = "#1E90FF"
+_SCATTER_GRADIENT_N_STOPS = 9
+
+
+def _hsv_rainbow_stops(
+    start_hex: str,
+    end_hex: str,
+    n_stops: int = _SCATTER_GRADIENT_N_STOPS,
+) -> List[str]:
+    """Multi-stop ramp through the spectrum between two hex endpoints.
+
+    Interpolates hue along the *longer* arc on the colour wheel so e.g.
+    red→blue passes orange, yellow, green rather than a direct RGB blend.
+    Saturation and value lerp linearly between endpoint HSV values.
+    """
+    if n_stops < 2:
+        raise ValueError("n_stops must be >= 2")
+
+    r0, g0, b0 = (c / 255.0 for c in _hex_to_rgb(start_hex))
+    r1, g1, b1 = (c / 255.0 for c in _hex_to_rgb(end_hex))
+    h0, s0, v0 = colorsys.rgb_to_hsv(r0, g0, b0)
+    h1, s1, v1 = colorsys.rgb_to_hsv(r1, g1, b1)
+
+    fwd_span = (h1 - h0) if h1 >= h0 else (1.0 - h0) + h1
+    bwd_span = (h0 - h1) if h0 >= h1 else h0 + (1.0 - h1)
+    span_diff = abs(fwd_span - bwd_span)
+
+    if span_diff > 0.35:
+        # Same neighbourhood on the wheel — direct (possibly decreasing) hue.
+        h_start, h_end = h0, h1
+    elif fwd_span >= bwd_span:
+        # Similar arcs (e.g. red→blue) — longer rainbow sweep forward.
+        h_start = h0
+        h_end = h1 + 1.0 if h1 < h0 else h1
+    else:
+        h_start = h0 + 1.0
+        h_end = h1
+
+    stops: List[str] = []
+    for i in range(n_stops):
+        t = i / (n_stops - 1)
+        h = (h_start + t * (h_end - h_start)) % 1.0
+        s = s0 + t * (s1 - s0)
+        v = v0 + t * (v1 - v0)
+        rr, gg, bb = colorsys.hsv_to_rgb(h, s, v)
+        stops.append(_rgb_to_hex(int(rr * 255), int(gg * 255), int(bb * 255)))
+    return stops
+
+
+def _scatter_gradient_range_stops(mapping: Dict[str, Any]) -> Optional[List[str]]:
+    """HSV rainbow stops for scatter gradients, or None for a named scheme."""
+    color_range = mapping.get("color_range")
+    if mapping.get("color_scheme") is not None and color_range is None:
+        return None
+    if color_range is not None:
+        start_hex, end_hex = color_range[0], color_range[1]
+    else:
+        start_hex, end_hex = _SCATTER_GRADIENT_DEFAULT_START, _SCATTER_GRADIENT_DEFAULT_END
+    return _hsv_rainbow_stops(start_hex, end_hex)
+
+
+def _scatter_gradient_color_scale(mapping: Dict[str, Any]) -> alt.Scale:
+    """Continuous color scale for scatter phase-space gradient paths.
+
+    Default (no ``color_range`` / ``color_scheme``): red→blue HSV rainbow.
+    ``color_range=['#start', '#end']``: same HSV sweep between endpoints.
+    Explicit ``color_scheme`` alone selects a Vega-Lite named ramp.
+    """
+    stops = _scatter_gradient_range_stops(mapping)
+    if stops is not None:
+        return alt.Scale(domain=[0, 1], range=stops)
+    return alt.Scale(scheme=mapping["color_scheme"])
+
+
+def _scatter_gradient_scale_spec(
+    mapping: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Vega-Lite scale dict for facet gradient legend strips."""
+    stops = _scatter_gradient_range_stops(mapping)
+    if stops is not None:
+        return {"domain": [0, 1], "range": stops}
+    return {"scheme": mapping["color_scheme"]}
+
+
+def _scatter_gradient_scale_uses_norm(scale_spec: Optional[Dict[str, Any]]) -> bool:
+    """True when the facet strip must color by normalized position, not raw dates."""
+    return (
+        isinstance(scale_spec, dict)
+        and scale_spec.get("domain") == [0, 1]
+        and "range" in scale_spec
+    )
+
+
+def _build_baseline_fill_layers(
+    df: pd.DataFrame,
+    x_field: str,
+    y_field: str,
+    baseline: float,
+    y_scale: alt.Scale,
+    x_axis: alt.Axis,
+    y_axis: alt.Axis,
+    pos_color: str,
+    neg_color: str,
+    width: int,
+    height: int,
+) -> Tuple[alt.Chart, alt.Chart]:
+    """Area layers shading above / below a horizontal baseline."""
+    y_vals = pd.to_numeric(df[y_field], errors="coerce")
+    fill_df = df.copy()
+    fill_df["_baseline"] = baseline
+    fill_df["_fill_top"] = np.where(y_vals >= baseline, y_vals, baseline)
+    fill_df["_fill_bot"] = np.where(y_vals <= baseline, y_vals, baseline)
+
+    shared_x = alt.X(x_field, type="temporal", axis=x_axis)
+
+    area_pos = (
+        alt.Chart(fill_df)
+        .mark_area(color=pos_color, opacity=0.35, clip=True)
+        .encode(
+            shared_x,
+            y=alt.Y("_fill_top:Q", scale=y_scale, axis=y_axis),
+            y2=alt.Y2("_baseline:Q"),
+        )
+        .properties(width=width, height=height)
+    )
+    area_neg = (
+        alt.Chart(fill_df)
+        .mark_area(color=neg_color, opacity=0.35, clip=True)
+        .encode(
+            shared_x,
+            y=alt.Y("_baseline:Q", scale=y_scale, axis=y_axis),
+            y2=alt.Y2("_fill_bot:Q"),
+        )
+        .properties(width=width, height=height)
+    )
+    return area_neg, area_pos
+
+
+def _expand_scatter_path_segments(
+    df: pd.DataFrame,
+    x_field: str,
+    y_field: str,
+    order_field: str,
+    color_field: Optional[str],
+) -> pd.DataFrame:
+    """One row per consecutive (x, y) pair for gradient path segments.
+
+    Vega-Lite splits ``mark_line`` into one series per unique ``color``
+    value. Temporal/numeric phase-space paths have a unique color per
+    row, which renders as disconnected dots. ``mark_rule`` segments
+    sidestep that by giving each edge its own mark.
+    """
+    sorted_df = df.sort_values(order_field).reset_index(drop=True)
+    grad_norm: Optional[pd.Series] = None
+    if color_field and color_field in sorted_df.columns:
+        grad_norm = _scatter_gradient_norm_series(sorted_df[color_field])
+    rows: List[Dict[str, Any]] = []
+    for i in range(len(sorted_df) - 1):
+        start = sorted_df.iloc[i]
+        end = sorted_df.iloc[i + 1]
+        row: Dict[str, Any] = {
+            x_field: start[x_field],
+            y_field: start[y_field],
+            "_seg_x2": end[x_field],
+            "_seg_y2": end[y_field],
+            "_seg_idx": i,
+        }
+        if grad_norm is not None:
+            row["_grad_norm"] = grad_norm.iloc[i + 1]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def _build_scatter(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -11560,6 +11908,35 @@ def _build_scatter(
         y_padding = (y_max - y_min) * 0.05 if y_max != y_min else max(abs(y_max), 1.0) * 0.05
         y_domain = [y_min - y_padding, y_max + y_padding]
 
+    connect_path = bool(mapping.get("connect"))
+    if connect_path and mapping.get("trendline"):
+        raise ValidationError(
+            "scatter mapping['connect']=True is incompatible with trendline=True. "
+            "Pick one: a time-ordered path (connect) or a linear regression "
+            "(trendline)."
+        )
+
+    order_field = (
+        _resolve_scatter_order_field(mapping, df, color_field)
+        if connect_path
+        else None
+    )
+    if connect_path and not order_field:
+        raise ValidationError(
+            "scatter mapping['connect']=True requires mapping['order'] "
+            "(sequence column) or a temporal/numeric mapping['color'] to "
+            "define path order."
+        )
+
+    if connect_path:
+        df = df.sort_values(order_field).reset_index(drop=True)
+        valid_pairs = df[[x_field, y_field]].dropna()
+        if len(valid_pairs) < 3:
+            raise ValidationError(
+                f"Connected scatter needs >=3 valid (x, y) pairs in path "
+                f"order; found {len(valid_pairs)}."
+            )
+
     # ---- visible-dot density gate ---------------------------------------
     # A scatter only conveys a relationship when the visible plot region
     # carries enough distinct points. Below ``_MIN_SCATTER_VISIBLE_DOTS``
@@ -11585,7 +11962,7 @@ def _build_scatter(
         "[_build_scatter] visible distinct dots: %d (total valid pairs: %d)",
         visible_dot_count, len(valid_pairs),
     )
-    if visible_dot_count < _MIN_SCATTER_VISIBLE_DOTS:
+    if not connect_path and visible_dot_count < _MIN_SCATTER_VISIBLE_DOTS:
         raise ValidationError(
             f"Scatter would render only {visible_dot_count} distinct dot(s) "
             f"inside the visible plot area (need >= "
@@ -11595,7 +11972,8 @@ def _build_scatter(
             f"{visible_dot_count} remain. A scatter this sparse reads as "
             f"anecdote, not pattern. Either expand the data window, "
             f"aggregate to denser distinct points, or pick a chart type "
-            f"that suits sparse data (e.g. `bar`, `multi_line`)."
+            f"that suits sparse data (e.g. `bar`, `multi_line`), or use "
+            f"mapping['connect']=True for a time-ordered phase path."
         )
 
     # ---- titles ---------------------------------------------------------
@@ -11645,38 +12023,132 @@ def _build_scatter(
         mapping, opacity_field, df, base_opacity,
     )
 
-    point = (
-        alt.Chart(df)
-        .mark_point(
-            size=mark_config.get("size", 60),
-            filled=mark_config.get("filled", True),
-            opacity=mark_opacity,
-            color=primary_color,
-            clip=True,  # Issue #2b: clip points at axis boundaries.
-        )
-        .encode(
-            x=alt.X(
-                x_field,
-                type=x_type,
-                axis=alt.Axis(title=x_title, titleFontWeight="normal"),
-                scale=(
-                    alt.Scale(domain=x_domain)
-                    if x_domain is not None
-                    else alt.Undefined
-                ),
-            ),
-            y=alt.Y(
-                y_field,
-                type="quantitative",
-                axis=alt.Axis(title=y_title, titleFontWeight="normal"),
-                scale=alt.Scale(domain=y_domain),
-            ),
-            tooltip=_build_tooltip(mapping, "scatter", df),
-        )
-        .properties(width=width, height=height)
+    x_enc = alt.X(
+        x_field,
+        type=x_type,
+        axis=alt.Axis(title=x_title, titleFontWeight="normal"),
+        scale=(
+            alt.Scale(domain=x_domain)
+            if x_domain is not None
+            else alt.Undefined
+        ),
     )
+    y_enc = alt.Y(
+        y_field,
+        type="quantitative",
+        axis=alt.Axis(title=y_title, titleFontWeight="normal"),
+        scale=alt.Scale(domain=y_domain),
+    )
+    tooltips = _build_tooltip(mapping, "scatter", df)
 
-    if color_field and color_field in df.columns:
+    if connect_path:
+        line_config = skin_config.get("mark_config", {}).get("line", {})
+        if pd.api.types.is_datetime64_any_dtype(df[order_field]):
+            order_enc: alt.Order = alt.Order(order_field, type="temporal", sort="ascending")
+        elif pd.api.types.is_numeric_dtype(df[order_field]):
+            order_enc = alt.Order(order_field, type="quantitative", sort="ascending")
+        else:
+            order_enc = alt.Order(order_field, sort="ascending")
+
+        connect_gradient = has_color and _is_gradient_color
+        if connect_gradient:
+            # mark_line + temporal/numeric color splits every row into its
+            # own series (disconnected dots). Render one mark_rule per edge.
+            grad_df = df.copy()
+            grad_df["_grad_norm"] = _scatter_gradient_norm_series(
+                grad_df[color_field],
+            )
+            seg_df = _expand_scatter_path_segments(
+                grad_df, x_field, y_field, order_field, color_field,
+            )
+            color_series = df[color_field]
+            color_is_temporal = pd.api.types.is_datetime64_any_dtype(color_series)
+            color_type = "temporal" if color_is_temporal else "quantitative"
+            x2_type = "T" if x_is_temporal else "Q"
+            grad_scale = _scatter_gradient_color_scale(mapping)
+            segments = (
+                alt.Chart(seg_df)
+                .mark_rule(
+                    strokeWidth=line_config.get("strokeWidth", 2.5),
+                    clip=True,
+                )
+                .encode(
+                    x_enc,
+                    y_enc,
+                    x2=alt.X2(f"_seg_x2:{x2_type}"),
+                    y2=alt.Y2("_seg_y2:Q"),
+                    color=alt.Color(
+                        "_grad_norm:Q",
+                        scale=grad_scale,
+                        legend=_scatter_gradient_legend(
+                            df, color_field, color_type,
+                        ),
+                    ),
+                    order=alt.Order("_seg_idx:Q", sort="ascending"),
+                )
+                .properties(width=width, height=height)
+            )
+            vertices = (
+                alt.Chart(grad_df)
+                .mark_point(
+                    size=max(20, mark_config.get("size", 60) // 3),
+                    filled=mark_config.get("filled", True),
+                    opacity=0.45,
+                    clip=True,
+                )
+                .encode(
+                    x_enc,
+                    y_enc,
+                    color=alt.Color(
+                        "_grad_norm:Q",
+                        scale=grad_scale,
+                        legend=None,
+                    ),
+                    tooltip=tooltips,
+                )
+                .properties(width=width, height=height)
+            )
+            chart = alt.layer(segments, vertices)
+            logger.debug(
+                "[_build_scatter] connected gradient path: %d segments, order=%r",
+                len(seg_df), order_field,
+            )
+        else:
+            chart = (
+                alt.Chart(df)
+                .mark_line(
+                    point={"size": max(30, mark_config.get("size", 60) // 2)},
+                    strokeWidth=line_config.get("strokeWidth", 2.5),
+                    clip=True,
+                    color=primary_color if not has_color else alt.Undefined,
+                )
+                .encode(
+                    x_enc,
+                    y_enc,
+                    order=order_enc,
+                    tooltip=tooltips,
+                )
+                .properties(width=width, height=height)
+            )
+            logger.debug(
+                "[_build_scatter] connected path: order=%r", order_field,
+            )
+    else:
+        chart = (
+            alt.Chart(df)
+            .mark_point(
+                size=mark_config.get("size", 60),
+                filled=mark_config.get("filled", True),
+                opacity=mark_opacity,
+                color=primary_color,
+                clip=True,
+            )
+            .encode(x_enc, y_enc, tooltip=tooltips)
+            .properties(width=width, height=height)
+        )
+
+    connect_gradient = connect_path and has_color and _is_gradient_color
+    if color_field and color_field in df.columns and not connect_gradient:
         # Auto-detect gradient mode: when the color column is temporal
         # or numeric, use a sequential palette + temporal/quantitative
         # encoding type so phase-space plots show point evolution as a
@@ -11691,26 +12163,47 @@ def _build_scatter(
             and not pd.api.types.is_bool_dtype(color_series)
         )
         if color_is_temporal or color_is_numeric:
-            scheme = mapping.get("color_scheme", "viridis")
             color_type = "temporal" if color_is_temporal else "quantitative"
-            point = point.encode(
+            grad_df = df.copy()
+            grad_df["_grad_norm"] = _scatter_gradient_norm_series(
+                grad_df[color_field],
+            )
+            grad_scale = _scatter_gradient_color_scale(mapping)
+            chart = alt.Chart(grad_df).mark_point(
+                size=mark_config.get("size", 60),
+                filled=mark_config.get("filled", True),
+                opacity=mark_opacity,
+                clip=True,
+            ).encode(
+                x_enc,
+                y_enc,
+                tooltip=tooltips,
+            ).properties(width=width, height=height)
+            chart = chart.encode(
                 color=alt.Color(
-                    color_field,
-                    type=color_type,
-                    scale=alt.Scale(scheme=scheme),
-                    legend=alt.Legend(title=None),
+                    "_grad_norm:Q",
+                    scale=grad_scale,
+                    legend=_scatter_gradient_legend(
+                        df, color_field, color_type,
+                    ),
                 )
             )
+            if opacity_encoding is not None:
+                chart = chart.encode(opacity=opacity_encoding)
             logger.debug(
-                "[_build_scatter] gradient color: field=%r type=%s scheme=%s",
-                color_field, color_type, scheme,
+                "[_build_scatter] gradient color: field=%r type=%s scale=%s",
+                color_field,
+                color_type,
+                mapping.get("color_range")
+                or mapping.get("color_scheme")
+                or f"rainbow:{_SCATTER_GRADIENT_DEFAULT_START}→{_SCATTER_GRADIENT_DEFAULT_END}",
             )
         else:
             # Always symbolOpacity=1.0 on the legend for categorical
             # scatters: data points use the density curve (often <0.85)
             # but the color key must stay crisp (pre-opacity_map behaviour).
-            point = _encode_categorical_color_and_opacity(
-                point,
+            chart = _encode_categorical_color_and_opacity(
+                chart,
                 mapping,
                 skin_config,
                 color_field,
@@ -11722,11 +12215,10 @@ def _build_scatter(
                 legend_kwargs={"symbolOpacity": 1.0},
             )
 
-    if size_field and size_field in df.columns:
-        point = point.encode(size=alt.Size(size_field, type="quantitative"))
+    if size_field and size_field in df.columns and not connect_path:
+        chart = chart.encode(size=alt.Size(size_field, type="quantitative"))
 
-    chart = point
-    if mapping.get("trendline"):
+    if mapping.get("trendline") and not connect_path:
         trend = (
             alt.Chart(df)
             .transform_regression(x_field, y_field, method="linear")
@@ -11753,7 +12245,7 @@ def _build_scatter(
                 ),
             )
         )
-        chart = alt.layer(point, trend)
+        chart = alt.layer(chart, trend)
         logger.debug("[_build_scatter] trendline added")
 
     if layers:
@@ -16290,7 +16782,9 @@ def make_chart(
     if (
         _legend_color_field
         and _legend_color_field in df.columns
-        and _color_legend_will_render(chart_type, mapping, annotations)
+        and _color_legend_will_render(
+            chart_type, mapping, annotations, df=df,
+        )
     ):
         try:
             _validate_legend_labels(
@@ -17011,6 +17505,7 @@ def _build_single_chart(
         and _legend_color_field in df.columns
         and _color_legend_will_render(
             chart_type, mapping, spec.annotations, suppress_lvl=suppress_lvl,
+            df=df,
         )
     ):
         _validate_legend_labels(
@@ -18433,6 +18928,7 @@ def _build_facet_gradient_legend_panel(
     color_type: str,
     scheme: str,
     width: int,
+    scale_spec: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Horizontal gradient color bar for facet+gradient mode.
 
@@ -18478,10 +18974,18 @@ def _build_facet_gradient_legend_panel(
         midpoints = [(edges[i] + edges[i + 1]) / 2 for i in range(n_steps)]
         encoding_type = "Q"
 
+    color_scale = scale_spec if scale_spec is not None else {"scheme": scheme}
+    if _scatter_gradient_scale_uses_norm(scale_spec):
+        color_values = [(i + 0.5) / n_steps for i in range(n_steps)]
+        color_encoding_type = "Q"
+    else:
+        color_values = midpoints
+        color_encoding_type = encoding_type
+
     spec: Dict[str, Any] = {
         "data": {
             "values": [
-                {"_x1": x1_vals[i], "_x2": x2_vals[i], "_c": midpoints[i]}
+                {"_x1": x1_vals[i], "_x2": x2_vals[i], "_c": color_values[i]}
                 for i in range(n_steps)
             ]
         },
@@ -18501,8 +19005,8 @@ def _build_facet_gradient_legend_panel(
             },
             "x2": {"field": "_x2", "type": encoding_type},
             "color": {
-                "field": "_c", "type": encoding_type,
-                "scale": {"scheme": scheme},
+                "field": "_c", "type": color_encoding_type,
+                "scale": color_scale,
                 "legend": None,
             },
         },
@@ -19042,6 +19546,7 @@ def _render_facet_grid(
             color_type="temporal" if color_is_temporal else "quantitative",
             scheme=gradient_scheme,
             width=composite_outer_w,
+            scale_spec=_scatter_gradient_scale_spec(panel_mapping),
         )
         if gradient_spec:
             _strip_schema_and_config(gradient_spec)

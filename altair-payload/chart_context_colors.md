@@ -169,21 +169,29 @@ mapping = {'x': 'a', 'y': 'b', 'value': 'corr', 'color_scheme': 'redblue'}
 
 ## 6. Scatter phase-space gradient
 
-Triggered by temporal or numeric `mapping['color']` on `scatter`/`scatter_multi` (grids spoke §5). Engine picks `viridis` by default; override via `color_scheme`:
+Triggered by temporal or numeric `mapping['color']` on `scatter`/`scatter_multi` (grids spoke §5). Two ways to set the ramp:
+
+**Explicit endpoints (preferred for orbits):** `mapping['color_range']=[start_hex, end_hex]` — early time = first colour, late time = second. The engine builds a multi-stop HSV ramp along the **longer hue arc** on the colour wheel (e.g. red→blue passes orange, yellow, green — not a direct RGB blend through purple).
+
+```python
+mapping = {'x': 'util', 'y': 'labor_share', 'color': 'date', 'connect': True,
+           'color_range': ['#DC143C', '#003359']}   # red → navy
+mapping = {'x': 'cpi', 'y': 'gdp', 'color': 'quarter',
+           'color_range': ['#E63946', '#6A0DAD']}     # red → purple
+```
+
+**Default (no kwargs):** when both `color_range` and `color_scheme` are omitted, the engine uses the same HSV rainbow sweep from `#DC143C` (red) to `#1E90FF` (blue). Multi-stop ramps encode normalized time position (`0→1`) as quantitative color so Vega-Lite uses every stop (temporal encoding only interpolates the first two).
+
+**Named scheme (explicit override):** set `color_scheme` alone to select a Vega-Lite ramp instead of HSV endpoints:
 
 | Name | When |
 |---|---|
-| `viridis` (default) | Perceptually uniform; safe |
+| `viridis` | Perceptually uniform; safe |
 | `plasma` / `magma` / `inferno` | Same shape, hotter palette |
-| `turbo` / `rainbow` | More-saturated rainbow; avoid for serious analysis |
+| `turbo` / `rainbow` | More-saturated rainbow |
 | `cividis` | Colourblind-safe sequential |
 
-```python
-mapping = {'x': 'cpi', 'y': 'gdp', 'color': 'quarter',   # temporal → gradient
-           'color_scheme': 'plasma'}
-```
-
-`color_map` doesn't apply (continuous encoding).
+`color_range` wins over `color_scheme` when both are set. Legend shows first/last time only. `color_map` doesn't apply (continuous encoding).
 
 ---
 

@@ -144,6 +144,8 @@ When user hands chart-type pick ("analysis", "what's interesting"), lean toward 
 | Shape | Use case | Build |
 |---|---|---|
 | Scatter (+ trendline) | Direct X-Y: shape, strength, outliers | `'scatter'` + `mapping['trendline']=True`. Per-group: `'scatter_multi'` + `color=...` + `mapping['trendlines']=True` |
+| Phase orbit | Distribution vs activity loop through time | `'scatter'` + `mapping['connect']=True` + temporal/numeric `color` (or `order`) — §6.1 |
+| Squeeze / diffusion gauge | Single series vs a regime line (0, 50, …) | `'multi_line'` + `mapping['zero_fill']=True` + `zero_fill_baseline` — §6.1 |
 | Dual-axis multi_line in change space | Co-movement over time. Both transformed to SAME change measure (YoY %, MoM %, log-diff) BEFORE charting | `'multi_line'` + `mapping['dual_axis_series']=[...]` (§9) |
 | Lead-lag | Does X anticipate Y? | Scatter form: `merged['x_lag'] = x.shift(N)` + `'scatter'` + `mapping['trendline']=True`. Time-shift form: shift predictor `+N` months → dual-axis + `VLine` "Today" (§9.6) |
 
@@ -199,6 +201,10 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 | `waterfall` | Additive decomposition | `x` (cat), `y`, `type` (opt) |
 
 `timeseries` is an alias for `multi_line`. `multi_line` auto-detects non-datetime x → ordinal mode; tenor values (`1M`, `2Y`, `10Y`) auto-sort by maturity.
+
+**Phase orbit (`scatter` + `connect`).** Goodwin-style phase portraits: plot (x, y) with `mapping['connect']=True` to draw a time-ordered path instead of isolated dots. Requires `mapping['order']` or a temporal/numeric `mapping['color']` for sequence. Set ramp endpoints with `mapping['color_range']=['#start', '#end']` (early→late, HSV rainbow through the longer hue arc), or use `color_scheme='turbo'` etc. — see `chart_context_colors.md` §6. Incompatible with `trendline=True`.
+
+**Baseline fill gauge (`multi_line` + `zero_fill`).** Single-series line with shaded band above/below a horizontal baseline — squeeze gauge at 0, ISM diffusion at 50, etc. Set `mapping['zero_fill']=True` and `mapping['zero_fill_baseline']=50` (default `0`). Optional `zero_fill_positive` / `zero_fill_negative` hex overrides. Single-series only; incompatible with `color`, dual-axis, `strokeDash`, log scale.
 
 **End-of-line labels (LVL), not colour legend, on `multi_line` / `timeseries`.** Series name paints at line's right end in own colour (FT/Bloomberg). Auto-injected on every single panel **and every pack-composite cell** (`make_2pack_*`, `make_3pack_*`, `make_4pack_grid`, `make_6pack_grid`). **Series names ≤25 chars** -- longer raises `LvlSeriesNameTooLongError`; rename in DataFrame (`'United States Equities Index 500'` → `'S&P 500'`). Customise via explicit `LastValueLabel(dx=..., font_size=..., font_weight=...)` -- your annotation wins. **Dual-axis (`dual_axis_series`): no LVL** -- end-of-line text collides with the right y-axis; colour legend renders instead (§9.4). Facet grids (`mapping['facet']`) strip LVL -- see grids spoke.
 
@@ -284,6 +290,10 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series'}                        
 mapping = {'x': 'date', 'y': ['col_a', 'col_b']}                                        # auto-melt (wide)
 mapping = {'x': 'tenor', 'y': 'yield_pct', 'color': 'curve_date'}                       # profile/curve
 mapping = {'x': 'x_var', 'y': 'y_var', 'color': 'group', 'trendlines': True}            # scatter + trendlines
+mapping = {'x': 'util', 'y': 'labor_share', 'color': 'date', 'connect': True,
+           'color_range': ['#DC143C', '#003359']}                                     # red → navy orbit
+mapping = {'x': 'date', 'y': 'ulc_yoy', 'zero_fill': True}                              # squeeze gauge @ 0
+mapping = {'x': 'date', 'y': 'ism_mfg', 'zero_fill': True, 'zero_fill_baseline': 50}    # ISM vs 50
 mapping = {'x': 'date', 'y': 'value', 'color': 'series',                                # dual axis (§9)
            'dual_axis_series': ['Right Axis Series'],
            'y_title': 'Left Label', 'y_title_right': 'Right Label'}
@@ -303,6 +313,11 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',                        
 | `dual_axis_config` | dict | Pin dual-axis y domains: `{'y_domain_left': [lo, hi], 'y_domain_right': [lo, hi]}` |
 | `legend` | bool | Show/hide (auto by default) |
 | `trendline` / `trendlines` | bool | Overall (scatter) / per-group (scatter_multi) |
+| `connect` | bool | `scatter`: time-ordered path through (x, y); needs `order` or temporal/numeric `color` |
+| `order` | str | Path sequence column for `connect` (optional when `color` is temporal/numeric) |
+| `zero_fill` | bool | Single-series line: shade above/below baseline |
+| `zero_fill_baseline` | float | Baseline for `zero_fill` (default `0`; e.g. `50` for ISM) |
+| `zero_fill_positive` / `zero_fill_negative` | str | Hex overrides for above-/below-baseline fill |
 | `stack` | bool | Bar+color: `True` stacked (default), `False` grouped |
 | `strokeDash` / `strokeDashScale` / `strokeDashLegend` | str/dict/bool | Line-style col / `{domain, range}` / show legend (default `False`) |
 | `value` / `theta` | str | Heatmap cell value / donut magnitude |
@@ -316,7 +331,7 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',                        
 | `value_sort` | list | Heatmap value-driven sort |
 | `facet_order` | list | Explicit panel-id order in grid mode |
 
-**Colour kwargs live in the spoke:** `color_scheme`, `color_map`, `opacity`, `opacity_map` -- fetch `chart_context_colors.md` first; do not add from memory.
+**Colour kwargs live in the spoke:** `color_scheme`, `color_range`, `color_map`, `opacity`, `opacity_map` -- fetch `chart_context_colors.md` first; do not add from memory.
 
 ### 7.4 strokeDash: per-series line styles
 

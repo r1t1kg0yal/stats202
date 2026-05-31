@@ -74,7 +74,7 @@ Set `same_scale=True` for direct cross-panel comparison (G20 GDP in same y-range
 
 ## 5. Scatter phase-space gradient
 
-For `scatter` / `scatter_multi`: when `mapping['color']` references a TEMPORAL or NUMERIC column, engine auto-switches to sequential palette. Use for phase-space plots where each dot's colour encodes its position in time/sequence -- dots paint a trail through (x, y).
+For `scatter` / `scatter_multi`: when `mapping['color']` references a TEMPORAL or NUMERIC column, engine auto-switches to sequential palette. Use for phase-space plots where each dot's colour encodes its position in time/sequence -- dots paint a trail through (x, y). Add `mapping['connect']=True` to link points into a gradient path (Goodwin orbit); `order` defaults to `color` when temporal/numeric.
 
 ```python
 make_chart(df=df,                            # cols: country, quarter, cpi, gdp
