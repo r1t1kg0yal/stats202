@@ -7281,7 +7281,7 @@ def _temporal_tick_step(interval: str, step: int) -> Dict[str, Any]:
 
 
 # Skin axis label font size assumed by tick-spacing math. Matches GS_CLEAN's
-# ``config.axis.labelFontSize`` (18). If a smaller skin is introduced, pass
+# ``config.axis.labelFontSize`` (19). If a smaller skin is introduced, pass
 # its label font size into ``_max_ticks_for_width`` so the per-label width
 # estimate matches reality.
 _DEFAULT_AXIS_LABEL_FONT_SIZE = 18
@@ -12440,7 +12440,7 @@ def _build_bar(
             labelAngle=facet_label_angle,
             labelPadding=14,
             labelFontSize=skin_config.get("axis_config", {}).get(
-                "labelFontSize", 14,
+                "labelFontSize", 15,
             ),
         )
         
