@@ -16402,6 +16402,54 @@ def profile_df(df: pd.DataFrame) -> DataProfile:
 # MODULE: PNG RENDERING
 # ===========================================================================
 
+# Distinct-colour ceiling for the indexed-palette step in
+# ``_compress_png``. At or below this count the palette holds every colour
+# exactly (lossless); above it the image is quantized to this many colours
+# (an imperceptible loss on flat vector art).
+_PNG_PALETTE_MAX_COLORS = 256
+
+
+def _compress_png(png_bytes: bytes) -> bytes:
+    """Shrink a rendered chart/table PNG without perceptible quality loss.
+
+    ``vl_convert`` (and PIL's default ``save``) emit 32-bit RGBA truecolor
+    with weak compression. Charts and tables are flat vector art -- almost
+    always well under 256 distinct colours even after anti-aliasing -- so
+    storing them as truecolor is hugely wasteful (a 10-megapixel grid that
+    uses ~90 colours can weigh several MB). This:
+
+      1. drops the alpha channel when the image is fully opaque (GS-skin
+         charts on a solid background always are),
+      2. converts to an indexed palette holding the image's colours --
+         lossless when the image has <= ``_PNG_PALETTE_MAX_COLORS`` distinct
+         colours, otherwise an adaptive quantization to that many colours,
+      3. re-encodes with ``optimize=True`` (maximum zlib effort).
+
+    Typical reduction is 5-13x. The smaller of the optimized and original
+    bytes is returned so a pathological tiny input can never inflate.
+    """
+    im = Image.open(io.BytesIO(png_bytes))
+    im.load()
+
+    if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+        rgba = im.convert("RGBA")
+        opaque = rgba.getchannel("A").getextrema()[0] == 255
+        base = rgba.convert("RGB") if opaque else rgba
+    else:
+        base = im.convert("RGB")
+
+    distinct = base.getcolors(maxcolors=_PNG_PALETTE_MAX_COLORS)
+    n_colors = len(distinct) if distinct is not None else _PNG_PALETTE_MAX_COLORS
+    # MAXCOVERAGE/MEDIANCUT cannot quantize an alpha channel; FASTOCTREE can.
+    method = Image.FASTOCTREE if base.mode == "RGBA" else Image.MAXCOVERAGE
+    palette = base.quantize(colors=max(n_colors, 2), method=method, dither=Image.NONE)
+
+    buf = io.BytesIO()
+    palette.save(buf, format="PNG", optimize=True)
+    out = buf.getvalue()
+    return out if len(out) < len(png_bytes) else png_bytes
+
+
 def _render_chart_to_png(
     chart_or_spec: Any,
     scale: float = 2.0,
@@ -16429,7 +16477,7 @@ def _render_chart_to_png(
         else:
             spec = chart_or_spec.to_dict()  # last-resort duck typing
 
-        return vlc.vegalite_to_png(vl_spec=spec, scale=scale)
+        return _compress_png(vlc.vegalite_to_png(vl_spec=spec, scale=scale))
 
     except ImportError:
         # vl-convert not installed -- fall back to altair's own save().
@@ -16441,7 +16489,7 @@ def _render_chart_to_png(
         try:
             chart_or_spec.save(tmp_path, scale_factor=scale)
             with open(tmp_path, "rb") as f:
-                return f.read()
+                return _compress_png(f.read())
         finally:
             try:
                 os.unlink(tmp_path)
@@ -23217,7 +23265,7 @@ def _tbl_draw_body(
 def _tbl_png_bytes(img: Image.Image) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    return buf.getvalue()
+    return _compress_png(buf.getvalue())
 
 
 _PASSTHROUGH_PREFIXES = (
