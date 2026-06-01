@@ -164,7 +164,7 @@ Engine rejects anonymous scatters with < 8 distinct (x, y) coords in visible reg
 - **No source attribution in title/subtitle.** Title argues; sources in PRISM metadata. Good: `title='Inflation Has Peaked'`, `subtitle='Core CPI decelerating 6 months'`. Bad: `title='US CPI Data'`, `subtitle='Source: Haver'`.
 - **Clean before charting.** `pd.to_numeric(errors='coerce')` + `dropna(subset=['date', 'value'])`. Max 12 color cats, 16 facet cats. >5,000 rows auto-downsample to ~2,000 (warning).
 - **Never plot `np.zeros()` placeholder.** Skip the panel or add text annotation.
-- **Title/subtitle: 2-line cap, auto-wrap.** Engine reports exact char limit on rejection; explicit `\n` honored (counts toward cap).
+- **Title/subtitle: 2-line cap, auto-wrap.** Engine reports exact char limit on rejection; explicit `\n` honored (counts toward cap). Wrapped titles grow the header band vertically only — font-size-aware pre-wrap keeps lines inside the plot width (never Vega-Lite ``title.limit``, which ellipsis-truncates).
 - **Never truncate axis / legend / LVL labels.** Vega-Lite ``labelLimit`` ellipsis is forbidden -- overlong nominal labels raise typed errors (`BarCategoryLabelTooLongError`, `HeatmapRowLabelTooLongError`, `LegendLabelTooLongError`, `LvlSeriesNameTooLongError`). Shorten strings in the DataFrame; the engine will not silently clip.
 
 ---

@@ -326,10 +326,10 @@ _FACET_DEFAULT_SPACING: int = 50
 # Title / subtitle text-budget calibration. Used by
 # ``_validate_and_wrap_text`` to compute (a) how many chars fit on one
 # line of a given chart-area width and (b) the hard total-length cap
-# above which the engine refuses to render. Calibrated empirically
-# against the dev/_probe_2pack_titles.py gallery: each slot has its
-# own font size, so each slot has its own pixel-per-character rate
-# (bigger font -> fewer chars fit per pixel of horizontal space).
+# above which the engine refuses to render. Each slot has its own font
+# size; chars-per-line uses the same ``font_size * 0.55`` heuristic as
+# ``_wrap_text_to_width`` so pre-wrapped ``\\n`` breaks fit inside the
+# plot width without Vega-Lite ``title.limit`` (which ellipsis-truncates).
 #
 # The four composite-specific slot kinds give the composite a real
 # typographic hierarchy: a larger composite super-title (32px), a
@@ -340,16 +340,16 @@ _FACET_DEFAULT_SPACING: int = 50
 # 26px.
 _SUBCHART_TITLE_FONT_SIZE: int = 18
 _SUBCHART_SUBTITLE_FONT_SIZE: int = 12
-_TEXT_PX_PER_CHAR: Dict[str, float] = {
+_TEXT_CHAR_WIDTH_RATIO: float = 0.55
+_TEXT_FONT_SIZE: Dict[str, int] = {
     # Generic single-chart slots (make_chart standalone, 26px / 14px).
-    "title":    6.8,
-    "subtitle": 5.1,
-    # Composite-specific slots. Per-char rates scale with font size --
-    # bigger fonts take more horizontal pixels per character.
-    "composite_super_title":    8.0,   # 32px bold
-    "composite_super_subtitle": 6.0,   # 22px medium
-    "subchart_title":           4.5,   # 18px bold inside a panel
-    "subchart_subtitle":        4.2,   # 12px regular inside a panel
+    "title":    26,
+    "subtitle": 14,
+    # Composite-specific slots.
+    "composite_super_title":    32,
+    "composite_super_subtitle": 22,
+    "subchart_title":           _SUBCHART_TITLE_FONT_SIZE,
+    "subchart_subtitle":        _SUBCHART_SUBTITLE_FONT_SIZE,
 }
 # Hard cap on the number of wrapped lines a single title or subtitle
 # slot may produce. Anything that would wrap to more than this is
@@ -3757,9 +3757,8 @@ class LastValueLabel(Annotation):
         last_rows = _last_row_at_max_x(df_clean, x_col, color_field)
 
         # Series names are pre-validated by ``_validate_lvl_series_names``
-        # at the make_chart boundary (cap = ``_LVL_SERIES_NAME_MAX_CHARS``),
         # so no per-label truncation is needed -- whatever is in the color
-        # column is guaranteed to fit the reserved right margin.
+        # column is guaranteed to pass ``_validate_lvl_series_names``.
         last_rows["_label"] = last_rows[color_field].astype(str)
 
         x_kwargs: Dict[str, Any] = {"type": x_type}
@@ -5452,85 +5451,6 @@ def _validate_lvl_series_names(
         offending_names=offenders,
         mapping=mapping,
     )
-
-
-def _estimate_lvl_right_margin(
-    annotations: Optional[List["Annotation"]],
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-) -> int:
-    """Pixel reserve needed on the chart's right edge for LastValueLabel.
-
-    LVL paints the series name (and optionally the latest value) just
-    past the last data point. Without explicit canvas-right padding,
-    labels overflow into negative pixel space and get clipped by the
-    canvas edge.
-
-    Returns 0 when no LVL is present in the annotation list, otherwise a
-    pixel value sized to fit the longest "series name [value]" label.
-
-    Series names are guaranteed to be <= ``_LVL_SERIES_NAME_MAX_CHARS``
-    by ``_validate_lvl_series_names`` upstream, so this function does no
-    truncation; it just sizes the reserve to whatever the validated
-    names require.
-    """
-    if not annotations:
-        return 0
-    lvl_anns = [a for a in annotations if isinstance(a, LastValueLabel)]
-    if not lvl_anns:
-        return 0
-
-    labels = _collect_lvl_series_labels(df, mapping)
-    if not labels:
-        return 0
-
-    margin = 0
-    for lvl in lvl_anns:
-        font_size = lvl.font_size
-        # Average sans-serif body-text glyph is ~0.6 * font_size in width.
-        char_w = max(1.0, font_size * 0.6)
-
-        max_chars = max(len(lbl) for lbl in labels)
-
-        # Width = chars * glyph + dx (text offset from data point) + 8 px slack.
-        ann_margin = int(max_chars * char_w + lvl.dx + 8)
-        margin = max(margin, ann_margin)
-
-    return margin
-
-
-def _estimate_composite_cell_lvl_pad(
-    spec: "ChartSpec",
-    chart_width: int,
-    *,
-    suppress_lvl: bool = False,
-) -> int:
-    """Right-edge reserve for LVL in a composite sub-chart (pre-compose).
-
-    Mirrors the annotation list ``_build_single_chart`` assembles so
-    ``make_composite`` can apply a single ``padding`` on the composed
-    ``HConcatChart`` / ``VConcatChart`` (per-chart padding breaks
-    ``alt.hconcat``).
-    """
-    if suppress_lvl:
-        return 0
-    if spec.mapping.get("dual_axis_series"):
-        return 0
-    df = spec.df.copy()
-    mapping = dict(spec.mapping)
-    chart_type = spec.chart_type
-    if chart_type in {"multi_line", "area"}:
-        df, mapping = _auto_melt_for_multiline(df, mapping)
-    df, mapping = _sanitize_column_names(df, mapping)
-    cell_annotations = spec.annotations
-    if suppress_lvl:
-        cell_annotations = _strip_lvl_annotations(cell_annotations)
-    if not suppress_lvl and _should_auto_inject_lvl(
-        chart_type, mapping, cell_annotations,
-    ):
-        cell_annotations = list(cell_annotations or [])
-        cell_annotations.append(LastValueLabel())
-    return _estimate_lvl_right_margin(cell_annotations, df, mapping)
 
 
 def _should_auto_inject_lvl(
@@ -8806,11 +8726,14 @@ def _wrap_text_to_width(text: str, width_px: int, font_size: int) -> str:
 def _chars_per_line(slot_kind: str, width_px: int) -> int:
     """Return the soft chars-per-line budget for ``slot_kind`` at ``width_px``.
 
-    ``slot_kind`` is either ``"title"`` or ``"subtitle"``. Anything else
-    falls back to the title (more conservative) calibration.
+    Uses the slot's configured ``_TEXT_FONT_SIZE`` and the same average
+    character-width ratio as ``_wrap_text_to_width`` so wrapped titles
+    fit the plot band without ``title.limit`` (Vega-Lite truncates with
+    an ellipsis when ``limit`` is set).
     """
-    px_per_char = _TEXT_PX_PER_CHAR.get(slot_kind, _TEXT_PX_PER_CHAR["title"])
-    return max(20, int(width_px / px_per_char))
+    font_size = _TEXT_FONT_SIZE.get(slot_kind, _TEXT_FONT_SIZE["title"])
+    char_w_px = max(1.0, font_size * _TEXT_CHAR_WIDTH_RATIO)
+    return max(20, int(width_px / char_w_px))
 
 
 def _wrap_text_at_width(text: str, chars_per_line: int) -> List[str]:
@@ -8940,6 +8863,72 @@ def _validate_and_wrap_text(
         )
 
     return lines
+
+
+def _title_text_from_lines(lines: Optional[List[str]]) -> Any:
+    """Unwrap a 1-line list to a scalar for Vega-Lite ``title.text``."""
+    if not lines:
+        return None
+    return lines if len(lines) > 1 else lines[0]
+
+
+def _title_params_from_lines(
+    title_lines: List[str],
+    *,
+    width_px: int,
+    subtitle_lines: Optional[List[str]] = None,
+    anchor: str = "start",
+    font_size: Optional[int] = None,
+    subtitle_font_size: Optional[int] = None,
+    font: Optional[str] = None,
+    offset: Optional[int] = None,
+    subtitle_color: Optional[str] = None,
+) -> alt.TitleParams:
+    """Build ``TitleParams`` for pre-wrapped title / subtitle lines.
+
+    Callers must run ``_validate_and_wrap_text`` first (font-size-aware
+    char budget + explicit ``\\n`` / list lines). Do **not** set
+    Vega-Lite ``limit`` -- it ellipsis-truncates instead of wrapping.
+    ``frame='group'`` anchors the header to the plot band; multi-line
+    titles grow vertically only.
+    """
+    del width_px  # kept for call-site symmetry with ``_validate_and_wrap_text``
+    kwargs: Dict[str, Any] = {
+        "text": _title_text_from_lines(title_lines),
+        "anchor": anchor,
+        "frame": "group",
+    }
+    if font_size is not None:
+        kwargs["fontSize"] = font_size
+    if font is not None:
+        kwargs["font"] = font
+    if offset is not None:
+        kwargs["offset"] = offset
+    if subtitle_lines:
+        kwargs["subtitle"] = _title_text_from_lines(subtitle_lines)
+        if subtitle_font_size is not None:
+            kwargs["subtitleFontSize"] = subtitle_font_size
+        if subtitle_color is not None:
+            kwargs["subtitleColor"] = subtitle_color
+    return alt.TitleParams(**kwargs)
+
+
+def _title_dict_from_lines(
+    title_lines: List[str],
+    *,
+    width_px: int,
+    subtitle_lines: Optional[List[str]] = None,
+    **extra: Any,
+) -> Dict[str, Any]:
+    """Dict-shaped title block (facet grid / composite super-title paths)."""
+    del width_px  # pre-wrap via ``_validate_and_wrap_text``; no ``limit`` key
+    block: Dict[str, Any] = {
+        "text": _title_text_from_lines(title_lines),
+        **extra,
+    }
+    if subtitle_lines:
+        block["subtitle"] = _title_text_from_lines(subtitle_lines)
+    return block
 
 
 def calculate_tick_values(
@@ -17259,11 +17248,12 @@ def make_chart(
         )
         warnings.extend(_plottext_warnings)
 
-    # ---- LastValueLabel series-name validation + right-margin reserve ---
+    # ---- LastValueLabel series-name validation ----------------------------
     # Validation runs BEFORE ``render_annotations`` so a long-name failure
     # is converted into a ChartResult(success=False) instead of bubbling
-    # an exception out of make_chart. The right-margin reserve then sizes
-    # the canvas-right padding to the validated label widths.
+    # an exception out of make_chart. Canvas width for LVL text is handled
+    # by Vega-Lite autosize at PNG export time -- explicit padding.right
+    # was redundant and produced an empty white sidebar (2026-05-31).
     try:
         _validate_lvl_series_names(annotations, df, mapping)
     except ValidationError as exc:
@@ -17272,7 +17262,6 @@ def make_chart(
             error_message=str(exc), warnings=warnings,
             audit_trail=audit_trail,
         )
-    lvl_right_pad = _estimate_lvl_right_margin(annotations, df, mapping)
 
     # ---- Annotations (layer first; configure must be applied AFTER ------
     # because altair rejects ``alt.layer(...)`` of charts that already
@@ -17286,17 +17275,6 @@ def make_chart(
             )
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Annotation layer failed (non-fatal): {exc}")
-
-    # ---- Apply the LVL right-margin reserve -----------------------------
-    # ``LastValueLabel`` paints labels OUTSIDE the plot region (to the
-    # right of the last data point). Without canvas-right padding the
-    # labels get clipped at the canvas edge -- this was the most-flagged
-    # P0 issue in the vision audit. Class 8 also caps this reserve at
-    # 25%% of canvas width when series names are exceptionally long.
-    if lvl_right_pad > 0:
-        chart = chart.properties(padding={
-            "left": 5, "top": 5, "bottom": 5, "right": lvl_right_pad,
-        })
 
     # ---- Title / subtitle / skin config ---------------------------------
     chart_props: Dict[str, Any] = {}
@@ -17329,27 +17307,20 @@ def make_chart(
         # title remains start-aligned to the chart's plot region instead
         # of drifting to the centre of its hconcat slot. ``frame='group'``
         # anchors the title to the chart group bounds (axes + plot area)
-        # rather than the outer composition bounds.
-        title_text: Any = (
-            title_lines if title_lines and len(title_lines) > 1
-            else (title_lines[0] if title_lines else title)
-        )
+        # rather than the outer composition bounds. Pre-wrap via
+        # ``_validate_and_wrap_text`` (font-size-aware); never ``limit``.
         if subtitle_lines:
-            chart_props["title"] = alt.TitleParams(
-                text=title_text,
-                subtitle=(
-                    subtitle_lines
-                    if len(subtitle_lines) > 1
-                    else subtitle_lines[0]
-                ),
+            chart_props["title"] = _title_params_from_lines(
+                title_lines,
+                width_px=width,
+                subtitle_lines=subtitle_lines,
                 anchor="start",
-                frame="group",
             )
         else:
-            chart_props["title"] = alt.TitleParams(
-                text=title_text,
+            chart_props["title"] = _title_params_from_lines(
+                title_lines,
+                width_px=width,
                 anchor="start",
-                frame="group",
             )
     if chart_props:
         chart = chart.properties(**chart_props)
@@ -17978,10 +17949,6 @@ def _build_single_chart(
                 "use a wider dimension_preset (e.g. 'wide')"
             ),
         )
-        title_text: Any = (
-            title_lines if title_lines and len(title_lines) > 1
-            else (title_lines[0] if title_lines else spec.title)
-        )
         title_fs = (
             title_fontsize_override
             if title_fontsize_override
@@ -17993,24 +17960,23 @@ def _build_single_chart(
             else _SUBCHART_SUBTITLE_FONT_SIZE
         )
         if subtitle_lines:
-            subtitle_text: Any = (
-                subtitle_lines
-                if len(subtitle_lines) > 1
-                else subtitle_lines[0]
-            )
             chart = chart.properties(
-                title=alt.TitleParams(
-                    text=title_text,
-                    subtitle=subtitle_text,
-                    fontSize=title_fs,
-                    subtitleFontSize=subtitle_fs,
+                title=_title_params_from_lines(
+                    title_lines,
+                    width_px=width,
+                    subtitle_lines=subtitle_lines,
+                    anchor="start",
+                    font_size=title_fs,
+                    subtitle_font_size=subtitle_fs,
                 )
             )
         else:
             chart = chart.properties(
-                title=alt.TitleParams(
-                    text=title_text,
-                    fontSize=title_fs,
+                title=_title_params_from_lines(
+                    title_lines,
+                    width_px=width,
+                    anchor="start",
+                    font_size=title_fs,
                 )
             )
 
@@ -20017,19 +19983,15 @@ def _render_facet_grid(
                 chart_type=chart_type, skin=skin, success=False,
                 error_message=str(exc), warnings=warnings_list,
             )
-        title_text: Any = (
-            title_lines if title_lines and len(title_lines) > 1
-            else (title_lines[0] if title_lines else title)
+        title_block = _title_dict_from_lines(
+            title_lines,
+            width_px=composite_outer_w,
+            subtitle_lines=subtitle_lines,
+            anchor="start",
+            fontSize=38,
+            fontWeight="bold",
         )
-        title_block: Dict[str, Any] = {
-            "text": title_text, "anchor": "start",
-            "fontSize": 38, "fontWeight": "bold",
-        }
         if subtitle_lines:
-            title_block["subtitle"] = (
-                subtitle_lines if len(subtitle_lines) > 1
-                else subtitle_lines[0]
-            )
             title_block["subtitleFontSize"] = 22
         composite_spec["title"] = title_block
 
@@ -20268,12 +20230,12 @@ def make_composite(
         )
 
     # Validate every cell is a ChartSpec BEFORE any spec-walking helper runs.
-    # ``_composite_consensus_x_angle`` / ``_scan_text_panel_reserves`` /
-    # ``_estimate_composite_cell_lvl_pad`` read ``spec.mapping`` / ``spec.df``
-    # / ``spec.chart_type`` ahead of the per-cell try/except, so a non-ChartSpec
-    # input (most commonly a ``CompositeResult`` from a nested ``make_*pack_*``
-    # call) would otherwise surface as a raw ``AttributeError`` from deep inside
-    # a helper instead of a typed, actionable failure at the entry point.
+    # ``_composite_consensus_x_angle`` / ``_scan_text_panel_reserves`` read
+    # ``spec.mapping`` / ``spec.df`` / ``spec.chart_type`` ahead of the per-cell
+    # try/except, so a non-ChartSpec input (most commonly a ``CompositeResult``
+    # from a nested ``make_*pack_*`` call) would otherwise surface as a raw
+    # ``AttributeError`` from deep inside a helper instead of a typed,
+    # actionable failure at the entry point.
     for i, spec in enumerate(charts):
         if not isinstance(spec, ChartSpec):
             got = type(spec).__name__
@@ -20374,13 +20336,8 @@ def make_composite(
     # Build each sub-chart, collecting errors.
     built: List[alt.Chart] = []
     chart_errors: List[Dict[str, Any]] = []
-    max_lvl_right_pad = 0
     for i, spec in enumerate(charts):
         chart_index = i + 1
-        max_lvl_right_pad = max(
-            max_lvl_right_pad,
-            _estimate_composite_cell_lvl_pad(spec, chart_width),
-        )
         try:
             built.append(
                 _build_single_chart(
@@ -20503,43 +20460,21 @@ def make_composite(
     # multi-line title body) and a too-long title would have already
     # short-circuited above with CompositeResult(success=False).
     if super_title_lines:
-        title_props: Dict[str, Any] = {
-            "text": (
-                super_title_lines
-                if len(super_title_lines) > 1
-                else super_title_lines[0]
+        title_props = _title_dict_from_lines(
+            super_title_lines,
+            width_px=super_title_width,
+            subtitle_lines=super_subtitle_lines,
+            fontSize=32,
+            font=skin_config.get(
+                "font_family", "Liberation Sans, Arial, sans-serif",
             ),
-            # Composite super-title fontSize is set explicitly (not
-            # ``skin.title_font_size + N``) because the composite
-            # hierarchy needs a clear typographic ladder against the
-            # 18px per-chart titles set in ``_build_single_chart``. 32
-            # is ~78% larger than 18 -- big enough that the eye lands
-            # on the super-title first.
-            "fontSize": 32,
-            "font": skin_config.get("font_family", "Liberation Sans, Arial, sans-serif"),
-            "anchor": "middle",
-            # ``offset`` is the orthogonal pixel gap between the title
-            # block and the chart-area below it. Vega-Lite's default is
-            # ~4-14px which leaves the composite super-title sitting
-            # almost on top of the per-sub-chart titles in a 4-level
-            # hierarchy. Bump to leave clear breathing room between the
-            # composite header and the per-panel headers below.
-            "offset": 20,
-        }
+            anchor="middle",
+            offset=20,
+        )
         if super_subtitle_lines:
-            title_props["subtitle"] = (
-                super_subtitle_lines
-                if len(super_subtitle_lines) > 1
-                else super_subtitle_lines[0]
-            )
             title_props["subtitleFontSize"] = 22
             title_props["subtitleColor"] = "#666666"
         composite = composite.properties(title=title_props)
-
-    if max_lvl_right_pad > 0:
-        composite = composite.properties(padding={
-            "left": 5, "top": 5, "bottom": 5, "right": max_lvl_right_pad,
-        })
 
     composite = composite.configure(**skin_config.get("config", {}))
 
