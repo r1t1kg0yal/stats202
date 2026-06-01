@@ -972,6 +972,223 @@ def _sanitize_column_names(
     return df, mapping
 
 
+# Canonical timezone for intraday market data. Naive datetimes are
+# interpreted as US/Eastern wall clock unless ``mapping['x_timezone']``
+# requests a different display timezone.
+_DEFAULT_INTRADAY_TZ = "America/New_York"
+_X_TIMEZONE_ALIASES: Dict[str, str] = {
+    "ET": "America/New_York",
+    "EST": "America/New_York",
+    "EDT": "America/New_York",
+    "US/Eastern": "America/New_York",
+    "EASTERN": "America/New_York",
+    "UTC": "UTC",
+    "GMT": "UTC",
+    "LON": "Europe/London",
+    "LONDON": "Europe/London",
+    "TOKYO": "Asia/Tokyo",
+    "HKT": "Asia/Hong_Kong",
+}
+
+
+def _resolve_x_timezone(mapping: Dict[str, Any]) -> str:
+    """Display timezone for intraday temporal x-axis labels.
+
+    Defaults to US/Eastern. Accepts IANA names or common aliases
+    (``ET``, ``UTC``, ``LON``, ...). PRISM sets ``mapping['x_timezone']``
+    when the user asks for a non-ET clock.
+    """
+    raw = mapping.get("x_timezone") or mapping.get("timezone")
+    if not raw:
+        return _DEFAULT_INTRADAY_TZ
+    key = str(raw).strip()
+    return _X_TIMEZONE_ALIASES.get(key.upper(), key)
+
+
+def _to_et_naive_wall_clock(series: pd.Series) -> pd.Series:
+    """Coerce any datetime series to tz-naive US/Eastern wall clock."""
+    s = pd.to_datetime(series, errors="coerce")
+    if getattr(s.dt, "tz", None) is not None:
+        return s.dt.tz_convert(_DEFAULT_INTRADAY_TZ).dt.tz_localize(None)
+    return s.dt.tz_localize(
+        _DEFAULT_INTRADAY_TZ,
+        ambiguous="infer",
+        nonexistent="shift_forward",
+    ).dt.tz_localize(None)
+
+
+def _convert_wall_clock_timezone(
+    series: pd.Series,
+    *,
+    source_tz: str,
+    target_tz: str,
+) -> pd.Series:
+    """Re-express a tz-naive wall-clock series from ``source_tz`` to ``target_tz``."""
+    if source_tz == target_tz:
+        return series
+    s = pd.to_datetime(series, errors="coerce")
+    localized = s.dt.tz_localize(
+        source_tz,
+        ambiguous="infer",
+        nonexistent="shift_forward",
+    )
+    return localized.dt.tz_convert(target_tz).dt.tz_localize(None)
+
+
+def _intraday_label_expr(*, single_session: bool) -> str:
+    """Vega ``labelExpr`` for intraday axes.
+
+    Date appears in exactly two situations:
+      1. **Midnight** (``00:00:00``) on multi-day spans → ``May 28``
+      2. **Single-session** (one calendar day, no midnight in range) →
+         date on the leftmost tick only → ``May 27``
+
+    Every other tick is ``HH:MM`` only. No date+time combos; no date at
+    non-midnight hours on multi-day charts.
+    """
+    if single_session:
+        return (
+            "(datum.index === 0) "
+            "? timeFormat(datum.value, '%b %d') "
+            ": timeFormat(datum.value, '%H:%M')"
+        )
+    return (
+        "(hours(datum.value) === 0 && minutes(datum.value) === 0 "
+        "&& seconds(datum.value) === 0) "
+        "? timeFormat(datum.value, '%b %d') "
+        ": timeFormat(datum.value, '%H:%M')"
+    )
+
+
+def _is_intraday_datetime_series(date_series: pd.Series) -> bool:
+    """True when ``date_series`` has sub-daily sample cadence (minute bars, etc.).
+
+    Uses the same median-gap heuristic as ``determine_date_format`` so every
+    caller agrees on what counts as intraday.
+    """
+    if len(date_series) < 2:
+        return False
+    if not pd.api.types.is_datetime64_any_dtype(date_series):
+        return False
+    min_date = date_series.min()
+    max_date = date_series.max()
+    if pd.isna(min_date) or pd.isna(max_date):
+        return False
+    span_hours = (max_date - min_date).total_seconds() / 3600
+    if span_hours > 5 * 24:
+        return False
+    date_diffs = _unique_sorted_diffs(date_series)
+    if len(date_diffs) == 0:
+        return False
+    median_diff_seconds = float(date_diffs.dt.total_seconds().median())
+    return median_diff_seconds < 20 * 3600
+
+
+def _normalize_intraday_x_column(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> pd.DataFrame:
+    """Make intraday x-columns plot-ready regardless of upstream formatting.
+
+    The engine absorbs ~95% of PRISM-side datetime hygiene (Principle #7):
+
+      - ``datetime64[ns, UTC-04:00]`` / any tz-aware -> US/Eastern wall
+        clock (naive), unless ``mapping['x_timezone']`` requests another
+        display timezone
+      - tz-naive timestamps -> assumed US/Eastern wall clock
+      - ISO / slash / space-separated strings -> datetime, then ET
+      - unix-epoch integers (ms or s)
+      - common column aliases when ``mapping['x']`` is missing: ``date``,
+        ``timestamp``, ``datetime``, ``time``
+
+    Skipped when ``mapping['x_type'] == 'ordinal'`` -- caller owns labels.
+    """
+    if mapping.get("x_type") == "ordinal":
+        return df
+
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        for alias in ("date", "timestamp", "datetime", "time", "Date", "TIME"):
+            if alias in df.columns and (
+                pd.api.types.is_datetime64_any_dtype(df[alias])
+                or df[alias].dtype == object
+            ):
+                mapping["x"] = alias
+                x_field = alias
+                break
+        else:
+            return df
+
+    series = df[x_field]
+    if not (
+        pd.api.types.is_datetime64_any_dtype(series)
+        or pd.api.types.is_numeric_dtype(series)
+        or series.dtype == object
+        or pd.api.types.is_string_dtype(series)
+    ):
+        return df
+
+    df = df.copy()
+    display_tz = _resolve_x_timezone(mapping)
+
+    if pd.api.types.is_datetime64_any_dtype(series):
+        converted = _to_et_naive_wall_clock(series)
+    elif pd.api.types.is_numeric_dtype(series):
+        sample = pd.to_numeric(series.dropna().head(20), errors="coerce")
+        if len(sample) and sample.median() > 1e11:
+            converted = pd.to_datetime(series, unit="ms", errors="coerce")
+        elif len(sample) and sample.median() > 1e8:
+            converted = pd.to_datetime(series, unit="s", errors="coerce")
+        else:
+            return df
+        converted = _to_et_naive_wall_clock(converted)
+    else:
+        import warnings as _warnings
+
+        converted = None
+        for fmt in (
+            None,
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%dT%H:%M:%S",
+            "%m/%d %H:%M",
+            "%m/%d/%Y %H:%M",
+            "%m/%d/%y %H:%M",
+            "%d/%m/%Y %H:%M",
+        ):
+            try:
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore")
+                    if fmt is None:
+                        converted = pd.to_datetime(series, errors="raise", utc=False)
+                    else:
+                        converted = pd.to_datetime(
+                            series, format=fmt, errors="raise",
+                        )
+                break
+            except (ValueError, TypeError):
+                continue
+        if converted is None:
+            return df
+        converted = _to_et_naive_wall_clock(converted)
+
+    if display_tz != _DEFAULT_INTRADAY_TZ:
+        converted = _convert_wall_clock_timezone(
+            converted,
+            source_tz=_DEFAULT_INTRADAY_TZ,
+            target_tz=display_tz,
+        )
+
+    df[x_field] = converted
+    logger.info(
+        "[chart_functions] Normalized x_field=%r to intraday wall clock "
+        "(display_tz=%r, chart_type=%s).",
+        x_field, display_tz, chart_type,
+    )
+    return df
+
+
 def _coerce_string_x_to_datetime(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -2087,6 +2304,35 @@ def _resolve_x_sort_for_annotation(
     if explicit:
         return list(explicit)
     return _infer_tenor_sort(df[x_col].unique())
+
+
+def _last_row_at_max_x(
+    df: pd.DataFrame,
+    x_col: str,
+    color_col: Optional[str] = None,
+) -> pd.DataFrame:
+    """Return one row per series at the latest x position.
+
+    For datetime / numeric x, uses ``idxmax``. For ordinal / string x
+    (e.g. ``05/27 03:00`` labels), ``idxmax`` raises on object dtype --
+    fall back to the last row per group in data order, which matches
+    chronologically-sorted intraday frames.
+    """
+    if color_col and color_col in df.columns:
+        if (
+            pd.api.types.is_datetime64_any_dtype(df[x_col])
+            or pd.api.types.is_numeric_dtype(df[x_col])
+        ):
+            last_idx = df.groupby(color_col)[x_col].idxmax()
+            return df.loc[last_idx].reset_index(drop=True)
+        return df.groupby(color_col, sort=False).tail(1).reset_index(drop=True)
+
+    if (
+        pd.api.types.is_datetime64_any_dtype(df[x_col])
+        or pd.api.types.is_numeric_dtype(df[x_col])
+    ):
+        return df.loc[[df[x_col].idxmax()]].reset_index(drop=True)
+    return df.tail(1).reset_index(drop=True)
 
 
 def _apply_nominal_axis_sort(
@@ -3508,8 +3754,7 @@ class LastValueLabel(Annotation):
         if df_clean.empty:
             return alt.Chart(pd.DataFrame({"_": []})).mark_point()
 
-        last_idx = df_clean.groupby(color_field)[x_col].idxmax()
-        last_rows = df_clean.loc[last_idx].reset_index(drop=True)
+        last_rows = _last_row_at_max_x(df_clean, x_col, color_field)
 
         # Series names are pre-validated by ``_validate_lvl_series_names``
         # at the make_chart boundary (cap = ``_LVL_SERIES_NAME_MAX_CHARS``),
@@ -3681,7 +3926,7 @@ class LastValueLabel(Annotation):
         df_clean = df.dropna(subset=[x_col, y_field]).reset_index(drop=True)
         if df_clean.empty:
             return alt.Chart(pd.DataFrame({"_": []})).mark_point()
-        last_row = df_clean.loc[df_clean[x_col].idxmax()]
+        last_row = _last_row_at_max_x(df_clean, x_col).iloc[0]
         last_x = last_row[x_col]
         last_y = float(last_row[y_field])
 
@@ -7150,8 +7395,9 @@ class DateFormatConfig:
 #     dropped because spans <= ~30 days rarely cross calendar years and
 #     the chart title / context carries the year anchor. Day is informative
 #     (Mondays for ISO-weekly ticks, arbitrary dates for daily ticks).
-#   - Intraday: ``%H:%M`` (single-day) or conditional labelExpr that shows
-#     the date at midnight ticks and the time elsewhere (multi-day).
+#   - Intraday: conditional labelExpr -- date at midnight (multi-day)
+#     or leftmost tick only (single-session); ``HH:MM`` elsewhere.
+#     Default clock ET; ``x_timezone`` override.
 #
 # Always abbreviate months (``%b`` -> "Jan"), never full month names
 # (``%B``), and always 2-digit year (``%y``) when paired with a month.
@@ -7244,6 +7490,9 @@ _PROFILE_LABEL_CHAR_PX = 8          # per-char width at the skin label font
 _PROFILE_LABEL_PAD_PX = 12          # inter-label padding when horizontal
 _PROFILE_MIN_PITCH_45_PX = 22       # min horizontal pitch for non-overlapping -45 labels
 _PROFILE_MIN_HORIZONTAL_TICKS = 8   # keep horizontal while >= this many fit; else rotate to -45
+# Heatmap column labels are sparser than profile lines: 2x pitch -> ~half the
+# tick count at -45 (intraday 15-min grids stay legible on 700px wide).
+_HEATMAP_MIN_PITCH_45_PX = _PROFILE_MIN_PITCH_45_PX * 2
 
 
 def _evenly_spaced_subset(values: List[Any], k: int) -> List[Any]:
@@ -7796,8 +8045,29 @@ def _determine_date_format_raw(
         is_intraday = median_diff_seconds < 20 * 3600
 
         if is_intraday:
-            unique_dates = date_series.dt.date.nunique()
-            crosses_midnight = unique_dates > 1
+            # Conditional Vega expression for intraday axes: date at
+            # midnight (multi-day) or leftmost tick only (single-session).
+            # See ``_intraday_label_expr``.
+            single_session = date_series.dt.normalize().nunique() == 1
+            intraday_label_expr = _intraday_label_expr(
+                single_session=single_session,
+            )
+            sample_label = "May 27" if single_session else "Apr 28"
+
+            def _intraday_format_and_sample(
+                stride_s: int,
+            ) -> Tuple[Optional[str], Optional[str], str]:
+                """Pick format / labelExpr + width-sample for a stride.
+
+                Returns ``(format, label_expr, sample_label)``. Intraday
+                always uses ``label_expr``; date only at midnight (multi-day)
+                or leftmost tick (single-session).
+                """
+                if stride_s >= 86400:
+                    return ("%b %d", None, "Apr 28")
+                if stride_s < 60:
+                    return (None, intraday_label_expr, sample_label)
+                return (None, intraday_label_expr, sample_label)
 
             # Initial stride targeting ~5-7 ticks across a clean
             # boundary. Always picks a "nice" interval so adjacent
@@ -7833,50 +8103,6 @@ def _determine_date_format_raw(
                 stride_seconds = 720 * 60
             else:
                 stride_seconds = 1440 * 60
-
-            # Conditional Vega expression for multi-day intraday axes.
-            # A naive ``"%b %d %H:%M"`` format on every tick produces
-            # ugly long labels ("Apr 28 12:00") that have to be
-            # rotated -45 to fit. Instead, render the date *only* at
-            # midnight ticks and the time-of-day at other ticks. This
-            # keeps every label short (max 6 chars), horizontal, and
-            # conveys the day boundary visually:
-            #
-            #     12:00   Apr 29   12:00   Apr 30
-            #
-            # The first day's date isn't shown unless a tick happens
-            # to land on its midnight; the chart title / subtitle
-            # carries that anchor.
-            INTRADAY_DATETIME_LABEL_EXPR = (
-                "hours(datum.value) === 0 && minutes(datum.value) === 0 "
-                "&& seconds(datum.value) === 0 "
-                "? timeFormat(datum.value, '%b %d') "
-                ": timeFormat(datum.value, '%H:%M')"
-            )
-
-            def _intraday_format_and_sample(
-                stride_s: int,
-            ) -> Tuple[Optional[str], Optional[str], str]:
-                """Pick format / labelExpr + width-sample for a stride.
-
-                Returns ``(format, label_expr, sample_label)``. Exactly
-                one of ``format`` or ``label_expr`` is non-None.
-
-                  - Day-aligned stride (>= 86400 s): date-only ``%b %d``.
-                    Every tick lands at midnight so time is redundant.
-                  - Sub-minute stride (< 60 s): ``%H:%M:%S``.
-                  - Cross-midnight or span > 24h: conditional labelExpr
-                    (date at midnight, time elsewhere). Sample is the
-                    longest expected label, ``"Apr 28"``.
-                  - Single-day intraday: ``%H:%M``.
-                """
-                if stride_s >= 86400:
-                    return ("%b %d", None, "Apr 28")
-                if stride_s < 60:
-                    return ("%H:%M:%S", None, "09:30:00")
-                if crosses_midnight or span_hours > 24:
-                    return (None, INTRADAY_DATETIME_LABEL_EXPR, "Apr 28")
-                return ("%H:%M", None, "09:30")
 
             fmt, label_expr, sample = _intraday_format_and_sample(
                 stride_seconds,
@@ -7937,10 +8163,16 @@ def _determine_date_format_raw(
                 stride_label = f"{stride_seconds // 86400}d"
             return DateFormatConfig(
                 format=fmt,
-                tick_count=None,
+                # Intraday axes MUST use a plain integer ``tick_count`` hint.
+                # Emitting ``tick_step={"interval": "hour", "step": N}`` on
+                # ``axis.tickCount`` compiles in Altair but explodes inside
+                # vl-convert/Vega at PNG time (``marktype`` / ``every``
+                # TypeError). The stride loop above still picks ``fmt`` /
+                # ``label_expr``; only the tick *placement* hint changes.
+                tick_count=max(n_ticks, 2),
                 label_angle=0,
                 description=f"Intraday ticks (every {stride_label})",
-                tick_step=tick_step,
+                tick_step=None,
                 label_expr=label_expr,
             )
 
@@ -8765,11 +8997,10 @@ def get_axis_beautification(
     """
     configs: Dict[str, AxisConfig] = {}
 
-    # Heatmaps own their axis label-angle decision entirely (x clamps to
-    # {0, -45} via ``_heatmap_x_label_angle``; y is always 0 via
+    # Heatmaps own their axis plan entirely (x angle in {0, -45} plus tick
+    # thinning via ``_heatmap_x_axis_plan``; y is always 0 via
     # ``_heatmap_row_label_angle``; spec patched by ``_apply_heatmap_config``).
-    # Skipping the
-    # plan here prevents ``apply_beautification_to_spec`` from
+    # Skipping the plan here prevents ``apply_beautification_to_spec`` from
     # overwriting the builder's clamp with the generic
     # ``calculate_optimal_label_angle`` answer (which can return -90).
     if chart_type == "heatmap":
@@ -8780,22 +9011,32 @@ def get_axis_beautification(
         x_data = df[x_field]
         if pd.api.types.is_datetime64_any_dtype(x_data):
             date_config = determine_date_format(x_data, chart_width)
+            is_intraday = _is_intraday_datetime_series(x_data)
             configs["x"] = AxisConfig(
                 label_angle=date_config.label_angle or 0,
                 tick_count=date_config.tick_count,
                 tick_step=date_config.tick_step,
                 format=date_config.format,
                 label_expr=date_config.label_expr,
+                # ``greedy`` thins the leftmost date anchor on single-session
+                # charts; ``parity`` keeps first + last labels visible.
+                label_overlap="parity" if is_intraday else None,
             )
         elif pd.api.types.is_numeric_dtype(x_data):
             configs["x"] = AxisConfig(label_angle=0)
+        elif chart_type == "boxplot":
+            # ``_build_boxplot`` sets labelAngle=-45 on the nominal x axis.
+            # Without an explicit plan here, ``apply_beautification_to_spec``
+            # overwrites that with ``calculate_optimal_label_angle``, which
+            # often returns 0 for short tick strings (e.g. "EUR/USD") even
+            # when 9+ pairs collide horizontally on a 700px canvas.
+            configs["x"] = AxisConfig(label_angle=-45, label_limit=200)
         elif chart_type in {"multi_line", "timeseries", "line"}:
             # Profile / yield-curve / vol-smile path (non-temporal,
             # non-numeric x routes to ``_build_profile_line``). House
             # rule: tick labels are NEVER vertical -- horizontal or -45
             # only -- and the label frequency is reduced when they would
-            # collide. Bars / boxplots / waterfalls keep their own
-            # (vertical-allowed) angle logic in the branch below.
+            # collide. Bars / waterfalls keep their own angle logic below.
             ordered_vals = _resolve_profile_x_order(df, x_field, mapping)
             label_angle, tick_values = _profile_ordinal_axis_plan(
                 ordered_vals, chart_width,
@@ -10885,7 +11126,13 @@ def _build_timeseries(
 
     # FIX RC1: datetime coercion uses the actual mapping field, not 'date'.
     # Allows x columns named 'datetime', 'timestamp', etc.
-    if x_field in df.columns and not pd.api.types.is_datetime64_any_dtype(df[x_field]):
+    # Skip when caller declared ordinal x -- strings like ``05/27 03:00``
+    # must not be re-parsed (OutOfBoundsDatetime on ambiguous formats).
+    if (
+        x_field in df.columns
+        and not pd.api.types.is_datetime64_any_dtype(df[x_field])
+        and mapping.get("x_type") != "ordinal"
+    ):
         df[x_field] = pd.to_datetime(df[x_field])
 
     # ---- non-null sanity check (final gate before encoding) -------------
@@ -11197,7 +11444,10 @@ def _build_multi_line_dual_axis(
         )
 
     df = df.copy()
-    if not pd.api.types.is_datetime64_any_dtype(df[x_field]):
+    if (
+        not pd.api.types.is_datetime64_any_dtype(df[x_field])
+        and mapping.get("x_type") != "ordinal"
+    ):
         df[x_field] = pd.to_datetime(df[x_field])
 
     # Series-name matching is the #1 dual-axis failure mode. Strip
@@ -13757,37 +14007,34 @@ def _validate_heatmap_row_labels(
     )
 
 
-def _heatmap_x_label_angle(
-    df: pd.DataFrame,
-    field: Optional[str],
-    sort_order: Optional[List[Any]],
-    *,
-    axis_pixels: int,
-) -> int:
-    """Pick heatmap column (x) label angle: 0 (flat) or -45.
+def _heatmap_x_axis_plan(
+    ordered_vals: List[Any],
+    chart_width: int,
+) -> Tuple[int, Optional[List[Any]]]:
+    """Pick heatmap column (x) ``(label_angle, tick_values)``.
 
-    Vertical (90 deg) labels are forbidden on heatmaps -- Vega-Lite
-    auto-rotates straight to 90 when nominal labels can't fit
-    horizontally, and the result reads as a wall of stacked text.
-    Column labels may use -45 when the longest label won't fit the
-    per-cell width budget; row labels never rotate (see
-    ``_heatmap_row_label_angle``).
+    Vertical (90 deg) labels are forbidden on heatmaps. Same horizontal /
+    -45 ladder as profile charts, but ``_HEATMAP_MIN_PITCH_45_PX`` is 2x
+    the profile pitch so thinned x ticks run at roughly half the frequency
+    (better for dense intraday column grids). Every cell still renders.
     """
-    if not field or (df is not None and field not in getattr(df, "columns", [])):
-        return 0
+    vals = [str(v) for v in ordered_vals]
+    n = len(vals)
+    if n == 0:
+        return 0, None
+    max_len = max(len(v) for v in vals)
+    needed_h = max_len * _PROFILE_LABEL_CHAR_PX + _PROFILE_LABEL_PAD_PX
 
-    labels = _heatmap_axis_labels(df, field, sort_order)
-    if not labels:
-        return 0
+    horiz_capacity = max(1, int(chart_width // needed_h))
+    diag_capacity = max(1, int(chart_width // _HEATMAP_MIN_PITCH_45_PX))
 
-    max_label_len = max(len(s) for s in labels)
-    n_cells = max(len(labels), 1)
-    cell_pixels = axis_pixels / n_cells
-
-    horizontal_budget_per_label = max_label_len * 7 + 8
-    if horizontal_budget_per_label <= cell_pixels:
-        return 0
-    return -45
+    if horiz_capacity >= n:
+        return 0, None
+    if horiz_capacity >= _PROFILE_MIN_HORIZONTAL_TICKS:
+        return 0, _evenly_spaced_subset(ordered_vals, horiz_capacity)
+    if diag_capacity >= n:
+        return -45, None
+    return -45, _evenly_spaced_subset(ordered_vals, diag_capacity)
 
 
 def _heatmap_row_label_angle() -> int:
@@ -13893,14 +14140,12 @@ def _build_heatmap(
         composite_cell=composite_cell,
     )
 
-    # ---- label-angle clamp ----------------------------------------------
-    # Heatmap column (x) labels NEVER render vertical (90 deg). Vega-Lite's
-    # default for nominal axes auto-rotates when labels won't fit
-    # horizontally and overshoots straight to 90. Column labels may use
-    # -45 when cramped; row (y) labels are ALWAYS horizontal (angle=0).
-    x_label_angle = _heatmap_x_label_angle(
-        df, x_field, x_sort_order, axis_pixels=width,
-    )
+    # ---- column (x) axis plan -------------------------------------------
+    # Heatmap column labels NEVER render vertical (90 deg). When the x
+    # grid is dense (intraday 15-min bars over several sessions), show an
+    # evenly-spaced tick subset so labels stay legible at -45.
+    x_ordered = _resolve_profile_x_order(df, x_field, mapping)
+    x_label_angle, x_tick_values = _heatmap_x_axis_plan(x_ordered, width)
     y_label_angle = _heatmap_row_label_angle()
 
     # Grid-suppressed axes prevent white-line artifacts on cells.
@@ -13908,10 +14153,13 @@ def _build_heatmap(
     # "Financials") don't kiss the first column of cells; default
     # Vega-Lite labelPadding is 2px which reads as zero gap on a tight
     # heatmap grid.
-    x_axis = alt.Axis(
+    x_axis_kwargs: Dict[str, Any] = dict(
         grid=False, domain=False, ticks=False, title=x_title,
         labelPadding=8, labelAngle=x_label_angle,
     )
+    if x_tick_values is not None:
+        x_axis_kwargs["values"] = x_tick_values
+    x_axis = alt.Axis(**x_axis_kwargs)
     y_axis = alt.Axis(
         grid=False, domain=False, ticks=False, title=y_title,
         labelPadding=8, labelAngle=y_label_angle,
@@ -16514,6 +16762,7 @@ def make_chart(
     # _build_profile_line (the ordinal-x builder) which produces verbose
     # "2023-01-01" tick labels rotated -45 degrees instead of the smart
     # date-aware format ("Jan 23", "%Y") and horizontal labels.
+    df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
 
     # ---- Heatmap matrix auto-melt ---------------------------------------
@@ -17670,6 +17919,7 @@ def _build_single_chart(
     if chart_type in {"multi_line", "area"}:
         df, mapping = _auto_melt_for_multiline(df, mapping)
     df, mapping = _sanitize_column_names(df, mapping)
+    df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
 
     # Validation.

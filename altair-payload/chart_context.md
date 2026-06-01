@@ -195,12 +195,14 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 | `bar_horizontal` | Horizontal category comparisons -- NEVER time series | `x`, `y` (cat) |
 | `heatmap` | Matrices | `x`, `y`, `value` (NOT `'color'`) |
 | `histogram` | Distributions | `x` |
-| `boxplot` | Distribution comparison | `x` (cat), `y` |
+| `boxplot` | Distribution comparison | `x` (cat), `y` — engine renders x labels at -45° |
 | `area` | Stacked time series | `x`, `y`, `color` |
 | `donut` | Part-to-whole | `theta`, `color` |
 | `waterfall` | Additive decomposition | `x` (cat), `y`, `type` (opt) |
 
 `timeseries` is an alias for `multi_line`. `multi_line` auto-detects non-datetime x → ordinal mode; tenor values (`1M`, `2Y`, `10Y`) auto-sort by maturity.
+
+**Intraday x-axis (minute / hour bars).** Pass ``datetime64[ns]`` (or strings / epoch / tz-aware -- the engine normalizes). **Default clock: US/Eastern (ET).** X labels: **multi-day** → date at midnight only (``May 28``), otherwise ``HH:MM``; **single-session** (one calendar day) → date on the leftmost tick only (``May 27``), otherwise ``HH:MM``. Override display clock with ``mapping['x_timezone']``. Do NOT pre-format to strings or set ``x_type='ordinal'``.
 
 **Phase orbit (`scatter` + `connect`).** Goodwin-style phase portraits: plot (x, y) with `mapping['connect']=True` to draw a time-ordered path instead of isolated dots. Requires `mapping['order']` or a temporal/numeric `mapping['color']` for sequence. Set ramp endpoints with `mapping['color_range']=['#start', '#end']` (early→late, HSV rainbow through the longer hue arc), or use `color_scheme='turbo'` etc. — see `chart_context_colors.md` §6. Incompatible with `trendline=True`.
 
@@ -242,6 +244,8 @@ Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact
 | categorical / string | nominal sequential ramp indexed by sort order; cell label is the bin | ≤12 distinct bins (rejected above) |
 
 For categorical recipe (continuous binned to labels), bin via `pd.cut()` / `np.digitize()`. Override sort via `mapping['value_sort']=[...]`.
+
+**Column labels (x-axis):** engine picks horizontal or -45° and thins tick labels when the x grid is dense (intraday heatmaps use ~half the tick frequency of profile-line charts). Do not pass `labelAngle` / tick counts — shorten category strings or reduce x cardinality in the DataFrame if labels still crowd.
 
 **Row labels (y-axis):** always horizontal (`labelAngle=0`); never rotated to -45; never ellipsis-truncated. Hard cap **15 chars** (same discipline as bar category labels). Row labels are validated on every heatmap -- overlong values raise `HeatmapRowLabelTooLongError`; shorten in the DataFrame.
 
@@ -308,7 +312,8 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',                        
 | `color` | str | Grouping column for multi-series |
 | `y_title` / `y_title_right` / `x_title` | str | Axis labels (≤24 chars hard, aim ≤16); right Y dual-axis only |
 | `x_sort` / `y_sort` | list | Explicit ordinal sort (x) / heatmap y-sort |
-| `x_type` | str | Force `'ordinal'` on datetime |
+| `x_type` | str | Force `'ordinal'` on non-temporal categoricals (yield-curve tenors); NOT for intraday datetime |
+| `x_timezone` | str | Intraday display clock override (default ET / `America/New_York`). Aliases: `UTC`, `LON`, `US/Eastern` |
 | `dual_axis_series` / `invert_right_axis` | list / bool | Right-axis series / flip (higher = bottom) |
 | `dual_axis_config` | dict | Pin dual-axis y domains: `{'y_domain_left': [lo, hi], 'y_domain_right': [lo, hi]}` |
 | `legend` | bool | Show/hide (auto by default) |
