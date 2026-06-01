@@ -1,6 +1,6 @@
 # Tool widget (form-driven compute)
 
-Spoke fetched on demand from the dashboards hub. Covers `widget: tool` end-to-end — pricers, scenarios, calculators. For non-tool widgets fetch `widgets.md`; for chart specs fetch `charts.md`.
+Spoke fetched on demand from the dashboards hub. Covers `widget: tool` end-to-end -- pricers, scenarios, calculators. For non-tool widgets fetch `widgets.md`; for chart specs fetch `charts.md`.
 
 `widget: tool` is the **interactive** widget. Filters narrow rows; tools take user-supplied values, run a compute function, and route outputs to renderers. Use it for any tile where the user types/picks something and expects a number, table, or chart to update.
 
@@ -10,7 +10,7 @@ The engine is **domain-blind**. A tool def is a JSON dict declaring inputs + out
 
 ## 1. Where tool defs live (inline only)
 
-**Tool defs live INLINE in the manifest.** There is no runtime tool library, no shared registry, no file lookup at compile time. `tool_def` must be a dict. Every dashboard is fully self-contained: the def + JS compute fn travel with the manifest. PRISM authors a tool def the same way it authors a chart spec — emit the JSON, embed in the manifest, ship.
+**Tool defs live INLINE in the manifest.** There is no runtime tool library, no shared registry, no file lookup at compile time. `tool_def` must be a dict. Every dashboard is fully self-contained: the def + JS compute fn travel with the manifest. PRISM authors a tool def the same way it authors a chart spec -- emit the JSON, embed in the manifest, ship.
 
 ```json
 {"widget": "tool", "id": "taylor", "w": 12,
@@ -25,19 +25,19 @@ The engine is **domain-blind**. A tool def is a JSON dict declaring inputs + out
 
 The compiler validates the def, materialises any matrix-input row bindings against `manifest.datasets`, and embeds the full thing into the dashboard payload. Compute runs entirely in-browser; every keystroke triggers a recompute.
 
-**Compute shape.** The canonical authoring form is the flat `compute_js: "function compute(...){...}"` field. The legacy nested shape `compute: {"kind": "js", "source": "..."}` is also accepted — both normalise to the same internal representation at compile time. The `kind` discriminator was a placeholder for a hypothetical Python compute backend that does not exist in v1 (§5); new defs should use `compute_js`.
+**Compute shape.** The canonical authoring form is the flat `compute_js: "function compute(...){...}"` field. The legacy nested shape `compute: {"kind": "js", "source": "..."}` is also accepted -- both normalise to the same internal representation at compile time. The `kind` discriminator was a placeholder for a hypothetical Python compute backend that does not exist in v1 (§5); new defs should use `compute_js`.
 
-**Inline tool defs are MANIFEST-WIPE-FRAGILE.** Because the entire `tool_def` (inputs, outputs, compute_js, matrix bindings) lives inline in `manifest.layout.…[].tool_def`, regenerating the manifest from scratch and overwriting `manifest_template.json` silently destroys the tool widget. When ADDING a new chart / KPI / tab to a dashboard that already has a `widget: tool`, follow raw JSON CRUD on `manifest_template.json` per `dashboards/template_crud.md` (`dashboards.md` § 2.5.4 routes here). Never rebuild the manifest as a fresh dict and put-overwrite — the tool def has no separate file backing it; if it's not in the dict you write, it's gone.
+**Inline tool defs are MANIFEST-WIPE-FRAGILE.** Because the entire `tool_def` (inputs, outputs, compute_js, matrix bindings) lives inline in `manifest.layout.…[].tool_def`, regenerating the manifest from scratch and overwriting `manifest_template.json` silently destroys the tool widget. When ADDING a new chart / KPI / tab to a dashboard that already has a `widget: tool`, follow raw JSON CRUD on `manifest_template.json` per `dashboards/template_crud.md` (`dashboards.md` § 2.5.4 routes here). Never rebuild the manifest as a fresh dict and put-overwrite -- the tool def has no separate file backing it; if it's not in the dict you write, it's gone.
 
-**`compute_js` lives ONLY in `manifest_template.json`. `build.py` never authors it.** The compute body is written ONCE at first dashboard creation (when the manifest dict is initially composed) and edited thereafter via surgical READ → MERGE → WRITE on `manifest_template.json` (`dashboards.md` §2.5.4). The persisted `build.py` only LOADS the template and calls `populate_template` — it does not concatenate, f-string, or `.format()` anything into a tool's `compute.source`. Inlining Python values into a JS body produces a ReferenceError at runtime: `None` / `True` / `False` / `nan` / `inf` / `Timestamp(...)` / `Decimal(...)` are not defined identifiers in JavaScript, and the runtime fails with `compute error: <token> is not defined` while the right panel of the tool tile renders blank. The engine validator hard-blocks the leak class at validate time (`tool_compute_python_literal_in_js`); the authoring rule prevents it from being written.
+**`compute_js` lives ONLY in `manifest_template.json`. `build.py` never authors it.** The compute body is written ONCE at first dashboard creation (when the manifest dict is initially composed) and edited thereafter via surgical READ → MERGE → WRITE on `manifest_template.json` (`dashboards.md` §2.5.4). The persisted `build.py` only LOADS the template and calls `populate_template` -- it does not concatenate, f-string, or `.format()` anything into a tool's `compute.source`. Inlining Python values into a JS body produces a ReferenceError at runtime: `None` / `True` / `False` / `nan` / `inf` / `Timestamp(...)` / `Decimal(...)` are not defined identifiers in JavaScript, and the runtime fails with `compute error: <token> is not defined` while the right panel of the tool tile renders blank. The engine validator hard-blocks the leak class at validate time (`tool_compute_python_literal_in_js`); the authoring rule prevents it from being written.
 
-**Where Python-supplied values belong instead.** Anything PRISM wants to default into a tool input goes in the `inputs[].default` field, NOT into `compute_js`. Defaults are JSON-serialised by the engine on render (so `None` becomes `null`, `True` becomes `true`, `pd.Timestamp(...)` becomes an ISO string), and the runtime hands them to `compute()` via the `inputs.<id>` argument. If the value needs to vary per dataset refresh, drive it through a dataset reference (`source: "<ds>.<aggregator>.<col>"` for KPIs / stat_grid items; matrix inputs via `rows_from_dataset` for cell-level binding). The compute function reads inputs at call time — there is no need to bake values into the JS source.
+**Where Python-supplied values belong instead.** Anything PRISM wants to default into a tool input goes in the `inputs[].default` field, NOT into `compute_js`. Defaults are JSON-serialised by the engine on render (so `None` becomes `null`, `True` becomes `true`, `pd.Timestamp(...)` becomes an ISO string), and the runtime hands them to `compute()` via the `inputs.<id>` argument. If the value needs to vary per dataset refresh, drive it through a dataset reference (`source: "<ds>.<aggregator>.<col>"` for KPIs / stat_grid items; matrix inputs via `rows_from_dataset` for cell-level binding). The compute function reads inputs at call time -- there is no need to bake values into the JS source.
 
 ---
 
 ## 2. Cribbing from canonical examples
 
-PRISM doesn't author tool defs from a blank page. Reference templates live in **staging only** at `projects/echarts/dev/tool_examples/<name>/` — a `def.json` schema plus a `compute.js` paired sibling. They are NOT shipped with the payload (the engine has no concept of a tool registry; runtime accepts inline dicts only). Three are shipped today:
+PRISM doesn't author tool defs from a blank page. Reference templates live in **staging only** at `projects/echarts/dev/tool_examples/<name>/` -- a `def.json` schema plus a `compute.js` paired sibling. They are NOT shipped with the payload (the engine has no concept of a tool registry; runtime accepts inline dicts only). Three are shipped today:
 
 | Example | Demonstrates | Use it as a template for |
 |---------|-------------|--------------------------|
@@ -51,7 +51,7 @@ These folders are reference-only. The engine never reads them at compile time an
 2. Demo / test code can materialise a def via `from tool_examples_loader import read_example_tool_def; d = read_example_tool_def("bond_pricer")` (staging-side import; the helper lives at `dev/tool_examples_loader.py`) and inline the result.
 3. Vetted, math-correct implementations of canonical tools have a single home in the staging repo.
 
-When PRISM is asked for a tool that resembles one of the examples, the path is: read the SHAPE description in the §2 table above (input kinds, output kinds, compute math), match the structure to the user's ask, then emit a fresh inline `tool_def` in the manifest. The example `def.json` + `compute.js` files at `dev/tool_examples/<name>/` are staging-only — they do NOT ship with PRISM, and PRISM cannot reference them at runtime. The §3.1 inline Taylor rule below is the canonical paste-and-adapt template; the §2 table tells PRISM which canonical to model after for which problem class. PRISM does NOT reference an example by name in `tool_def`; the engine rejects string refs.
+When PRISM is asked for a tool that resembles one of the examples, the path is: read the SHAPE description in the §2 table above (input kinds, output kinds, compute math), match the structure to the user's ask, then emit a fresh inline `tool_def` in the manifest. The example `def.json` + `compute.js` files at `dev/tool_examples/<name>/` are staging-only -- they do NOT ship with PRISM, and PRISM cannot reference them at runtime. The §3.1 inline Taylor rule below is the canonical paste-and-adapt template; the §2 table tells PRISM which canonical to model after for which problem class. PRISM does NOT reference an example by name in `tool_def`; the engine rejects string refs.
 
 If a custom tool earns shared shelf space, drop a `def.json` + `compute.js` under `dev/tool_examples/<new_name>/` so the next person authoring something similar can crib it. The on-disk files never become runtime assets.
 
@@ -59,7 +59,7 @@ If a custom tool earns shared shelf space, drop a `def.json` + `compute.js` unde
 
 ## 3. Inline patterns
 
-### 3.1 Basic — many scalars + one stat output
+### 3.1 Basic -- many scalars + one stat output
 
 ```python
 manifest["layout"]["rows"].append([{
@@ -99,13 +99,13 @@ manifest["layout"]["rows"].append([{
 
 The `compute_js` value is a Python triple-quoted string that the JSON serialiser carries verbatim into the dashboard payload. The runtime wraps it in `new Function(...)` and runs it on every input change.
 
-### 3.2 Parameterised — many scalars + a series output (model fitting / payoff curves)
+### 3.2 Parameterised -- many scalars + a series output (model fitting / payoff curves)
 
 When the model output is a CURVE (Taylor rule fitted policy path, option payoff vs spot, RV ranking with cutoff), declare a `series` output instead of a `stat`. The chart renders inside the tool tile and re-renders on every input change. For comparison against historical data, place a sibling chart in the same row whose `mapping.annotations[]` consume `x_from: "input.<id>"` to track a single live scalar:
 
 ```python
 {"widget": "tool", "id": "taylor_path", "w": 6,
-  "title": "Taylor rule — fitted policy path",
+  "title": "Taylor rule -- fitted policy path",
   "tool_def": {
       "name": "taylor_rule_path",
       "compute_js": '''
@@ -162,8 +162,8 @@ When the model output is a CURVE (Taylor rule fitted policy path, option payoff 
 | Field | Purpose |
 |-------|---------|
 | `name` / `version` / `title` / `description` | Identification + UI copy |
-| `compute_js` | `"function compute(inputs){...}"` — canonical flat shape (preferred) |
-| `compute` | `{kind: "js", source: "function compute(inputs){...}"}` — legacy nested shape; both forms normalise to the same internal representation |
+| `compute_js` | `"function compute(inputs){...}"` -- canonical flat shape (preferred) |
+| `compute` | `{kind: "js", source: "function compute(inputs){...}"}` -- legacy nested shape; both forms normalise to the same internal representation |
 | `inputs` | List of input declarations (§4.1) |
 | `outputs` | List of output declarations (§4.2) |
 | `display.input_panel_w` | Hint for input panel width (informational; layout is auto) |
@@ -176,8 +176,8 @@ Four kinds. Every input is a row in the input panel.
 | Kind | Use | Schema |
 |------|-----|--------|
 | `scalar` | One value (number / date / text / select / radio / toggle) | `{id, kind:"scalar", type, default, label, step?, min?, max?, decimals?, options?, suffix?, show_when?}` |
-| `sweep` | Auto-generated range (Phase 4 — not in v1) | reserved |
-| `expression` | Function of other inputs (Phase 4 — not in v1) | reserved |
+| `sweep` | Auto-generated range (Phase 4 -- not in v1) | reserved |
+| `expression` | Function of other inputs (Phase 4 -- not in v1) | reserved |
 | `matrix` | User-typed / Excel-pasted grid | `{id, kind:"matrix", label, rows_from?, rows?, cols?, cols_from?, cell, paste_enabled?}` |
 
 **Scalar types:**
@@ -185,7 +185,6 @@ Four kinds. Every input is a row in the input panel.
 | `type` | UI | Notes |
 |--------|----|-------|
 | `number` | numeric input | `step` / `min` / `max` honored |
-| `range` | slider + value readout | `min` / `max` required; `step` / `decimals` / `suffix` optional. Compute receives a number identical to `type: "number"` |
 | `date` | date picker | ISO `YYYY-MM-DD` value |
 | `text` | text input | free-form string |
 | `select` | dropdown | requires `options`: list of primitives or `{value, label}` |
@@ -198,11 +197,11 @@ Four kinds. Every input is a row in the input panel.
 
 | Field | Purpose |
 |-------|---------|
-| `rows_from` | `{dataset, key_col, label_col?}` — rows resolved at compile time from a manifest dataset (e.g. FOMC dates) |
+| `rows_from` | `{dataset, key_col, label_col?}` -- rows resolved at compile time from a manifest dataset (e.g. FOMC dates) |
 | `rows` | Static row list `[{key, label}, ...]` (used if `rows_from` not set) |
 | `cols` | Static col list `[{id, label}, ...]` |
-| `cols_from` | Dynamic col binding (Phase 4 — defer) |
-| `cell` | `{type:"number", default, step, suffix, decimals, min, max}` — uniform cell type |
+| `cols_from` | Dynamic col binding (Phase 4 -- defer) |
+| `cell` | `{type:"number", default, step, suffix, decimals, min, max}` -- uniform cell type |
 | `paste_enabled` | If `true` (default), shows a Paste button that opens a TSV/CSV textarea. Empty cells become 0; rows pad/truncate to grid shape |
 
 Matrix rows are STATIC at compile time when `rows_from.dataset` is given (the dataset's rows become the matrix rows once). Refresh re-runs the build with the latest dataset; the matrix structure refreshes with it.
@@ -211,13 +210,12 @@ Matrix rows are STATIC at compile time when `rows_from.dataset` is given (the da
 
 | Kind | Routes to | Compute fn returns |
 |------|-----------|--------------------|
-| `stat` / `param` / `kpi` | Headline stat cell (or secondary stat row when not in `headline_stats`) | scalar number or text |
+| `stat` / `param` / `kpi` | Headline stat cell | scalar number |
 | `table` | HTML table inside the tile | `{columns:[{field,label,align?,format?}], rows:[{...}]}` OR bare row-array (columns from def) |
-| `series` | ECharts line / bar / multi-line | `[{x, y, color?}, ...]` long-form OR `{rows:[...]}`. Set `chart_type: "bar"` or `"bar_horizontal"` for categorical bars. Aliases `x_key` / `y_key` / `color_key` accepted |
+| `series` | ECharts line / multi-line | `[{x_key, y_key, color_key?}, ...]` long-form OR `{rows:[...]}` |
 | `distribution` | ECharts histogram-style line | `[{x, density}, ...]` |
-| `stat_grid` | Dense stat grid inside the tile | `[{label, value, sub?, format?, decimals?}, ...]` OR `{stats: [...]}` |
 
-Series outputs declare `x` / `y` / `color?` keys (aliases `x_key` / `y_key` / `color_key`) plus `chart_type` (`line` default, `bar`, `bar_horizontal`), `x_format` (`date` / `number`) / `y_format` (`percent` / `bps` / `number`). Output kind `bar` is normalised to `series` + `chart_type: "bar"`. Annotations of type `vline` accept `x_from: "input.<id>"` to track a scalar input live.
+Series outputs declare `x` / `y` / `color?` keys plus `x_format` (`date` / `number`) / `y_format` (`percent` / `bps` / `number`). Annotations of type `vline` accept `x_from: "input.<id>"` to track a scalar input live.
 
 Stat outputs declare `format` (`number` / `percent` / `bps` / `currency` / `integer`), `decimals`, `prefix`, `suffix`. Numeric precision is clamped to the global decimal cap (see hub).
 
@@ -233,7 +231,7 @@ function compute(inputs) {
 }
 ```
 
-Pure JS, no DOM access, no network. Errors are caught and shown in the tile's error box. Heavier compute (large simulations, calibration) would land as a separate `compute_python` field with a server-side endpoint — Phase 4+; v1 has only `compute_js`.
+Pure JS, no DOM access, no network. Errors are caught and shown in the tile's error box. Heavier compute (large simulations, calibration) would land as a separate `compute_python` field with a server-side endpoint -- Phase 4+; v1 has only `compute_js`.
 
 ---
 

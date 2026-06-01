@@ -8,7 +8,7 @@ Spoke fetched on demand from `chart_context.md`. Covers `make_chart()` in grid m
 
 | Situation | Reach for |
 |---|---|
-| 12-30 entities sharing one shape (G20 GDP, 12 sectors, 16 FX pairs, 20 country curves) | grid mode (this spoke) |
+| 7-30 entities sharing one shape (Mag-7, 11 GICS sectors, G20 GDP, 16 FX pairs) | grid mode (this spoke) |
 | 2-6 panels making a single ARGUMENT (US vs EU, level + change) | `make_2pack_*` / `make_4pack_grid` / `make_6pack_grid` (hub §10) |
 | One canvas with one comparison | single `make_chart()` + `mapping['color']` |
 | 30+ entities or matrix-of-values | `chart_type='heatmap'` |
@@ -46,7 +46,7 @@ Grid mode triggered ONLY by `mapping['facet']`. Without it, normal single-canvas
 
 - `n_panels > 36` → hard reject (aggregate to group level or use `chart_type='heatmap'`)
 - `n_panels >= 25` → render + warning ("consider aggregating")
-- `n_panels < 12` → hard reject (use `make_2pack_*` / `make_4pack_grid` / `make_6pack_grid`)
+- `n_panels < 7` → hard reject (use `make_2pack_*` / `make_4pack_grid` / `make_6pack_grid`; composites top out at 6)
 
 ---
 

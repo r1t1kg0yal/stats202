@@ -68,6 +68,7 @@ import hashlib
 import io
 import json
 import colorsys
+import difflib
 import logging
 import math
 import os
@@ -300,10 +301,13 @@ _FACET_VALID_CHART_TYPES: frozenset = frozenset({
     "histogram",
 })
 
-# Minimum panel count for facet mode. Below this PRISM should use
-# make_*pack_* composites (max 6 cells). Grids are for cross-sectional
-# dashboards (G20, 12 sectors, 16 FX pairs), not 2-4 panel arguments.
-_FACET_MIN_PANELS: int = 12
+# Minimum panel count for facet mode. Set to 7 so the facet range begins
+# exactly where pack composites end (make_*pack_* tops out at 6 cells),
+# leaving NO dead zone: <=6 entities -> composite, >=7 -> facet grid. This
+# closes the 7-11 gap (Mag-7, 11 GICS sectors, G10 FX) that previously had
+# no native multi-panel shape and forced manual splits. Below 7, a composite
+# is the right call (2-4 panels are arguments, not cross-sectional grids).
+_FACET_MIN_PANELS: int = 7
 
 # Hard cap on grid size. Beyond 6x6, per-panel readability collapses;
 # PRISM should aggregate or switch to a heatmap.
@@ -710,6 +714,15 @@ _BAR_CATEGORY_LABEL_MAX_CHARS = 15
 # ``_build_scatter_multi`` because it dispatches through ``_build_scatter``
 # on the full DataFrame (chart-level total, not per-color group).
 _MIN_SCATTER_VISIBLE_DOTS = 8
+
+# Relaxed scatter floor for NAMED cross-sections. When each dot carries a
+# categorical (non-gradient) ``color`` identity -- a legend names every point
+# (e.g. a G7 deficit-vs-yield scatter coloured by country) -- the chart reads
+# as a labelled cross-section, not an anonymous cloud, so the dot floor drops.
+# This unblocks the recurring 6-7-entity cross-asset universes (G6/G7, Mag-7)
+# that fall below the anonymous-scatter floor. Below this even a labelled
+# scatter is too sparse to read as a relationship.
+_MIN_SCATTER_LABELED_DOTS = 4
 
 # Minimum fraction of the visible y-axis span that any single series in a
 # multi-series single-y-axis time-series chart (``multi_line`` /
@@ -1782,6 +1795,35 @@ def _validate_y_level_disparity(
     )
 
 
+def _group_scale_ok(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+    names: List[str],
+) -> bool:
+    """True when a subset of series clears BOTH y-scale gates on its own axis.
+
+    Used by the dual-axis auto-recovery to verify that a proposed magnitude
+    cluster (the set destined for one axis) is internally compatible -- i.e.
+    no member compresses into a flat rail relative to the others in the
+    group. A single-series group trivially passes (one series defines its
+    own scale).
+    """
+    if len(names) < 2:
+        return True
+    wanted = {str(n) for n in names}
+    color_field = _get_field(mapping, "color")
+    if not color_field or color_field not in df.columns:
+        return False
+    sub = df[df[color_field].astype(str).isin(wanted)]
+    try:
+        _validate_y_scale_homogeneity(sub, mapping, chart_type)
+        _validate_y_level_disparity(sub, mapping, chart_type)
+    except ValidationError:
+        return False
+    return True
+
+
 def _maybe_auto_recover_y_scale(
     exc: "ValidationError",
     df: pd.DataFrame,
@@ -1790,17 +1832,25 @@ def _maybe_auto_recover_y_scale(
     *,
     depth: int,
 ) -> Optional[Tuple[Dict[str, Any], str]]:
-    """Detect a y-scale rejection and propose a 2-series dual-axis fix.
+    """Detect a y-scale rejection and propose a dual-axis fix.
 
     The two y-scale gates (``_validate_y_scale_homogeneity``,
     ``_validate_y_level_disparity``) reject single-axis multi-series
     time-series charts whose level / range mix would compress one or
-    more series into flat horizontal rails. For the 2-series case the
-    canonical fix is unambiguous: route the smaller-magnitude series to
-    a right axis. The engine does this transformation in-line so PRISM
-    isn't punished for a deterministic shape problem -- but for 3+
-    series the editorial choice (2-pack / dual / z-score / facet)
-    belongs to PRISM. The error message itself names all four options.
+    more series into flat horizontal rails. When the series fall into
+    exactly TWO magnitude clusters, the canonical fix is unambiguous:
+    put each cluster on its own y-axis. The engine does this in-line so
+    PRISM isn't punished for a deterministic shape problem.
+
+    The split is found by sorting series by ``|mean|`` and cutting at the
+    largest magnitude gap, then VERIFYING that both resulting clusters
+    independently clear the y-scale gates (a dual axis only has two
+    scales to give). The 2-series case is the degenerate version (the
+    low cluster is the single smaller series). When no 2-cluster split
+    resolves the mismatch -- i.e. 3+ irreconcilable magnitude tiers --
+    the function returns ``None`` so the editorial choice (2-pack /
+    z-score / facet) stays with PRISM. The rejection message names all
+    four options.
 
     Returns:
         ``(new_mapping, recovery_message)`` if the rejection qualifies for
@@ -1833,16 +1883,14 @@ def _maybe_auto_recover_y_scale(
     series_names = [
         str(name) for name in df[color_field].dropna().unique()
     ]
-    if len(series_names) != 2:
+    if len(series_names) < 2:
         return None
 
-    # Compute |mean| + span per series. Skip auto-recovery when EITHER
-    # series is constant (span == 0); a constant series is a horizontal
-    # threshold semantically, and the better fix is `HLine(y=<const>)`
-    # not a dual-axis chart with one perfectly-flat right-axis line.
-    # The rejection message already routes the LLM toward HLine via
-    # the standard "(b) dual-axis" suggestion -- we just don't take
-    # that path silently.
+    # Compute |mean| per series. Skip auto-recovery when ANY series is
+    # constant (span == 0); a constant series is a horizontal threshold
+    # semantically, and the better fix is `HLine(y=<const>)` not a flat
+    # right-axis line. The rejection message already routes the LLM toward
+    # HLine via the standard "(b) dual-axis" suggestion.
     means: Dict[str, float] = {}
     for name in series_names:
         s = pd.to_numeric(
@@ -1854,23 +1902,51 @@ def _maybe_auto_recover_y_scale(
         if float(s.max() - s.min()) <= 0:
             return None  # one series is constant -- defer to caller
         means[name] = float(abs(s.mean()))
-    smallest = min(means, key=lambda n: means[n])
+
+    # Find the cleanest split into a low-magnitude cluster (-> right axis)
+    # and a high-magnitude cluster (left axis). Sort by |mean|, then try
+    # split points ordered by the size of the magnitude gap between
+    # neighbours; accept the first split where BOTH clusters independently
+    # clear the y-scale gates. 3+ irreconcilable tiers leave no valid
+    # 2-cluster split -> return None so PRISM picks the reshape.
+    ordered = sorted(series_names, key=lambda n: means[n])
+    candidate_splits = sorted(
+        range(1, len(ordered)),
+        key=lambda k: means[ordered[k]] / max(means[ordered[k - 1]], 1e-12),
+        reverse=True,
+    )
+    right_group: Optional[List[str]] = None
+    for k in candidate_splits:
+        low, high = ordered[:k], ordered[k:]
+        if (
+            _group_scale_ok(df, mapping, chart_type, low)
+            and _group_scale_ok(df, mapping, chart_type, high)
+        ):
+            right_group = low
+            break
+    if not right_group:
+        return None
 
     new_mapping = dict(mapping)
-    new_mapping["dual_axis_series"] = [smallest]
+    new_mapping["dual_axis_series"] = list(right_group)
     if not new_mapping.get("y_title_right"):
-        new_mapping["y_title_right"] = smallest
+        new_mapping["y_title_right"] = (
+            right_group[0] if len(right_group) == 1 else "Right axis"
+        )
 
     gate = (
         "scale-mismatch" if msg.startswith("Y-AXIS SCALE MISMATCH")
         else "level-disparity"
     )
+    routed = (
+        f"'{right_group[0]}'" if len(right_group) == 1
+        else f"the smaller-magnitude group {right_group}"
+    )
     recovery_message = (
-        f"AUTO-RECOVERED: y-axis {gate} gate rejected the 2-series "
-        f"single-axis chart. Engine routed '{smallest}' to the right "
-        f"axis (dual_axis_series=['{smallest}'], y_title_right="
-        f"'{smallest}') and re-rendered. Override by setting "
-        f"dual_axis_series explicitly or switching chart shape "
+        f"AUTO-RECOVERED: y-axis {gate} gate rejected the single-axis "
+        f"chart. Engine routed {routed} to the right axis "
+        f"(dual_axis_series={right_group}) and re-rendered. Override by "
+        f"setting dual_axis_series explicitly or switching chart shape "
         f"(e.g. make_2pack_horizontal)."
     )
     return new_mapping, recovery_message
@@ -11962,11 +12038,34 @@ def _build_scatter(
         "[_build_scatter] visible distinct dots: %d (total valid pairs: %d)",
         visible_dot_count, len(valid_pairs),
     )
-    if not connect_path and visible_dot_count < _MIN_SCATTER_VISIBLE_DOTS:
+    # A categorical (non-gradient) colour identity makes each dot a named
+    # entity (the legend labels them), so a sparse but labelled cross-section
+    # (G7, Mag-7) is legitimate and gets the relaxed floor; anonymous clouds
+    # keep the full floor.
+    is_named_cross_section = (
+        bool(color_field)
+        and color_field in df.columns
+        and not _scatter_color_is_gradient(df, color_field)
+    )
+    dot_floor = (
+        _MIN_SCATTER_LABELED_DOTS if is_named_cross_section
+        else _MIN_SCATTER_VISIBLE_DOTS
+    )
+    if not connect_path and visible_dot_count < dot_floor:
+        relax_hint = (
+            ""
+            if is_named_cross_section
+            else (
+                f" If this is a small NAMED cross-section (e.g. a handful of "
+                f"countries / names), add a categorical mapping['color'] so "
+                f"each dot is identified -- the floor then relaxes to "
+                f"{_MIN_SCATTER_LABELED_DOTS}."
+            )
+        )
         raise ValidationError(
             f"Scatter would render only {visible_dot_count} distinct dot(s) "
-            f"inside the visible plot area (need >= "
-            f"{_MIN_SCATTER_VISIBLE_DOTS} to convey a relationship). "
+            f"inside the visible plot area (need >= {dot_floor} to convey a "
+            f"relationship). "
             f"Total valid (x, y) pairs: {len(valid_pairs)}; after deduping "
             f"coincident points and clipping to the visible domain only "
             f"{visible_dot_count} remain. A scatter this sparse reads as "
@@ -11974,6 +12073,7 @@ def _build_scatter(
             f"aggregate to denser distinct points, or pick a chart type "
             f"that suits sparse data (e.g. `bar`, `multi_line`), or use "
             f"mapping['connect']=True for a time-ordered phase path."
+            f"{relax_hint}"
         )
 
     # ---- titles ---------------------------------------------------------
@@ -17348,7 +17448,18 @@ def _layout_grid_shape(layout: str, n_charts: int) -> Tuple[int, int]:
     return (max(1, n_charts), 1)
 
 
-@dataclass
+# Composite-global kwargs that live on the make_*pack_* call, NOT on a
+# ChartSpec. Naming one of these on a ChartSpec is the most common drift, so
+# the unknown-kwarg error calls them out explicitly rather than just listing
+# the valid set.
+_CHARTSPEC_COMPOSITE_GLOBAL_KWARGS = frozenset({
+    "skin", "dimensions", "dimension_preset", "output_dir", "filename_prefix",
+    "filename_suffix", "spacing", "interactive", "session_path", "s3_manager",
+    "save_as", "user_id",
+})
+
+
+@dataclass(init=False)
 class ChartSpec:
     """Specification for a single sub-chart inside a composite layout.
 
@@ -17367,6 +17478,11 @@ class ChartSpec:
     or-mapping pattern as ``make_chart``: pass at top level for
     ergonomics OR set on ``mapping``; ``mapping[...]`` wins if both
     are set.
+
+    Unknown keyword arguments raise a typed ``ValidationError`` naming the
+    bad kwarg, listing the valid set, and suggesting the nearest match --
+    rather than the bare ``TypeError: __init__() got an unexpected keyword
+    argument`` a plain dataclass emits when call-site code drifts.
     """
 
     df: pd.DataFrame
@@ -17384,6 +17500,68 @@ class ChartSpec:
     x_title: Optional[str] = None
     y_title: Optional[str] = None
     y_title_right: Optional[str] = None
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        chart_type: str,
+        mapping: Dict[str, Any],
+        *,
+        title: Optional[str] = None,
+        subtitle: Optional[str] = None,
+        annotations: Optional[List[Annotation]] = None,
+        layers: Optional[List[Dict[str, Any]]] = None,
+        caption: Union[str, Dict[str, Any], None] = None,
+        side_left: Union[str, Dict[str, Any], None] = None,
+        side_right: Union[str, Dict[str, Any], None] = None,
+        x_label: Optional[str] = None,
+        y_label: Optional[str] = None,
+        x_title: Optional[str] = None,
+        y_title: Optional[str] = None,
+        y_title_right: Optional[str] = None,
+        **extra: Any,
+    ) -> None:
+        if extra:
+            self._raise_unknown_kwargs(list(extra))
+        self.df = df
+        self.chart_type = chart_type
+        self.mapping = mapping
+        self.title = title
+        self.subtitle = subtitle
+        self.annotations = annotations
+        self.layers = layers
+        self.caption = caption
+        self.side_left = side_left
+        self.side_right = side_right
+        self.x_label = x_label
+        self.y_label = y_label
+        self.x_title = x_title
+        self.y_title = y_title
+        self.y_title_right = y_title_right
+        self.__post_init__()
+
+    @staticmethod
+    def _raise_unknown_kwargs(unknown: List[str]) -> None:
+        valid = [
+            "df", "chart_type", "mapping", "title", "subtitle", "annotations",
+            "layers", "caption", "side_left", "side_right", "x_label",
+            "y_label", "x_title", "y_title", "y_title_right",
+        ]
+        bad = unknown[0]
+        global_hint = ""
+        if any(k in _CHARTSPEC_COMPOSITE_GLOBAL_KWARGS for k in unknown):
+            offenders = [k for k in unknown if k in _CHARTSPEC_COMPOSITE_GLOBAL_KWARGS]
+            global_hint = (
+                f" Note: {offenders} are composite-global -- set them on the "
+                f"make_*pack_* call (e.g. make_4pack_grid(..., "
+                f"dimension_preset='wide')), not on a ChartSpec."
+            )
+        suggestion = difflib.get_close_matches(bad, valid, n=1, cutoff=0.6)
+        did_you_mean = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
+        raise ValidationError(
+            f"ChartSpec got unexpected keyword argument(s): {unknown}. "
+            f"Valid ChartSpec kwargs: {valid}.{did_you_mean}{global_hint}"
+        )
 
     def __post_init__(self) -> None:
         # Route top-level axis-title kwargs into ``mapping`` so the
@@ -19733,6 +19911,33 @@ def _resolve_composite_aliases(
     return resolved_dim, resolved_left, resolved_right, alias_warnings
 
 
+def _summarize_chart_errors(
+    chart_errors: List[Dict[str, Any]], n_charts: int
+) -> str:
+    """Roll per-sub-chart failures up into a self-sufficient top-level message.
+
+    Composites collect each cell's failure in ``chart_errors[i]``; the
+    top-level ``error_message`` used to be a generic
+    ``"All sub-charts failed validation."`` that forced the caller to unpack
+    ``chart_errors`` to learn the actual cause. This folds the per-cell
+    causes into the headline string (deduping identical errors so a 4-pack
+    that all hit the same gate reads as one line, not four).
+    """
+    if not chart_errors:
+        return "All sub-charts failed validation."
+    header = f"All {n_charts} sub-charts failed validation"
+    distinct = {(ce.get("error_message") or "").strip() for ce in chart_errors}
+    if len(distinct) == 1:
+        only = next(iter(distinct))
+        return f"{header} -- every cell raised the same error: {only}"
+    lines = [
+        f"  [{ce.get('chart_index')}] ({ce.get('chart_type')}) "
+        f"{(ce.get('error_message') or '').strip()}"
+        for ce in chart_errors
+    ]
+    return header + ":\n" + "\n".join(lines)
+
+
 def make_composite(
     charts: List[ChartSpec],
     layout: LayoutType,
@@ -19811,6 +20016,34 @@ def make_composite(
             ),
             skin=skin,
         )
+
+    # Validate every cell is a ChartSpec BEFORE any spec-walking helper runs.
+    # ``_composite_consensus_x_angle`` / ``_scan_text_panel_reserves`` /
+    # ``_estimate_composite_cell_lvl_pad`` read ``spec.mapping`` / ``spec.df``
+    # / ``spec.chart_type`` ahead of the per-cell try/except, so a non-ChartSpec
+    # input (most commonly a ``CompositeResult`` from a nested ``make_*pack_*``
+    # call) would otherwise surface as a raw ``AttributeError`` from deep inside
+    # a helper instead of a typed, actionable failure at the entry point.
+    for i, spec in enumerate(charts):
+        if not isinstance(spec, ChartSpec):
+            got = type(spec).__name__
+            nested_hint = (
+                " Composites cannot be nested -- pass the underlying "
+                "ChartSpecs to make_4pack_grid / make_6pack_grid instead of "
+                "feeding one composite into another."
+                if got == "CompositeResult" else ""
+            )
+            return CompositeResult(
+                png_path=None, layout=layout, n_charts=n_charts,
+                success=False,
+                error_message=(
+                    f"Composite cell {i + 1} is a {got}, but make_composite "
+                    f"requires ChartSpec inputs. Build each panel with "
+                    f"ChartSpec(df=..., chart_type=..., mapping=...)."
+                    f"{nested_hint}"
+                ),
+                skin=skin,
+            )
 
     skin_config = get_skin(skin, "explore")
     if s3_manager is None:
@@ -19940,7 +20173,7 @@ def make_composite(
         return CompositeResult(
             png_path=None, layout=layout, n_charts=n_charts,
             success=False,
-            error_message="All sub-charts failed validation.",
+            error_message=_summarize_chart_errors(chart_errors, n_charts),
             warnings=warnings_list, skin=skin, chart_errors=chart_errors,
         )
 

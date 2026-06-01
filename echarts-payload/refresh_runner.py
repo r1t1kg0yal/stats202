@@ -60,6 +60,36 @@ import time
 import traceback
 from typing import Any, Optional
 
+import sys, os
+print('=' * 80, flush=True)
+print(f'[REFRESH_RUNNER] PID={os.getpid()}', flush=True)
+print(f'[REFRESH_RUNNER] sys.executable={sys.executable}', flush=True)
+print(f'[REFRESH_RUNNER] sys.prefix={sys.prefix}', flush=True)
+print(f'[REFRESH_RUNNER] sys.path:', flush=True)
+for p in sys.path:
+    print(f'[REFRESH_RUNNER]   {p}', flush=True)
+print(f'[REFRESH_RUNNER] os.environ PYTHONPATH={os.environ.get("PYTHONPATH","<unset>")}', flush=True)
+print(f'[REFRESH_RUNNER] os.environ PYTHONHOME={os.environ.get("PYTHONHOME","<unset>")}', flush=True)
+
+import importlib.util
+
+# Check if the submodule exists
+spec_csvs = importlib.util.find_spec("pandas.io.formats.csv")
+spec_string = importlib.util.find_spec("pandas.io.formats.string")
+
+print("[REFRESH_RUNNER] csvs exists:", spec_csvs is not None)
+print("[REFRESH_RUNNER] string exists:", spec_string is not None)
+import importlib.util
+
+# Check if the submodule exists
+spec_csvs = importlib.util.find_spec("pandas.io.formats.csv")
+spec_string = importlib.util.find_spec("pandas.io.formats.string")
+
+print("[REFRESH_RUNNER] csvs exists:", spec_csvs is not None)
+print("[REFRESH_RUNNER] string exists:", spec_string is not None)
+
+print('=' * 80, flush=True)
+
 from ai_development.core.s3_bucket_manager import s3_manager
 from ai_development.dashboards import build_dashboard, run_pull
 from ai_development.dashboards.dashboards_time import (
@@ -233,6 +263,28 @@ def _list_pulls(folder: str) -> list:
     per pull so a per-pull failure surfaces the failing pull's name in
     the ``script`` field of the \u00a78.1 ``errors[]`` entry."""
     src = s3_manager.get(f"{folder}/scripts/pull_data.py").decode("utf-8")
+    ns: dict = {"__name__": "_runner_introspect", "__builtins__": __builtins__}
+
+    # DEBUG: dump exec namespace and check what pull_data.py expects
+    print(f"[_LIST_PULLS] folder={folder}", flush=True)
+    print(f"[_LIST_PULLS] script length={len(src)} chars", flush=True)
+    print(f"[_LIST_PULLS] first 500 chars:\n{src[:500]}", flush=True)
+    print(f"[_LIST_PULLS] namespace keys before exec: {list(ns.keys())}", flush=True)
+    # Look for the call sites that will fail
+    import re as _re
+    bad_refs = _re.findall(
+        r'\b(pull_market_data|pull_haver_data|pull_plottool_data|pull_fred_data|s3_manager|make_chart)\b', src)
+    print(f"[_LIST_PULLS] script references injected names: {set(bad_refs)}", flush=True)
+    print(f"[_LIST_PULLS] These MUST be imported at the top of pull_data.py for refresh to work", flush=True)
+    import importlib.util
+
+    # Check if the submodule exists
+    spec_csvs = importlib.util.find_spec("pandas.io.formats.csv")
+    spec_string = importlib.util.find_spec("pandas.io.formats.string")
+
+    print("[_LIST_PULLS] csvs exists:", spec_csvs is not None)
+    print("[_LIST_PULLS] string exists:", spec_string is not None)
+
     ns: dict = _build_exec_namespace()
     ns["__name__"] = "_runner_introspect"
     exec(compile(src, f"{folder}/scripts/pull_data.py", "exec"), ns)

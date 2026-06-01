@@ -31,7 +31,7 @@ Spoke fetched on demand from the dashboards hub. Covers all 10 filter types, cas
 | `toggle` | checkbox | `rows[field]` truthy when checked |
 | `rule` | enable-chip + popup tree | nested AND/OR/NOT row-evaluator, see §5 |
 
-**`dateRange` semantics on charts.** Time-series charts ship with their own `dataZoom` (§3). A `dateRange` filter is a global "initial lookback" knob, not a data filter — changing the dropdown moves every targeted chart's visible window via `dispatchAction({type:'dataZoom'})` and leaves the underlying dataset untouched. Tables / KPIs / stat_grids targeted by the same filter still see real row-filtering. Pass `"mode": "filter"` to force row-filter on charts (e.g. histograms / aggregates that must recompute over the window).
+**`dateRange` semantics on charts.** Time-series charts ship with their own `dataZoom` (§3). A `dateRange` filter is a global "initial lookback" knob, not a data filter -- changing the dropdown moves every targeted chart's visible window via `dispatchAction({type:'dataZoom'})` and leaves the underlying dataset untouched. Tables / KPIs / stat_grids targeted by the same filter still see real row-filtering. Pass `"mode": "filter"` to force row-filter on charts (e.g. histograms / aggregates that must recompute over the window).
 
 **Fields:**
 
@@ -83,14 +83,14 @@ Supported `where` ops: `==`, `!=`, `>`, `>=`, `<`, `<=`. Dependent filter's exis
 
 Every chart with `time` x-axis ships with two `dataZoom` controls injected at compile time (independent of any `dateRange` filter): `type: "inside"` (mouse wheel / pinch zoom + click-and-drag pan) and `type: "slider"` (draggable slider beneath the grid). Full dataset embedded; slider clips visible window. `grid.bottom` auto-bumps. Builders that already declared their own `dataZoom` (e.g. candlestick) are left alone.
 
-The injected zoom is **per-chart and local by default** — dragging the slider on one chart does not move sibling charts. To propagate drags across charts, author a `Link` with `sync: ["dataZoom"]` (§6); a `dateRange` global filter dropdown also moves every targeted chart. Slider tick label format is auto-selected from the data span (no author knob).
+The injected zoom is **per-chart and local by default** -- dragging the slider on one chart does not move sibling charts. To propagate drags across charts, author a `Link` with `sync: ["dataZoom"]` (§6); a `dateRange` global filter dropdown also moves every targeted chart. Slider tick label format is auto-selected from the data span (no author knob).
 
 `chart_zoom` value:
 
 | Form                                | Result                                                       |
 |-------------------------------------|--------------------------------------------------------------|
 | `true` / unset                      | Both inside + slider injected (default)                      |
-| `false`                             | Nothing injected — sparkline mode                            |
+| `false`                             | Nothing injected -- sparkline mode                            |
 | `{"slider": true, "inside": false}` | Slider only (chart inside-pan would steal page-scroll)       |
 | `{"slider": false, "inside": true}` | Inside only (cramped tile, slider clutters)                  |
 | `{"slider": false, "inside": false}`| Equivalent to `false`                                        |
@@ -130,7 +130,7 @@ Turn a data-point click on one chart into a filter change driving downstream wid
 
 ## 5. Compound rule filters (`type: "rule"`)
 
-Flat filters always AND together. When the screen needs OR or NOT — e.g. "investment-grade AND ((rich AND tight) OR (financial AND short-duration))" — declare a `rule` filter whose body is a nested all/any/not tree:
+Flat filters always AND together. When the screen needs OR or NOT -- e.g. "investment-grade AND ((rich AND tight) OR (financial AND short-duration))" -- declare a `rule` filter whose body is a nested all/any/not tree:
 
 ```json
 {"id": "screen", "type": "rule", "label": "Compound screen",
@@ -169,7 +169,7 @@ Mixing boolean keys with leaf keys in the same node is rejected. Multiple boolea
 
 **Leaf ops.** All `VALID_FILTER_OPS`: `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `startsWith`, `endsWith`, plus the rule-specific `in` and `not_in` (value must be a non-empty list). Default op is `==`. Comparison semantics mirror the flat filter ops (numeric coercion, case-insensitive substring for `contains` etc.).
 
-**Composition with flat filters.** A `rule` filter coexists with the 9 flat filter types — every targeted widget AND-intersects all applicable filters (rule + flats). Multiple rule filters on the same dashboard also AND together. Use a `rule` for the load-bearing screen logic; layer flat filters on top for live one-axis adjustments (sector multiSelect, search box, slider).
+**Composition with flat filters.** A `rule` filter coexists with the 9 flat filter types -- every targeted widget AND-intersects all applicable filters (rule + flats). Multiple rule filters on the same dashboard also AND together. Use a `rule` for the load-bearing screen logic; layer flat filters on top for live one-axis adjustments (sector multiSelect, search box, slider).
 
 **Fields:**
 
@@ -183,7 +183,7 @@ Mixing boolean keys with leaf keys in the same node is rejected. Multiple boolea
 | `targets` | Widget ids the rule filters; same semantics as flat filters |
 | `description` / `popup` | Optional alt-text and override popup body for the info icon |
 
-The runtime walks the tree per row using a small JS evaluator. Performance is `O(rows × leaves)` — fine for the ~10k-row universes the dashboard system targets today.
+The runtime walks the tree per row using a small JS evaluator. Performance is `O(rows × leaves)` -- fine for the ~10k-row universes the dashboard system targets today.
 
 ---
 
@@ -200,7 +200,7 @@ The runtime walks the tree per row using a small JS evaluator. Performance is `O
 
 `sync` values: `axis`, `tooltip`, `legend`, `dataZoom`. At load, runtime sets `chart.group = group` and calls `echarts.connect(group)`.
 
-`sync: ["dataZoom"]` is the **only** mechanism that mirrors a slider drag live across charts — without an explicit Link the in-chart zoom is always local (§3). Use it sparingly: it's the right call when a panel is comparing the same window across several series (curve / spread / vol on aligned dates) and the wrong call when each chart is independently navigable.
+`sync: ["dataZoom"]` is the **only** mechanism that mirrors a slider drag live across charts -- without an explicit Link the in-chart zoom is always local (§3). Use it sparingly: it's the right call when a panel is comparing the same window across several series (curve / spread / vol on aligned dates) and the wrong call when each chart is independently navigable.
 
 `brush.type`: `rect`, `polygon`, `lineX`, `lineY`. When user brushes on any member chart, runtime extracts `coordRange`, filters linked charts' datasets to brushed range on x axis, re-renders all linked charts. Clearing brush resets dataset.
 

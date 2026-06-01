@@ -46,7 +46,7 @@ Common optional fields: `w` (1-12 grid span), `h_px` (chart only; default 280), 
                         "low": "low", "high": "high"}}}
 ```
 
-Chart widgets are never full-width — pair with a volume chart, RSI panel, or stat strip on the right half of the row. The hub's layouts section has the chart-width rule.
+Chart widgets are never full-width -- pair with a volume chart, RSI panel, or stat strip on the right half of the row. The hub's layouts section has the chart-width rule.
 
 ---
 
@@ -55,10 +55,10 @@ Chart widgets are never full-width — pair with a volume chart, RSI panel, or s
 **Source path syntax.** `source` (and `delta_source`) use `<dataset>.<aggregator>.<column>`. `sparkline_source` drops the aggregator: `<dataset>.<column>`. Aggregators: `latest` / `first` / `sum` / `mean` / `min` / `max` / `count` / `prev`.
 
 For time-series datasets:
-- `rates.latest.us_10y` — last numeric value
-- `rates.prev.us_10y` — second-to-last (drives delta vs prev)
+- `rates.latest.us_10y` -- last numeric value
+- `rates.prev.us_10y` -- second-to-last (drives delta vs prev)
 
-For categorical / summary datasets, source paths still work but the aggregator collapses N rows to one — rarely what you want. Either pivot to a single-row "latest" snapshot, or skip `source` and pass `value` directly:
+For categorical / summary datasets, source paths still work but the aggregator collapses N rows to one -- rarely what you want. Either pivot to a single-row "latest" snapshot, or skip `source` and pass `value` directly:
 
 ```python
 {"widget": "kpi", "id": "kpi_aapl", "label": "AAPL NTM EPS", "value": 8.98, "w": 3}
@@ -122,7 +122,7 @@ Pass `dataset_ref` and the table renders every column by default. For production
 
 **Row-level highlighting** (`row_highlight`): list of rules evaluated per row; first match wins. `{field, op, value, class}` where `op` ∈ `==, !=, >, >=, <, <=, contains, startsWith, endsWith` and `class` ∈ `"pos"` / `"neg"` / `"warn"` / `"info"` / `"muted"`. Row gets tinted background + left-edge accent.
 
-### `row_click` and chart `click_popup` — same grammar
+### `row_click` and chart `click_popup` -- same grammar
 
 Two modes: simple (key/value table) or rich drill-down (mini-dashboard inside the modal).
 
@@ -132,7 +132,7 @@ Two modes: simple (key/value table) or rich drill-down (mini-dashboard inside th
 "row_click": {"title_field": "ticker", "popup_fields": ["ticker", "sector", "last", "d1_pct"]}
 ```
 
-*Rich drill-down* — modal widens to 880px when `detail.wide: True`:
+*Rich drill-down* -- modal widens to 880px when `detail.wide: True`:
 
 ```json
 "row_click": {
@@ -191,13 +191,13 @@ Template substitution `{field:format}` matches column formats (`number:N`, `sign
 
 When the user asks for interactive controls inside the popup (series toggle, MA overlay, brush, dataZoom) and the engine cannot render them, surface the limitation upfront. Two clean fallbacks: (a) inline the charts in a row instead of nesting in a popup, (b) ship a simpler popup with static series and route the interactive view to a sibling inline chart. Do not author a popup spec with a feature outside the allow-list and report success.
 
-**Filter scoping for popup charts.** A popup chart's dataset MUST contain a column named `filter_field` whose values match the parent row's `row_key` cell. If the dataset has only `(date, val)` columns and the popup tries `filter_field: metric`, the popup renders empty. Verify at build time before authoring the manifest: load the dataset, run `df[df[filter_field] == row_key].head()`, and require `len(rows) > 0`. Empty popup charts silently shipped to the user is the canonical row_click failure mode — catch it pre-author.
+**Filter scoping for popup charts.** A popup chart's dataset MUST contain a column named `filter_field` whose values match the parent row's `row_key` cell. If the dataset has only `(date, val)` columns and the popup tries `filter_field: metric`, the popup renders empty. Verify at build time before authoring the manifest: load the dataset, run `df[df[filter_field] == row_key].head()`, and require `len(rows) > 0`. Empty popup charts silently shipped to the user is the canonical row_click failure mode -- catch it pre-author.
 
 ---
 
 ## 4. Provenance
 
-Every line / bar / point / row / cell carries the upstream identifier plus source system. The compiler does NOT introspect `df.attrs`; PRISM cleans upstream metadata into the canonical shape and passes it explicitly. Vendor-agnostic — the renderer treats `system` as opaque, so adding a new data source is one PRISM-side adapter (~10 lines), no echarts code change.
+Every line / bar / point / row / cell carries the upstream identifier plus source system. The compiler does NOT introspect `df.attrs`; PRISM cleans upstream metadata into the canonical shape and passes it explicitly. Vendor-agnostic -- the renderer treats `system` as opaque, so adding a new data source is one PRISM-side adapter (~10 lines), no echarts code change.
 
 **The contract:** attach `field_provenance` (and optionally `row_provenance_field` + `row_provenance` for mixed-vendor columns) alongside `source`.
 
@@ -220,7 +220,7 @@ manifest["datasets"]["rates"] = {
 | Key | Purpose |
 |-----|---------|
 | `system` | Source slug: `haver`, `market_data`, `plottool`, `fred`, `bloomberg`, `refinitiv`, `factset`, `csv`, `computed`, `manual`, or any string PRISM picks for a new vendor. Renderer treats as opaque |
-| `symbol` | Universal primary identifier — pass the exact upstream string (`GDP@USECON`, `IR_USD_Treasury_10Y_Rate`, `DGS10`, `USGG10YR Index`, `AAPL-US.GAAP.EPS_DILUTED`) |
+| `symbol` | Universal primary identifier -- pass the exact upstream string (`GDP@USECON`, `IR_USD_Treasury_10Y_Rate`, `DGS10`, `USGG10YR Index`, `AAPL-US.GAAP.EPS_DILUTED`) |
 | `display_name` / `units` / `source_label` | Human-readable footer label; `percent` / `bp` / etc.; vendor attribution |
 | `recipe` / `computed_from` | For `system: "computed"`: free-form formula + list of source columns referenced |
 | `as_of` | ISO timestamp of latest tick at column level |
@@ -245,7 +245,7 @@ PRISM rule: every dataset backing a chart or table carries `field_provenance`.
 
 ## 5. stat_grid
 
-Dense grid of label / value stats — for when a row of KPIs would take too much vertical space.
+Dense grid of label / value stats -- for when a row of KPIs would take too much vertical space.
 
 ```json
 {"widget": "stat_grid", "id": "summary", "w": 12, "title": "Risk summary",
@@ -263,7 +263,7 @@ Dense grid of label / value stats — for when a row of KPIs would take too much
 | `value` / `source` | Pre-formatted (no number formatting applied) OR dotted `<dataset>.<agg>.<column>` |
 | `info` (alias `description`) / `popup` | Hover tooltip + click modal; `{title, body}` markdown popup |
 | `trend` | Optional numeric delta. Positive = green up, negative = red down |
-| `sense_check` | Bool, default `True`. Per-stat. Same semantics as KPI's `sense_check` — compile prints every resolved stat value and fires `stat_grid_value_sense_check` when `|value| > 20`. Set per-stat (not per-widget) to acknowledge legitimately-large items (HY OAS 285bp, VaR $18m) one at a time. |
+| `sense_check` | Bool, default `True`. Per-stat. Same semantics as KPI's `sense_check` -- compile prints every resolved stat value and fires `stat_grid_value_sense_check` when `|value| > 20`. Set per-stat (not per-widget) to acknowledge legitimately-large items (HY OAS 285bp, VaR $18m) one at a time. |
 
 ---
 
@@ -308,15 +308,15 @@ Filters targeting `dataset_ref` flow through naturally. User's last selections s
 {"widget": "divider", "id": "sep"}
 ```
 
-The `markdown` widget renders as transparent prose by default. Set `kind` to one of `insight` / `thesis` / `watch` / `risk` / `context` / `fact` to render as a tinted semantic card with a coloured left-edge stripe instead — see §8.
+The `markdown` widget renders as transparent prose by default. Set `kind` to one of `insight` / `thesis` / `watch` / `risk` / `context` / `fact` to render as a tinted semantic card with a coloured left-edge stripe instead -- see §8.
 
 ---
 
 ## 8. Markdown with `kind` (semantic callout)
 
-Set `kind` on a markdown widget when a paragraph is load-bearing — the thesis, the risk, the watch level. The widget body stays markdown; the renderer adds a tinted card with a coloured left-edge stripe and a kind-label header so the reader can scan for "this is the thesis" / "this is a risk" without reading prose.
+Set `kind` on a markdown widget when a paragraph is load-bearing -- the thesis, the risk, the watch level. The widget body stays markdown; the renderer adds a tinted card with a coloured left-edge stripe and a kind-label header so the reader can scan for "this is the thesis" / "this is a risk" without reading prose.
 
-Required: `id`, `content` (markdown — `body` also accepted as a legacy alias). Optional: `kind` ∈ `insight` / `thesis` / `watch` / `risk` / `context` / `fact`, `title`, `icon` (1-2 char glyph), `w` (default 12), `footer`, `popup`, `info`.
+Required: `id`, `content` (markdown -- `body` also accepted as a legacy alias). Optional: `kind` ∈ `insight` / `thesis` / `watch` / `risk` / `context` / `fact`, `title`, `icon` (1-2 char glyph), `w` (default 12), `footer`, `popup`, `info`.
 
 | Kind | Visual | Use for |
 |------|--------|---------|
@@ -356,19 +356,19 @@ Same grammar applies to: `widget: markdown` (with or without `kind`), `metadata.
 | Horizontal rule | A line containing only `---`, `***`, or `___` |
 | Inline | `**bold**` / `*italic*` / `~~strike~~` / `` `code` `` / `[label](url)` (opens in new tab) |
 
-Anything that does not match is escaped as plain text — including raw HTML.
+Anything that does not match is escaped as plain text -- including raw HTML.
 
 ---
 
 ## 10. show_when, initial_state, stat strip
 
-### `show_when` — conditional widget visibility
+### `show_when` -- conditional widget visibility
 
 A widget can declare `show_when`; if it fails the widget is removed (compile-time data conditions) or hidden via CSS (runtime filter conditions).
 
-- **Data condition** (compile-time) — `{"data": "<dotted_source> <op> <value>"}`. Source uses KPI dotted shape (`dataset.aggregator.column`); ops: `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `startsWith`, `endsWith`. Widget removed from layout when condition fails.
-- **Filter condition** (runtime) — `{"filter": "<filter_id>", "value": <v>}`, `{"filter": "<filter_id>", "in": [<v>, ...]}`, or `{"filter": "<filter_id>", "op": ">", "value": 25}`. JS toggles widget visibility on filter change.
-- **Compound** — `{"all": [...]}` (AND), `{"any": [...]}` (OR). Mix data and filter clauses freely; compile-time pass evaluates only data sub-conditions.
+- **Data condition** (compile-time) -- `{"data": "<dotted_source> <op> <value>"}`. Source uses KPI dotted shape (`dataset.aggregator.column`); ops: `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `startsWith`, `endsWith`. Widget removed from layout when condition fails.
+- **Filter condition** (runtime) -- `{"filter": "<filter_id>", "value": <v>}`, `{"filter": "<filter_id>", "in": [<v>, ...]}`, or `{"filter": "<filter_id>", "op": ">", "value": 25}`. JS toggles widget visibility on filter change.
+- **Compound** -- `{"all": [...]}` (AND), `{"any": [...]}` (OR). Mix data and filter clauses freely; compile-time pass evaluates only data sub-conditions.
 
 ```python
 {"widget": "note", "id": "vol_warning", "kind": "risk",
@@ -383,7 +383,7 @@ A widget can declare `show_when`; if it fails the widget is removed (compile-tim
                           {"filter": "scope", "in": ["us", "eu"]}]}}
 ```
 
-### `initial_state` — seed the controls drawer
+### `initial_state` -- seed the controls drawer
 
 Every chart / table / KPI carries a controls drawer. `initial_state` seeds it so a chart opens in YoY % instead of raw levels (etc.) without an extra click. Mirrors drawer state shape; unknown keys are ignored.
 
@@ -415,7 +415,7 @@ Every chart / table / KPI carries a controls drawer. `initial_state` seeds it so
 
 ### Auto stat strip (`Σ` button)
 
-Every supported time-series chart (`line`, `multi_line`, `area`) gets a `Σ` button in its toolbar. The popup carries one row per visible series with current value, deltas at `1d` / `5d` / `1m` / `3m` / `YTD` / `1Y`, 1Y high-low range, 1Y percentile rank. Computed on-demand — always reflects current state including drawer transforms or filter state.
+Every supported time-series chart (`line`, `multi_line`, `area`) gets a `Σ` button in its toolbar. The popup carries one row per visible series with current value, deltas at `1d` / `5d` / `1m` / `3m` / `YTD` / `1Y`, 1Y high-low range, 1Y percentile rank. Computed on-demand -- always reflects current state including drawer transforms or filter state.
 
 Format choice (bp / pct+abs / pp / arithmetic) follows `field_provenance.units`:
 

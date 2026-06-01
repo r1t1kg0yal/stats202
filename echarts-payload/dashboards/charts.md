@@ -1,6 +1,6 @@
 # Chart specs
 
-Spoke fetched on demand from the dashboards hub. Covers every detail of `widget: chart` — variants, the 30-type catalog, mapping keys, cosmetic knobs, annotations, the two interactive sub-types (`scatter_studio`, `correlation_matrix`), and manifest-level computed columns.
+Spoke fetched on demand from the dashboards hub. Covers every detail of `widget: chart` -- variants, the 30-type catalog, mapping keys, cosmetic knobs, annotations, the two interactive sub-types (`scatter_studio`, `correlation_matrix`), and manifest-level computed columns.
 
 For widget-level scaffolding (`title`, `footer`, `info`, `click_emit_filter`, `click_popup`), fetch `widgets.md`.
 
@@ -56,7 +56,7 @@ Every `widget: chart` declares one of three variants. Use the lowest ceremony th
 | `marimekko` | `x` (col-axis cat), `y` (row-axis cat), `value`, optional `order_x`, `order_y` |
 | `raw` | pass `option=...` directly (passthrough) |
 
-Unknown `chart_type` raises `ValueError`. Datetime cols auto-resolve to `xAxis.type='time'`; numeric to `'value'`; everything else to `'category'`. Missing columns raise `ValueError` listing actual DataFrame columns — no silent fallback.
+Unknown `chart_type` raises `ValueError`. Datetime cols auto-resolve to `xAxis.type='time'`; numeric to `'value'`; everything else to `'category'`. Missing columns raise `ValueError` listing actual DataFrame columns -- no silent fallback.
 
 **Finance-flavoured shapes:**
 
@@ -84,7 +84,7 @@ Unknown `chart_type` raises `ValueError`. Datetime cols auto-resolve to `xAxis.t
 | `axes` | List of axis spec dicts for N-axis time series. Takes precedence over the legacy 2-axis API |
 | `strokeDash` / `strokeDashScale` / `strokeDashLegend` | Column controlling per-series dash pattern; `{"domain": [...], "range": [[1,0], [8,3]]}` explicit mapping; legend cross-product |
 | `trendline` / `trendlines` (scatter) | `True` adds overall / per-group OLS line |
-| `size` (scatter) | Column driving marker size. Auto-scaled to a 6-28 px range using the column's robust 5th/95th percentile, so raw revenue / market-cap / volume columns work without pre-normalising. Override with `size_min` / `size_max` (pixels) and `size_lo` / `size_hi` (data-space pin) — see below. |
+| `size` (scatter) | Column driving marker size. Auto-scaled to a 6-28 px range using the column's robust 5th/95th percentile, so raw revenue / market-cap / volume columns work without pre-normalising. Override with `size_min` / `size_max` (pixels) and `size_lo` / `size_hi` (data-space pin) -- see below. |
 | `size_min` / `size_max` (scatter) | Pixel range for `size` mapping. Defaults: 6 / 28. |
 | `size_lo` / `size_hi` (scatter) | Data-space pin for the `size` mapping. Defaults to the column's 5th/95th percentile. Use when a fixed reference scale matters (e.g. comparing across reruns where the dataset extent shifts). |
 | `bins` / `density` (histogram) | Int or list of bin edges (default 20); `True` normalises counts to density |
@@ -105,7 +105,7 @@ Corrective actions in priority order:
 
 | Action | When |
 |--------|------|
-| Drop to ≤4 series (filter dataset to top-N by some criterion — largest end-of-period magnitude, alphabetical first N, peer-group membership) | Default. Cheapest path; loses no fidelity if the dropped series are tail-of-distribution |
+| Drop to ≤4 series (filter dataset to top-N by some criterion -- largest end-of-period magnitude, alphabetical first N, peer-group membership) | Default. Cheapest path; loses no fidelity if the dropped series are tail-of-distribution |
 | Bucket the rest into a synthetic "Other" series | When the count of dropped series matters but their individual identity does not |
 | Split into small multiples (one widget per category, paired into 2-up rows) | When every series is load-bearing and the data deserves dedicated canvases |
 | Pivot framing: `Index=100` normalisation (5 series of normalised %-from-base read more cleanly than 5 raw levels), `correlation_matrix` (replaces a 5+ multi_line of asset returns), aggregate `stat_grid` (when the question is "where do these N values land today?" not "how have they evolved?") | When the question can be answered without the time-series axis |
@@ -123,7 +123,7 @@ Corrective actions in priority order:
 | `parallel_coords` | `dims` (list), optional `color` |
 | `tree` | `name`, `parent` |
 
-**Heatmap-style** (`heatmap`, `correlation_matrix`, `calendar_heatmap`) cell-label / color keys: `show_values`, `value_decimals` (auto, clamped to global cap §4), `value_formatter` (raw JS — suppresses auto-contrast + cap), `value_label_color` (`"auto"` / hex / `False`), `value_label_size` (default 11), `colors` / `color_palette`, `color_scale` (`sequential` / `diverging` / `auto`), `value_min` / `value_max` (pin visualMap range across reruns).
+**Heatmap-style** (`heatmap`, `correlation_matrix`, `calendar_heatmap`) cell-label / color keys: `show_values`, `value_decimals` (auto, clamped to global cap §4), `value_formatter` (raw JS -- suppresses auto-contrast + cap), `value_label_color` (`"auto"` / hex / `False`), `value_label_size` (default 11), `colors` / `color_palette`, `color_scale` (`sequential` / `diverging` / `auto`), `value_min` / `value_max` (pin visualMap range across reruns).
 
 **Multi-axis time series (`mapping.axes`).** Line / multi_line / area accept arbitrary independent y-axes:
 
@@ -164,15 +164,17 @@ When to use: 2 axes → prefer `dual_axis_series`; 3+ across asset classes → `
 
 The compiler truncates long category labels to `category_label_max_px`, sizes `nameGap` from real label widths, bumps `grid.left` / `grid.bottom` for rotated axis names, auto-rotates vertical-bar / boxplot x-labels when crowded, and bumps heatmap `grid.right` to 76px for visualMap clearance.
 
-**Per-spec overrides.** `palette`, `theme`, `annotations` may live on `spec` to override manifest defaults. Required keys: `chart_type`, `dataset`, `mapping`. Titles / subtitles live at the widget level only — `spec.title` / `spec.subtitle` are rejected by the validator.
+**Per-spec overrides.** `palette`, `theme`, `annotations` may live on `spec` to override manifest defaults. Required keys: `chart_type`, `dataset`, `mapping`. Titles / subtitles live at the widget level only -- `spec.title` / `spec.subtitle` are rejected by the validator.
 
-**Global decimal cap.** Numeric values rendered anywhere are hard-capped at 5 decimal places (`config.MAX_DASHBOARD_DECIMALS`); author-supplied precision options are clamped end-to-end. Author-supplied raw JS formatters (`value_formatter`, `tooltip.formatter`, `axisLabel.formatter`) are not inspected — if you pass raw JS, you own its precision.
+**Global decimal cap.** Numeric values rendered anywhere are hard-capped at 5 decimal places (`config.MAX_DASHBOARD_DECIMALS`); author-supplied precision options are clamped end-to-end. Author-supplied raw JS formatters (`value_formatter`, `tooltip.formatter`, `axisLabel.formatter`) are not inspected -- if you pass raw JS, you own its precision.
 
 ---
 
 ## 5. Annotations
 
-Five types in `annotations=[...]`:
+Five types in annotations=[...]:
+
+Required positional key per type: hline -> y, vline -> x, band -> (x1,x2) OR (y1,y2), arrow -> (x1,y1,x2,y2), point -> (x,y). The compiler also accepts the author-friendly aliases value / at / x_value / y_value and folds them to the canonical positional key (so {type: hline, value: 0} is treated as {type: hline, y: 0}). Items missing the required positional key (and no alias) are silently dropped rather than emitted as broken markLine entries.
 
 ```python
 "annotations": [
@@ -183,15 +185,13 @@ Five types in `annotations=[...]`:
     {"type": "point", "x": "2023-06-15", "y": 4.4, "label": "peak"}]
 ```
 
-**Required positional key per type:** `hline` → `y`, `vline` → `x`, `band` → `(x1,x2)` OR `(y1,y2)`, `arrow` → `(x1,y1,x2,y2)`, `point` → `(x,y)`. The compiler also accepts the author-friendly aliases `value` / `at` / `x_value` / `y_value` and folds them to the canonical positional key (so `{"type": "hline", "value": 0}` is treated as `{"type": "hline", "y": 0}`). Items missing the required positional key (and no alias) are silently dropped rather than emitted as broken markLine entries that would crash ECharts' renderSeries.
-
 Common keys: `label`, `color`, `style` (`'solid'|'dashed'|'dotted'`), `stroke_dash` (`[4,4]`), `stroke_width`, `label_color`, `label_position`, `opacity` (band), `head_size` / `head_type` (arrow), `font_size` (point). `band` accepts `y1`/`y2` (horizontal band) and aliases `x_start`/`x_end`, `y_start`/`y_end`. Dual-axis: `hline` accepts `"axis": "right"`. Charts without axes (pie / donut / sankey / treemap / sunburst / radar / gauge / funnel / parallel_coords / tree) silently ignore annotations.
 
 Annotate regime changes, policy shifts, event dates, structural breaks. Don't annotate self-evident facts (zero line on a spread, target on every CPI chart).
 
 ---
 
-## 6. `scatter_studio` — exploratory bivariate
+## 6. `scatter_studio` -- exploratory bivariate
 
 Use when the analyst should pick X / Y / color / size / per-axis transform / regression interactively. Author whitelists columns; regression line, R², p-value, window slicer wired automatically.
 
@@ -219,9 +219,9 @@ Stats strip example: `n=247  r=0.68***  R²=0.46  beta=0.42 (SE 0.03)  alpha=1.1
 
 ---
 
-## 7. `correlation_matrix` — N×N heatmap from a column list
+## 7. `correlation_matrix` -- N×N heatmap from a column list
 
-"How do these N series co-move?" Builder applies a per-column transform, computes the correlation matrix, emits a diverging heatmap pinned to `[-1, 1]`. Mapping `transform`, `window`, and `method` are the INITIAL state of the runtime drawer, not pins — the viewer can re-correlate against any combination without a script reload.
+"How do these N series co-move?" Builder applies a per-column transform, computes the correlation matrix, emits a diverging heatmap pinned to `[-1, 1]`. Mapping `transform`, `window`, and `method` are the INITIAL state of the runtime drawer, not pins -- the viewer can re-correlate against any combination without a script reload.
 
 | Mapping key | Purpose |
 |-------------|---------|

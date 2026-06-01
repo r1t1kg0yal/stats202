@@ -3504,18 +3504,6 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
   min-width: 140px;
   font-family: inherit;
 }
-.tool-input-row.tool-range .tool-range-row {
-  display: flex; align-items: center; gap: 8px;
-}
-.tool-input-row.tool-range input[type=range] {
-  flex: 1; min-width: 0; accent-color: var(--gs-navy, #002F6C);
-}
-.tool-input-row.tool-range .tool-range-val {
-  min-width: 44px; text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: var(--gs-navy, #002F6C);
-  font-weight: 600; font-size: 0.82rem;
-}
 .tool-input-row input:focus, .tool-input-row select:focus {
   outline: none; border-color: var(--gs-navy, #002F6C);
   box-shadow: 0 0 0 2px rgba(0,47,108,0.12);
@@ -3683,29 +3671,6 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
 .tool-output-chart-host {
   width: 100%; min-height: 200px;
 }
-.tool-chart-empty {
-  display: flex; align-items: center; justify-content: center;
-  min-height: 180px; padding: 16px;
-  border: 1px dashed var(--border, #ccd1da);
-  border-radius: 4px;
-  color: var(--text-secondary, #777);
-  font-size: 0.82rem; text-align: center;
-}
-.tool-output-stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: 8px;
-}
-.tool-output-stat-grid .tool-stat-cell {
-  background: var(--surface-2, #f9fafc);
-  border: 1px solid var(--border, #eef0f4);
-  border-radius: 4px;
-}
-.tool-stat-section .tool-stat-cell {
-  background: var(--surface-2, #f9fafc);
-  border: 1px solid var(--border, #eef0f4);
-  border-radius: 4px;
-}
 .tool-error {
   padding: 10px 14px;
   background: rgba(180, 30, 30, 0.06);
@@ -3719,9 +3684,6 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
 
 :root[data-theme="dark"] .tool-tile .tool-input-panel {
   border-right-color: var(--border, #2a2f3a);
-}
-:root[data-theme="dark"] .tool-input-row.tool-range .tool-range-val {
-  color: var(--text, #e8eaed);
 }
 :root[data-theme="dark"] .tool-input-row input,
 :root[data-theme="dark"] .tool-input-row select,
@@ -12961,8 +12923,6 @@ DASHBOARD_APP_JS = r"""
 
   function _toolFmtStat(out, val){
     if (val == null) return '--';
-    if (typeof val === 'string' && !out.format) return val;
-    if (typeof val === 'string' && isNaN(+val)) return val;
     var fmt = out.format || 'number';
     var dec = out.decimals;
     var s;
@@ -13172,19 +13132,13 @@ DASHBOARD_APP_JS = r"""
     rows.forEach(function(row){
       var iid = row.getAttribute('data-input-id');
       if (!iid) return;
-      // Number / date / text / select / toggle / range:
+      // Number / date / text / select / toggle:
       var el = row.querySelector(
-        'input[type=number], input[type=date], input[type=text], input[type=range], select, input[type=checkbox]'
+        'input[type=number], input[type=date], input[type=text], select, input[type=checkbox]'
       );
       if (el) {
-        el.addEventListener('input',  function(){
-          if (el.type === 'range') _toolUpdateRangeDisplay(el);
-          _toolOnScalarChange(tile, wid, iid);
-        });
-        el.addEventListener('change', function(){
-          if (el.type === 'range') _toolUpdateRangeDisplay(el);
-          _toolOnScalarChange(tile, wid, iid);
-        });
+        el.addEventListener('input',  function(){ _toolOnScalarChange(tile, wid, iid); });
+        el.addEventListener('change', function(){ _toolOnScalarChange(tile, wid, iid); });
         return;
       }
       // Radio:
@@ -13195,51 +13149,11 @@ DASHBOARD_APP_JS = r"""
     });
   }
 
-  function _toolFormatRangeDisplay(val, inp){
-    if (val == null || val === '') return '';
-    var n = +val;
-    if (isNaN(n)) return String(val);
-    var dec = inp && inp.decimals;
-    if (dec == null || dec === '') {
-      var step = inp && inp.step;
-      if (step != null && step !== '') {
-        var stepStr = String(step);
-        var dot = stepStr.indexOf('.');
-        dec = dot >= 0 ? (stepStr.length - dot - 1) : 0;
-      } else {
-        dec = 2;
-      }
-    }
-    dec = (+dec | 0);
-    if (dec < 0) dec = 0;
-    if (dec > __MAX_DEC) dec = __MAX_DEC;
-    return _toolHumanFmt(n, dec);
-  }
-
-  function _toolUpdateRangeDisplay(el){
-    if (!el || el.type !== 'range') return;
-    var disp = document.getElementById(el.id + '-val');
-    if (!disp) return;
-    var wid = el.closest('[data-tool-id]');
-    wid = wid ? wid.getAttribute('data-tool-id') : null;
-    var inp = null;
-    if (wid && TOOLS[wid]){
-      var iid = el.closest('.tool-input-row');
-      iid = iid ? iid.getAttribute('data-input-id') : null;
-      if (iid){
-        inp = (TOOLS[wid].def.inputs || []).filter(function(x){
-          return x.id === iid;
-        })[0];
-      }
-    }
-    disp.textContent = _toolFormatRangeDisplay(el.value, inp);
-  }
-
   function _toolReadScalarValue(tile, inp){
     var iid = inp.id;
     var typ = inp.type || 'number';
     var nid = 'tool-' + tile.getAttribute('data-tool-id') + '-in-' + iid;
-    if (typ === 'number' || typ === 'range'){
+    if (typ === 'number'){
       var el = document.getElementById(nid);
       if (!el) return inp.default;
       var v = el.value;
@@ -13369,7 +13283,6 @@ DASHBOARD_APP_JS = r"""
           _toolRenderDistribution(tile, wid, out, val);
           break;
         case 'stat_grid':
-          _toolRenderStatGrid(tile, out, val);
           break;
         default: break;
       }

@@ -120,7 +120,7 @@ for r, qc in zip([r1, r2], qc_results):
 | 1 headline + 2 supporting | `make_3pack_triangle` | One main + two angles |
 | 4 panels | `make_4pack_grid` | Regional/sector/scenario grid where grid IS the point |
 | 6-panel dashboard | `make_6pack_grid` | True dashboards; not for arguments |
-| 8-30 entities sharing one shape | grid mode (`mapping['facet']`) | G20 / sectors / FX -- fetch grids spoke |
+| 7-30 entities sharing one shape | grid mode (`mapping['facet']`) | Mag-7 / sectors / G20 / FX -- fetch grids spoke |
 | 9+ series on one canvas | aggregate/group, or `heatmap` | Too many for any panel composite |
 
 ### 3.2 Annotations make charts argue
@@ -151,7 +151,7 @@ When user hands chart-type pick ("analysis", "what's interesting"), lean toward 
 
 **Anti-pattern:** single-series `multi_line` on "is anything happening?" -- narrates, doesn't argue.
 
-Engine rejects scatters with < 8 distinct (x, y) coords in visible region (error mentions "distinct dot(s)"). For correlation with disparate magnitudes (gold + WTI) or disparate levels (FCI components 30/60/10), single-y-axis `multi_line` is REJECTED -- pick 2-pack or dual-axis (§9.1).
+Engine rejects anonymous scatters with < 8 distinct (x, y) coords in visible region (reads as anecdote; error mentions "distinct dot(s)"). A NAMED cross-section -- categorical `mapping['color']` identifying each dot (G7 deficit-vs-yield, Mag-7) -- relaxes the floor to 4, so small labelled universes plot as scatters instead of forcing a bar conversion. For correlation with disparate magnitudes (gold + WTI) or disparate levels (FCI components 30/60/10), single-y-axis `multi_line` is REJECTED -- pick 2-pack or dual-axis (§9.1).
 
 ---
 
@@ -437,9 +437,9 @@ Engine REJECTS multi-series single-y-axis `multi_line` / `timeseries` when eithe
 | **Flatness** | single series's data span < 10% of visible y | `Y-AXIS SCALE MISMATCH` | gold ($2000) + WTI ($70); equity + 2Y yield |
 | **Level disparity** | every series varies, but gap between two means > 3x the largest individual span | `Y-AXIS LEVEL DISPARITY` | corp saving (~2.5%) vs investment (~9.9%) of GDP |
 
-**2-series cases auto-recover** -- engine routes smaller-|mean| series to right axis, re-renders, emits `AUTO-RECOVERED:` on `result.audit_trail` (NOT `warnings`; chart is fine). Override via explicit `dual_axis_series=` or switch to `make_2pack_*`.
+**2-magnitude-cluster cases auto-recover** -- when the series split cleanly into two magnitude groups (the 2-series case, or e.g. two $-level series + one %-level series), the engine routes the smaller-magnitude group to the right axis, re-renders, and emits `AUTO-RECOVERED:` on `result.audit_trail` (NOT `warnings`; chart is fine). Override via explicit `dual_axis_series=` or switch to `make_2pack_*`.
 
-**3+ series cases stay rejected** -- editorial choice required:
+**3+ irreconcilable magnitude tiers stay rejected** -- a dual axis only has two scales; editorial choice required:
 
 | Fix | Best when |
 |---|---|
@@ -574,7 +574,7 @@ All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`,
 | 4 regional PMIs | `make_4pack_grid` |
 | Headline + 2 supporting | `make_3pack_triangle` |
 | Sector dashboard (6 panels) | `make_6pack_grid` |
-| 8-30 entities (G20, sectors, FX) | grid mode via `mapping['facet']` -- fetch grids spoke |
+| 7-30 entities (Mag-7, sectors, G20, FX) | grid mode via `mapping['facet']` -- fetch grids spoke |
 
 ---
 

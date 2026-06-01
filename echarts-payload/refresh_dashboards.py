@@ -120,7 +120,6 @@ _REFRESH_RUNNER_PATH = _refresh_runner_module.__file__
 # (e.g. ad-hoc jobs scripts).
 _SPAWN_KIND = "dashboard_refresh"
 
-
 # ============================================================================
 # small print helpers (HIERARCHICAL output: banner per walk + indented
 # per-dashboard lines + indented sub-events for spawn / done / cooldown)
@@ -322,7 +321,7 @@ def _spawn_runner(folder: str) -> dict:
         ts=spawn_ts,
     )
 
-    # Option A — dual-write: the dashboard FOLDER itself is the auditable
+    # Option A -- dual-write: the dashboard FOLDER itself is the auditable
     # session-side destination. A user inspecting
     # users/<kerb>/dashboards/<name>/ should see the refresh subprocess
     # log right next to dashboard.html / refresh_status.json instead of

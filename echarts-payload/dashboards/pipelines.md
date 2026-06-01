@@ -2,7 +2,7 @@
 
 Spoke fetched on demand from the dashboards hub. Covers the three-surface model, pipeline cataloging, the reuse decision ladder, active-pipeline integrity rules, end-to-end re-authoring of `pull_data.py`, and the post-edit session-folder health check.
 
-This spoke is the SSOT for "how PRISM thinks about dashboard data flow" — fetch when ADDING / EDITING an existing dashboard's data side, before authoring any change. The other dashboards spokes (`charts.md`, `widgets.md`, `widget_tool.md`, `filters.md`) are about per-primitive widget specs; `template_crud.md` is the SSOT for raw JSON CRUD on `manifest_template.json`; `recipes.md` carries long-form worked recipes including derived-dataset patterns in `build.py`.
+This spoke is the SSOT for "how PRISM thinks about dashboard data flow" -- fetch when ADDING / EDITING an existing dashboard's data side, before authoring any change. The other dashboards spokes (`charts.md`, `widgets.md`, `widget_tool.md`, `filters.md`) are about per-primitive widget specs; `template_crud.md` is the SSOT for raw JSON CRUD on `manifest_template.json`; `recipes.md` carries long-form worked recipes including derived-dataset patterns in `build.py`.
 
 ---
 
@@ -17,7 +17,7 @@ A persistent dashboard's true artifact is three files: `scripts/pull_data.py` (t
   data/<stem>.csv              (one CSV per pipeline)
      │ runner execs build.py
      ▼
-  manifest_template.json       (the spec — PRISM CRUDs via raw JSON code)
+  manifest_template.json       (the spec -- PRISM CRUDs via raw JSON code)
      │ build.py loads + populate_template + compile_dashboard
      ▼
   manifest.json + dashboard.html
@@ -25,7 +25,7 @@ A persistent dashboard's true artifact is three files: `scripts/pull_data.py` (t
 
 The runner has no PRISM state and no conversation memory. It re-execs `pull_data.py`, then `build.py`, then nothing. If the three surfaces produce a dashboard today, they produce the same dashboard tomorrow with fresher data. If a refresh fails, the failure is in one of the two scripts (the spec is JSON; it can't fail at exec time, only at compile time inside `build.py`).
 
-This spoke is about the data side — `pull_data.py` and the CSVs it produces. For the spec side (`manifest_template.json`) see `template_crud.md`. For cross-dataset derivation in `build.py` see `recipes.md` § 7.
+This spoke is about the data side -- `pull_data.py` and the CSVs it produces. For the spec side (`manifest_template.json`) see `template_crud.md`. For cross-dataset derivation in `build.py` see `recipes.md` § 7.
 
 | Question | Answer |
 |---|---|
@@ -72,11 +72,11 @@ If two widgets reference the same `dataset_key`, they share one pipeline (the ch
 | Knob | Effect |
 |------|--------|
 | `coordinates` / `codes` / `series` / `expressions` | Which columns the pipeline produces |
-| `start` | History depth — clipping here is irreversible (`dashboards.md` §11) |
+| `start` | History depth -- clipping here is irreversible (`dashboards.md` §11) |
 | `name` | The CSV stem (post-suffix for market_data) and therefore the dataset_key |
 | `output_path` | Always `f"{SESSION_PATH}/data"` (Rule 5); never per-source subfolders |
 
-When PRISM reads an existing `pull_data.py`, the catalog is recoverable in one pass: each top-level pull / alt-data block is one pipeline; its arguments tell you exactly what CSV it produces and which columns the CSV will have. For a dashboard with 4 pipelines and 12 widgets, the full pipeline-graph is ~30 lines of mental model — cheap to build, expensive to skip.
+When PRISM reads an existing `pull_data.py`, the catalog is recoverable in one pass: each top-level pull / alt-data block is one pipeline; its arguments tell you exactly what CSV it produces and which columns the CSV will have. For a dashboard with 4 pipelines and 12 widgets, the full pipeline-graph is ~30 lines of mental model -- cheap to build, expensive to skip.
 
 ---
 
@@ -120,11 +120,11 @@ When the user asks for a new widget on an existing dashboard, walk the ladder. T
      │           CSV in addition to the existing ones; populate_template
      │           gets a new entry in its dict argument. Audit the
      │           refresh-runner namespace before adding (§6.5 of
-     │           dashboards.md) — alt-data clients and `save_artifact`
+     │           dashboards.md) -- alt-data clients and `save_artifact`
      │           are NOT injected today.
      │
      └── (If neither (a) nor (b) is acceptable, surface the gap to the user
-          instead of inventing data — `recipes.md` §4 propose-and-confirm.)
+          instead of inventing data -- `recipes.md` §4 propose-and-confirm.)
 ```
 
 **Concrete reuse example.** Existing dashboard has the rates pipeline:
@@ -141,8 +141,8 @@ User asks for a 5Y rates chart.
 
 | Ladder step | Decision |
 |-------------|----------|
-| 1 — column exists today? | NO (`us_5y` column doesn't exist) → step 2 |
-| 2 — same source? | YES (rates pipeline IS market data) → EXTEND |
+| 1 -- column exists today? | NO (`us_5y` column doesn't exist) → step 2 |
+| 2 -- same source? | YES (rates pipeline IS market data) → EXTEND |
 
 Action: add `IR_USD_Swap_5Y_Rate` to `coordinates`. `name=`, CSV stem, dataset_key all stay the same. `build.py`'s post-pull rename block needs the new column added (`df.columns = ['us_2y', 'us_10y', 'us_5y']`).
 
@@ -150,9 +150,9 @@ Action: add `IR_USD_Swap_5Y_Rate` to `coordinates`. `name=`, CSV stem, dataset_k
 
 | Ladder step | Decision |
 |-------------|----------|
-| 1 — column exists today? | NO (no FDIC data) → step 2 |
-| 2 — same source? | NO (FDIC is not market_data) → step 3 |
-| 3 — new source? | YES → ADD |
+| 1 -- column exists today? | NO (no FDIC data) → step 2 |
+| 2 -- same source? | NO (FDIC is not market_data) → step 3 |
+| 3 -- new source? | YES → ADD |
 
 Action: new pipeline using `fdic_client.get(...)` + `save_artifact(name='gs_bank', ...)`. New CSV `data/gs_bank.csv`. New dataset_key `gs_bank`. `build.py` populate_template grows by one entry. Set the registry entry's `refresh_frequency: "manual"` if the runner namespace doesn't yet inject `fdic_client` / `save_artifact` (`dashboards.md` §6.5).
 
@@ -160,7 +160,7 @@ Action: new pipeline using `fdic_client.get(...)` + `save_artifact(name='gs_bank
 
 ## 4. Active-pipeline integrity (5 nevers)
 
-Once a pipeline is in production, other widgets are downstream. The pipeline graph (§2) is implicit but load-bearing — breaking it silently is the canonical "everything looked fine in-session, the next refresh is empty" failure mode.
+Once a pipeline is in production, other widgets are downstream. The pipeline graph (§2) is implicit but load-bearing -- breaking it silently is the canonical "everything looked fine in-session, the next refresh is empty" failure mode.
 
 | Never | Why | Symptom at refresh time |
 |-------|-----|--------------------------|
@@ -168,7 +168,7 @@ Once a pipeline is in production, other widgets are downstream. The pipeline gra
 | Rename `name=` | The CSV stem changes (e.g. `rates` → `usd_rates`); every widget referencing the old dataset_key now points to a missing CSV | `_audit_dashboard_layout` raises "manifest-orphan in data/" + missing dataset stem |
 | Drop a coordinate / code / expression that other widgets read | The CSV exists but a column another widget needs is gone | `chart_mapping_column_missing` |
 | Change `output_path` away from `f"{SESSION_PATH}/data"` | Rule 5 violation; CSVs land in per-source subfolders; `build.py`'s read path doesn't follow | `FileNotFoundError` on every refresh |
-| Change post-pull data shape (column rename, MultiIndex re-introduction, dtype shift) without updating `build.py`'s read block | The CSV's columns are the contract between the two scripts; `build.py`'s `df.columns = [...]` rename block is positional — silently mis-rename and the wrong column ends up in the chart | Wrong values in chart, no error raised; user-detectable only |
+| Change post-pull data shape (column rename, MultiIndex re-introduction, dtype shift) without updating `build.py`'s read block | The CSV's columns are the contract between the two scripts; `build.py`'s `df.columns = [...]` rename block is positional -- silently mis-rename and the wrong column ends up in the chart | Wrong values in chart, no error raised; user-detectable only |
 
 **Audit before re-authoring.** Read the FULL `pull_data.py` and `build.py`. For each pipeline:
 
@@ -185,7 +185,7 @@ If step 4 fails, the edit is a breaking change, not a delta. Surface to the user
 
 ## 5. Re-authoring `pull_data.py` end-to-end
 
-When `pull_data.py` needs to change (Steps 2 or 3 of the reuse ladder, §3), re-author the FULL script. Inline deltas (an `s3_manager.put` of just the new pipeline appended after the existing file) leave the script in a fragile half-state — the runner re-execs the whole file, so a syntactically broken middle line breaks every pipeline below it.
+When `pull_data.py` needs to change (Steps 2 or 3 of the reuse ladder, §3), re-author the FULL script. Inline deltas (an `s3_manager.put` of just the new pipeline appended after the existing file) leave the script in a fragile half-state -- the runner re-execs the whole file, so a syntactically broken middle line breaks every pipeline below it.
 
 ```
  Pattern (from §6.1 of dashboards.md, restated in nucleus terms):
@@ -199,11 +199,11 @@ When `pull_data.py` needs to change (Steps 2 or 3 of the reuse ladder, §3), re-
 
  3. PLAN the edit (Steps 1 / 2 / 3 of the reuse ladder, §3)
     What columns does the new widget need?
-    Reuse / extend / add — pick one path
+    Reuse / extend / add -- pick one path
 
  4. RE-AUTHOR pull_data.py as a fresh string
     Open with the explicit SESSION_PATH = "<dashboard-path-literal>"
-    line (dashboards.md Rule 5) — neither the in-session sandbox nor
+    line (dashboards.md Rule 5) -- neither the in-session sandbox nor
     the refresh runner injects it. Then preserve every existing
     pipeline; modify the one (or add the new one) the plan calls for.
     Keep the script readable: imports at top, pipelines in dependency
@@ -224,10 +224,10 @@ When `pull_data.py` needs to change (Steps 2 or 3 of the reuse ladder, §3), re-
     Then s3_manager.get + exec(compile(...)) on the live path.
     Verify by reading each new / changed CSV back; print shape / head / dtypes.
 
- 7. RE-AUTHOR build.py — ALWAYS, even if dataset shape didn't change
+ 7. RE-AUTHOR build.py -- ALWAYS, even if dataset shape didn't change
     Coupled bump (§2.6) means every Tools 1+2 cycle writes both
     scripts/versions/pull_data_v{N}.py AND scripts/versions/build_v{N}.py
-    — the build_v{N} snapshot is required even when build.py's bytes
+    -- the build_v{N} snapshot is required even when build.py's bytes
     are byte-identical to v{N-1} (no functional delta).
 
     Reuse path:  re-emit build.py with the same bytes as before; the
@@ -261,7 +261,7 @@ After any edit to `pull_data.py` or `build.py` (or both), run the health check b
 | 4. Build | `build.py` runs end-to-end, manifest + html on S3 | Tool 2 exec ends with `[build.py] success` |
 | 5. Folder audit | `_audit_dashboard_layout(folder, manifest)` passes (covers §2.2 layout + §2.6 versioning chain integrity) | `dashboards.md` §2.5 invocation |
 | 6. Manifest reference integrity | Every `manifest.datasets[key]` resolves to `data/<key>.csv`; every widget's `mapping.<col>` references a column that exists | The compiler's `chart_data_diagnostics` raises `chart_mapping_column_missing` regardless of `strict` (`dashboards.md` §1 ALWAYS_BLOCKING_ERROR_CODES) |
-| 7. Pipeline integrity | No active pipeline silently broken — every CSV that EXISTED before the edit still exists with at least the columns it had before | Manual: list `data/` before vs after; diff column sets per CSV. Engine companion `_audit_pipeline_integrity()` flagged in `dev/notes.md` |
+| 7. Pipeline integrity | No active pipeline silently broken -- every CSV that EXISTED before the edit still exists with at least the columns it had before | Manual: list `data/` before vs after; diff column sets per CSV. Engine companion `_audit_pipeline_integrity()` flagged in `dev/notes.md` |
 | 8. Version chain integrity | `scripts/versions/pull_data_v{N}.py` and `scripts/versions/build_v{N}.py` were written for the new `SCRIPT_VERSION = N`; live `scripts/<name>.py` is byte-identical to its `_v{N}.py` snapshot; `manifest.metadata.script_version == N` | Folded into step 5 (`_audit_dashboard_layout` enforces all four §2.6 invariants); also surface explicitly so a failure here flags the §6.1 Tools 1+2 wiring rather than the manifest content |
 
 **Health-check checklist** (run at the bottom of the in-session edit script, after Tool 2's exec):
@@ -312,4 +312,4 @@ assert versioned['pull_data'] == versioned['build'], (
 
 If any step fails, the dashboard is not in a healthy state. Fix the script (re-author end-to-end per §5), re-run the health check from step 1.
 
-The check is most discriminating on EDITS to existing dashboards (where active pipelines exist and could be silently broken). On fresh builds, steps 1-7 fire — there are no pre-existing pipelines to protect, so step 7 collapses to "every column is new by definition" and step 8 collapses to "v1 + v1 + script_version=1".
+The check is most discriminating on EDITS to existing dashboards (where active pipelines exist and could be silently broken). On fresh builds, steps 1-7 fire -- there are no pre-existing pipelines to protect, so step 7 collapses to "every column is new by definition" and step 8 collapses to "v1 + v1 + script_version=1".
