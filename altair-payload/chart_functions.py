@@ -7525,15 +7525,15 @@ def _count_calendar_ticks_in_range(
         span_days = (max_date - min_date).days
         return max(int(span_days / step) + 1, 1)
 
-    if interval == "hours":
+    if interval == "hour":
         span_hours = (max_date - min_date).total_seconds() / 3600
         return max(int(span_hours / step) + 1, 1)
 
-    if interval == "minutes":
+    if interval == "minute":
         span_min = (max_date - min_date).total_seconds() / 60
         return max(int(span_min / step) + 1, 1)
 
-    if interval == "seconds":
+    if interval == "second":
         span_sec = (max_date - min_date).total_seconds()
         return max(int(span_sec / step) + 1, 1)
 
@@ -7643,9 +7643,9 @@ def _format_for_step(
         return ("%b %y", "Mar 25")
     if interval in ("week", "day"):
         return ("%d %b", "06 Mar")
-    if interval == "hours":
+    if interval == "hour":
         return ("%H:%M", "09:30")
-    if interval in ("minutes", "seconds"):
+    if interval in ("minute", "second"):
         return ("%H:%M:%S", "09:30:00")
     return ("%Y", "2025")
 
@@ -7918,16 +7918,16 @@ def _determine_date_format_raw(
             # rather than rotate.
 
             if stride_seconds < 60:
-                tick_step = {"interval": "seconds", "step": stride_seconds}
+                tick_step = {"interval": "second", "step": stride_seconds}
                 stride_label = f"{stride_seconds}s"
             elif stride_seconds < 3600:
                 tick_step = {
-                    "interval": "minutes", "step": stride_seconds // 60,
+                    "interval": "minute", "step": stride_seconds // 60,
                 }
                 stride_label = f"{stride_seconds // 60}min"
             elif stride_seconds < 86400:
                 tick_step = {
-                    "interval": "hours", "step": stride_seconds // 3600,
+                    "interval": "hour", "step": stride_seconds // 3600,
                 }
                 stride_label = f"{stride_seconds // 3600}h"
             else:
@@ -23163,6 +23163,24 @@ def make_table(
 
     if df is None or len(df.columns) == 0:
         return TableResult(success=False, error_message="DataFrame has no columns")
+
+    col_names = list(df.columns)
+    if len(col_names) != len(set(col_names)):
+        from collections import Counter
+
+        dupes = sorted(
+            name for name, count in Counter(col_names).items() if count > 1
+        )
+        return TableResult(
+            success=False,
+            error_message=(
+                "Duplicate column names are not supported in make_table(): "
+                f"{dupes}. Each column header must be unique -- rename the "
+                "offending columns in the DataFrame (or pass distinct names "
+                "via columns=[...] when using rows=) before calling "
+                "make_table()."
+            ),
+        )
 
     df = df.copy()
     if show_index:

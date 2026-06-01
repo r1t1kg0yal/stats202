@@ -565,7 +565,19 @@ spec = ChartSpec(df=df, chart_type='multi_line',
 
 All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`, `spacing`, `filename_prefix`, `filename_suffix`; return `CompositeResult` (`ChartResult` fields + `chart_errors`). `caption` / `side_*` flank the whole pack (same shape as `make_chart`); sub-chart text panels go on each `ChartSpec`.
 
+**Composite-global kwargs** (`skin`, `dimensions`, `dimension_preset`, `save_as`, `spacing`, …) belong on the `make_*pack_*` call, **not** on `ChartSpec`. `make_chart(skin=...)` is valid; `ChartSpec(skin=...)` raises a typed `ValidationError` naming the bad kwarg and pointing at the pack helper.
+
 **Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. Up to N-1 sub-charts can fail; survivors render. Failures in `result.chart_errors`. **`multi_line` series names ≤25 chars in every pack-composite cell** (same LVL cap as standalone; see §6.1). **`heatmap` row labels must fit horizontally in composite cells** -- long y-axis category strings raise `HeatmapRowLabelTooLongError`; shorten before `make_*pack_*()` (§6.3).
+
+**Per-cell colour-legend label budget** (when a sub-chart uses categorical `mapping['color']` and the legend renders): char cap = `floor(0.25 * cell_width_px / 7)`. Composite cells are narrow -- budget before `LegendLabelTooLongError`:
+
+| Pack | Typical cell width | Approx char cap |
+|---|---|---|
+| `make_3pack_triangle` | ~320px | ~11 |
+| `make_4pack_grid` (compact) | 280px | ~10 |
+| `make_6pack_grid` (compact) | 260px | ~9 |
+
+Standalone `make_chart` at 600px allows ~21 chars. Shorten colour-category names in the DataFrame before building the composite; aim ≤6 chars in 4-pack / 6-pack cells.
 
 | Situation | Layout |
 |---|---|
