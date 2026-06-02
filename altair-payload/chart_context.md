@@ -616,7 +616,7 @@ Never silently substitute a layout. If a requested shape isn't feasible, tell th
 
 ## 13. Static tables (`make_table()`)
 
-`make_table()` + `TableResult` auto-injected (§1). Same brand palette and Liberation Sans font stack as `make_chart`. **Canvas engine-decided**: PNG width fits data (text columns wrap automatically), height grows to fit every row. PRISM never picks a dimension; nothing is truncated.
+`make_table()` + `TableResult` auto-injected (§1). Same brand palette and Liberation Sans font stack as `make_chart`. **Canvas engine-decided**: PNG width fits data (text columns wrap automatically), height grows to fit every row. PRISM never picks a dimension; nothing is truncated. **One hard limit:** a table too wide to read on a portrait 8.5x11 page is *rejected* (`success=False`), not shrunk into illegible micro-text -- reshape it instead of widening it (§13.10).
 
 Reach for `make_table` when the answer is structured rows × columns and a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, FX cross-rates, sector tapes, calendars, snapshot dashboards.
 
@@ -805,6 +805,7 @@ minibar_columns={'MktBar': 'Mkt Cap ($B)'}
 - **`signed_columns` colours TEXT, not the cell.** Combine with `column_color_modes={col: 'rwg'}` for both.
 - **Sparkline series can differ in length per row.** Each row's min/max scales independently.
 - **Wide text columns wrap automatically.** PRISM doesn't opt in.
+- **Width has a hard legibility limit -- reshape, don't widen.** A table whose body text would print below ~6pt across a portrait 8.5x11 page's usable width is rejected (the error reports the canvas px width + printed pt). Column COUNT is not the trigger: numeric columns can't compress and headers set a non-compressible floor, so a few long-header numeric columns can fail where a dozen narrow ones pass. When the natural shape is too wide (e.g. a metric × 24-month grid, a 40-column matrix), build it narrow from the start by ONE of: (1) **transpose** -- if many columns and few rows, swap them (months-as-rows, not months-as-columns); (2) **split** by column group into several tables (one per year / region) rendered separately; (3) **aggregate** -- show latest + 3m + 12m change instead of every period, or top-N rows; (4) **shorten headers**. Prefer reshaping at authoring time over emitting a table that will be rejected.
 
 ### 13.11 Anti-patterns
 
@@ -820,6 +821,7 @@ minibar_columns={'MktBar': 'Mkt Cap ($B)'}
 | `row_indent=[0, 1, 2, 3, ...]` (deep multi-level) | 2 indent levels read; 3+ degrades. Refactor to row groups |
 | Heatmap on a column where higher-is-just-different (Country code, Ticker, Sector) | Colour encodes magnitude or sign -- not nominal identity |
 | Mixing `cell_colors` with `column_color_modes` on same cell | `cell_colors` always wins -- reserve for one-off highlights, not bulk |
+| Emitting a very wide table (every month of a multi-year series, a 30+ column matrix) | Rejected as illegible on 8.5x11 -- transpose / split / aggregate / shorten headers (§13.10) |
 
 ### 13.12 Common shapes (worked examples)
 
@@ -846,6 +848,7 @@ minibar_columns={'MktBar': 'Mkt Cap ($B)'}
 - `row_groups counts sum to X, expected len(df)=Y` -- adjust counts
 - `column_color_modes[col]=... looks like rag thresholds` -- split: `column_color_modes={col: 'rag'}` + `rag_thresholds={col: {...}}`
 - `heatmap_groups=... was passed as a dict-keyed-by-mode` -- use list-of-dicts (§13.5)
+- `too wide to render legibly on a portrait 8.5x11 page` -- reshape: transpose / split by column group / aggregate to fewer periods / shorten headers (§13.10)
 - `DataFrame has no columns` -- filter upstream
 - `Pass either df= (DataFrame) or rows= (list of dicts/tuples)` -- pass exactly one; `Pass either df= or rows=, not both` -- pick one
 - `s3_manager.put failed: ...` -- check `session_path`; verify manager is alive

@@ -22139,6 +22139,28 @@ _TBL_MIN_ASPECT_RATIO = 0.30
 _TBL_TARGET_HTML_WIDTH_PX = 720
 _TBL_TARGET_TEXT_PX_AT_DISPLAY = 11.0
 _TBL_NORMALIZE_MAX_ITERATIONS = 4
+
+# Paper-legibility gate (make_table). The engine sizes the PNG to fit
+# content exactly and NEVER truncates, so an over-wide table just shrinks
+# to an unreadable micro-text PNG when fit to a page. This gate rejects a
+# table whose body text, scaled to fill a portrait 8.5x11 page's usable
+# width, would print below a legibility floor.
+#
+# canvas_w (px) -- NOT column count -- is the driver: numeric / datetime
+# columns cannot compress (floor == natural width) and wrapping text
+# columns floor at _TBL_TEXT_COL_FLOOR, so both decouple wideness from
+# column count. The point-size a reader sees on paper is:
+#       printed_pt = body_font_size * _TBL_LEGIBILITY_USABLE_IN * 72 / canvas_w
+# evaluated on the FINAL (post-normalize) body font, because the aspect
+# pass may have grown / shrunk it. There is no font escape hatch for a
+# wide table: growing the font grows canvas_w too, leaving printed_pt
+# unchanged.
+#
+#   _TBL_LEGIBILITY_USABLE_IN: usable page width after 1in margins
+#       (portrait 8.5x11 -> 6.5in).
+#   _TBL_MIN_LEGIBLE_PT: body-text point-size floor when fit to that width.
+_TBL_LEGIBILITY_USABLE_IN = 6.5
+_TBL_MIN_LEGIBLE_PT = 6.0
 _TBL_FONT_TIER_FLOOR = 9   # do not shrink body font below this
 _TBL_FONT_TIER_CEIL = 22   # do not grow body font above this
 _TBL_CELL_PAD_X = 10        # Per-cell horizontal padding
@@ -23639,6 +23661,46 @@ def make_table(
     )
     warnings.extend(normalize_warnings)
     canvas = (geom.canvas_w, geom.canvas_h)
+
+    # ---- Paper-legibility gate (width) --------------------------------
+    # Reject a table too wide to read on a portrait 8.5x11 page BEFORE
+    # rasterising it. The engine never truncates, so without this gate an
+    # over-wide table renders as an illegible micro-text PNG that PRISM
+    # would only discover by looking at the pixels. canvas_w is destiny:
+    # column count is a poor proxy because numeric columns cannot compress
+    # and text columns wrap to a fixed floor. See chart_context.md §13
+    # "Width & legibility limits".
+    printed_pt = (
+        theme["body_font_size"] * _TBL_LEGIBILITY_USABLE_IN * 72 / geom.canvas_w
+        if geom.canvas_w else 0.0
+    )
+    if printed_pt < _TBL_MIN_LEGIBLE_PT:
+        return TableResult(
+            success=False,
+            error_message=(
+                f"make_table(): this table is too wide to render legibly on a "
+                f"portrait 8.5x11 page. The content-sized canvas is "
+                f"{geom.canvas_w}px wide ({len(df.columns)} columns), which "
+                f"prints body text at ~{printed_pt:.1f}pt across the "
+                f"{_TBL_LEGIBILITY_USABLE_IN:.1f}in usable width -- below the "
+                f"{_TBL_MIN_LEGIBLE_PT:.0f}pt legibility floor. make_table never "
+                f"truncates, so an over-wide table would just shrink to an "
+                f"unreadable PNG. Reduce the rendered width by ONE of: "
+                f"(1) TRANSPOSE -- if there are many columns and few rows, swap "
+                f"them (e.g. periods-as-rows instead of periods-as-columns); "
+                f"(2) SPLIT into several tables by column group (e.g. one per "
+                f"year / category) and render each separately; (3) DROP or "
+                f"AGGREGATE columns -- show the most recent N periods or a "
+                f"summary (latest + 3m + 12m change) instead of every period; "
+                f"(4) SHORTEN long headers, which set a non-compressible width "
+                f"floor on numeric columns. See chart_context.md §13 'Width & "
+                f"legibility limits'."
+            ),
+            warnings=warnings,
+            n_rows=len(df),
+            n_cols=len(df.columns),
+            canvas_size=canvas,
+        )
 
     img = Image.new("RGB", canvas, theme["background_color"])
     draw = ImageDraw.Draw(img)
