@@ -91,7 +91,7 @@ make_chart(df=df,                            # cols: country, quarter, cpi, gdp
 
 ## 6. Engine defaults
 
-PRISM passes none of these. Panels are square (squareness > canvas-fill). Y-axis title strip stripped on line/multi_line/bar/area/histogram (composite title carries metric); KEPT on scatter/scatter_multi (x and y are different variables). Per-panel legends always stripped; `share_color=True` rebuilds a single composite legend. Typography uses the `facet_grid` preset (24pt axis labels, 3 tick budget) on every panel regardless of pixel size. `LastValueLabel` is never rendered in facet grids or composites -- the engine silently strips any LVL PRISM passes. Bar value labels are suppressed in facet panels. Up to N-1 panels can fail and survivors render (failures in `result.warnings`). No kwarg for `panel_width`, `panel_height`, `spacing`, or typography.
+PRISM passes none of these. Panels are square (squareness > canvas-fill). Y-axis title strip stripped on line/multi_line/bar/area/histogram (composite title carries metric); KEPT on scatter/scatter_multi (x and y are different variables). Per-panel legends always stripped; `share_color=True` rebuilds a single composite legend. Typography uses the `facet_grid` preset (24pt axis labels, 3 tick budget) on every panel regardless of pixel size. `LastValueLabel` is never rendered in facet grids or composites -- the engine silently strips any LVL PRISM passes. Bar value labels are suppressed in facet panels. If ANY panel fails validation the entire grid is rejected -- the error names the offending panel id(s) and cause (same fail-fast contract as `make_*pack_*` composites).
 
 ---
 

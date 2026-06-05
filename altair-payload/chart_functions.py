@@ -672,6 +672,29 @@ class SeriesMisalignmentError(ValidationError):
         }
 
 
+class SeriesOscillationError(ValidationError):
+    """Raised when a single encoded line/area series interleaves distant levels.
+
+    SOFT rejection: two or more series merged without ``mapping['color']``
+    (or duplicate x-rows for the same panel) make ``mark_line`` connect
+    alternating high/low points sequentially. The panel fills with vertical
+    zig-zags that read as solid shading. Distinct from ``SeasonalJaggednessError``
+    (regular seasonal sawtooth on one series) -- this gate catches interleaved
+    merge / alignment failures.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        offending_series: Optional[List[str]] = None,
+        mapping: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        Exception.__init__(self, message)
+        self.context = {
+            "offending_series": list(offending_series or []),
+            "mapping": mapping,
+        }
+
 # ---------------------------------------------------------------------------
 # No-truncation policy (global Altair engine principle)
 # ---------------------------------------------------------------------------
@@ -806,6 +829,17 @@ _SEASONAL_MIN_CYCLES = 2                 # need >= 2 full cycles to assess seaso
 # (~0.14) is rejected.
 _AREA_SERIES_COVERAGE_MIN = 0.60
 
+# Interleaved-series / shading gate (MSFT Mag-7 EPS repro). Trips when a
+# single encoded series reverses direction on most steps AND each step
+# spans a large fraction of the y-range -- the signature of two horizons
+# merged without mapping['color']. Calibrated in dev/calibrate_oscillation.py:
+# 0 false positives across the macro fixture corpus + jaggedness anchors,
+# 0 misses on the MSFT-shading repro anchors.
+_OSCILLATION_REVERSAL_THRESHOLD = 0.85
+_OSCILLATION_VERTICAL_RATIO_THRESHOLD = 0.22
+_OSCILLATION_LARGE_STEP_THRESHOLD = 0.35   # |dy| / y-range counted as "large"
+_OSCILLATION_LARGE_STEP_RATE_THRESHOLD = 0.55
+_OSCILLATION_MIN_POINTS = 12
 
 def _axis_label_px_per_char(label_font_size: int) -> float:
     """Average horizontal pixels per character for axis tick labels."""
@@ -1316,14 +1350,21 @@ def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
 
 
 def _infer_heatmap_period_frequency(timestamps: List[pd.Timestamp]) -> str:
-    """Infer A/Q/M/D label granularity from median calendar gap."""
+    """Infer A/Q/M/D/T label granularity from median calendar gap.
+
+    ``T`` (intraday) is returned when unique x values are sub-daily so the
+    normalizer keeps one label per bar instead of collapsing to calendar days.
+    """
     if len(timestamps) < 2:
         return "Q"
-    days = sorted(
-        abs((timestamps[i + 1] - timestamps[i]).days)
+    gaps_sec = sorted(
+        abs((timestamps[i + 1] - timestamps[i]).total_seconds())
         for i in range(len(timestamps) - 1)
     )
-    median_days = days[len(days) // 2]
+    median_sec = gaps_sec[len(gaps_sec) // 2]
+    if median_sec < 6 * 3600:
+        return "T"
+    median_days = median_sec / 86400.0
     if median_days > 300:
         return "A"
     if median_days > 80:
@@ -1331,6 +1372,11 @@ def _infer_heatmap_period_frequency(timestamps: List[pd.Timestamp]) -> str:
     if median_days > 20:
         return "M"
     return "D"
+
+
+def _heatmap_intraday_display_label(ts: pd.Timestamp) -> str:
+    """Unique intraday tick label for dense heatmap x columns."""
+    return ts.strftime("%m-%d %H:%M")
 
 
 def _heatmap_period_display_label(
@@ -1341,6 +1387,8 @@ def _heatmap_period_display_label(
     """Human-readable period label for a heatmap nominal x tick."""
     if isinstance(orig, str) and re.fullmatch(r"\d{4}", orig.strip()):
         return orig.strip()
+    if freq == "T":
+        return _heatmap_intraday_display_label(ts)
     if freq == "A":
         return ts.strftime("%Y")
     if freq == "Q":
@@ -1349,6 +1397,176 @@ def _heatmap_period_display_label(
     if freq == "M":
         return ts.strftime("%b %y")
     return ts.strftime("%d %b")
+
+
+def _heatmap_x_value_kind(val: Any, ts: Optional[pd.Timestamp]) -> str:
+    """Classify one heatmap x value for mixed-type rejection."""
+    if isinstance(val, (int, float, np.integer, np.floating)):
+        if float(val) > 1e8:
+            return "epoch"
+        return "numeric"
+    if isinstance(val, str):
+        s = val.strip()
+        if s.isdigit() and int(s) > 1e11:
+            return "epoch"
+        if _HEATMAP_QUARTER_RE.match(s):
+            return "quarter_str"
+        if re.fullmatch(r"\d{4}", s):
+            return "year_str"
+    if isinstance(val, pd.Period):
+        return "period"
+    if ts is not None:
+        return "datetime"
+    return "other"
+
+
+def _parse_heatmap_display_label_to_timestamp(
+    label: str,
+    *,
+    default_year: Optional[int] = None,
+) -> Optional[pd.Timestamp]:
+    """Reverse-parse materialised heatmap x labels for calendar thinning."""
+    s = str(label).strip()
+    m = re.match(r"^Q([1-4])\s+(\d{2})$", s, re.I)
+    if m:
+        q, yy = int(m.group(1)), int(m.group(2))
+        year = 2000 + yy if yy < 100 else yy
+        month = q * 3
+        last_day = pd.Timestamp(year=year, month=month, day=1).days_in_month
+        return pd.Timestamp(year=year, month=month, day=last_day)
+    m = re.match(r"^(\w{3})\s+(\d{2})$", s)
+    if m:
+        try:
+            return pd.to_datetime(f"{m.group(1)} {m.group(2)}", format="%b %y")
+        except (ValueError, TypeError):
+            pass
+    m = re.match(r"^(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$", s)
+    if m:
+        mo, da, hh, mm = map(int, m.groups())
+        year = default_year or 2026
+        return pd.Timestamp(year=year, month=mo, day=da, hour=hh, minute=mm)
+    m = re.match(r"^(\d{1,2})\s+(\w{3})$", s)
+    if m:
+        try:
+            year = default_year or 2026
+            return pd.to_datetime(
+                f"{m.group(1)} {m.group(2)} {year}", format="%d %b %Y",
+            )
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _heatmap_calendar_anchor_indices(
+    ts_list: List[Optional[pd.Timestamp]],
+    cadence: str,
+) -> List[int]:
+    """Indices of calendar-aligned anchor ticks in display order."""
+    n = len(ts_list)
+    if n == 0:
+        return []
+    anchors: List[int] = []
+    if cadence == "T":
+        for i, t in enumerate(ts_list):
+            if t is not None and t.hour == 0 and t.minute == 0:
+                anchors.append(i)
+        six_hour = [
+            i for i, t in enumerate(ts_list)
+            if t is not None and t.minute == 0 and t.hour % 6 == 0
+        ]
+        if six_hour:
+            anchors = sorted(set(anchors + six_hour))
+        if len(anchors) < 3:
+            anchors = six_hour or anchors
+    elif cadence == "D":
+        seen_month: set = set()
+        for i, t in enumerate(ts_list):
+            if t is None:
+                continue
+            key = (t.year, t.month)
+            if key not in seen_month:
+                seen_month.add(key)
+                anchors.append(i)
+    elif cadence == "M":
+        for i, t in enumerate(ts_list):
+            if t is not None and t.month == 1:
+                anchors.append(i)
+        if not anchors:
+            seen_year: set = set()
+            for i, t in enumerate(ts_list):
+                if t is not None and t.year not in seen_year:
+                    seen_year.add(t.year)
+                    anchors.append(i)
+    elif cadence == "Q":
+        for i, t in enumerate(ts_list):
+            if t is None:
+                continue
+            if (t.month - 1) // 3 + 1 == 1:
+                anchors.append(i)
+    elif cadence == "A":
+        seen_year_a: set = set()
+        for i, t in enumerate(ts_list):
+            if t is not None and t.year not in seen_year_a:
+                seen_year_a.add(t.year)
+                anchors.append(i)
+    else:
+        return list(range(n))
+    if not anchors:
+        return [0, n - 1] if n > 1 else [0]
+    if 0 not in anchors:
+        anchors = [0] + anchors
+    # Intraday: never force the terminal bar — it is rarely a round hour
+    # and collides with the preceding midnight/6h anchor.
+    if cadence != "T" and (n - 1) not in anchors:
+        anchors.append(n - 1)
+    return sorted(set(anchors))
+
+
+def _evenly_spaced_indices(n: int, k: int) -> List[int]:
+    """Pick ``k`` evenly-spaced indices from ``0 .. n-1`` (first + last kept)."""
+    if k >= n:
+        return list(range(n))
+    if k <= 1:
+        return [0]
+    step = (n - 1) / (k - 1)
+    return sorted({int(round(i * step)) for i in range(k)})
+
+
+def _heatmap_calendar_tick_subset(ordered_vals: List[Any], k: int) -> List[Any]:
+    """Pick up to ``k`` tick labels aligned to calendar boundaries."""
+    n = len(ordered_vals)
+    if k >= n:
+        return list(ordered_vals)
+    if k <= 1:
+        return [ordered_vals[0]]
+
+    default_year: Optional[int] = None
+    ts_list: List[Optional[pd.Timestamp]] = []
+    for v in ordered_vals:
+        ts = _coerce_heatmap_x_value_to_timestamp(v)
+        if ts is None:
+            ts = _parse_heatmap_display_label_to_timestamp(
+                str(v), default_year=default_year,
+            )
+        if ts is not None and default_year is None:
+            default_year = int(ts.year)
+        ts_list.append(ts)
+
+    parsed_ts = [t for t in ts_list if t is not None]
+    if len(parsed_ts) < max(1, int(n * 0.9)):
+        return _evenly_spaced_subset(ordered_vals, k)
+
+    cadence = _infer_heatmap_period_frequency(parsed_ts)
+    anchors = _heatmap_calendar_anchor_indices(ts_list, cadence)
+
+    if len(anchors) <= k:
+        # Prefer calendar anchors only — do not pad with index-based fill-ins
+        # that land at odd times (e.g. 01:30 beside midnight) and collide.
+        pick_idx = anchors
+    else:
+        pick_idx = [anchors[i] for i in _evenly_spaced_indices(len(anchors), k)]
+
+    return [ordered_vals[i] for i in sorted(pick_idx)]
 
 
 def _normalize_heatmap_x_column(
@@ -1402,6 +1620,17 @@ def _normalize_heatmap_x_column(
         )
 
     chronological = sorted(parsed.items(), key=lambda kv: kv[1])
+    value_kinds = {
+        _heatmap_x_value_kind(orig, ts) for orig, ts in chronological
+    }
+    if "epoch" in value_kinds and value_kinds & {"quarter_str", "year_str"}:
+        raise ValidationError(
+            f"Heatmap x column '{x_field}' mixes epoch-ms/numeric timestamps "
+            f"with quarter/year string labels. Normalize to one format before "
+            f"charting -- e.g. all quarter-end epoch-ms, all '2024Q1' strings, "
+            f"or all calendar-year integers -- not a blend."
+        )
+
     freq = _infer_heatmap_period_frequency([ts for _, ts in chronological])
     label_by_orig = {
         orig: _heatmap_period_display_label(ts, freq, orig=orig)
@@ -1409,8 +1638,9 @@ def _normalize_heatmap_x_column(
     }
 
     # Disambiguate rare label collisions (two distinct timestamps -> same text).
+    # Sub-daily (``T``) labels are already unique per bar; never collapse to days.
     labels_in_order = [label_by_orig[orig] for orig, _ in chronological]
-    if len(set(labels_in_order)) < len(labels_in_order):
+    if freq != "T" and len(set(labels_in_order)) < len(labels_in_order):
         label_by_orig = {
             orig: _heatmap_period_display_label(ts, "D")
             for orig, ts in chronological
@@ -1968,6 +2198,12 @@ def _validate_chart_data_integrity(
     # moving average.
     _validate_seasonal_jaggedness(df, mapping, chart_type)
 
+    # Validation 9: interleaved-series oscillation. Catches two horizons
+    # merged without a color field (MSFT Mag-7 EPS shading repro). Distinct
+    # from Validation 8 -- seasonal sawteeth reverse slowly; interleaved
+    # merges reverse on nearly every step with large vertical jumps.
+    _validate_series_oscillation(df, mapping, chart_type)
+
 
 def _validate_y_scale_homogeneity(
     df: pd.DataFrame,
@@ -2379,6 +2615,125 @@ def _validate_seasonal_jaggedness(
         f"sawtooth.",
         offending_series=offending_names,
         period=period,
+        mapping=mapping,
+    )
+
+
+def _oscillation_series_diagnostics(
+    y: np.ndarray,
+    x: Optional[np.ndarray] = None,
+) -> Dict[str, float]:
+    """Return interleaved-oscillation metrics for one ordered series.
+
+    Mirrors dev/_oscillation_probe.py exactly so calibration thresholds
+    transfer verbatim.
+    """
+    v = np.asarray(y, dtype=float)
+    v = v[~np.isnan(v)]
+    n = len(v)
+    out: Dict[str, float] = {
+        "n": float(n),
+        "reversal_rate": float("nan"),
+        "vertical_ratio": float("nan"),
+        "large_step_rate": float("nan"),
+    }
+    if n < 3:
+        return out
+
+    dy = np.diff(v)
+    signs = np.sign(dy)
+    signs_nz = signs[signs != 0]
+    if len(signs_nz) >= 2:
+        out["reversal_rate"] = float(np.mean(signs_nz[1:] * signs_nz[:-1] < 0))
+
+    y_range = float(np.ptp(v))
+    denom = y_range if y_range > 0 else 1.0
+    abs_dy = np.abs(dy)
+    out["vertical_ratio"] = float(np.mean(abs_dy / denom))
+    out["large_step_rate"] = float(
+        np.mean(abs_dy / denom >= _OSCILLATION_LARGE_STEP_THRESHOLD)
+    )
+    return out
+
+
+def _validate_series_oscillation(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> None:
+    """Reject line/area panels whose data interleaves distant y-levels.
+
+    Scope: ``multi_line`` / ``timeseries`` / ``line`` / ``area``. Evaluated
+    PER SERIES (each color group, or the whole frame when no color field).
+    Trips when reversal rate, mean vertical step size, and large-step rate
+    all exceed calibrated thresholds -- the MSFT Mag-7 EPS shading signature.
+    Raises ``SeriesOscillationError``.
+    """
+    if chart_type not in {"multi_line", "timeseries", "line", "area"}:
+        return
+    x_field = _get_field(mapping, "x")
+    y_field = _get_field(mapping, "y")
+    if not (x_field and y_field):
+        return
+    if x_field not in df.columns or y_field not in df.columns:
+        return
+    if not pd.api.types.is_numeric_dtype(df[y_field]):
+        return
+
+    color_field = _get_field(mapping, "color")
+    if color_field and color_field in df.columns:
+        groups = [(str(name), sub) for name, sub in df.groupby(color_field, sort=False)]
+    else:
+        groups = [(None, df)]
+
+    flagged: List[Tuple[Optional[str], float, float, float]] = []
+    for name, sub in groups:
+        s = sub.sort_values(x_field)
+        vals = pd.to_numeric(s[y_field], errors="coerce").to_numpy()
+        xs = s[x_field].to_numpy() if x_field in s.columns else None
+        d = _oscillation_series_diagnostics(vals, xs)
+        n = int(d["n"])
+        if n < _OSCILLATION_MIN_POINTS:
+            continue
+        rev = d["reversal_rate"]
+        vr = d["vertical_ratio"]
+        lsr = d["large_step_rate"]
+        is_osc = (
+            np.isfinite(rev) and rev >= _OSCILLATION_REVERSAL_THRESHOLD
+            and np.isfinite(vr) and vr >= _OSCILLATION_VERTICAL_RATIO_THRESHOLD
+            and np.isfinite(lsr) and lsr >= _OSCILLATION_LARGE_STEP_RATE_THRESHOLD
+        )
+        if is_osc:
+            flagged.append((name, rev, vr, lsr))
+
+    if not flagged:
+        return
+
+    single_label = y_field if flagged[0][0] is None else "series"
+
+    def _describe(item: Tuple[Optional[str], float, float, float]) -> str:
+        nm, rev, vr, _lsr = item
+        who = f"'{nm}'" if nm is not None else f"the {single_label}"
+        return f"{who} (reversal={rev:.0%}, vertical={vr:.0%} of range)"
+
+    offenders_desc = "; ".join(_describe(it) for it in flagged[:5])
+    offending_names = [it[0] for it in flagged if it[0] is not None]
+
+    raise SeriesOscillationError(
+        f"SERIES OSCILLATION: {len(flagged)} series look like two horizons "
+        f"interleaved without a color split: {offenders_desc}. A line chart "
+        f"connects the alternating high/low points sequentially and the panel "
+        f"fills with vertical zig-zags that read as solid shading. This is "
+        f"usually a data-prep issue -- pick one:\n"
+        f"  (a) Split the horizons with mapping['color']='<series_col>' so "
+        f"each level draws as its own line.\n"
+        f"  (b) Keep one horizon: filter or aggregate to a single value per "
+        f"x-date before charting.\n"
+        f"  (c) Put each horizon on its own panel: mapping['facet']="
+        f"'<series_col>' (drop color) for small-multiples.\n"
+        f"  (d) Route one horizon to a right axis: mapping['color'] plus "
+        f"mapping['dual_axis_series']=[...] when co-movement is the argument.",
+        offending_series=offending_names,
         mapping=mapping,
     )
 
@@ -14511,31 +14866,37 @@ def _validate_heatmap_row_labels(
 def _heatmap_x_axis_plan(
     ordered_vals: List[Any],
     chart_width: int,
+    label_font_size: Optional[int] = None,
 ) -> Tuple[int, Optional[List[Any]]]:
     """Pick heatmap column (x) ``(label_angle, tick_values)``.
 
-    Vertical (90 deg) labels are forbidden on heatmaps. Same horizontal /
-    -45 ladder as profile charts, but ``_HEATMAP_MIN_PITCH_45_PX`` is 2x
-    the profile pitch so thinned x ticks run at roughly half the frequency
-    (better for dense intraday column grids). Every cell still renders.
+    Vertical (90 deg) labels are forbidden on heatmaps. Uses the skin's
+    real axis-label font size for pitch math (post-normalization labels),
+    and calendar-aware thinning (Q1 anchors, month starts, midnights) when
+    tick labels parse as temporal. Every cell still renders.
     """
     vals = [str(v) for v in ordered_vals]
     n = len(vals)
     if n == 0:
         return 0, None
+    font_px = label_font_size or _SKIN_AXIS_LABEL_FONT_PX
+    px_per_char = _axis_label_px_per_char(font_px)
     max_len = max(len(v) for v in vals)
-    needed_h = max_len * _PROFILE_LABEL_CHAR_PX + _PROFILE_LABEL_PAD_PX
+    needed_h = max_len * px_per_char + _PROFILE_LABEL_PAD_PX
 
     horiz_capacity = max(1, int(chart_width // needed_h))
     diag_capacity = max(1, int(chart_width // _HEATMAP_MIN_PITCH_45_PX))
 
+    def _thin(k: int) -> List[Any]:
+        return _heatmap_calendar_tick_subset(ordered_vals, k)
+
     if horiz_capacity >= n:
         return 0, None
     if horiz_capacity >= _PROFILE_MIN_HORIZONTAL_TICKS:
-        return 0, _evenly_spaced_subset(ordered_vals, horiz_capacity)
+        return 0, _thin(horiz_capacity)
     if diag_capacity >= n:
         return -45, None
-    return -45, _evenly_spaced_subset(ordered_vals, diag_capacity)
+    return -45, _thin(diag_capacity)
 
 
 def _heatmap_row_label_angle() -> int:
@@ -14629,6 +14990,7 @@ def _build_heatmap(
     x_sort_order = mapping.get("x_sort")
     y_sort_order = mapping.get("y_sort")
     row_label_font_size = _heatmap_axis_label_font_size(skin_config)
+    x_label_font_size = row_label_font_size
 
     row_label_limit_px = _validate_heatmap_row_labels(
         df,
@@ -14643,10 +15005,12 @@ def _build_heatmap(
 
     # ---- column (x) axis plan -------------------------------------------
     # Heatmap column labels NEVER render vertical (90 deg). When the x
-    # grid is dense (intraday 15-min bars over several sessions), show an
-    # evenly-spaced tick subset so labels stay legible at -45.
+    # grid is dense (intraday 15-min bars over several sessions), show a
+    # calendar-aligned tick subset so labels stay legible at -45.
     x_ordered = _resolve_profile_x_order(df, x_field, mapping)
-    x_label_angle, x_tick_values = _heatmap_x_axis_plan(x_ordered, width)
+    x_label_angle, x_tick_values = _heatmap_x_axis_plan(
+        x_ordered, width, label_font_size=x_label_font_size,
+    )
     y_label_angle = _heatmap_row_label_angle()
 
     # Grid-suppressed axes prevent white-line artifacts on cells.
@@ -20540,10 +20904,6 @@ def _render_facet_grid(
                 "error_type": type(exc).__name__,
                 "error_message": str(exc),
             })
-            warnings_list.append(
-                f"Panel {idx + 1} ({panel_id!r}) failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
             continue
 
         spec_dict = chart.to_dict()
@@ -20609,6 +20969,13 @@ def _render_facet_grid(
         spec_dict["height"] = panel_h
 
         panel_specs.append(spec_dict)
+
+    if panel_errors:
+        return ChartResult(
+            chart_type=f"{chart_type}_facet", skin=skin, success=False,
+            error_message=_summarize_facet_panel_errors(panel_errors, n_panels),
+            warnings=warnings_list,
+        )
 
     if not panel_specs:
         return ChartResult(
@@ -20828,6 +21195,46 @@ def _resolve_composite_aliases(
     return resolved_dim, resolved_left, resolved_right, alias_warnings
 
 
+def _summarize_facet_panel_errors(
+    panel_errors: List[Dict[str, Any]], n_panels: int
+) -> str:
+    """Roll per-panel facet failures into a headline rejection message.
+
+    Names the offending panel id(s) and their validation causes so PRISM
+    knows exactly which subplot to fix without unpacking a separate
+    ``panel_errors`` field.
+    """
+    if not panel_errors:
+        return "Facet grid validation failed."
+    n_failed = len(panel_errors)
+    scope = (
+        f"Facet grid rejected: all {n_panels} panels failed validation"
+        if n_failed >= n_panels
+        else f"Facet grid rejected: {n_failed} of {n_panels} panels failed validation"
+    )
+    distinct = {
+        (pe.get("error_message") or pe.get("error") or "").strip()
+        for pe in panel_errors
+    }
+    if len(distinct) == 1 and n_failed > 1:
+        only = next(iter(distinct))
+        panel_list = ", ".join(
+            f"'{pe.get('panel_id')}' (panel {int(pe.get('panel_index', 0)) + 1})"
+            for pe in panel_errors
+        )
+        return (
+            f"{scope}. Offending panels: {panel_list}. "
+            f"Every failing panel raised the same error: {only}"
+        )
+    lines = [
+        f"  [panel {int(pe.get('panel_index', 0)) + 1}] "
+        f"{pe.get('panel_id')!r}: "
+        f"{(pe.get('error_message') or pe.get('error') or '').strip()}"
+        for pe in panel_errors
+    ]
+    return scope + ":\n" + "\n".join(lines)
+
+
 def _summarize_chart_errors(
     chart_errors: List[Dict[str, Any]], n_charts: int
 ) -> str:
@@ -20894,11 +21301,10 @@ def make_composite(
     Builds each ``ChartSpec`` into an Altair chart, composes them via
     ``_compose_charts``, applies a top-level title/subtitle, renders to
     PNG via vl-convert, and (when ``session_path`` is set) uploads to
-    S3 with a presigned URL. Per-sub-chart failures are collected in
-    ``CompositeResult.chart_errors`` rather than aborting the whole
-    composite; if at least 2 sub-charts succeed the layout is rendered
-    with the survivors. With only 1 survivor the composite is downgraded
-    to a single chart render.
+    S3 with a presigned URL. If ANY sub-chart fails validation the whole
+    composite is rejected (no partial / survivor render); per-cell causes
+    are folded into ``error_message`` via ``_summarize_chart_errors`` so
+    PRISM knows which panel to fix.
 
     Composite-level text panels:
       ``caption`` sits below the entire pack (composite footer).
@@ -21078,10 +21484,14 @@ def make_composite(
                 "df_shape": spec.df.shape if isinstance(spec.df, pd.DataFrame) else None,
             }
             chart_errors.append(error_detail)
-            warnings_list.append(
-                f"Sub-chart {chart_index} ({spec.chart_type}) failed: "
-                f"{type(exc).__name__}: {exc}"
-            )
+
+    if chart_errors:
+        return CompositeResult(
+            png_path=None, layout=layout, n_charts=n_charts,
+            success=False,
+            error_message=_summarize_chart_errors(chart_errors, n_charts),
+            warnings=warnings_list, skin=skin, chart_errors=chart_errors,
+        )
 
     if not built:
         return CompositeResult(
@@ -21091,47 +21501,7 @@ def make_composite(
             warnings=warnings_list, skin=skin, chart_errors=chart_errors,
         )
 
-    # Survivors-only handling.
-    #
-    # Layout indexing in ``_compose_charts`` is positional (``charts[0]``,
-    # ``charts[1]``, ...) and assumes the slot count matches the
-    # original layout name. With partial survivors we have to downgrade
-    # to a smaller layout that the survivor count can fill, otherwise
-    # ``_compose_charts`` raises ``IndexError: list index out of range``
-    # at ``charts[3]`` on a 4-grid with 3 survivors. Map by survivor
-    # count, preserving horizontal-vs-vertical orientation where the
-    # original layout expressed one. When the downgrade lands on a
-    # smaller layout than survivor count (e.g. 5 of 6 -> 4_grid), trim
-    # ``built`` to fit -- one extra survivor goes unrendered, but the
-    # composite stays sound.
     composite_layout: Optional[str] = layout
-    if len(built) < n_charts:
-        composite_layout = _downgrade_layout_for_survivors(
-            layout, len(built),
-        )
-        if composite_layout is None:
-            warnings_list.append(
-                f"Downgraded from {layout} composite to single chart "
-                f"({len(built)} of {n_charts} sub-charts succeeded)."
-            )
-        else:
-            slot_count = _LAYOUT_SLOT_COUNT.get(composite_layout, len(built))
-            if slot_count < len(built):
-                dropped = len(built) - slot_count
-                built = built[:slot_count]
-                warnings_list.append(
-                    f"Removed {n_charts - len(built) - dropped} failed "
-                    f"sub-chart(s) from composite ({layout} -> "
-                    f"{composite_layout}) plus {dropped} successful "
-                    f"sub-chart(s) trimmed to fit the downgraded "
-                    f"layout's slot count."
-                )
-            else:
-                warnings_list.append(
-                    f"Removed {n_charts - len(built)} failed sub-chart(s) "
-                    f"from composite ({layout} -> {composite_layout})."
-                )
-
     has_dual_axis = any(
         isinstance(s, ChartSpec) and s.mapping.get("dual_axis_series")
         for s in charts

@@ -214,6 +214,8 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 
 **Seasonal-jaggedness gate (`multi_line` / `timeseries` / `line` / `area`).** A weekly / monthly / quarterly series with a strong, regular every-period swing (e.g. raw quarterly revenue with a holiday-quarter spike) is REJECTED with `SEASONAL JAGGEDNESS` — it renders as an unreadable sawtooth. Checked per series, including single-panel composite cells. Fix: seasonally adjust, plot YoY % change, or take a trailing rolling mean / rolling sum over one full period (e.g. a 4-quarter rolling sum for quarterly revenue) before charting.
 
+**Series-oscillation gate (`multi_line` / `timeseries` / `line` / `area`).** When two horizons or series are interleaved at every x-date without `mapping['color']`, a line chart connects the alternating high/low points sequentially and the panel fills with vertical zig-zags that read as solid shading (canonical: MSFT panel in a Mag-7 EPS facet grid). REJECTED with `SERIES OSCILLATION`. Distinct from seasonal jaggedness — oscillation reverses on nearly every step with large vertical jumps. Fix: add `mapping['color']`, filter to one horizon per x, use `mapping['facet']`, or split with `dual_axis_series`.
+
 **Stacked-area alignment gate (`area` + `color`).** When series report on different calendars so the layers don't share x-values, the stack shatters into white triangular gaps and the engine REJECTS with `SERIES MISALIGNMENT`. Fix: resample every series onto a common period grid (e.g. quarter-end, forward-filled to the last reported value) before stacking.
 
 ### 6.2 Bar family
@@ -257,9 +259,9 @@ mapping = {'x': 'factor', 'y': 'factor', 'value': 'corr'}      # matrix: index +
 
 For categorical recipe (continuous binned to labels), bin via `pd.cut()` / `np.digitize()`. Override sort via `mapping['value_sort']=[...]`.
 
-**Column labels (x-axis):** engine picks horizontal or -45° and thins tick labels when the x grid is dense (intraday heatmaps use ~half the tick frequency of profile-line charts). Do not pass `labelAngle` / tick counts — shorten category strings or reduce x cardinality in the DataFrame if labels still crowd.
+**Column labels (x-axis):** engine picks horizontal or -45° and thins tick labels when the x grid is dense. Thinning is calendar-aware (Q1 anchors for quarterly grids, month starts for monthly, midnights / 6-hour marks for intraday) using the skin's real 18px label font for pitch math. Intraday heatmaps use ~half the tick frequency of profile-line charts. Do not pass `labelAngle` / tick counts — shorten category strings or reduce x cardinality in the DataFrame if labels still crowd.
 
-**Temporal x columns (epoch ms, datetime64, ``2024-Q1`` strings, pandas Period):** the engine auto-materialises readable period labels (``Q2 25``, ``2024``, ``Oct 24``) before the nominal encode — pass raw timestamps or quarter tokens; do not pre-format to strings and do not set ``x_type='ordinal'`` to block coercion. True categoricals (region codes, probability buckets, ``T000`` session tags) are left untouched. Mixed temporal + categorical x raises ``ValidationError``.
+**Temporal x columns (epoch ms, datetime64, ``2024-Q1`` strings, pandas Period):** the engine auto-materialises readable period labels (``Q2 25``, ``2024``, ``Oct 24``, ``05-27 09:30`` for sub-daily) before the nominal encode — pass raw timestamps or quarter tokens; do not pre-format to strings and do not set ``x_type='ordinal'`` to block coercion. Sub-daily ``datetime64`` stays one label per bar (never collapsed to calendar days). True categoricals (region codes, probability buckets, ``T000`` session tags) are left untouched. Mixed temporal + categorical x, or epoch-ms blended with quarter/year strings, raises ``ValidationError``.
 
 **Row labels (y-axis):** always horizontal (`labelAngle=0`); never rotated to -45; never ellipsis-truncated. Hard cap **15 chars** (same discipline as bar category labels). Row labels are validated on every heatmap -- overlong values raise `HeatmapRowLabelTooLongError`; shorten in the DataFrame.
 
