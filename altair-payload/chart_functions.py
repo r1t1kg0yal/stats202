@@ -31,8 +31,8 @@ Annotation primitives (``VLine``, ``HLine``, ``Segment``, ``Band``,
 (``ChartResult``, ``CompositeResult``, ``DataProfile``), and
 ``profile_df`` are shared between the two surfaces.
 
-PRISM-coupled helpers (S3, error mailer, presigned URLs, Gemini vision
-QC) are imported from ``ai_development.mcp.utils.*`` -- the same paths
+PRISM-coupled helpers (S3, presigned URLs, Gemini vision QC) are
+imported from ``ai_development.mcp.utils.*`` -- the same paths
 PRISM uses in production. In this staging repo the same import paths
 resolve to the colocated ``ai_development/`` stub package, which
 provides filesystem-backed / no-op equivalents sufficient for local
@@ -69,6 +69,7 @@ import io
 import json
 import colorsys
 import difflib
+import functools
 import logging
 import math
 import os
@@ -78,7 +79,7 @@ import traceback
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
 # ---------------------------------------------------------------------------
 # Third-party
@@ -96,7 +97,6 @@ from PIL import Image, ImageDraw, ImageFont
 # no-op equivalents.
 # ---------------------------------------------------------------------------
 from ai_development.mcp.utils.download_links import generate_presigned_download_url
-from ai_development.mcp.utils.error_handler import send_error_email
 from ai_development.mcp.utils.unit_helper_functions import guess_units_from_name
 from ai_development.mcp.utils.vision_functions import check_chart_quality
 from ai_development.mcp.utils.chart_functions_studio import (
@@ -422,17 +422,59 @@ class ValidationError(Exception):
     """Base validation error for chart functions.
 
     Note:
-        ``send_error_email()`` is **not** called from ``__init__``. This is
-        intentional. When ``make_chart()`` catches a ``ValidationError`` to
-        return a graceful ``ChartResult(success=False)``, the error is
-        expected and should not trigger an email. Error emails for genuine
-        crashes are sent by the exception handler in the script-execution
-        layer where actual script failures are caught.
+        ``ValidationError`` (and its subclasses) signals an input problem
+        the engine cannot render. The public entry points (``make_chart``,
+        ``make_table``, and the composite helpers) re-raise it via
+        ``_raise_on_failure`` so the failure bubbles out of
+        ``execute_analysis_script`` and PRISM surfaces it to the LLM,
+        instead of being swallowed inside a ``success=False`` result.
+        The internal builders still *return* ``success=False`` for the
+        recovery / panel-aggregation paths that inspect it; only the
+        public boundary converts that into a raise.
     """
 
     def __init__(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
         super().__init__(message)
         self.context = context or {}
+
+
+def _raise_on_failure(func: Callable) -> Callable:
+    """Wrap a public chart/table builder so a failed result *raises*.
+
+    PRISM runs chart code inside ``execute_analysis_script``. That sandbox
+    only surfaces a failure to the LLM when the script raises -- a returned
+    ``ChartResult(success=False)`` / ``CompositeResult(success=False)`` /
+    ``TableResult(success=False)`` is never inspected post-exec and is
+    silently discarded when the namespace is torn down (the swallowed-error
+    path). Wrapping the public builders so a ``success=False`` result raises
+    routes the failure onto the sandbox's ``script_execution`` stage, where
+    it becomes an LLM-visible error (matching the
+    ``compile_dashboard(strict=True)`` fail-loud precedent).
+
+    The raised type is the base ``ValidationError`` deliberately: PRISM's
+    ``_map_error_to_hint_key`` routes to the chart-specific hint by *type*
+    when the exception's class name contains ``validation`` -- which the
+    base name does (the typed ``*TooLongError`` subclasses do NOT, so the
+    gate raises a fresh base ``ValidationError`` rather than re-raising the
+    original instance). The engine's ``error_message`` strings already carry
+    the mapping / column / field vocabulary the hint also keys on.
+
+    Internal callers that need the inspectable ``success=False`` return
+    (``make_chart``'s auto-recovery recursion, composite panel aggregation,
+    ``Chart.preview`` / ``Chart.render``) call the undecorated
+    implementation directly and are unaffected.
+    """
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        result = func(*args, **kwargs)
+        if getattr(result, "success", True) is False:
+            raise ValidationError(
+                getattr(result, "error_message", None)
+                or f"{getattr(func, '__name__', 'chart build')} failed"
+            )
+        return result
+
+    return wrapper
 
 
 class YAxisLabelTooLongError(ValidationError):
@@ -447,20 +489,6 @@ class YAxisLabelTooLongError(ValidationError):
         # Skip ValidationError.__init__ to avoid duplicate context handling.
         Exception.__init__(self, message)
         self.context = {"y_title": y_title, "mapping": mapping}
-        send_error_email(
-            error_message=f"YAxisLabelTooLongError: {message}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions",
-            metadata={
-                "error_type": "YAxisLabelTooLongError",
-                "y_title": y_title,
-                "mapping_keys": list(mapping.keys()) if mapping else None,
-            },
-            context=(
-                "Y-axis label exceeded character limit. "
-                "User should provide a shorter y_title in mapping."
-            ),
-        )
 
 
 class LvlSeriesNameTooLongError(ValidationError):
@@ -484,21 +512,6 @@ class LvlSeriesNameTooLongError(ValidationError):
             "offending_names": list(offending_names or []),
             "mapping": mapping,
         }
-        send_error_email(
-            error_message=f"LvlSeriesNameTooLongError: {message}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions",
-            metadata={
-                "error_type": "LvlSeriesNameTooLongError",
-                "offending_names": list(offending_names or []),
-                "mapping_keys": list(mapping.keys()) if mapping else None,
-            },
-            context=(
-                "multi_line / timeseries series name exceeded character "
-                "limit. User should rename the series in the DataFrame "
-                "or short-form the categorical labels before make_chart()."
-            ),
-        )
 
 
 class LegendLabelTooLongError(ValidationError):
@@ -528,24 +541,6 @@ class LegendLabelTooLongError(ValidationError):
             "max_chars": max_chars,
             "chart_width": chart_width,
         }
-        send_error_email(
-            error_message=f"LegendLabelTooLongError: {message}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions",
-            metadata={
-                "error_type": "LegendLabelTooLongError",
-                "offending_names": list(offending_names or []),
-                "color_field": color_field,
-                "max_chars": max_chars,
-                "chart_width": chart_width,
-                "mapping_keys": list(mapping.keys()) if mapping else None,
-            },
-            context=(
-                "Colour-legend series name exceeded the cell-width budget. "
-                "User should shorten names in the color column -- super short "
-                "in composites (aim <=6 chars in 4-pack / 6-pack cells)."
-            ),
-        )
 
 
 class HeatmapRowLabelTooLongError(ValidationError):
@@ -576,25 +571,6 @@ class HeatmapRowLabelTooLongError(ValidationError):
             "max_chars": max_chars,
             "chart_height": chart_height,
         }
-        send_error_email(
-            error_message=f"HeatmapRowLabelTooLongError: {message}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions",
-            metadata={
-                "error_type": "HeatmapRowLabelTooLongError",
-                "offending_labels": list(offending_labels or []),
-                "y_field": y_field,
-                "max_chars": max_chars,
-                "chart_height": chart_height,
-                "mapping_keys": list(mapping.keys()) if mapping else None,
-            },
-            context=(
-                "Heatmap row label exceeded the horizontal budget in a "
-                "composite cell. User should shorten y-axis category labels "
-                "in the DataFrame before make_*pack_*() (budget depends on "
-                "row count and cell height)."
-            ),
-        )
 
 
 class BarCategoryLabelTooLongError(ValidationError):
@@ -625,22 +601,6 @@ class BarCategoryLabelTooLongError(ValidationError):
             "category_field": category_field,
             "mapping": mapping,
         }
-        send_error_email(
-            error_message=f"BarCategoryLabelTooLongError: {message}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions",
-            metadata={
-                "error_type": "BarCategoryLabelTooLongError",
-                "offending_labels": list(offending_labels or []),
-                "category_field": category_field,
-                "mapping_keys": list(mapping.keys()) if mapping else None,
-            },
-            context=(
-                "Bar chart category labels exceeded the character limit. "
-                "User should shorten category labels in the DataFrame "
-                "before make_chart()."
-            ),
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1296,14 +1256,6 @@ def validate_plot_ready_df(
     # ---- empty DataFrame ----------------------------------------------------
     if len(df) == 0:
         logger.error("[validate_plot_ready_df] EMPTY DATAFRAME!")
-        send_error_email(
-            error_message="Empty DataFrame in validate_plot_ready_df",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions.validate_plot_ready_df",
-            tool_parameters={"chart_type": chart_type, "mapping": mapping},
-            metadata={"error_type": "EmptyDataframe", "df_shape": df.shape},
-            context="DataFrame is empty. Cannot create chart from empty data.",
-        )
         raise ValidationError("DataFrame is empty. Cannot create chart from empty data.")
 
     fields_to_check = _extract_fields(mapping)
@@ -1332,21 +1284,6 @@ def validate_plot_ready_df(
         potential_date_cols = list({*datetime_cols, *index_like_cols})
 
         if "date" in missing_cols and potential_date_cols:
-            send_error_email(
-                error_message="Missing 'date' column - likely reset_index()/melt() ordering issue",
-                traceback_info=traceback.format_exc(),
-                tool_name="chart_functions.validate_plot_ready_df",
-                tool_parameters={"chart_type": chart_type, "mapping": mapping},
-                metadata={
-                    "missing_cols": missing_cols,
-                    "available_cols": list(df.columns),
-                    "potential_date_cols": potential_date_cols,
-                },
-                context=(
-                    "Column 'date' not found but datetime-like columns exist. "
-                    "Likely a rename ordering issue."
-                ),
-            )
             raise ValidationError(
                 f"Missing column 'date' in DataFrame. "
                 f"Available columns: {list(df.columns)}\n\n"
@@ -1365,17 +1302,6 @@ def validate_plot_ready_df(
             chart_type in {"multi_line", "area"}
             and any(col in common_color_fields for col in missing_cols)
         ):
-            send_error_email(
-                error_message=f"Missing columns for multi_line chart: {missing_cols}",
-                traceback_info=traceback.format_exc(),
-                tool_name="chart_functions.validate_plot_ready_df",
-                tool_parameters={"chart_type": chart_type, "mapping": mapping},
-                metadata={
-                    "missing_cols": missing_cols,
-                    "available_cols": list(df.columns),
-                },
-                context="Multi-line chart missing required color field columns.",
-            )
             raise ValidationError(
                 f"Missing columns in DataFrame: {missing_cols}. "
                 f"Available columns: {list(df.columns)}\n\n"
@@ -1386,17 +1312,6 @@ def validate_plot_ready_df(
                 f"  2. Use mapping={{'y': ['col1', 'col2']}} to auto-melt wide-format data."
             )
 
-        send_error_email(
-            error_message=f"Missing columns in DataFrame: {missing_cols}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions.validate_plot_ready_df",
-            tool_parameters={"chart_type": chart_type, "mapping": mapping},
-            metadata={
-                "missing_cols": missing_cols,
-                "available_cols": list(df.columns),
-            },
-            context="Required columns missing from DataFrame.",
-        )
         raise ValidationError(
             f"Missing columns in DataFrame: {missing_cols}. "
             f"Available columns: {list(df.columns)}"
@@ -1418,16 +1333,6 @@ def validate_plot_ready_df(
                 non_null_count < 2
                 and chart_type in {"timeseries", "multi_line", "scatter", "area", "scatter_multi"}
             ):
-                send_error_email(
-                    error_message=(
-                        f"Column '{field_name}' has insufficient data points: {non_null_count}"
-                    ),
-                    traceback_info=traceback.format_exc(),
-                    tool_name="chart_functions.validate_plot_ready_df",
-                    tool_parameters={"chart_type": chart_type, "field": field_name},
-                    metadata={"non_null_count": non_null_count, "required_min": 2},
-                    context=f"Chart type '{chart_type}' requires at least 2 data points.",
-                )
                 raise ValidationError(
                     f"Column '{field_name}' has only {non_null_count} valid value(s). "
                     f"Chart type '{chart_type}' requires at least 2 data points. "
@@ -1436,14 +1341,6 @@ def validate_plot_ready_df(
 
     # ---- empty column count (e.g. .assign() on a Series) -------------------
     if len(df.columns) == 0:
-        send_error_email(
-            error_message="DataFrame has no columns",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions.validate_plot_ready_df",
-            tool_parameters={"chart_type": chart_type},
-            metadata={"df_shape": df.shape},
-            context="DataFrame has no columns, likely from .assign() on a Series.",
-        )
         raise ValidationError(
             "DataFrame has no columns. This often occurs when using .assign() on a Series "
             "instead of a DataFrame. Use df[['column']].assign() instead."
@@ -1453,16 +1350,6 @@ def validate_plot_ready_df(
     if chart_type == "timeseries":
         x_field = _get_field(mapping, "x")
         if x_field and not pd.api.types.is_datetime64_any_dtype(df[x_field]):
-            send_error_email(
-                error_message=(
-                    f"X-axis column '{x_field}' is not datetime for timeseries chart"
-                ),
-                traceback_info=traceback.format_exc(),
-                tool_name="chart_functions.validate_plot_ready_df",
-                tool_parameters={"chart_type": chart_type, "x_field": x_field},
-                metadata={"current_dtype": str(df[x_field].dtype)},
-                context="Timeseries charts require datetime x-axis.",
-            )
             raise ValidationError(
                 f"For timeseries charts, x-axis column '{x_field}' must be datetime. "
                 f"Current type: {df[x_field].dtype}. "
@@ -1472,14 +1359,6 @@ def validate_plot_ready_df(
     if chart_type in {"timeseries", "scatter", "bar", "area", "histogram", "boxplot"}:
         y_field = _get_field(mapping, "y")
         if y_field and y_field in df.columns and not pd.api.types.is_numeric_dtype(df[y_field]):
-            send_error_email(
-                error_message=f"Y-axis column '{y_field}' is not numeric for {chart_type} chart",
-                traceback_info=traceback.format_exc(),
-                tool_name="chart_functions.validate_plot_ready_df",
-                tool_parameters={"chart_type": chart_type, "y_field": y_field},
-                metadata={"current_dtype": str(df[y_field].dtype)},
-                context=f"Chart type '{chart_type}' requires numeric y-axis.",
-            )
             raise ValidationError(
                 f"Column '{y_field}' must be numeric for {chart_type} charts. "
                 f"Current type: {df[y_field].dtype}. "
@@ -1529,14 +1408,6 @@ def validate_plot_ready_df(
     if facet_field and facet_field in df.columns:
         cardinality = df[facet_field].nunique()
         if cardinality > MAX_FACET_CARDINALITY:
-            send_error_email(
-                error_message=f"Facet column '{facet_field}' exceeds max cardinality: {cardinality}",
-                traceback_info=traceback.format_exc(),
-                tool_name="chart_functions.validate_plot_ready_df",
-                tool_parameters={"facet_field": facet_field},
-                metadata={"cardinality": cardinality, "max_allowed": MAX_FACET_CARDINALITY},
-                context="Facet cardinality exceeds maximum allowed.",
-            )
             raise ValidationError(
                 f"Facet column '{facet_field}' has {cardinality} unique values "
                 f"(max allowed: {MAX_FACET_CARDINALITY}). "
@@ -1581,14 +1452,6 @@ def validate_plot_ready_df(
             or _get_field(mapping, "y")
         )
         if theta_field and theta_field in df.columns and (df[theta_field] < 0).any():
-            send_error_email(
-                error_message=f"Donut/pie chart has negative values in '{theta_field}'",
-                traceback_info=traceback.format_exc(),
-                tool_name="chart_functions.validate_plot_ready_df",
-                tool_parameters={"chart_type": chart_type, "theta_field": theta_field},
-                metadata={"min_value": float(df[theta_field].min())},
-                context="Donut/pie charts require non-negative values.",
-            )
             raise ValidationError(
                 f"Donut/pie charts require non-negative values. "
                 f"Column '{theta_field}' contains negative values."
@@ -2278,6 +2141,57 @@ def _resolve_axis_type(df: pd.DataFrame, col: str) -> str:
     return "nominal"
 
 
+def _profile_x_axis_type(df: pd.DataFrame, x_field: Optional[str]) -> str:
+    """The Vega-Lite x-axis type a profile / yield-curve line uses.
+
+    The SINGLE authority for the profile-line x encoding type.
+    ``_build_profile_line`` builds its base layer from it, and the
+    line-family builders publish it into ``mapping['_x_axis_type']`` so
+    every annotation layer (LastValueLabel, VLine, HLine, Band, ...)
+    inherits the SAME type via ``_annotation_x_axis_type``.
+
+    The defect this prevents: when the base line layer and an annotation
+    layer disagree on the x type for the same field (e.g. base
+    ``ordinal`` vs an end-of-line label layer ``quantitative`` for a
+    numeric tenor column), Vega-Lite resolves them onto INDEPENDENT x
+    scales and paints a second, spurious x-axis (titled with the raw
+    field name) while the line collapses into a thin strip.
+
+    Decision (the historical inline rule from ``_build_profile_line``):
+      - numeric with > 15 distinct values -> ``quantitative`` (let
+        Vega-Lite auto-thin a continuous axis; a categorical axis would
+        overcrowd).
+      - everything else (low-cardinality numeric tenors like
+        0.25/2/5/10/30, or string tenors like ``"2Y"``) -> ``ordinal``
+        (evenly-spaced categories, the rates / vol-smile house style).
+    """
+    if x_field is None or x_field not in df.columns:
+        return "ordinal"
+    series = df[x_field]
+    if pd.api.types.is_numeric_dtype(series) and series.nunique() > 15:
+        return "quantitative"
+    return "ordinal"
+
+
+def _annotation_x_axis_type(
+    df: pd.DataFrame, x_col: str, mapping: Dict[str, Any],
+) -> str:
+    """Resolve an annotation layer's x-axis type.
+
+    Prefers the base builder's PUBLISHED x-axis type
+    (``mapping['_x_axis_type']``, set by the line-family builders --
+    ``_build_profile_line`` / ``_build_timeseries`` /
+    ``_build_multi_line_dual_axis``) so an annotation layer can never
+    disagree with the base layer's x encoding and trigger the
+    duplicate-axis defect. Non-line chart types never publish a type, so
+    their annotations resolve from the column dtype exactly as before.
+    """
+    published = mapping.get("_x_axis_type")
+    if published:
+        return published
+    return _resolve_axis_type(df, x_col)
+
+
 def _resolve_x_sort_for_annotation(
     df: pd.DataFrame, mapping: Dict[str, Any], x_col: str,
 ) -> Optional[List[str]]:
@@ -2441,7 +2355,7 @@ class VLine(Annotation):
     ) -> alt.Chart:
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
-        x_type = _resolve_axis_type(df, x_col)
+        x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
         y_field_user = (
             mapping.get("y") if isinstance(mapping.get("y"), str) else None
@@ -2605,7 +2519,7 @@ class HLine(Annotation):
             and x_field_user in df.columns
         ):
             label_df = pd.DataFrame({col_name: [self.y], x_field_user: [anchor_x]})
-            x_type = _resolve_axis_type(df, x_field_user)
+            x_type = _annotation_x_axis_type(df, x_field_user, mapping)
             label_align = "right"
             label_dx = -5
             label_x_enc = alt.X(x_field_user, type=x_type)
@@ -2707,7 +2621,7 @@ class Band(Annotation):
         y_field = y_field_user if y_field_user else "y"
 
         if self.x1 is not None and self.x2 is not None:
-            x_type = _resolve_axis_type(df, x_field)
+            x_type = _annotation_x_axis_type(df, x_field, mapping)
             band_df = pd.DataFrame({x_field: [self.x1], "_x2": [self.x2]})
             band = (
                 alt.Chart(band_df)
@@ -2792,7 +2706,7 @@ class Band(Annotation):
                 label_df = pd.DataFrame(
                     {y_field: [mid_y], x_field_user: [anchor_x]}
                 )
-                x_type = _resolve_axis_type(df, x_field_user)
+                x_type = _annotation_x_axis_type(df, x_field_user, mapping)
                 label_align = "right"
                 label_dx = -5
                 label_x_enc = alt.X(x_field_user, type=x_type)
@@ -2874,7 +2788,7 @@ class PointLabel(Annotation):
 
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
-        x_type = _resolve_axis_type(df, x_col)
+        x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
         y_field_user = (
             mapping.get("y") if isinstance(mapping.get("y"), str) else None
@@ -2990,7 +2904,7 @@ class Arrow(Annotation):
 
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
-        x_type = _resolve_axis_type(df, x_col)
+        x_type = _annotation_x_axis_type(df, x_col, mapping)
         y_field_user = (
             mapping.get("y") if isinstance(mapping.get("y"), str) else None
         )
@@ -3256,19 +3170,20 @@ class Segment(Annotation):
 
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
-        x_type = _resolve_axis_type(df, x_col)
+        x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
         y_field_user = (
             mapping.get("y") if isinstance(mapping.get("y"), str) else None
         )
         y_field = y_field_user if y_field_user else "y"
 
-        if x_type == "nominal":
+        if x_type in ("nominal", "ordinal"):
             logger.warning(
-                "[Segment] x-axis is nominal (e.g. tenor strings); ranged "
-                "rules with x/x2 do not render reliably on ordinal scales. "
-                "Skipping Segment line; label (if any) will still render at "
-                "the configured anchor point."
+                "[Segment] x-axis is categorical (nominal/ordinal, e.g. "
+                "tenor strings or a low-cardinality numeric profile axis); "
+                "ranged rules with x/x2 do not render reliably on band "
+                "scales. Skipping Segment line; label (if any) will still "
+                "render at the configured anchor point."
             )
             if not self.label:
                 return alt.Chart(pd.DataFrame({"_": []})).mark_point()
@@ -3387,7 +3302,7 @@ class PointHighlight(Annotation):
     ) -> alt.Chart:
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
-        x_type = _resolve_axis_type(df, x_col)
+        x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
         y_field_user = (
             mapping.get("y") if isinstance(mapping.get("y"), str) else None
@@ -3523,7 +3438,7 @@ class Callout(Annotation):
 
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
-        x_type = _resolve_axis_type(df, x_col)
+        x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
         y_field_user = (
             mapping.get("y") if isinstance(mapping.get("y"), str) else None
@@ -3709,7 +3624,7 @@ class LastValueLabel(Annotation):
             )
             return alt.Chart(pd.DataFrame({"_": []})).mark_point()
 
-        x_type = _resolve_axis_type(df, x_col)
+        x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
 
         y_field_user = mapping.get("y") if isinstance(mapping.get("y"), str) else None
@@ -11009,14 +10924,6 @@ def _build_timeseries(
 
     if len(df) == 0:
         logger.error("[_build_timeseries] EMPTY DATAFRAME - chart will fail!")
-        send_error_email(
-            error_message="_build_timeseries called with empty DataFrame",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions._build_timeseries",
-            tool_parameters={"mapping": mapping},
-            metadata={"df_shape": df.shape},
-            context="DataFrame is empty entering _build_timeseries.",
-        )
         raise ValidationError(
             "DataFrame is empty. Cannot create time-series chart from empty data."
         )
@@ -11191,6 +11098,10 @@ def _build_timeseries(
 
     # ---- titles ---------------------------------------------------------
     # x_title is always None for time series (date axis is self-evident).
+    # Publish the temporal x type so annotation layers inherit it (see
+    # ``_annotation_x_axis_type``); a time-series x is always temporal here
+    # because the dispatcher routes non-temporal x to ``_build_profile_line``.
+    mapping["_x_axis_type"] = "temporal"
     x_axis = alt.Axis(title=None, titleFontWeight="normal")
     y_title = _format_label(y_field, mapping, "y")
     _validate_y_axis_label(y_title, mapping)
@@ -11439,6 +11350,14 @@ def _build_multi_line_dual_axis(
     ):
         df[x_field] = pd.to_datetime(df[x_field])
 
+    # Publish the x type so annotation layers inherit it (see
+    # ``_annotation_x_axis_type``). Dual-axis x is temporal unless the
+    # caller forced ordinal; mirror that so VLine / HLine / Band labels
+    # ride the same x scale as the base layers.
+    mapping["_x_axis_type"] = (
+        "ordinal" if mapping.get("x_type") == "ordinal" else "temporal"
+    )
+
     # Series-name matching is the #1 dual-axis failure mode. Strip
     # whitespace and coerce to strings so 'Rate' matches 'Rate '.
     df[color_field] = df[color_field].astype(str).str.strip()
@@ -11447,20 +11366,6 @@ def _build_multi_line_dual_axis(
     series_present = set(df[color_field].unique())
     missing_right = [s for s in dual_axis_series if s not in series_present]
     if missing_right:
-        send_error_email(
-            error_message=f"dual_axis_series mismatch: {missing_right}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions._build_multi_line_dual_axis",
-            tool_parameters={
-                "dual_axis_series": dual_axis_series,
-                "color_field": color_field,
-            },
-            metadata={
-                "missing_right": missing_right,
-                "available_series": sorted(series_present),
-            },
-            context="dual_axis_series values not found in color column.",
-        )
         raise ValidationError(
             f"dual_axis_series {missing_right} not found in color column "
             f"{color_field!r}. Available series: {sorted(series_present)}. "
@@ -11707,7 +11612,14 @@ def _build_profile_line(
     # label frequency is thinned when they would collide. The same plan is
     # re-derived (and is authoritative) in ``get_axis_beautification``;
     # setting it here keeps the builder correct on its own.
-    if pd.api.types.is_numeric_dtype(df[x_field]) and df[x_field].nunique() > 15:
+    # Single authority for the x type. Publish it into ``mapping`` so the
+    # annotation layers ``render_annotations`` adds on top (LastValueLabel,
+    # VLine, ...) inherit the SAME type via ``_annotation_x_axis_type``.
+    # A mismatch (base ``ordinal`` vs annotation ``quantitative`` for a
+    # numeric tenor column) is what paints the spurious second x-axis.
+    x_axis_type = _profile_x_axis_type(df, x_field)
+    mapping["_x_axis_type"] = x_axis_type
+    if x_axis_type == "quantitative":
         x_encoding = alt.X(
             x_field,
             type="quantitative",
@@ -12086,14 +11998,6 @@ def _build_scatter(
 
     if len(df) == 0:
         logger.error("[_build_scatter] EMPTY DATAFRAME - chart will fail!")
-        send_error_email(
-            error_message="_build_scatter called with empty DataFrame",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions._build_scatter",
-            tool_parameters={"mapping": mapping},
-            metadata={"df_shape": df.shape},
-            context="DataFrame is empty entering _build_scatter.",
-        )
         raise ValidationError(
             "DataFrame is empty. Cannot create scatter chart from empty data."
         )
@@ -12727,14 +12631,6 @@ def _build_bar(
 
     if len(df) == 0:
         logger.error("[_build_bar] EMPTY DATAFRAME - chart will fail")
-        send_error_email(
-            error_message="_build_bar called with empty DataFrame",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions._build_bar",
-            tool_parameters={"mapping": mapping},
-            metadata={"df_shape": df.shape},
-            context="DataFrame is empty entering _build_bar.",
-        )
         raise ValidationError(
             "DataFrame is empty. Cannot create bar chart from empty data."
         )
@@ -15671,18 +15567,6 @@ def _auto_melt_for_multiline(
     except ValidationError:
         raise
     except Exception as exc:  # noqa: BLE001
-        send_error_email(
-            error_message=f"_auto_melt_for_multiline failed: {exc}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions._auto_melt_for_multiline",
-            tool_parameters={"mapping": mapping},
-            metadata={
-                "error_type": type(exc).__name__,
-                "df_shape": df.shape,
-                "df_columns": list(df.columns),
-            },
-            context="Auto-melt operation failed for multi-line chart.",
-        )
         raise
 
 
@@ -15809,14 +15693,6 @@ def _auto_downsample_timeseries(
         return df_down, freq
 
     except Exception as exc:  # noqa: BLE001
-        send_error_email(
-            error_message=f"_auto_downsample_timeseries failed: {exc}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions._auto_downsample_timeseries",
-            tool_parameters={"x_field": x_field, "target_rows": target_rows},
-            metadata={"error_type": type(exc).__name__, "df_shape": df.shape},
-            context="Auto-downsample operation failed for time-series chart.",
-        )
         return df, None
 
 
@@ -16532,7 +16408,7 @@ def _generate_filename(
     return "_".join(p for p in parts if p)
 
 
-def make_chart(
+def _make_chart(
     df: pd.DataFrame,
     chart_type: ChartType,
     mapping: Dict[str, Any],
@@ -16930,7 +16806,7 @@ def make_chart(
         if recovered is not None:
             new_mapping, recovery_msg = recovered
             audit_trail.append(recovery_msg)
-            recovered_result = make_chart(
+            recovered_result = _make_chart(
                 df=df, chart_type=chart_type, mapping=new_mapping,
                 title=title, subtitle=subtitle, skin=skin, intent=intent,
                 dimensions=dimensions, annotations=annotations,
@@ -17196,20 +17072,6 @@ def make_chart(
             audit_trail=audit_trail,
         )
     except Exception as exc:  # noqa: BLE001
-        send_error_email(
-            error_message=f"Chart build failed: {exc}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions.make_chart",
-            tool_parameters={
-                "chart_type": chart_type, "skin": skin, "title": title,
-                "mapping": mapping,
-            },
-            metadata={
-                "error_type": type(exc).__name__,
-                "df_shape": df.shape, "df_columns": list(df.columns),
-            },
-            context=f"Failed to build {chart_type!r} chart with title {title!r}.",
-        )
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
             error_message=f"Chart build failed: {type(exc).__name__}: {exc}",
@@ -17499,17 +17361,6 @@ def make_chart(
         png_bytes = _render_chart_to_png(spec, scale=2.0)
         s3_manager.put(png_bytes, png_path)
     except Exception as exc:  # noqa: BLE001
-        send_error_email(
-            error_message=f"PNG export failed in make_chart: {exc}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions.make_chart",
-            tool_parameters={
-                "chart_type": chart_type, "skin": skin,
-                "title": title, "png_path": png_path,
-            },
-            metadata={"error_type": type(exc).__name__, "stage": "png_export"},
-            context="PNG export failed during chart generation.",
-        )
         png_save_failed = True
         png_error_message = str(exc)
         png_path = None
@@ -20088,18 +19939,6 @@ def _render_facet_grid(
         png_bytes = _render_chart_to_png(composite_spec, scale=2.0)
         s3_manager.put(png_bytes, png_path)
     except Exception as exc:  # noqa: BLE001
-        send_error_email(
-            error_message=f"PNG export failed in facet grid: {exc}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions._render_facet_grid",
-            tool_parameters={
-                "chart_type": chart_type, "skin": skin,
-                "title": title, "n_panels": n_panels,
-                "rows": rows, "cols": cols,
-            },
-            metadata={"error_type": type(exc).__name__, "stage": "png_export"},
-            context="PNG export failed during facet grid render.",
-        )
         png_save_failed = True
         png_error_message = str(exc)
         png_path = None
@@ -20411,14 +20250,6 @@ def make_composite(
                 "df_shape": spec.df.shape if isinstance(spec.df, pd.DataFrame) else None,
             }
             chart_errors.append(error_detail)
-            send_error_email(
-                error_message=f"Sub-chart {chart_index} failed in make_composite: {exc}",
-                traceback_info=traceback.format_exc(),
-                tool_name="chart_functions.make_composite",
-                tool_parameters={"layout": layout, "chart_index": chart_index},
-                metadata=error_detail,
-                context=f"Sub-chart {chart_index} of {n_charts} failed.",
-            )
             warnings_list.append(
                 f"Sub-chart {chart_index} ({spec.chart_type}) failed: "
                 f"{type(exc).__name__}: {exc}"
@@ -20487,14 +20318,6 @@ def make_composite(
                 has_dual_axis=has_dual_axis,
             )
         except Exception as exc:  # noqa: BLE001
-            send_error_email(
-                error_message=f"_compose_charts failed: {exc}",
-                traceback_info=traceback.format_exc(),
-                tool_name="chart_functions.make_composite",
-                tool_parameters={"layout": composite_layout, "n_charts": len(built)},
-                metadata={"error_type": type(exc).__name__},
-                context="Layout composition failed.",
-            )
             return CompositeResult(
                 png_path=None, layout=layout, n_charts=n_charts,
                 success=False,
@@ -20586,14 +20409,6 @@ def make_composite(
         png_bytes = _render_chart_to_png(spec_dict, scale=2.0)
         s3_manager.put(png_bytes, png_path)
     except Exception as exc:  # noqa: BLE001
-        send_error_email(
-            error_message=f"Composite PNG export failed: {exc}",
-            traceback_info=traceback.format_exc(),
-            tool_name="chart_functions.make_composite",
-            tool_parameters={"layout": layout, "title": title, "png_path": png_path},
-            metadata={"error_type": type(exc).__name__, "stage": "png_export"},
-            context="Composite PNG export failed.",
-        )
         png_save_failed = True
         png_error_message = str(exc)
         png_path = None
@@ -20631,6 +20446,7 @@ def make_composite(
 # Convenience wrappers for the common composite layouts
 # ---------------------------------------------------------------------------
 
+@_raise_on_failure
 def make_2pack_horizontal(
     chart1: ChartSpec,
     chart2: ChartSpec,
@@ -20672,6 +20488,7 @@ def make_2pack_horizontal(
     )
 
 
+@_raise_on_failure
 def make_2pack_vertical(
     chart1: ChartSpec,
     chart2: ChartSpec,
@@ -20713,6 +20530,7 @@ def make_2pack_vertical(
     )
 
 
+@_raise_on_failure
 def make_3pack_triangle(
     chart_top: ChartSpec,
     chart_bottom_left: ChartSpec,
@@ -20755,6 +20573,7 @@ def make_3pack_triangle(
     )
 
 
+@_raise_on_failure
 def make_4pack_grid(
     chart_tl: ChartSpec,
     chart_tr: ChartSpec,
@@ -20798,6 +20617,7 @@ def make_4pack_grid(
     )
 
 
+@_raise_on_failure
 def make_6pack_grid(
     chart_r1_l: Optional[ChartSpec] = None,
     chart_r1_r: Optional[ChartSpec] = None,
@@ -21696,7 +21516,7 @@ class Chart:
         spec into a custom renderer.
         """
         ctx = _resolve_runtime_context()
-        result = make_chart(
+        result = _make_chart(
             df=self._df,
             chart_type=self._type,
             mapping=self._to_v1_mapping(),
@@ -21756,7 +21576,7 @@ class Chart:
             ``result.warnings``.
         """
         ctx = _resolve_runtime_context()
-        result = make_chart(
+        result = _make_chart(
             df=self._df,
             chart_type=self._type,
             mapping=self._to_v1_mapping(),
@@ -23315,6 +23135,7 @@ def _tbl_resolve_path(save_as: Optional[str], session_path: Optional[str],
     return rel
 
 
+@_raise_on_failure
 def make_table(
     df: Optional[pd.DataFrame] = None,
     *,
@@ -23818,6 +23639,22 @@ _ENGINE_NAMESPACE_V2: Tuple[str, ...] = (
     "Trendline",
     "PlotText",
 )
+
+
+# ---------------------------------------------------------------------------
+# Public entry-point gating (failures bubble up instead of being swallowed)
+# ---------------------------------------------------------------------------
+# PRISM's execute_analysis_script only surfaces a chart failure to the LLM
+# when the script raises; a returned ``*Result(success=False)`` is discarded
+# silently. ``make_chart`` is impl-split: ``_make_chart`` stays non-raising
+# (the auto-recovery recursion + Chart.preview/render inspect its
+# ``success`` flag), while the public ``make_chart`` name is the gated
+# wrapper. ``make_table`` and the ``make_*pack_*`` helpers are gated in place
+# via the ``@_raise_on_failure`` decorator on their defs. See
+# ``_raise_on_failure`` for the routing rationale.
+_make_chart.__name__ = "make_chart"
+_make_chart.__qualname__ = "make_chart"
+make_chart = _raise_on_failure(_make_chart)
 
 
 # ===========================================================================

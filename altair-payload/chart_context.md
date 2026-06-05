@@ -83,23 +83,23 @@ Canvas size engine-decided per `chart_type`. `interactive=True` (default) auto-e
 | `editor_html_path` / `editor_download_url` / `editor_chart_id` | Interactive HTML companion -- surface alongside PNG |
 | `vegalite_json` | Final Vega-Lite spec |
 | `chart_type` / `skin` | Echoed |
-| `success` / `error_message` | Render succeeded + details |
+| `success` / `error_message` | `success` is `True` on any returned result; failures **raise** instead (see Failure contract) |
 | `warnings` | Fail-soft annotations (auto-melt, dropped annotations) -- caller may surface |
 | `audit_trail` | Informational engine decisions (auto-recovered dual-axis, downsampling) -- chart is fine; do NOT surface as failures |
 
 `CompositeResult` (from `make_Npack_*`) adds `layout`, `n_charts`, `chart_errors` (per-sub-chart `df_shape` / `error_type` / `error_message`); editor fields same as single charts.
 
+**Failure contract.** `make_chart`, `make_table`, and the `make_*pack_*` composites **raise** `ValidationError` on failure -- the error bubbles out of your script and PRISM surfaces it to the user. Do **not** wrap these calls in `try/except` to swallow it. A *returned* result therefore always has `success=True`; no `if not r.success` guard is needed. **Composites raise if *any* sub-chart fails** -- one empty / broken panel raises the whole `make_*pack_*` call (it does not return a partial render). Build every panel from validated, non-empty data before composing.
+
 ---
 
 ## 2. Quality gate (MANDATORY)
 
-Every chart through `check_charts_quality()`. Fail-open if Gemini unavailable. Pass composites as single PNGs. **Always check `r.success` before `r.png_path` / `r.download_url`** -- both `None` on failure (no orphan to delete). On QC fail: `s3_manager.delete()` the PNG; fix or remove the call.
+Every chart through `check_charts_quality()`. Fail-open if Gemini unavailable. Pass composites as single PNGs. On QC fail: `s3_manager.delete()` the PNG; fix or remove the call. (Build failures already raised upstream, so every `r` here has rendered.)
 
 ```python
 qc_results = check_charts_quality([r1, r2])
 for r, qc in zip([r1, r2], qc_results):
-    if not r.success:                  # render failed
-        continue
     if not qc['passed']:
         s3_manager.delete(r.png_path)
 ```
@@ -572,7 +572,7 @@ All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`,
 
 **Composite-global kwargs** (`skin`, `dimensions`, `dimension_preset`, `save_as`, `spacing`, …) belong on the `make_*pack_*` call, **not** on `ChartSpec`. `make_chart(skin=...)` is valid; `ChartSpec(skin=...)` raises a typed `ValidationError` naming the bad kwarg and pointing at the pack helper.
 
-**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. Up to N-1 sub-charts can fail; survivors render. Failures in `result.chart_errors`. **`multi_line` series names ≤25 chars in every pack-composite cell** (same LVL cap as standalone; see §6.1). **`heatmap` row labels must fit horizontally in composite cells** -- long y-axis category strings raise `HeatmapRowLabelTooLongError`; shorten before `make_*pack_*()` (§6.3).
+**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. **Any sub-chart failure raises `ValidationError`** (message names how many failed) -- every panel must build from valid, non-empty data. **`multi_line` series names ≤25 chars in every pack-composite cell** (same LVL cap as standalone; see §6.1). **`heatmap` row labels must fit horizontally in composite cells** -- long y-axis category strings raise `HeatmapRowLabelTooLongError`; shorten before `make_*pack_*()` (§6.3).
 
 **Per-cell colour-legend label budget** (when a sub-chart uses categorical `mapping['color']` and the legend renders): char cap = `floor(0.25 * cell_width_px / 7)`. Composite cells are narrow -- budget before `LegendLabelTooLongError`:
 
@@ -616,7 +616,7 @@ Never silently substitute a layout. If a requested shape isn't feasible, tell th
 
 ## 13. Static tables (`make_table()`)
 
-`make_table()` + `TableResult` auto-injected (§1). Same brand palette and Liberation Sans font stack as `make_chart`. **Canvas engine-decided**: PNG width fits data (text columns wrap automatically), height grows to fit every row. PRISM never picks a dimension; nothing is truncated. **One hard limit:** a table too wide to read on a portrait 8.5x11 page is *rejected* (`success=False`), not shrunk into illegible micro-text -- reshape it instead of widening it (§13.10).
+`make_table()` + `TableResult` auto-injected (§1). Same brand palette and Liberation Sans font stack as `make_chart`. **Canvas engine-decided**: PNG width fits data (text columns wrap automatically), height grows to fit every row. PRISM never picks a dimension; nothing is truncated. **One hard limit:** a table too wide to read on a portrait 8.5x11 page **raises** `ValidationError`, not shrunk into illegible micro-text -- reshape it instead of widening it (§13.10).
 
 Reach for `make_table` when the answer is structured rows × columns and a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, FX cross-rates, sector tapes, calendars, snapshot dashboards.
 
@@ -683,11 +683,11 @@ result = make_table(
 | `subtotal_rows` | list | Row indices → bold + subtle band |
 | `show_index` | bool | Include DataFrame index as leftmost column |
 
-### 13.3 `TableResult` (dataclass -- dot notation only; check `r.success` before reading paths)
+### 13.3 `TableResult` (dataclass -- dot notation only; failures raise, so a returned result has rendered)
 
 | Attribute | Description |
 |---|---|
-| `success` / `error_message` | render succeeded + reason |
+| `success` / `error_message` | `True` on returned results; failures raise (§2) |
 | `png_path` / `download_url` | PNG S3 path / presigned URL |
 | `warnings` | non-fatal annotations (e.g. dropped `cell_colors` keys with unknown columns) |
 | `n_rows` / `n_cols` | shape after `show_index` adjustment |
@@ -840,7 +840,7 @@ minibar_columns={'MktBar': 'Mkt Cap ($B)'}
 
 ### 13.13 Failure transparency
 
-`make_table` returns `TableResult` always. On failure `success=False` + `error_message` carries reason; `png_path` / `download_url` are `None`. Common triggers (error message names the fix):
+`make_table` **raises** `ValidationError` on failure; the message carries the reason. Common triggers (error message names the fix):
 
 - `header_levels[N] spans sum to X, expected Y` -- adjust spans to sum `len(df.columns)`
 - `header_levels[N][i]=... is not a (label, span) tuple` -- use tuples (or `{'label': X, 'span': N}` dicts)
