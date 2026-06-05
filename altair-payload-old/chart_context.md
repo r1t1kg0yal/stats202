@@ -157,7 +157,7 @@ Engine rejects anonymous scatters with < 8 distinct (x, y) coords in visible reg
 
 ## 4. Authoring rules
 
-- **Max 4 lines per `multi_line`** (5+ clutters). For >4, composite (§10).
+- **Max 4 lines per `multi_line` / `area` -- engine-enforced (raises).** 5+ overplot and end-of-line labels collide; the engine rejects with a message routing to a breakup. For >4, don't crowd one panel -- split into a composite (§10), small-multiples facet (grids spoke), or normalize/aggregate to the most important ≤4. Counted per panel, so composite cells must each stay ≤4.
 - **`y_title` plain English; aim ≤16 chars (hard cap 24).** Same cap on `x_title` / `y_title_right`. Series names on `multi_line` / `timeseries` capped 25 (§6.1) -- rename in DataFrame before melting.
 - **X column must be `'date'` for time series, as a column.** `df.rename(columns={'datetime': 'date'}).reset_index()`.
 - **Multi-line long format: rename FIRST, then melt** -- or use auto-melt (no `color` key, pass `y=[list]`).
@@ -211,6 +211,10 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 **End-of-line labels (LVL), not colour legend, on `multi_line` / `timeseries`.** Series name paints at line's right end in own colour (FT/Bloomberg). Auto-injected on every single panel **and every pack-composite cell** (`make_2pack_*`, `make_3pack_*`, `make_4pack_grid`, `make_6pack_grid`). **Series names ≤25 chars** -- longer raises `LvlSeriesNameTooLongError`; rename in DataFrame (`'United States Equities Index 500'` → `'S&P 500'`). Customise via explicit `LastValueLabel(dx=..., font_size=..., font_weight=...)` -- your annotation wins. **Dual-axis (`dual_axis_series`): no LVL** -- end-of-line text collides with the right y-axis; colour legend renders instead (§9.4). Facet grids (`mapping['facet']`) strip LVL -- see grids spoke.
 
 **Colour-legend series names** apply only when the legend is visible (dual-axis, or explicit `mapping['legend']=True`): must fit the cell-width budget or the engine raises `LegendLabelTooLongError`. Pack composites with LVL do not show a colour legend.
+
+**Seasonal-jaggedness gate (`multi_line` / `timeseries` / `line` / `area`).** A weekly / monthly / quarterly series with a strong, regular every-period swing (e.g. raw quarterly revenue with a holiday-quarter spike) is REJECTED with `SEASONAL JAGGEDNESS` — it renders as an unreadable sawtooth. Checked per series, including single-panel composite cells. Fix: seasonally adjust, plot YoY % change, or take a trailing rolling mean / rolling sum over one full period (e.g. a 4-quarter rolling sum for quarterly revenue) before charting.
+
+**Stacked-area alignment gate (`area` + `color`).** When series report on different calendars so the layers don't share x-values, the stack shatters into white triangular gaps and the engine REJECTS with `SERIES MISALIGNMENT`. Fix: resample every series onto a common period grid (e.g. quarter-end, forward-filled to the last reported value) before stacking.
 
 ### 6.2 Bar family
 

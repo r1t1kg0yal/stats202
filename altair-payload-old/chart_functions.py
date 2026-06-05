@@ -170,6 +170,15 @@ MAX_COLOR_CARDINALITY = 10          # Max unique values in a color encoding
 MAX_FACET_CARDINALITY = 16          # Max facets in a small-multiples chart
 MAX_ROWS_INTERACTIVE = 50_000       # Above this, warn (do not block)
 
+# Hard line-count cap for a single multi_line / area / timeseries panel.
+# Beyond 4 lines, series overplot and the end-of-line labels collide; the
+# right move is to break the chart up (composite panels, small-multiples
+# facet, or normalize/aggregate) rather than crowd one canvas. Enforced as
+# a HARD error so the engine routes PRISM toward a better decomposition
+# instead of shipping an illegible chart. Facet/grid mode is the sanctioned
+# breakup and is exempt.
+MAX_LINE_SERIES = 4                 # Max series on a single line/area panel
+
 # Auto-downsample thresholds for time-series rendering.
 MAX_ROWS_BEFORE_DOWNSAMPLE = 5_000  # Trigger downsample above this
 DOWNSAMPLE_TARGET_ROWS = 2_000      # Aim for this row count post-downsample
@@ -198,6 +207,12 @@ _GROUPED_BAR_FACET_SPACING_PX = 6
 _GROUPED_BAR_INNER_X_PADDING_OUTER = 0.14
 _GROUPED_BAR_INNER_X_PADDING_INNER = 0.02
 _FACET_LABEL_MIN_PITCH_PX = 28     # min horizontal pitch between visible facet labels
+# Vertical grouped-bar category labels are facet-header labels (one per
+# x-group), NOT regular axis tick labels, so they don't inherit the
+# skin's config.axis.labelFontSize (18). They were rendering a touch
+# small at the base axis_config size (16); bumped one px so the group
+# names read at the same weight as the bars they label.
+_GROUPED_BAR_CATEGORY_LABEL_FONT_SIZE = 17
 
 
 def _facet_label_thinning_expr(
@@ -603,6 +618,60 @@ class BarCategoryLabelTooLongError(ValidationError):
         }
 
 
+class SeasonalJaggednessError(ValidationError):
+    """Raised when a line/area time-series series is strongly seasonal.
+
+    SOFT, easy-to-fix rejection (not a hard crash): a weekly/monthly/
+    quarterly series whose every-period oscillation is both REGULAR (high
+    Hyndman seasonal strength) AND LARGE (meaningful peak-to-trough vs the
+    plotted range) renders as an unreadable sawtooth. The engine refuses it
+    up-front and routes PRISM toward seasonal adjustment / normalisation /
+    a moving average (or fixing a data-frequency / alignment issue) before
+    re-charting. The message prefix is deliberately distinct from the
+    y-scale gates so the dual-axis auto-recovery never tries to "fix" it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        offending_series: Optional[List[str]] = None,
+        period: Optional[int] = None,
+        mapping: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        Exception.__init__(self, message)
+        self.context = {
+            "offending_series": list(offending_series or []),
+            "period": period,
+            "mapping": mapping,
+        }
+
+
+class SeriesMisalignmentError(ValidationError):
+    """Raised when a stacked area's series sit on disjoint x-grids.
+
+    SOFT, easy-to-fix rejection: when each series in a multi-series stacked
+    ``area`` reports on its own (misaligned) calendar, most x-positions
+    carry only a subset of the series, so the stack collapses into white
+    triangular gaps ("shattered" composition). The engine refuses it
+    up-front and routes PRISM toward resampling every series onto a common
+    calendar before stacking.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        coverage: Optional[float] = None,
+        n_series: Optional[int] = None,
+        mapping: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        Exception.__init__(self, message)
+        self.context = {
+            "coverage": coverage,
+            "n_series": n_series,
+            "mapping": mapping,
+        }
+
+
 # ---------------------------------------------------------------------------
 # No-truncation policy (global Altair engine principle)
 # ---------------------------------------------------------------------------
@@ -614,7 +683,20 @@ class BarCategoryLabelTooLongError(ValidationError):
 # validation passes, per-axis ``labelLimit`` is set to the exact validated
 # pixel budget so inherited config defaults cannot re-truncate.
 
-_AXIS_LABEL_CHAR_WIDTH_RATIO = 0.55  # matches ``_wrap_text_to_width`` heuristic
+# Real rendered width of one axis tick-label character, as a fraction of the
+# label font size. The gs_clean skin renders axis labels at 18px in
+# Liberation Sans / Arial, where uppercase tickers run ~0.7em and digits
+# ~0.55em; 0.62 is a deliberately conservative blended average. The OLD value
+# (0.55) under-measured uppercase labels, which is what let "GOOGL" (real
+# ~66px) get sized against a ~57px budget and silently ellipsis-truncate to
+# "GO...", and what let 12 short bars read as "fits horizontally" and collide.
+# Used for the heatmap row-label gutter/labelLimit math AND the bar / nominal
+# tick rotation decision so collisions and truncation are both sized against
+# one honest metric.
+_AXIS_LABEL_CHAR_WIDTH_RATIO = 0.62
+# The gs_clean skin's axis tick-label font size (px). If a smaller-font skin
+# is ever introduced, thread its size through instead of this default.
+_SKIN_AXIS_LABEL_FONT_PX = 18
 
 # Soft cap on y-axis label length. The PRISM style guide says ~16 chars is
 # the visual sweet spot; we hard-fail past 24 to surface obvious abuses
@@ -623,8 +705,12 @@ _AXIS_LABEL_CHAR_WIDTH_RATIO = 0.55  # matches ``_wrap_text_to_width`` heuristic
 _Y_AXIS_LABEL_MAX_CHARS = 24
 
 # Left-gutter fraction of chart width reserved for heatmap row labels.
-_HEATMAP_ROW_GUTTER_FRAC_STANDALONE = 0.38
-_HEATMAP_ROW_GUTTER_FRAC_COMPOSITE = 0.28
+# Widened (0.38->0.43, 0.28->0.32) in lockstep with the per-char ratio bump
+# (0.55->0.62) so the honest-but-stricter width estimate does NOT shrink the
+# set of labels that pass validation -- the char capacity at any given canvas
+# width stays ~unchanged; the only cost is a slightly wider left gutter.
+_HEATMAP_ROW_GUTTER_FRAC_STANDALONE = 0.43
+_HEATMAP_ROW_GUTTER_FRAC_COMPOSITE = 0.32
 _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX = 4
 # Absolute char ceiling for heatmap row labels -- aligned with bar
 # category cap so PRISM has one abbreviation discipline across matrix
@@ -705,6 +791,30 @@ _MIN_SERIES_VERTICAL_SHARE = 0.10
 # gap ~7.4 pp, ratio ~9x; FCI tenor contributions clustered at 10 / 30 /
 # 60 bp with span ~7 each -- ratio ~4x.
 _LEVEL_DISPARITY_RATIO_THRESHOLD = 3.0
+
+# Seasonality / jaggedness gate (multi_line / timeseries / line / area).
+# A series is rejected as "seasonally jagged" only when it is BOTH regular
+# AND has visually meaningful amplitude -- neither axis alone is enough
+# (seasonal strength alone over-flags tiny-but-regular waves; amplitude
+# alone over-flags near-zero-level rate-of-change series like gdp_qoq).
+# Calibrated in dev/calibrate_jaggedness.py against the full line/area
+# fixture corpus: 0 false positives, 0 misses, and the separation is wide
+# enough that the exact thresholds are not sensitive. Seasonality is only
+# assessed at the horizons the gate can reason about -- weekly (period 52),
+# monthly (12), quarterly (4); daily/business-daily/annual data infer
+# period 0 and are never evaluated.
+_SEASONAL_STRENGTH_THRESHOLD = 0.65      # Hyndman F_S (regularity), [0, 1]
+_SEASONAL_SWING_LEVEL_THRESHOLD = 25.0   # seasonal peak-to-trough as % of median |level|
+_SEASONAL_SWING_RANGE_THRESHOLD = 30.0   # seasonal peak-to-trough as % of series min-max range
+_SEASONAL_MIN_CYCLES = 2                 # need >= 2 full cycles to assess seasonality at all
+
+# Minimum average per-x series coverage for a multi-series stacked area.
+# Below this, the series sit on disjoint calendars and the stack shatters
+# into triangular gaps (Chart 8). 1.0 = every series present at every x
+# (clean stack); 1/n_series = fully disjoint. Calibrated so aligned area
+# demos (coverage 1.0) pass and the misaligned-fiscal-calendar repro
+# (~0.14) is rejected.
+_AREA_SERIES_COVERAGE_MIN = 0.60
 
 
 def _axis_label_px_per_char(label_font_size: int) -> float:
@@ -1404,6 +1514,40 @@ def validate_plot_ready_df(
     # Donut: same cap, but enforced separately below in the chart-specific
     # block so the suggested fix points at the right column.
 
+    # ---- line-series cap (multi_line / timeseries / area) ------------------
+    # A single line/area panel reads cleanly with at most MAX_LINE_SERIES
+    # series; beyond that, lines overplot and the end-of-line labels collide.
+    # The right move is to break the chart up rather than crowd one canvas, so
+    # this is a HARD error that routes toward a better decomposition. Facet /
+    # small-multiples mode is the sanctioned breakup and is exempt (the cap
+    # belongs per-panel, not to the whole grid). Applies per panel in
+    # composites too -- ``_build_single_chart`` runs this same validator.
+    if (
+        chart_type in {"multi_line", "timeseries", "area"}
+        and not _get_field(mapping, "facet")
+    ):
+        line_color_field = _get_field(mapping, "color")
+        if line_color_field and line_color_field in df.columns:
+            n_series = df[line_color_field].nunique()
+            if n_series > MAX_LINE_SERIES:
+                raise ValidationError(
+                    f"{chart_type} has {n_series} series (column "
+                    f"'{line_color_field}'), over the {MAX_LINE_SERIES}-line "
+                    f"cap. More than {MAX_LINE_SERIES} lines on one panel "
+                    f"overplot and the end-of-line labels collide -- break the "
+                    f"chart into a cleaner shape rather than crowding one "
+                    f"canvas. Pick the decomposition that fits the argument:\n"
+                    f"  - Composite panels grouping related series "
+                    f"(make_2pack_horizontal / make_4pack_grid), "
+                    f"<= {MAX_LINE_SERIES} lines each.\n"
+                    f"  - Small-multiples: one panel per series via "
+                    f"mapping['facet']='{line_color_field}' (drop 'color') -- "
+                    f"see the grids spoke.\n"
+                    f"  - Normalize (z-score / rebase-to-100) and keep the most "
+                    f"important <= {MAX_LINE_SERIES} series, aggregating the "
+                    f"rest into an 'Other' line or a separate panel."
+                )
+
     facet_field = _get_field(mapping, "facet")
     if facet_field and facet_field in df.columns:
         cardinality = df[facet_field].nunique()
@@ -1624,6 +1768,20 @@ def _validate_chart_data_integrity(
     # rails separated by empty whitespace. Canonical example: FCI tenor
     # contributions at 10 / 30 / 60 bp with per-series spans of ~7 each.
     _validate_y_level_disparity(df, mapping, chart_type)
+
+    # Validation 7: stacked-area series alignment. Catches the "shattered"
+    # stack where each series reports on its own calendar so the layers
+    # don't share x-positions and the composition fills with white
+    # triangular gaps (Chart 8). Area-only; runs before the seasonality
+    # gate because misalignment is the dominant defect for stacked areas.
+    _validate_series_alignment(df, mapping, chart_type)
+
+    # Validation 8: seasonal jaggedness. Catches non-seasonally-adjusted
+    # line / area series whose strong, regular every-period swing renders
+    # as an unreadable sawtooth (Charts 8 / 17). Soft, easy-to-fix
+    # rejection routing PRISM to seasonal adjustment / normalisation /
+    # moving average.
+    _validate_seasonal_jaggedness(df, mapping, chart_type)
 
 
 def _validate_y_scale_homogeneity(
@@ -1875,6 +2033,231 @@ def _validate_y_level_disparity(
     )
 
 
+def _infer_seasonal_period(x_values: Any) -> int:
+    """Infer the seasonal period from a datetime-like x, or 0 if not applicable.
+
+    Returns 52 (weekly data -> annual cycle), 12 (monthly), or 4 (quarterly).
+    Daily / business-daily / annual / irregular spacing -> 0, meaning the
+    seasonality gate does NOT evaluate the series (these fall outside the
+    weekly / monthly / quarterly horizons the gate reasons about, and the
+    daily case is what keeps random-walk equity / yield fixtures from ever
+    being judged). MUST be called on a SINGLE series' x -- a multi-series
+    frame's interleaved dates would mis-infer a much smaller period.
+    """
+    try:
+        d = pd.to_datetime(pd.Series(x_values)).dropna().sort_values()
+    except Exception:  # noqa: BLE001
+        return 0
+    if len(d) < 3:
+        return 0
+    md = float(d.diff().dropna().dt.days.median())
+    if 5.0 <= md <= 10.0:
+        return 52
+    if 26.0 <= md <= 35.0:
+        return 12
+    if 80.0 <= md <= 100.0:
+        return 4
+    return 0
+
+
+def _seasonal_diagnostics(
+    values: List[float], period: int
+) -> Tuple[float, float, float]:
+    """Return (F_S, swing/level %, swing/range %) for one evenly-sampled series.
+
+    Classical decomposition with no statsmodels/scipy dependency:
+      * centered moving-average detrend (2x-MA for even periods),
+      * phase-mean seasonal component,
+      * remainder = detrended - seasonal.
+    ``F_S`` is the Hyndman seasonal strength ``max(0, 1 - Var(R)/Var(S+R))``
+    in [0, 1] (regularity). The two swing ratios express the seasonal
+    peak-to-trough magnitude relative to the median absolute level and to
+    the series min-max range respectively. Returns NaNs when there are
+    fewer than ``_SEASONAL_MIN_CYCLES`` full cycles (too little data to
+    judge -- this is what protects short series).
+
+    Mirrors dev/_jagged_probe.py exactly so the calibration sweep's
+    thresholds transfer verbatim.
+    """
+    s = pd.Series(values, dtype=float).reset_index(drop=True)
+    n = len(s)
+    v = s.dropna().to_numpy()
+    if period < 2 or n < _SEASONAL_MIN_CYCLES * period or len(v) == 0:
+        return float("nan"), float("nan"), float("nan")
+    trend = s.rolling(window=period, center=True, min_periods=period).mean()
+    if period % 2 == 0:
+        trend = trend.rolling(window=2, center=True, min_periods=2).mean()
+    detr = s - trend
+    phase = np.arange(n) % period
+    seasonal_full = pd.Series(index=s.index, dtype=float)
+    seasonal_phase = np.full(period, np.nan)
+    for p in range(period):
+        mask = phase == p
+        if mask.any():
+            m = float(detr[mask].mean())
+            seasonal_phase[p] = m
+            seasonal_full[mask] = m
+    seasonal_phase = seasonal_phase - np.nanmean(seasonal_phase)
+    seasonal_full = seasonal_full - seasonal_full.mean()
+    remainder = detr - seasonal_full
+    var_rem = float(np.nanvar(remainder))
+    var_sr = float(np.nanvar(seasonal_full + remainder))
+    f_s = 0.0 if var_sr <= 0 else max(0.0, 1.0 - var_rem / var_sr)
+    p2t = float(np.nanmax(seasonal_phase) - np.nanmin(seasonal_phase))
+    rng = float(v.max() - v.min())
+    med = float(np.median(np.abs(v)))
+    swing_level = (p2t / med * 100.0) if med > 0 else 0.0
+    swing_range = (p2t / rng * 100.0) if rng > 0 else 0.0
+    return f_s, swing_level, swing_range
+
+
+def _validate_seasonal_jaggedness(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> None:
+    """Reject line/area series with a strong, regular seasonal sawtooth.
+
+    Scope: ``multi_line`` / ``timeseries`` / ``line`` / ``area``. Evaluated
+    PER SERIES (including a single-series panel, e.g. one cell of a
+    ``make_4pack_grid``). A series trips only when it clears ALL THREE
+    calibrated thresholds -- regularity (``F_S``) AND both amplitude views
+    (swing vs level AND swing vs range) -- so smooth-but-regular series and
+    near-zero-level rate series do not false-trigger. Raises
+    ``SeasonalJaggednessError`` (a ``ValidationError`` subclass with a
+    distinct message prefix so the dual-axis auto-recovery ignores it).
+    """
+    if chart_type not in {"multi_line", "timeseries", "line", "area"}:
+        return
+    x_field = _get_field(mapping, "x")
+    y_field = _get_field(mapping, "y")
+    if not (x_field and y_field):
+        return
+    if x_field not in df.columns or y_field not in df.columns:
+        return
+    if not pd.api.types.is_datetime64_any_dtype(df[x_field]):
+        return
+    if not pd.api.types.is_numeric_dtype(df[y_field]):
+        return
+
+    color_field = _get_field(mapping, "color")
+    if color_field and color_field in df.columns:
+        groups = [(str(name), sub) for name, sub in df.groupby(color_field, sort=False)]
+    else:
+        groups = [(None, df)]
+
+    flagged: List[Tuple[Optional[str], int, float, float, float]] = []
+    for name, sub in groups:
+        s = sub.sort_values(x_field)
+        period = _infer_seasonal_period(s[x_field])  # per-series, not the whole frame
+        if period < 2:
+            continue
+        vals = pd.to_numeric(s[y_field], errors="coerce").dropna().tolist()
+        f_s, swing_level, swing_range = _seasonal_diagnostics(vals, period)
+        is_jagged = (
+            np.isfinite(f_s) and f_s >= _SEASONAL_STRENGTH_THRESHOLD
+            and np.isfinite(swing_level) and swing_level >= _SEASONAL_SWING_LEVEL_THRESHOLD
+            and np.isfinite(swing_range) and swing_range >= _SEASONAL_SWING_RANGE_THRESHOLD
+        )
+        if is_jagged:
+            flagged.append((name, period, f_s, swing_level, swing_range))
+
+    if not flagged:
+        return
+
+    period = flagged[0][1]
+    freq_word = {52: "weekly", 12: "monthly", 4: "quarterly"}.get(period, "periodic")
+    single_label = y_field if flagged[0][0] is None else "series"
+
+    def _describe(item: Tuple[Optional[str], int, float, float, float]) -> str:
+        nm, _per, f_s, sl, _sr = item
+        who = f"'{nm}'" if nm is not None else f"the {single_label}"
+        return f"{who} (F_S={f_s:.2f}, swing={sl:.0f}% of level)"
+
+    offenders_desc = "; ".join(_describe(it) for it in flagged[:5])
+    offending_names = [it[0] for it in flagged if it[0] is not None]
+    full_period_pts = period
+
+    raise SeasonalJaggednessError(
+        f"SEASONAL JAGGEDNESS: {len(flagged)} {freq_word} series have a "
+        f"strong, regular every-period swing that renders as an unreadable "
+        f"sawtooth: {offenders_desc}. This is an easy fix -- pick one:\n"
+        f"  (a) Seasonally adjust the series (remove the recurring "
+        f"{freq_word} pattern) before charting.\n"
+        f"  (b) Normalise: plot year-over-year % change, which removes the "
+        f"seasonal cycle, instead of the raw level.\n"
+        f"  (c) Smooth: plot a trailing rolling mean / rolling sum over one "
+        f"full period ({full_period_pts} points) -- e.g. a 4-quarter "
+        f"rolling sum for quarterly revenue.\n"
+        f"  (d) Check for a data-frequency or alignment issue (mixed "
+        f"reporting calendars, duplicated periods) manufacturing the "
+        f"sawtooth.",
+        offending_series=offending_names,
+        period=period,
+        mapping=mapping,
+    )
+
+
+def _validate_series_alignment(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> None:
+    """Reject a multi-series stacked ``area`` whose series sit on disjoint x.
+
+    When each series reports on its own calendar, most x-positions carry
+    only a subset of the series, so the stack collapses into white
+    triangular gaps. Coverage = mean(series-present-per-x) / n_series:
+    1.0 means every series is present at every x (clean stack); 1/n means
+    fully disjoint. Below ``_AREA_SERIES_COVERAGE_MIN`` the engine raises
+    ``SeriesMisalignmentError``. Area-only -- a multi_line with different
+    x per line is not visually broken the way a stack is.
+    """
+    if chart_type != "area":
+        return
+    color_field = _get_field(mapping, "color")
+    x_field = _get_field(mapping, "x")
+    if not (color_field and x_field):
+        return
+    if color_field not in df.columns or x_field not in df.columns:
+        return
+
+    series_names = list(df[color_field].dropna().unique())
+    n_series = len(series_names)
+    if n_series < 2:
+        return
+
+    pairs = df[[color_field, x_field]].dropna().drop_duplicates()
+    if pairs.empty:
+        return
+    per_x = pairs.groupby(x_field)[color_field].nunique()
+    if per_x.empty:
+        return
+    coverage = float(per_x.mean()) / n_series
+    if coverage >= _AREA_SERIES_COVERAGE_MIN:
+        return
+
+    raise SeriesMisalignmentError(
+        f"SERIES MISALIGNMENT: this stacked area has {n_series} series but on "
+        f"average only {coverage * 100:.0f}% of them report at each "
+        f"x-position (a clean stack needs ~100%). The series sit on "
+        f"different calendars, so the layers don't share x-values and the "
+        f"stack collapses into white triangular gaps. Resample every series "
+        f"onto a COMMON calendar before stacking -- easy fix, pick one:\n"
+        f"  (a) Reindex each series to a shared period grid (e.g. "
+        f"quarter-end) and forward-fill / interpolate to the last reported "
+        f"value.\n"
+        f"  (b) Aggregate to a common frequency (e.g. resample to "
+        f"quarter-end, or a rolling sum) so every series lands on the same "
+        f"x.\n"
+        f"  (c) If only the overlapping window matters, filter to the dates "
+        f"all series share before charting.",
+        coverage=coverage,
+        n_series=n_series,
+        mapping=mapping,
+    )
+
+
 def _group_scale_ok(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -2049,6 +2432,30 @@ _LABEL_ABBREVIATIONS: Dict[str, str] = {
 }
 
 
+def _dedup_axis_title(title: Optional[str]) -> Optional[str]:
+    """Collapse a delimiter-joined axis title made of repeated segments.
+
+    Vega-Lite's shared-axis title resolution can concatenate the same
+    title once per layer (e.g. a scatter base + one per-group trendline
+    layer each), producing ``"FX YoY vs USD (%), FX YoY vs USD (%), ..."``;
+    an upstream caller can also hand in a pre-joined title. Split on
+    ``", "``, drop duplicate segments preserving order, and rejoin. The
+    string is only changed when there is ACTUAL repetition -- a
+    legitimately comma-listed title with all-distinct segments
+    (``"Yields, Changes"``) is returned unchanged.
+    """
+    if not title or not isinstance(title, str) or ", " not in title:
+        return title
+    parts = [p.strip() for p in title.split(", ")]
+    unique: List[str] = []
+    for part in parts:
+        if part and part not in unique:
+            unique.append(part)
+    if len(unique) == len(parts):
+        return title
+    return ", ".join(unique)
+
+
 def _format_label(raw_label: str, mapping: Dict[str, Any], key: str) -> str:
     """Format a raw column name into a human-readable axis/legend label.
 
@@ -2057,6 +2464,9 @@ def _format_label(raw_label: str, mapping: Dict[str, Any], key: str) -> str:
       2. Otherwise, auto-format the raw column name:
          underscores -> spaces, title-case, preserve abbreviations,
          and append a guessed-units suffix when detectable.
+
+    Any duplicate-segment axis title (``"X, X, X"``) is collapsed to its
+    unique segment via ``_dedup_axis_title`` before returning.
 
     Args:
         raw_label: The raw column name (e.g. ``'Canada_YOY_growth'``).
@@ -2068,7 +2478,7 @@ def _format_label(raw_label: str, mapping: Dict[str, Any], key: str) -> str:
     """
     title_key = f"{key}_title"
     if title_key in mapping and mapping[title_key]:
-        return mapping[title_key]
+        return _dedup_axis_title(mapping[title_key])
 
     if not raw_label:
         return ""
@@ -2088,7 +2498,7 @@ def _format_label(raw_label: str, mapping: Dict[str, Any], key: str) -> str:
     if guessed_units and guessed_units not in formatted_label:
         formatted_label = f"{formatted_label} ({guessed_units})"
 
-    return formatted_label
+    return _dedup_axis_title(formatted_label)
 
 
 # ===========================================================================
@@ -7303,7 +7713,13 @@ def calculate_optimal_label_angle(
     effective_label_count = estimated_tick_count or min(len(labels), 10)
     space_per_label = chart_width / max(effective_label_count, 1)
 
-    needed_horizontal = max_label_len * 8 + 12
+    # Size the horizontal-fit test against the REAL rendered width at the skin
+    # font (was a hardcoded 8px/char that under-measured the 18px skin and let
+    # GOOGL/MSFT collide at 0deg). The honest metric rotates 12 short tickers
+    # to -45 when they would touch, while still leaving sparse axes horizontal.
+    needed_horizontal = (
+        max_label_len * _axis_label_px_per_char(_SKIN_AXIS_LABEL_FONT_PX) + 12
+    )
     if needed_horizontal <= space_per_label:
         return 0
     
@@ -7321,7 +7737,7 @@ def calculate_optimal_label_angle(
 # When even -45 would collide, the visible tick labels are thinned to an
 # evenly-spaced subset (the plotted line keeps every knot point; only the
 # label frequency drops).
-_PROFILE_LABEL_CHAR_PX = 8          # per-char width at the skin label font
+_PROFILE_LABEL_CHAR_PX = 11         # real per-char width at the 18px skin label font (was 8)
 _PROFILE_LABEL_PAD_PX = 12          # inter-label padding when horizontal
 _PROFILE_MIN_PITCH_45_PX = 22       # min horizontal pitch for non-overlapping -45 labels
 _PROFILE_MIN_HORIZONTAL_TICKS = 8   # keep horizontal while >= this many fit; else rotate to -45
@@ -9173,7 +9589,7 @@ def apply_beautification_to_spec(
                         y_title = None
                 if y_title:
                     enc["y"]["axis"]["title"] = wrap_label(
-                        str(y_title), words_per_line=3,
+                        _dedup_axis_title(str(y_title)), words_per_line=3,
                     )
 
     def walk(obj: Dict[str, Any], allow_title_fallback: bool) -> None:
@@ -11409,9 +11825,11 @@ def _build_multi_line_dual_axis(
         mapping, color_field, df, mark_config.get("opacity", 1.0),
     )
 
-    y_title_left = mapping.get("y_title") or _format_label(y_field, mapping, "y")
-    y_title_right = mapping.get("y_title_right") or _format_label(
-        y_field, mapping, "y"
+    y_title_left = _dedup_axis_title(
+        mapping.get("y_title") or _format_label(y_field, mapping, "y")
+    )
+    y_title_right = _dedup_axis_title(
+        mapping.get("y_title_right") or _format_label(y_field, mapping, "y")
     )
     _validate_y_axis_label(y_title_left, mapping)
     _validate_y_axis_label(y_title_right, mapping)
@@ -13166,9 +13584,7 @@ def _build_bar(
             orient="bottom",
             labelAngle=facet_label_angle,
             labelPadding=14,
-            labelFontSize=skin_config.get("axis_config", {}).get(
-                "labelFontSize", 15,
-            ),
+            labelFontSize=_GROUPED_BAR_CATEGORY_LABEL_FONT_SIZE,
         )
         
         # When labels are rotated, align them so they don't overlap the chart
@@ -13770,8 +14186,13 @@ def _heatmap_row_label_plan(
     gutter_px = chart_width * gutter_frac
     max_chars = max(1, int((gutter_px - 8) / px_per_char))
     max_chars = min(max_chars, _HEATMAP_ROW_LABEL_MAX_CHARS)
+    # labelLimit must be >= the REAL rendered width of every label the
+    # validator already accepted, or Vega-Lite ellipsis-truncates (the
+    # "GOOGL"->"GO..." bug). Take the longest estimated width with an 18%
+    # head-room margin (covers the uppercase under-measure), clamped to the
+    # reserved gutter so the ceiling can never push past the label region.
     longest_px = max(_axis_label_pixel_budget(s, label_font_size) for s in labels)
-    label_limit_px = max(16, int(longest_px))
+    label_limit_px = max(16, min(int(gutter_px), int(longest_px * 1.18)))
     return labels, max_chars, label_limit_px
 
 
@@ -20017,24 +20438,34 @@ def _summarize_chart_errors(
 
     Composites collect each cell's failure in ``chart_errors[i]``; the
     top-level ``error_message`` used to be a generic
-    ``"All sub-charts failed validation."`` that forced the caller to unpack
+    ``"N sub-chart(s) failed to build"`` that forced the caller to unpack
     ``chart_errors`` to learn the actual cause. This folds the per-cell
-    causes into the headline string (deduping identical errors so a 4-pack
-    that all hit the same gate reads as one line, not four).
+    causes into the headline string -- naming the offending panel (by
+    title) and its reason -- so a 4-pack whose AAPL/AMZN cells hit the
+    seasonality gate tells PRISM exactly which panels to fix and how.
+    Identical errors are deduped so a pack that all hit the same gate
+    reads as one line, not four. Handles both the all-failed case and the
+    partial case (some cells built, some failed).
     """
     if not chart_errors:
         return "All sub-charts failed validation."
-    header = f"All {n_charts} sub-charts failed validation"
+    n_failed = len(chart_errors)
+    scope = (
+        f"All {n_charts} sub-charts failed validation"
+        if n_failed >= n_charts
+        else f"{n_failed} of {n_charts} sub-charts failed validation"
+    )
     distinct = {(ce.get("error_message") or "").strip() for ce in chart_errors}
     if len(distinct) == 1:
         only = next(iter(distinct))
-        return f"{header} -- every cell raised the same error: {only}"
+        return f"{scope} -- every failing cell raised the same error: {only}"
     lines = [
-        f"  [{ce.get('chart_index')}] ({ce.get('chart_type')}) "
+        f"  [{ce.get('chart_index')}] "
+        f"{ce.get('title') or ce.get('chart_type')}: "
         f"{(ce.get('error_message') or '').strip()}"
         for ce in chart_errors
     ]
-    return header + ":\n" + "\n".join(lines)
+    return scope + ":\n" + "\n".join(lines)
 
 
 def make_composite(
@@ -20429,7 +20860,7 @@ def make_composite(
             f"PNG export unavailable: {png_error_message}"
             if png_save_failed
             else (
-                f"{len(chart_errors)} sub-chart(s) failed to build"
+                _summarize_chart_errors(chart_errors, n_charts)
                 if chart_errors
                 else None
             )

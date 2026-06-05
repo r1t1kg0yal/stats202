@@ -151,7 +151,7 @@ When user hands chart-type pick ("analysis", "what's interesting"), lean toward 
 
 **Anti-pattern:** single-series `multi_line` on "is anything happening?" -- narrates, doesn't argue.
 
-Engine rejects anonymous scatters with < 8 distinct (x, y) coords in visible region (reads as anecdote; error mentions "distinct dot(s)"). A NAMED cross-section -- categorical `mapping['color']` identifying each dot (G7 deficit-vs-yield, Mag-7) -- relaxes the floor to 4, so small labelled universes plot as scatters instead of forcing a bar conversion. For correlation with disparate magnitudes (gold + WTI) or disparate levels (FCI components 30/60/10), single-y-axis `multi_line` is REJECTED -- pick 2-pack or dual-axis (§9.1).
+Engine rejects scatters with < 10 distinct (x, y) coords in visible region (reads as anecdote; error directs you to find a different representation — bar, multi_line, table, or a wider data window). For correlation with disparate magnitudes (gold + WTI) or disparate levels (FCI components 30/60/10), single-y-axis `multi_line` is REJECTED -- pick 2-pack or dual-axis (§9.1).
 
 ---
 
@@ -240,6 +240,14 @@ Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact
 
 ### 6.3 Heatmap
 
+**Data shape:** pass long (`x`/`y`/`value` columns), wide (an id column + one value column per category, e.g. `[ticker, 2016…2023]` or `[date, AAPL, MSFT…]`), or a matrix indexed by the row category — the engine auto-reshapes to long; never melt/pivot by hand. Always name `x`, `y`, `value` as the *intended* fields; for wide/matrix input the field name not present as a column labels the melted axis (or values), and `value` may be omitted (defaults to `value`). Ambiguous shapes (≥2 id-like / non-numeric columns, or a matrix with a default RangeIndex) raise a `ValidationError` naming the exact reshape.
+
+```python
+mapping = {'x': 'year', 'y': 'ticker', 'value': 'op_margin'}   # wide df=[ticker, 2016…2023] (y is the id col)
+mapping = {'x': 'date', 'y': 'ticker', 'value': 'ret'}         # wide df=[date, AAPL, MSFT…]  (x is the id col)
+mapping = {'x': 'factor', 'y': 'factor', 'value': 'corr'}      # matrix: index + cols = factors (correlation)
+```
+
 `value` column renders as cell colour. Two recipes by dtype:
 
 | `value` dtype | Color scale | Cap |
@@ -250,6 +258,8 @@ Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact
 For categorical recipe (continuous binned to labels), bin via `pd.cut()` / `np.digitize()`. Override sort via `mapping['value_sort']=[...]`.
 
 **Column labels (x-axis):** engine picks horizontal or -45° and thins tick labels when the x grid is dense (intraday heatmaps use ~half the tick frequency of profile-line charts). Do not pass `labelAngle` / tick counts — shorten category strings or reduce x cardinality in the DataFrame if labels still crowd.
+
+**Temporal x columns (epoch ms, datetime64, ``2024-Q1`` strings, pandas Period):** the engine auto-materialises readable period labels (``Q2 25``, ``2024``, ``Oct 24``) before the nominal encode — pass raw timestamps or quarter tokens; do not pre-format to strings and do not set ``x_type='ordinal'`` to block coercion. True categoricals (region codes, probability buckets, ``T000`` session tags) are left untouched. Mixed temporal + categorical x raises ``ValidationError``.
 
 **Row labels (y-axis):** always horizontal (`labelAngle=0`); never rotated to -45; never ellipsis-truncated. Hard cap **15 chars** (same discipline as bar category labels). Row labels are validated on every heatmap -- overlong values raise `HeatmapRowLabelTooLongError`; shorten in the DataFrame.
 

@@ -4947,7 +4947,7 @@ def run_smoke_tests() -> int:
                 "color": {"field": "Series", "type": "nominal", "title": "Series"},
                 "tooltip": [
                     {"field": "date", "type": "temporal", "title": "Date",
-                     "format": "%b %d, %Y"},
+                     "format": "%b %y"},
                     {"field": "Value", "type": "quantitative", "format": ",.2f"},
                     {"field": "Series", "type": "nominal", "title": "Series"},
                 ],

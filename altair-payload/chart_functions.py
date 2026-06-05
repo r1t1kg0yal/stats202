@@ -754,21 +754,11 @@ _BAR_CATEGORY_LABEL_MAX_CHARS = 15
 # Minimum distinct (x, y) coordinates that fall inside the visible plot
 # region for a scatter to read as a relationship rather than an anecdote.
 # Enforced by ``_build_scatter`` before chart construction; sparse scatters
-# raise ``ValidationError`` so the caller expands the data window,
-# aggregates to denser distinct points, or picks a chart type that suits
-# sparse data instead of shipping a misleading chart. Inherited by
+# raise ``ValidationError`` directing the caller to pick a different
+# representation instead of shipping a misleading chart. Inherited by
 # ``_build_scatter_multi`` because it dispatches through ``_build_scatter``
 # on the full DataFrame (chart-level total, not per-color group).
-_MIN_SCATTER_VISIBLE_DOTS = 8
-
-# Relaxed scatter floor for NAMED cross-sections. When each dot carries a
-# categorical (non-gradient) ``color`` identity -- a legend names every point
-# (e.g. a G7 deficit-vs-yield scatter coloured by country) -- the chart reads
-# as a labelled cross-section, not an anonymous cloud, so the dot floor drops.
-# This unblocks the recurring 6-7-entity cross-asset universes (G6/G7, Mag-7)
-# that fall below the anonymous-scatter floor. Below this even a labelled
-# scatter is too sparse to read as a relationship.
-_MIN_SCATTER_LABELED_DOTS = 4
+_MIN_SCATTER_VISIBLE_DOTS = 10
 
 # Minimum fraction of the visible y-axis span that any single series in a
 # multi-series single-y-axis time-series chart (``multi_line`` /
@@ -1119,13 +1109,13 @@ def _intraday_label_expr(*, single_session: bool) -> str:
     if single_session:
         return (
             "(datum.index === 0) "
-            "? timeFormat(datum.value, '%b %d') "
+            "? timeFormat(datum.value, '%d %b') "
             ": timeFormat(datum.value, '%H:%M')"
         )
     return (
         "(hours(datum.value) === 0 && minutes(datum.value) === 0 "
         "&& seconds(datum.value) === 0) "
-        "? timeFormat(datum.value, '%b %d') "
+        "? timeFormat(datum.value, '%d %b') "
         ": timeFormat(datum.value, '%H:%M')"
     )
 
@@ -1255,6 +1245,201 @@ def _normalize_intraday_x_column(
         "[chart_functions] Normalized x_field=%r to intraday wall clock "
         "(display_tz=%r, chart_type=%s).",
         x_field, display_tz, chart_type,
+    )
+    return df
+
+
+# Regex for explicit quarter tokens: ``2024-Q1``, ``2024Q1``, ``Q1 2024``.
+_HEATMAP_QUARTER_RE = re.compile(
+    r"^(?:"
+    r"Q\s*(?P<q1>[1-4])\s*(?P<y1>\d{2,4})"
+    r"|(?P<y2>\d{4})\s*[-_]?\s*Q\s*(?P<q2>[1-4])"
+    r"|(?P<y3>\d{4})\s*[-_]?\s*(?P<q3>[1-4])"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
+    """Best-effort parse of one heatmap x value to a calendar timestamp."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    if isinstance(val, pd.Period):
+        return val.to_timestamp(how="end")
+    if isinstance(val, (bool, np.bool_)):
+        return None
+    if isinstance(val, (int, float, np.integer, np.floating)):
+        n = float(val)
+        if n > 1e11:
+            return pd.Timestamp(int(n), unit="ms")
+        if n > 1e8:
+            return pd.Timestamp(int(n), unit="s")
+        return None
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return None
+        if s.isdigit():
+            n = int(s)
+            if n > 1e11:
+                return pd.Timestamp(n, unit="ms")
+            if n > 1e8:
+                return pd.Timestamp(n, unit="s")
+        m = _HEATMAP_QUARTER_RE.match(s)
+        if m:
+            q = int(m.group("q1") or m.group("q2") or m.group("q3"))
+            y_raw = m.group("y1") or m.group("y2") or m.group("y3")
+            year = int(y_raw)
+            if year < 100:
+                year += 2000
+            month = q * 3
+            last_day = pd.Timestamp(year=year, month=month, day=1).days_in_month
+            return pd.Timestamp(year=year, month=month, day=last_day)
+        if re.fullmatch(r"\d{4}", s):
+            return pd.Timestamp(year=int(s), month=12, day=31)
+        if re.match(r"^\d{4}-\d{2}-\d{2}", s):
+            try:
+                ts = pd.to_datetime(s, errors="raise")
+                if pd.notna(ts):
+                    return ts
+            except (ValueError, TypeError):
+                return None
+        return None
+    if hasattr(val, "to_pydatetime"):
+        try:
+            ts = pd.Timestamp(val)
+            if pd.notna(ts):
+                return ts
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _infer_heatmap_period_frequency(timestamps: List[pd.Timestamp]) -> str:
+    """Infer A/Q/M/D label granularity from median calendar gap."""
+    if len(timestamps) < 2:
+        return "Q"
+    days = sorted(
+        abs((timestamps[i + 1] - timestamps[i]).days)
+        for i in range(len(timestamps) - 1)
+    )
+    median_days = days[len(days) // 2]
+    if median_days > 300:
+        return "A"
+    if median_days > 80:
+        return "Q"
+    if median_days > 20:
+        return "M"
+    return "D"
+
+
+def _heatmap_period_display_label(
+    ts: pd.Timestamp,
+    freq: str,
+    orig: Any = None,
+) -> str:
+    """Human-readable period label for a heatmap nominal x tick."""
+    if isinstance(orig, str) and re.fullmatch(r"\d{4}", orig.strip()):
+        return orig.strip()
+    if freq == "A":
+        return ts.strftime("%Y")
+    if freq == "Q":
+        quarter = (ts.month - 1) // 3 + 1
+        return f"Q{quarter} {ts.strftime('%y')}"
+    if freq == "M":
+        return ts.strftime("%b %y")
+    return ts.strftime("%d %b")
+
+
+def _normalize_heatmap_x_column(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+) -> pd.DataFrame:
+    """Coerce temporal heatmap x columns to readable period labels.
+
+    Heatmaps encode x as ``nominal`` (cell alignment), so raw epoch-ms
+    integers, ``datetime64`` values, and ISO strings all render as ugly
+    machine tokens unless the engine materialises display labels first.
+    Runs even when ``mapping['x_type'] == 'ordinal'`` -- that override
+    is for yield-curve-style categoricals, not for quarter-end epochs
+    PRISM passes from FactSet / Haver merges.
+
+    Skipped when the x column is clearly categorical (region codes,
+    probability buckets, etc.) -- fewer than 90% of distinct values
+    parse as timestamps.
+
+    Raises:
+        ValidationError: when some but not all x values parse as temporal
+            (mixed epoch + quarter strings, etc.).
+    """
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        return df
+
+    series = df[x_field]
+    if isinstance(series.dtype, pd.PeriodDtype):
+        uniques = list(series.dropna().unique())
+        ts_map = {v: _coerce_heatmap_x_value_to_timestamp(v) for v in uniques}
+    else:
+        uniques = list(series.dropna().unique())
+        ts_map = {v: _coerce_heatmap_x_value_to_timestamp(v) for v in uniques}
+
+    parsed = {k: v for k, v in ts_map.items() if v is not None}
+    failed = [k for k, v in ts_map.items() if v is None]
+
+    if not parsed:
+        return df
+    if len(parsed) < max(1, int(len(uniques) * 0.9)):
+        return df
+    if failed:
+        raise ValidationError(
+            f"Heatmap x column '{x_field}' mixes temporal and categorical "
+            f"values. Unparseable: {[str(v) for v in failed[:5]]}"
+            f"{'...' if len(failed) > 5 else ''}. "
+            f"Normalize to one period format before charting -- e.g. all "
+            f"quarter-end timestamps, all 'Q1 2024' strings, or all "
+            f"calendar-year labels -- then pass the cleaned column."
+        )
+
+    chronological = sorted(parsed.items(), key=lambda kv: kv[1])
+    freq = _infer_heatmap_period_frequency([ts for _, ts in chronological])
+    label_by_orig = {
+        orig: _heatmap_period_display_label(ts, freq, orig=orig)
+        for orig, ts in chronological
+    }
+
+    # Disambiguate rare label collisions (two distinct timestamps -> same text).
+    labels_in_order = [label_by_orig[orig] for orig, _ in chronological]
+    if len(set(labels_in_order)) < len(labels_in_order):
+        label_by_orig = {
+            orig: _heatmap_period_display_label(ts, "D")
+            for orig, ts in chronological
+        }
+
+    df = df.copy()
+    df[x_field] = df[x_field].map(label_by_orig)
+
+    if mapping.get("x_sort") is None:
+        mapping["x_sort"] = [label_by_orig[orig] for orig, _ in chronological]
+    else:
+        # Re-map an explicit x_sort through the same label table when the
+        # caller passed raw timestamps / epoch values.
+        remapped: List[Any] = []
+        for item in mapping["x_sort"]:
+            if item in label_by_orig:
+                remapped.append(label_by_orig[item])
+            else:
+                ts = _coerce_heatmap_x_value_to_timestamp(item)
+                if ts is not None:
+                    remapped.append(_heatmap_period_display_label(ts, freq, orig=item))
+                else:
+                    remapped.append(item)
+        mapping["x_sort"] = remapped
+
+    logger.info(
+        "[chart_functions] Normalized heatmap x_field=%r to %s period "
+        "labels (n=%d).",
+        x_field, freq, len(chronological),
     )
     return df
 
@@ -8242,7 +8427,7 @@ def determine_date_format(
     The function dispatches in three layers:
       1. **Intraday** (span < ~5 days with sub-daily granularity):
          24-hour ``%H:%M`` time labels with explicit minute / hour /
-         day tick steps. Date prefix (``%b %d``) is added whenever the
+         day tick steps. Date prefix (``%d %b``) is added whenever the
          data crosses midnight so adjacent ``00:00`` ticks remain
          unambiguous; full-day strides drop the time component
          entirely.
@@ -8264,6 +8449,35 @@ def determine_date_format(
     """
     cfg = _determine_date_format_raw(date_series, chart_width)
     return _ensure_min_temporal_ticks(cfg, date_series, chart_width)
+
+
+def _temporal_house_strftime(
+    date_series: pd.Series,
+    chart_width: int = 600,
+) -> str:
+    """House-style strftime for a datetime column (tooltips, tables, legends).
+
+    Never combines month, day, AND year on one label -- only ``%d %b``,
+    ``%b %y``, or ``%Y`` (intraday falls back to ``%H:%M``).
+    """
+    cfg = determine_date_format(date_series, chart_width)
+    if cfg.format:
+        return cfg.format
+    return "%H:%M"
+
+
+def _format_timestamp_house(
+    ts: Any,
+    date_series: Optional[pd.Series] = None,
+    chart_width: int = 600,
+) -> str:
+    """Format one timestamp using the house rules for ``date_series`` span."""
+    stamp = pd.Timestamp(ts)
+    if date_series is not None and date_series.notna().sum() >= 2:
+        fmt = _temporal_house_strftime(date_series, chart_width)
+    else:
+        fmt = "%d %b"
+    return stamp.strftime(fmt)
 
 
 def _determine_date_format_raw(
@@ -8315,7 +8529,7 @@ def _determine_date_format_raw(
                 or leftmost tick (single-session).
                 """
                 if stride_s >= 86400:
-                    return ("%b %d", None, "Apr 28")
+                    return ("%d %b", None, "06 Mar")
                 if stride_s < 60:
                     return (None, intraday_label_expr, sample_label)
                 return (None, intraday_label_expr, sample_label)
@@ -9819,6 +10033,9 @@ GS_CLEAN: Dict[str, Any] = {
     # supersede the OCR'd MD values which had several typos (28pt title,
     # 20pt subtitle, axis labels and titles transposed).
     "config": {
+        # Vega-Lite default is "%b %d, %Y" (month+day+year). House rule:
+        # never all three -- day+month or month+year only.
+        "timeFormat": "%b %y",
         "view": {"strokeWidth": 0},
         "axis": {
             "grid": False,
@@ -10863,7 +11080,12 @@ def _build_tooltip(
     if x_field and x_field in df.columns:
         if pd.api.types.is_datetime64_any_dtype(df[x_field]):
             tooltips.append(
-                alt.Tooltip(x_field, type="temporal", format="%b %d, %Y", title="Date")
+                alt.Tooltip(
+                    x_field,
+                    type="temporal",
+                    format=_temporal_house_strftime(df[x_field]),
+                    title="Date",
+                )
             )
         elif pd.api.types.is_numeric_dtype(df[x_field]):
             tooltips.append(
@@ -12167,8 +12389,9 @@ def _scatter_gradient_legend(
     lo = series.min()
     hi = series.max()
     if color_type == "temporal":
-        lo_label = pd.Timestamp(lo).strftime("%b %d, %Y").replace("'", "\\'")
-        hi_label = pd.Timestamp(hi).strftime("%b %d, %Y").replace("'", "\\'")
+        fmt = _temporal_house_strftime(series)
+        lo_label = pd.Timestamp(lo).strftime(fmt).replace("'", "\\'")
+        hi_label = pd.Timestamp(hi).strftime(fmt).replace("'", "\\'")
     else:
         lo_label = f"{float(lo):g}".replace("'", "\\'")
         hi_label = f"{float(hi):g}".replace("'", "\\'")
@@ -12599,42 +12822,14 @@ def _build_scatter(
         "[_build_scatter] visible distinct dots: %d (total valid pairs: %d)",
         visible_dot_count, len(valid_pairs),
     )
-    # A categorical (non-gradient) colour identity makes each dot a named
-    # entity (the legend labels them), so a sparse but labelled cross-section
-    # (G7, Mag-7) is legitimate and gets the relaxed floor; anonymous clouds
-    # keep the full floor.
-    is_named_cross_section = (
-        bool(color_field)
-        and color_field in df.columns
-        and not _scatter_color_is_gradient(df, color_field)
-    )
-    dot_floor = (
-        _MIN_SCATTER_LABELED_DOTS if is_named_cross_section
-        else _MIN_SCATTER_VISIBLE_DOTS
-    )
-    if not connect_path and visible_dot_count < dot_floor:
-        relax_hint = (
-            ""
-            if is_named_cross_section
-            else (
-                f" If this is a small NAMED cross-section (e.g. a handful of "
-                f"countries / names), add a categorical mapping['color'] so "
-                f"each dot is identified -- the floor then relaxes to "
-                f"{_MIN_SCATTER_LABELED_DOTS}."
-            )
-        )
+    if not connect_path and visible_dot_count < _MIN_SCATTER_VISIBLE_DOTS:
         raise ValidationError(
-            f"Scatter would render only {visible_dot_count} distinct dot(s) "
-            f"inside the visible plot area (need >= {dot_floor} to convey a "
-            f"relationship). "
-            f"Total valid (x, y) pairs: {len(valid_pairs)}; after deduping "
-            f"coincident points and clipping to the visible domain only "
-            f"{visible_dot_count} remain. A scatter this sparse reads as "
-            f"anecdote, not pattern. Either expand the data window, "
-            f"aggregate to denser distinct points, or pick a chart type "
-            f"that suits sparse data (e.g. `bar`, `multi_line`), or use "
-            f"mapping['connect']=True for a time-ordered phase path."
-            f"{relax_hint}"
+            f"Scatter would render only {visible_dot_count} distinct point(s) "
+            f"(need >= {_MIN_SCATTER_VISIBLE_DOTS}). "
+            f"A scatter this sparse cannot convey a relationship. "
+            f"Find a different way to represent this information — "
+            f"e.g. bar, multi_line, table, or expand the data window to "
+            f"at least {_MIN_SCATTER_VISIBLE_DOTS} distinct points."
         )
 
     # ---- titles ---------------------------------------------------------
@@ -15991,6 +16186,273 @@ def _auto_melt_for_multiline(
         raise
 
 
+# Placeholder axis-name aliases PRISM sometimes passes for a matrix heatmap
+# instead of a semantic name. They no longer gate the reshape (presence in
+# df.columns does), but when one is used as an axis name the engine blanks
+# that axis title -- the cell grid already labels both axes, so "Columns" /
+# "Index" would be noise.
+_HEATMAP_X_PLACEHOLDER_ALIASES = {"columns", "column", "cols", "col", "x"}
+_HEATMAP_Y_PLACEHOLDER_ALIASES = {"index", "row", "rows", "y"}
+
+
+def _auto_reshape_heatmap(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Reshape any heatmap-bound DataFrame into the long ``(x, y, value)``
+    form the renderer needs, inferring the melt from which mapping fields
+    already exist as columns.
+
+    PRISM passes the *intended* ``x`` / ``y`` / ``value`` names; the engine
+    performs the mechanical melt/pivot so PRISM never reshapes by hand. The
+    inference is deterministic -- exactly one reading or an error, never a
+    guess:
+
+      * Already long (``x``, ``y``, ``value`` all columns): no-op.
+      * Value column unnamed (``x`` + ``y`` columns, value missing): if a
+        single leftover column exists it becomes the value; 0 or 2+ leftover
+        columns is ambiguous and raises.
+      * Wide with an explicit id column (exactly one of ``x``/``y`` is a real
+        column, the other axis + value are not): melt ``id_vars=[<id>]``, the
+        leftover NUMERIC columns form the matrix body, the *missing* axis
+        name labels the melted-header column, the value name labels the
+        melted values.
+      * Pure matrix (neither ``x`` nor ``y`` is a column) with row keys in a
+        MEANINGFUL pandas index: reset_index then melt the same way. A
+        default ``RangeIndex`` has no row labels and raises.
+      * One axis missing but recoverable from a meaningful index
+        (``x``/``value`` or ``y``/``value`` present): reset_index supplies
+        the missing coordinate.
+
+    Anything without a single unambiguous reading raises ``ValidationError``
+    naming the ambiguity and the exact reshape to run -- the engine never
+    fabricates a coordinate or picks an arbitrary id column.
+    """
+    x_field = _get_field(mapping, "x")
+    y_field = _get_field(mapping, "y")
+    value_field = _get_field(mapping, "value") or _get_field(mapping, "z")
+
+    # Both axis names must be supplied for the engine to know what to call
+    # the melted columns. Missing axis keys fall through to _build_heatmap's
+    # existing "requires x/y/value" errors unchanged.
+    if not (x_field and y_field):
+        return df, mapping
+
+    cols = list(df.columns)
+    X = x_field in cols
+    Y = y_field in cols
+    V = bool(value_field) and value_field in cols
+
+    # ---- Row 1: already long --------------------------------------------
+    if X and Y and V:
+        return df, mapping
+
+    # ---- Row 2: both axes present, value column missing ------------------
+    if X and Y and not V:
+        leftover = [c for c in cols if c not in (x_field, y_field)]
+        if len(leftover) == 1:
+            new_mapping = dict(mapping)
+            new_value_name = value_field or str(leftover[0])
+            if value_field and value_field != leftover[0]:
+                df = df.rename(columns={leftover[0]: value_field})
+            new_mapping["value"] = new_value_name
+            new_mapping.pop("z", None)
+            return df, new_mapping
+        if not leftover:
+            raise ValidationError(
+                f"Heatmap is missing the value column "
+                f"{value_field or '(value)'!r}: {x_field!r} and {y_field!r} "
+                f"are the only columns and there is nothing to colour the "
+                f"cells by. Add a numeric value column."
+            )
+        raise ValidationError(
+            f"Heatmap value column is ambiguous: {x_field!r} and {y_field!r} "
+            f"are present but {len(leftover)} other columns "
+            f"({leftover[:6]}) could be the value. Name it explicitly via "
+            f"mapping['value'], or keep only the value column alongside "
+            f"{x_field!r}/{y_field!r}."
+        )
+
+    # ---- Rows 3 / 4: wide with an explicit id column --------------------
+    if (X and not Y and not V) or (not X and Y and not V):
+        id_field = x_field if X else y_field
+        header_axis_field = y_field if X else x_field
+        value_name = value_field or "value"
+        remaining = [c for c in cols if c != id_field]
+        numeric_cols = [
+            c for c in remaining if pd.api.types.is_numeric_dtype(df[c])
+        ]
+        non_numeric = [
+            c for c in remaining if not pd.api.types.is_numeric_dtype(df[c])
+        ]
+        if non_numeric:
+            raise ValidationError(
+                f"Heatmap data looks wide (one column per "
+                f"{header_axis_field!r} category) keyed by {id_field!r}, but "
+                f"these non-numeric columns can't be auto-melted: "
+                f"{non_numeric[:6]} -- the engine can't tell if they are "
+                f"extra row identifiers or data. Keep only {id_field!r} plus "
+                f"the numeric value columns, or pre-melt: "
+                f"df.melt(id_vars=[{id_field!r}, ...], "
+                f"var_name={header_axis_field!r}, value_name={value_name!r})."
+            )
+        if not numeric_cols:
+            raise ValidationError(
+                f"Heatmap mapping references {header_axis_field!r} and a "
+                f"value, but {id_field!r} is the only usable column and there "
+                f"are no numeric value columns to melt. Provide the matrix "
+                f"body (one numeric column per {header_axis_field!r} "
+                f"category)."
+            )
+        id_order = [str(v) for v in pd.unique(df[id_field])]
+        header_order = [str(c) for c in numeric_cols]
+        melted = df.melt(
+            id_vars=[id_field],
+            value_vars=numeric_cols,
+            var_name=header_axis_field,
+            value_name=value_name,
+        )
+        new_mapping = dict(mapping)
+        new_mapping["x"] = x_field
+        new_mapping["y"] = y_field
+        new_mapping["value"] = value_name
+        new_mapping.pop("z", None)
+        if X:
+            # id is the x axis; headers became the y categories.
+            new_mapping.setdefault("x_sort", id_order)
+            new_mapping.setdefault("y_sort", header_order)
+        else:
+            # id is the y axis; headers became the x categories.
+            new_mapping.setdefault("y_sort", id_order)
+            new_mapping.setdefault("x_sort", header_order)
+        _blank_heatmap_placeholder_titles(new_mapping, x_field, y_field)
+        logger.info(
+            "[make_chart] auto-reshaped wide heatmap (id=%r): %s -> %s",
+            id_field, df.shape, melted.shape,
+        )
+        return melted, new_mapping
+
+    # ---- Row 6: pure matrix (row keys in the index) ---------------------
+    if not X and not Y and not V:
+        if isinstance(df.index, pd.RangeIndex):
+            raise ValidationError(
+                f"Heatmap received a matrix-shaped DataFrame with no row "
+                f"labels (default RangeIndex) and no {x_field!r}/{y_field!r} "
+                f"columns. Set the row category as the index "
+                f"(df.set_index('<row_col>')) or pass long-format data with "
+                f"{x_field!r}, {y_field!r} and a value column."
+            )
+        value_name = value_field or "value"
+        row_keys = [str(v) for v in df.index]
+        reset = df.reset_index()
+        idx_col = reset.columns[0]
+        remaining = [c for c in reset.columns if c != idx_col]
+        numeric_cols = [
+            c for c in remaining if pd.api.types.is_numeric_dtype(reset[c])
+        ]
+        non_numeric = [
+            c for c in remaining if not pd.api.types.is_numeric_dtype(reset[c])
+        ]
+        if non_numeric:
+            raise ValidationError(
+                f"Heatmap matrix has non-numeric columns {non_numeric[:6]} "
+                f"alongside the value cells -- the engine can't tell which "
+                f"are data. Keep the index as the row category and only "
+                f"numeric value columns, or pass long-format "
+                f"{x_field!r}/{y_field!r}/value data."
+            )
+        if not numeric_cols:
+            raise ValidationError(
+                f"Heatmap matrix has no numeric value columns to colour the "
+                f"cells by. Provide a matrix of numeric values indexed by "
+                f"the {y_field!r} category."
+            )
+        header_order = [str(c) for c in numeric_cols]
+        melted = reset.melt(
+            id_vars=[idx_col],
+            value_vars=numeric_cols,
+            var_name=x_field,
+            value_name=value_name,
+        )
+        melted = melted.rename(columns={idx_col: y_field})
+        new_mapping = dict(mapping)
+        new_mapping["x"] = x_field
+        new_mapping["y"] = y_field
+        new_mapping["value"] = value_name
+        new_mapping.pop("z", None)
+        new_mapping.setdefault("x_sort", header_order)
+        new_mapping.setdefault("y_sort", row_keys)
+        _blank_heatmap_placeholder_titles(new_mapping, x_field, y_field)
+        logger.info(
+            "[make_chart] auto-reshaped matrix heatmap: %s -> %s",
+            df.shape, melted.shape,
+        )
+        return melted, new_mapping
+
+    # ---- Row 5: value present, no coordinates ---------------------------
+    if not X and not Y and V:
+        raise ValidationError(
+            f"Heatmap needs both an x and a y coordinate, but neither "
+            f"{x_field!r} nor {y_field!r} exists as a column. Provide "
+            f"long-format data with {x_field!r}, {y_field!r} and "
+            f"{value_field!r}, or a matrix indexed by the row category."
+        )
+
+    # ---- Rows 7 / 8: one axis missing, recover it from the index -------
+    # (X and not Y and V) -> y from index; (not X and Y and V) -> x from index.
+    missing_axis_field = y_field if (X and not Y and V) else x_field
+    if isinstance(df.index, pd.RangeIndex):
+        raise ValidationError(
+            f"Heatmap is missing the {('y' if X else 'x')} coordinate "
+            f"{missing_axis_field!r}: the value column and the other axis "
+            f"exist, but there is no {missing_axis_field!r} column and the "
+            f"index is a default RangeIndex. Add a {missing_axis_field!r} "
+            f"column or set it as the DataFrame index."
+        )
+    reset = df.reset_index()
+    idx_col = reset.columns[0]
+    index_order = [str(v) for v in pd.unique(df.index)]
+    reset = reset.rename(columns={idx_col: missing_axis_field})
+    new_mapping = dict(mapping)
+    new_mapping["x"] = x_field
+    new_mapping["y"] = y_field
+    new_mapping.pop("z", None)
+    if X:
+        new_mapping.setdefault("y_sort", index_order)
+    else:
+        new_mapping.setdefault("x_sort", index_order)
+    _blank_heatmap_placeholder_titles(new_mapping, x_field, y_field)
+    logger.info(
+        "[make_chart] auto-reshaped heatmap (recovered %r from index): "
+        "%s -> %s",
+        missing_axis_field, df.shape, reset.shape,
+    )
+    return reset, new_mapping
+
+
+def _blank_heatmap_placeholder_titles(
+    mapping: Dict[str, Any],
+    x_field: Optional[str],
+    y_field: Optional[str],
+) -> None:
+    """Blank an axis title in-place when its name is a pure placeholder
+    alias (e.g. ``x='columns'``, ``y='index'``). The cell grid already
+    labels both axes, so a placeholder-derived title would be noise. A
+    user-supplied title always wins."""
+    if (
+        x_field
+        and x_field.lower() in _HEATMAP_X_PLACEHOLDER_ALIASES
+        and not mapping.get("x_title")
+    ):
+        mapping["x_title"] = " "
+    if (
+        y_field
+        and y_field.lower() in _HEATMAP_Y_PLACEHOLDER_ALIASES
+        and not mapping.get("y_title")
+    ):
+        mapping["y_title"] = " "
+
+
 def _auto_downsample_timeseries(
     df: pd.DataFrame,
     x_field: str,
@@ -17096,99 +17558,34 @@ def _make_chart(
     # _build_profile_line (the ordinal-x builder) which produces verbose
     # "2023-01-01" tick labels rotated -45 degrees instead of the smart
     # date-aware format ("Jan 23", "%Y") and horizontal labels.
-    df = _normalize_intraday_x_column(df, mapping, chart_type)
+    # Heatmaps skip intraday normalisation -- ``_normalize_heatmap_x_column``
+    # owns period-label materialisation on the nominal-x path.
+    if chart_type != "heatmap":
+        df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
 
-    # ---- Heatmap matrix auto-melt ---------------------------------------
-    # If both x and y reference non-existent columns and the DataFrame is a
-    # numeric matrix (correlation matrix, distance matrix, etc.), melt the
-    # matrix into long form. Detects two patterns:
-    #   - Both x and y are non-existent column names -> generic matrix.
-    #   - y is missing AND looks like an "index" alias.
-    #   - x is missing AND looks like a "columns" alias.
+    # ---- Heatmap auto-reshape -------------------------------------------
+    # PRISM passes the intended x / y / value names and whatever shape the
+    # data pull produced (long, wide-with-id-column, pure matrix). The
+    # engine infers and performs the melt/pivot so PRISM never reshapes by
+    # hand. Ambiguous shapes raise a corrective error (see
+    # _auto_reshape_heatmap) instead of guessing.
     if chart_type == "heatmap":
-        x_ref = _get_field(mapping, "x")
-        y_ref = _get_field(mapping, "y")
-        needs_melt = False
-        if x_ref and y_ref:
-            x_missing = x_ref not in df.columns
-            y_missing = y_ref not in df.columns
-            if x_missing and y_missing:
-                needs_melt = True
-            elif y_missing and y_ref.lower() in {"index", "row", "rows", "y"}:
-                needs_melt = True
-            elif x_missing and x_ref.lower() in {"columns", "column", "cols", "col", "x"}:
-                needs_melt = True
+        try:
+            df, mapping = _auto_reshape_heatmap(df, mapping)
+        except ValidationError as exc:
+            return ChartResult(
+                chart_type=chart_type, skin=skin, success=False,
+                error_message=str(exc), warnings=warnings,
+                audit_trail=audit_trail,
+            )
 
-        if needs_melt:
-            try:
-                # Capture the original index/column ordering BEFORE melting so
-                # the heatmap can render rows and cols in their input order
-                # (otherwise the heatmap's nominal axes default to alphabetical
-                # sort and a correlation matrix becomes asymmetric).
-                row_order = [str(v) for v in df.index]
-                col_order = [str(c) for c in df.columns]
-
-                melted = df.reset_index()
-                idx_col = melted.columns[0]
-                value_cols = [c for c in melted.columns if c != idx_col]
-                melted = melted.melt(
-                    id_vars=idx_col,
-                    value_vars=value_cols,
-                    var_name="_heatmap_x",
-                    value_name="_heatmap_value",
-                )
-                melted = melted.rename(columns={idx_col: "_heatmap_y"})
-                df = melted
-
-                new_mapping = dict(mapping)
-                new_mapping["x"] = "_heatmap_x"
-                new_mapping["y"] = "_heatmap_y"
-                # After auto-melt the value lives in _heatmap_value, regardless
-                # of what the user originally passed (since matrix mode
-                # implied the value field didn't exist as a column).
-                new_mapping["value"] = "_heatmap_value"
-                new_mapping.pop("z", None)
-                if "x_sort" not in new_mapping:
-                    new_mapping["x_sort"] = col_order
-                if "y_sort" not in new_mapping:
-                    new_mapping["y_sort"] = row_order
-                # Preserve original labels as axis titles when sensible.
-                # Treat missing OR empty-string user titles as "default
-                # me" so callers don't accidentally stamp the
-                # ``_heatmap_x`` / ``_heatmap_y`` placeholder names onto
-                # the axes.
-                if not new_mapping.get("x_title") and x_ref and x_ref.lower() not in {
-                    "columns", "column", "cols", "col", "x",
-                }:
-                    new_mapping["x_title"] = x_ref
-                if not new_mapping.get("y_title") and y_ref and y_ref.lower() not in {
-                    "index", "row", "rows", "y",
-                }:
-                    new_mapping["y_title"] = y_ref
-                # If x or y was a placeholder ("columns"/"index"), force
-                # an empty title rather than the placeholder name. This
-                # matches the matrix-style heatmap convention where
-                # axis labels are redundant with the cell labels.
-                if x_ref and x_ref.lower() in {
-                    "columns", "column", "cols", "col", "x",
-                }:
-                    new_mapping["x_title"] = " "
-                if y_ref and y_ref.lower() in {
-                    "index", "row", "rows", "y",
-                }:
-                    new_mapping["y_title"] = " "
-                mapping = new_mapping
-                logger.info(
-                    "[make_chart] auto-melted matrix DataFrame for heatmap: %s",
-                    df.shape,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[make_chart] heatmap auto-melt failed: %s. "
-                    "Proceeding with original data.",
-                    exc,
-                )
+    # ---- Heatmap period-x normalization ---------------------------------
+    # Nominal x encoding cannot format dates; materialise Q/year labels
+    # here so epoch-ms / datetime64 / quarter strings never reach Vega as
+    # raw machine tokens. Runs even when x_type='ordinal'.
+    if chart_type == "heatmap":
+        df = _normalize_heatmap_x_column(df, mapping)
 
     # ---- Sanitize column names (Vega-Lite safety) -----------------------
     df, mapping = _sanitize_column_names(df, mapping)
@@ -22577,7 +22974,9 @@ def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, pd.Timestamp):
-        return value.strftime("%Y-%m-%d")
+        if hint and "%" in hint:
+            return value.strftime(hint)
+        return value.strftime("%d %b")
     if not isinstance(value, (int, float)):
         return str(value)
     v = float(value)
@@ -23695,6 +24094,9 @@ def make_table(
     df = df.reset_index(drop=True)
 
     column_formats = dict(column_formats or {})
+    for col in df.columns:
+        if col not in column_formats and pd.api.types.is_datetime64_any_dtype(df[col]):
+            column_formats[col] = _temporal_house_strftime(df[col])
     column_aligns = dict(column_aligns or {})
     rag_thresholds = dict(rag_thresholds or {})
     highlight_columns = list(highlight_columns or [])
