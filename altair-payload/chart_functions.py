@@ -588,6 +588,37 @@ class HeatmapRowLabelTooLongError(ValidationError):
         }
 
 
+class HeatmapColumnLabelTooLongError(ValidationError):
+    """Raised when heatmap column (x) labels would ellipsis-truncate.
+
+    Heatmap x-axis labels may render at 0 deg or -45 deg (never 90 deg).
+    Vega-Lite ``labelLimit`` ellipsis is forbidden: when any visible tick
+    label exceeds the per-column pixel budget at the planned angle (or the
+    15-char cap), the engine fails up-front so PRISM shortens category
+    strings in the DataFrame before ``make_chart()`` / ``make_*pack_*()``.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        offending_labels: Optional[List[str]] = None,
+        x_field: Optional[str] = None,
+        mapping: Optional[Dict[str, Any]] = None,
+        max_chars: Optional[int] = None,
+        chart_width: Optional[int] = None,
+        label_angle: Optional[int] = None,
+    ) -> None:
+        Exception.__init__(self, message)
+        self.context = {
+            "offending_labels": list(offending_labels or []),
+            "x_field": x_field,
+            "mapping": mapping,
+            "max_chars": max_chars,
+            "chart_width": chart_width,
+            "label_angle": label_angle,
+        }
+
+
 class BarCategoryLabelTooLongError(ValidationError):
     """Raised when bar chart category labels exceed the configured cap.
 
@@ -700,7 +731,8 @@ class SeriesOscillationError(ValidationError):
 # ---------------------------------------------------------------------------
 # Vega-Lite ``labelLimit`` enforces hard ellipsis truncation on axis and
 # legend text. The engine NEVER relies on that silent path: every nominal
-# label surface (bar categories, heatmap rows, legend series names, LVL
+# label surface (bar categories, heatmap columns + rows, legend series
+# names, LVL
 # names, y-axis titles) is validated up-front and raises a typed
 # ``*TooLongError`` so PRISM shortens labels in the DataFrame. After
 # validation passes, per-axis ``labelLimit`` is set to the exact validated
@@ -740,6 +772,9 @@ _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX = 4
 # and bar charts. Gutter math may allow more in wide canvases; this cap
 # still wins so labels stay efficient.
 _HEATMAP_ROW_LABEL_MAX_CHARS = 15
+# Absolute char ceiling for heatmap column (x) labels -- aligned with
+# row / bar caps so PRISM has one abbreviation discipline.
+_HEATMAP_COLUMN_LABEL_MAX_CHARS = 15
 
 # Hard cap on per-series name length for ``LastValueLabel`` on
 # ``multi_line`` / ``timeseries``. End-of-line labels paint INSIDE the
@@ -1294,6 +1329,79 @@ _HEATMAP_QUARTER_RE = re.compile(
 )
 
 
+def _parse_heatmap_string_to_timestamp(
+    s: str,
+    *,
+    default_year: Optional[int] = None,
+) -> Optional[pd.Timestamp]:
+    """Parse PRISM-style pre-formatted heatmap x labels (MM/YY, Dec-24, Mar 27)."""
+    text = s.strip()
+    if not text:
+        return None
+    m = re.match(r"^(\d{2})/(\d{2})$", text)
+    if m:
+        mo, yy = int(m.group(1)), int(m.group(2))
+        year = 2000 + yy if yy < 100 else yy
+        return pd.Timestamp(year=year, month=mo, day=1)
+    m = re.match(r"^(\w{3})['-](\d{2})$", text)
+    if m:
+        try:
+            year = 2000 + int(m.group(2))
+            return pd.to_datetime(f"{m.group(1)} {year}", format="%b %Y")
+        except (ValueError, TypeError):
+            pass
+    m = re.match(r"^(\w{3})\s+(\d{1,2})$", text)
+    if m and default_year is not None:
+        try:
+            return pd.to_datetime(
+                f"{m.group(1)} {m.group(2)} {default_year}", format="%b %d %Y",
+            )
+        except (ValueError, TypeError):
+            pass
+    return None
+
+
+def _parse_month_day_batch(uniques: List[Any]) -> Dict[Any, pd.Timestamp]:
+    """Parse ``Mar 27``-style labels using the year that keeps df order chronological."""
+    vals = [str(v) for v in uniques]
+    if not vals or not all(re.match(r"^(\w{3})\s+(\d{1,2})$", v) for v in vals):
+        return {}
+    for year in range(2020, 2031):
+        attempt: Dict[Any, pd.Timestamp] = {}
+        ok = True
+        for orig in uniques:
+            ts = _parse_heatmap_string_to_timestamp(str(orig), default_year=year)
+            if ts is None:
+                ok = False
+                break
+            attempt[orig] = ts
+        if not ok:
+            continue
+        ordered_ts = [attempt[v] for v in uniques]
+        if all(
+            ordered_ts[i] <= ordered_ts[i + 1]
+            for i in range(len(ordered_ts) - 1)
+        ):
+            return attempt
+    return {}
+
+
+def _coerce_heatmap_time_only_batch(
+    ordered_uniques: List[Any],
+) -> Dict[Any, pd.Timestamp]:
+    """Map HH:MM-only x labels to a synthetic intraday timeline in display order."""
+    if not ordered_uniques:
+        return {}
+    if not all(re.match(r"^\d{2}:\d{2}$", str(v)) for v in ordered_uniques):
+        return {}
+    first_h, first_m = map(int, str(ordered_uniques[0]).split(":"))
+    base = pd.Timestamp(year=2026, month=1, day=1, hour=first_h, minute=first_m)
+    return {
+        v: base + pd.Timedelta(minutes=15 * i)
+        for i, v in enumerate(ordered_uniques)
+    }
+
+
 def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
     """Best-effort parse of one heatmap x value to a calendar timestamp."""
     if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -1307,7 +1415,7 @@ def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
         if n > 1e11:
             return pd.Timestamp(int(n), unit="ms")
         if n > 1e8:
-            return pd.Timestamp(int(n), unit="s")
+            return pd.Timestamp(n, unit="s")
         return None
     if isinstance(val, str):
         s = val.strip()
@@ -1338,6 +1446,9 @@ def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
                     return ts
             except (ValueError, TypeError):
                 return None
+        parsed = _parse_heatmap_string_to_timestamp(s)
+        if parsed is not None:
+            return parsed
         return None
     if hasattr(val, "to_pydatetime"):
         try:
@@ -1523,13 +1634,16 @@ def _heatmap_calendar_anchor_indices(
 
 
 def _evenly_spaced_indices(n: int, k: int) -> List[int]:
-    """Pick ``k`` evenly-spaced indices from ``0 .. n-1`` (first + last kept)."""
+    """Pick ``k`` evenly-spaced indices from ``0 .. n-1`` (first + last kept).
+
+    Uses integer floor spacing so rounding never skips interior anchors
+    (e.g. Q1 21 between Q1 20 and Q1 22 on dense quarter grids).
+    """
     if k >= n:
         return list(range(n))
     if k <= 1:
         return [0]
-    step = (n - 1) / (k - 1)
-    return sorted({int(round(i * step)) for i in range(k)})
+    return sorted({(i * (n - 1)) // (k - 1) for i in range(k)})
 
 
 def _heatmap_calendar_tick_subset(ordered_vals: List[Any], k: int) -> List[Any]:
@@ -1559,12 +1673,34 @@ def _heatmap_calendar_tick_subset(ordered_vals: List[Any], k: int) -> List[Any]:
     cadence = _infer_heatmap_period_frequency(parsed_ts)
     anchors = _heatmap_calendar_anchor_indices(ts_list, cadence)
 
+    # Short monthly/daily grids: calendar anchors (month-starts only)
+    # leave huge gaps — use even index spacing (pitch-capped by axis plan).
+    if cadence in ("M", "D") and n <= 24:
+        return _evenly_spaced_subset(ordered_vals, k)
+    # Intraday short grids: midnight-only anchors are too sparse.
+    min_useful_anchors = max(3, k // 2)
+    if cadence == "T" and n <= 24 and len(anchors) < min_useful_anchors:
+        return _evenly_spaced_subset(ordered_vals, k)
+
     if len(anchors) <= k:
-        # Prefer calendar anchors only — do not pad with index-based fill-ins
-        # that land at odd times (e.g. 01:30 beside midnight) and collide.
         pick_idx = anchors
     else:
-        pick_idx = [anchors[i] for i in _evenly_spaced_indices(len(anchors), k)]
+        # Forced terminal anchors (last column) are deprioritized when
+        # periodic calendar anchors already fill the tick budget — avoids
+        # dropping a year marker (e.g. Q1 21) to make room for Q4 25.
+        terminal_idx = n - 1
+        if cadence != "T" and terminal_idx in anchors:
+            core = [a for a in anchors if a != terminal_idx]
+            if len(core) <= k:
+                pick_idx = core
+            else:
+                pick_idx = [
+                    core[i] for i in _evenly_spaced_indices(len(core), k)
+                ]
+        else:
+            pick_idx = [
+                anchors[i] for i in _evenly_spaced_indices(len(anchors), k)
+            ]
 
     return [ordered_vals[i] for i in sorted(pick_idx)]
 
@@ -1595,19 +1731,39 @@ def _normalize_heatmap_x_column(
         return df
 
     series = df[x_field]
-    if isinstance(series.dtype, pd.PeriodDtype):
-        uniques = list(series.dropna().unique())
-        ts_map = {v: _coerce_heatmap_x_value_to_timestamp(v) for v in uniques}
-    else:
-        uniques = list(series.dropna().unique())
-        ts_map = {v: _coerce_heatmap_x_value_to_timestamp(v) for v in uniques}
-
+    uniques = list(series.dropna().unique())
+    ts_map = {v: _coerce_heatmap_x_value_to_timestamp(v) for v in uniques}
     parsed = {k: v for k, v in ts_map.items() if v is not None}
+
+    threshold = max(1, int(len(uniques) * 0.9))
+    if len(parsed) < threshold:
+        time_batch = _coerce_heatmap_time_only_batch(uniques)
+        if len(time_batch) >= threshold:
+            ts_map = time_batch
+            parsed = time_batch
+    if len(parsed) < threshold:
+        month_day_batch = _parse_month_day_batch(uniques)
+        if len(month_day_batch) >= threshold:
+            ts_map = month_day_batch
+            parsed = month_day_batch
+    if len(parsed) < threshold:
+        default_year: Optional[int] = None
+        if parsed:
+            default_year = int(pd.Series(list(parsed.values())).dt.year.median())
+        for v in uniques:
+            if ts_map.get(v) is not None:
+                continue
+            if isinstance(v, str):
+                ts = _parse_heatmap_string_to_timestamp(v, default_year=default_year)
+                if ts is not None:
+                    ts_map[v] = ts
+        parsed = {k: v for k, v in ts_map.items() if v is not None}
+
     failed = [k for k, v in ts_map.items() if v is None]
 
     if not parsed:
         return df
-    if len(parsed) < max(1, int(len(uniques) * 0.9)):
+    if len(parsed) < threshold:
         return df
     if failed:
         raise ValidationError(
@@ -8293,9 +8449,7 @@ def _evenly_spaced_subset(values: List[Any], k: int) -> List[Any]:
         return list(values)
     if k <= 1:
         return [values[0]]
-    step = (n - 1) / (k - 1)
-    idx = sorted({int(round(i * step)) for i in range(k)})
-    return [values[i] for i in idx if 0 <= i < n]
+    return [values[i] for i in _evenly_spaced_indices(n, k)]
 
 
 def _resolve_profile_x_order(
@@ -14863,6 +15017,74 @@ def _validate_heatmap_row_labels(
     )
 
 
+def _heatmap_column_label_span_px(
+    label: str,
+    label_font_size: int,
+    label_angle: int,
+) -> float:
+    """Horizontal span a heatmap column tick label needs at ``label_angle``."""
+    text_px = len(str(label)) * _axis_label_px_per_char(label_font_size)
+    if label_angle == 0:
+        return text_px + _PROFILE_LABEL_PAD_PX
+    label_h = label_font_size + 4
+    rad = math.radians(abs(label_angle))
+    return text_px * math.cos(rad) + label_h * math.sin(rad)
+
+
+def _heatmap_min_column_index_gap(
+    ordered_vals: List[Any],
+    n_cols: int,
+    chart_width: int,
+    label_font_size: int,
+    label_angle: int,
+) -> int:
+    """Minimum column-index gap so band-centre pitch clears label spans."""
+    if n_cols <= 1:
+        return 1
+    col_pitch = chart_width / n_cols
+    max_span = max(
+        _heatmap_column_label_span_px(str(v), label_font_size, label_angle)
+        for v in ordered_vals
+    )
+    return max(1, math.ceil(max_span / col_pitch))
+
+
+def _heatmap_max_ticks_for_column_pitch(
+    n_cols: int,
+    min_index_gap: int,
+) -> int:
+    """How many ticks fit when adjacent labels must be ``min_index_gap`` cols apart."""
+    if min_index_gap <= 1:
+        return n_cols
+    return max(1, math.ceil(n_cols / min_index_gap))
+
+
+def _heatmap_filter_tick_indices(indices: List[int], min_gap: int) -> List[int]:
+    """Drop tick indices closer than ``min_gap`` columns (first wins)."""
+    if min_gap <= 1:
+        return sorted(indices)
+    out: List[int] = []
+    for i in sorted(indices):
+        if not out or i - out[-1] >= min_gap:
+            out.append(i)
+    return out
+
+
+def _heatmap_apply_column_pitch_cap(
+    ordered_vals: List[Any],
+    ticks: Optional[List[Any]],
+    *,
+    min_index_gap: int,
+) -> Optional[List[Any]]:
+    """Enforce minimum column-index spacing on a tick subset."""
+    if ticks is None or min_index_gap <= 1:
+        return ticks
+    idx_by_val = {v: i for i, v in enumerate(ordered_vals)}
+    indices = [idx_by_val[v] for v in ticks if v in idx_by_val]
+    filtered = _heatmap_filter_tick_indices(indices, min_index_gap)
+    return [ordered_vals[i] for i in filtered]
+
+
 def _heatmap_x_axis_plan(
     ordered_vals: List[Any],
     chart_width: int,
@@ -14873,7 +15095,8 @@ def _heatmap_x_axis_plan(
     Vertical (90 deg) labels are forbidden on heatmaps. Uses the skin's
     real axis-label font size for pitch math (post-normalization labels),
     and calendar-aware thinning (Q1 anchors, month starts, midnights) when
-    tick labels parse as temporal. Every cell still renders.
+    tick labels parse as temporal. Band-scale column pitch caps tick count
+    so adjacent column labels never collide. Every cell still renders.
     """
     vals = [str(v) for v in ordered_vals]
     n = len(vals)
@@ -14887,16 +15110,104 @@ def _heatmap_x_axis_plan(
     horiz_capacity = max(1, int(chart_width // needed_h))
     diag_capacity = max(1, int(chart_width // _HEATMAP_MIN_PITCH_45_PX))
 
-    def _thin(k: int) -> List[Any]:
-        return _heatmap_calendar_tick_subset(ordered_vals, k)
+    gap_h = _heatmap_min_column_index_gap(
+        ordered_vals, n, chart_width, font_px, 0,
+    )
+    gap_d = _heatmap_min_column_index_gap(
+        ordered_vals, n, chart_width, font_px, -45,
+    )
+    horiz_capacity = min(
+        horiz_capacity, _heatmap_max_ticks_for_column_pitch(n, gap_h),
+    )
+    diag_capacity = min(
+        diag_capacity, _heatmap_max_ticks_for_column_pitch(n, gap_d),
+    )
 
-    if horiz_capacity >= n:
+    def _thin(k: int, min_gap: int) -> List[Any]:
+        subset = _heatmap_calendar_tick_subset(ordered_vals, k)
+        return _heatmap_apply_column_pitch_cap(
+            ordered_vals, subset, min_index_gap=min_gap,
+        ) or subset
+
+    if gap_h <= 1 and horiz_capacity >= n:
         return 0, None
     if horiz_capacity >= _PROFILE_MIN_HORIZONTAL_TICKS:
-        return 0, _thin(horiz_capacity)
-    if diag_capacity >= n:
+        return 0, _thin(horiz_capacity, gap_h)
+    if gap_d <= 1 and diag_capacity >= n:
         return -45, None
-    return -45, _thin(diag_capacity)
+    return -45, _thin(diag_capacity, gap_d)
+
+
+def _heatmap_column_label_plan(
+    ordered_vals: List[Any],
+    *,
+    label_font_size: int,
+    tick_values: Optional[List[Any]],
+) -> Tuple[List[str], List[str], int]:
+    """Return (all_labels, visible_labels, label_limit_px)."""
+    all_labels = [str(v) for v in ordered_vals]
+    if not all_labels:
+        return [], [], 16
+    visible = (
+        [str(v) for v in tick_values]
+        if tick_values is not None
+        else all_labels
+    )
+    budget_labels = visible or all_labels
+    longest_px = max(
+        _axis_label_pixel_budget(s, label_font_size) for s in budget_labels
+    )
+    label_limit_px = max(16, int(longest_px * 1.18))
+    return all_labels, visible, label_limit_px
+
+
+def _validate_heatmap_column_labels(
+    ordered_vals: List[Any],
+    x_field: Optional[str],
+    *,
+    chart_width: int,
+    label_font_size: int,
+    label_angle: int,
+    tick_values: Optional[List[Any]],
+    mapping: Optional[Dict[str, Any]] = None,
+    composite_cell: bool = False,
+) -> int:
+    """Fail fast when column labels exceed the char cap; return ``labelLimit`` px."""
+    all_labels, _, label_limit_px = _heatmap_column_label_plan(
+        ordered_vals,
+        label_font_size=label_font_size,
+        tick_values=tick_values,
+    )
+    if not all_labels:
+        return label_limit_px
+
+    offenders = sorted(
+        {label for label in all_labels if len(label) > _HEATMAP_COLUMN_LABEL_MAX_CHARS},
+        key=lambda s: -len(s),
+    )
+    if not offenders:
+        return label_limit_px
+
+    sample = offenders[0]
+    n_cols = len(all_labels)
+    ctx = "make_*pack_*()" if composite_cell else "make_chart()"
+    abbrev_hint = _suggest_bar_label_abbreviations(sample)
+    raise HeatmapColumnLabelTooLongError(
+        f"Heatmap column labels cannot be truncated, but "
+        f"{x_field!r} value {sample!r} ({len(sample)} chars) exceeds the "
+        f"{_HEATMAP_COLUMN_LABEL_MAX_CHARS}-character cap on a "
+        f"{chart_width}px-wide canvas at {label_angle} deg. "
+        f"Shorten column labels in the DataFrame before {ctx}. "
+        f"Try abbreviating {sample!r} -> {abbrev_hint}. "
+        f"Offending: {offenders[:4]}"
+        f"{'...' if len(offenders) > 4 else ''}.",
+        offending_labels=offenders,
+        x_field=x_field,
+        mapping=mapping,
+        max_chars=_HEATMAP_COLUMN_LABEL_MAX_CHARS,
+        chart_width=chart_width,
+        label_angle=label_angle,
+    )
 
 
 def _heatmap_row_label_angle() -> int:
@@ -15011,6 +15322,16 @@ def _build_heatmap(
     x_label_angle, x_tick_values = _heatmap_x_axis_plan(
         x_ordered, width, label_font_size=x_label_font_size,
     )
+    column_label_limit_px = _validate_heatmap_column_labels(
+        x_ordered,
+        x_field,
+        chart_width=width,
+        label_font_size=x_label_font_size,
+        label_angle=x_label_angle,
+        tick_values=x_tick_values,
+        mapping=mapping,
+        composite_cell=composite_cell,
+    )
     y_label_angle = _heatmap_row_label_angle()
 
     # Grid-suppressed axes prevent white-line artifacts on cells.
@@ -15021,6 +15342,8 @@ def _build_heatmap(
     x_axis_kwargs: Dict[str, Any] = dict(
         grid=False, domain=False, ticks=False, title=x_title,
         labelPadding=8, labelAngle=x_label_angle,
+        labelFontSize=x_label_font_size,
+        labelLimit=column_label_limit_px,
     )
     if x_tick_values is not None:
         x_axis_kwargs["values"] = x_tick_values
@@ -24913,6 +25236,7 @@ __all__ = [
     "LvlSeriesNameTooLongError",
     "LegendLabelTooLongError",
     "HeatmapRowLabelTooLongError",
+    "HeatmapColumnLabelTooLongError",
     "validate_plot_ready_df",
     # ---- Static spec utilities ------------------------------------
     "create_static_spec",

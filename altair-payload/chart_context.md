@@ -165,7 +165,7 @@ Engine rejects scatters with < 10 distinct (x, y) coords in visible region (read
 - **Clean before charting.** `pd.to_numeric(errors='coerce')` + `dropna(subset=['date', 'value'])`. Max 12 color cats, 16 facet cats. >5,000 rows auto-downsample to ~2,000 (warning).
 - **Never plot `np.zeros()` placeholder.** Skip the panel or add text annotation.
 - **Title/subtitle: 2-line cap, auto-wrap.** Engine reports exact char limit on rejection; explicit `\n` honored (counts toward cap). Wrapped titles grow the header band vertically only — font-size-aware pre-wrap keeps lines inside the plot width (never Vega-Lite ``title.limit``, which ellipsis-truncates).
-- **Never truncate axis / legend / LVL labels.** Vega-Lite ``labelLimit`` ellipsis is forbidden -- overlong nominal labels raise typed errors (`BarCategoryLabelTooLongError`, `HeatmapRowLabelTooLongError`, `LegendLabelTooLongError`, `LvlSeriesNameTooLongError`). Shorten strings in the DataFrame; the engine will not silently clip.
+- **Never truncate axis / legend / LVL labels.** Vega-Lite ``labelLimit`` ellipsis is forbidden -- overlong nominal labels raise typed errors (`BarCategoryLabelTooLongError`, `HeatmapColumnLabelTooLongError`, `HeatmapRowLabelTooLongError`, `LegendLabelTooLongError`, `LvlSeriesNameTooLongError`). Shorten strings in the DataFrame; the engine will not silently clip.
 
 ---
 
@@ -259,7 +259,7 @@ mapping = {'x': 'factor', 'y': 'factor', 'value': 'corr'}      # matrix: index +
 
 For categorical recipe (continuous binned to labels), bin via `pd.cut()` / `np.digitize()`. Override sort via `mapping['value_sort']=[...]`.
 
-**Column labels (x-axis):** engine picks horizontal or -45° and thins tick labels when the x grid is dense. Thinning is calendar-aware (Q1 anchors for quarterly grids, month starts for monthly, midnights / 6-hour marks for intraday) using the skin's real 18px label font for pitch math. Intraday heatmaps use ~half the tick frequency of profile-line charts. Do not pass `labelAngle` / tick counts — shorten category strings or reduce x cardinality in the DataFrame if labels still crowd.
+**Column labels (x-axis):** hard cap **15 chars** (same discipline as row labels / bar categories). Overlong values raise `HeatmapColumnLabelTooLongError`; shorten in the DataFrame. Engine picks horizontal or -45° and thins tick labels when the x grid is dense. Thinning is calendar-aware (Q1 anchors for quarterly grids, month starts for monthly, midnights / 6-hour marks for intraday) using the skin's real 18px label font for pitch math. Intraday heatmaps use ~half the tick frequency of profile-line charts. Do not pass `labelAngle` / tick counts.
 
 **Temporal x columns (epoch ms, datetime64, ``2024-Q1`` strings, pandas Period):** the engine auto-materialises readable period labels (``Q2 25``, ``2024``, ``Oct 24``, ``05-27 09:30`` for sub-daily) before the nominal encode — pass raw timestamps or quarter tokens; do not pre-format to strings and do not set ``x_type='ordinal'`` to block coercion. Sub-daily ``datetime64`` stays one label per bar (never collapsed to calendar days). True categoricals (region codes, probability buckets, ``T000`` session tags) are left untouched. Mixed temporal + categorical x, or epoch-ms blended with quarter/year strings, raises ``ValidationError``.
 
