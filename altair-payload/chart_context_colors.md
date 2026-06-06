@@ -215,6 +215,7 @@ Switch and re-render.
 | Anti-pattern | Why |
 |---|---|
 | Cracking the skin to set every colour by hand | Brand consistency lives at skin layer; `color_map` for one-off pinning, not bulk. Use `color_scheme` |
+| Per-ticker `color_map` (`TICKER_COLORS`, `{AAPL: '#...', NVDA: '#...'}`) on routine multi-line overlays | No ticker→hex registry exists; user did not ask for colours. Omit `color_map`/`color_scheme` — default `gs_primary` slots apply in data-first-seen order |
 | `color_scheme='rainbow'` on categorical | `rainbow` is heatmap/gradient. Vivid categorical → `bold` or `color_map=[...]` with explicit hexes |
 | `color_scheme='blue'` (singular) | Not valid. Sequential is `blues` (plural) |
 | `color_map` with rgb tuples or named CSS | Hex strings only (`'#DC143C'`); `'red'` / `(220, 20, 60)` rejected |

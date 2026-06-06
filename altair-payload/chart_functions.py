@@ -775,6 +775,11 @@ _HEATMAP_ROW_LABEL_MAX_CHARS = 15
 # Absolute char ceiling for heatmap column (x) labels -- aligned with
 # row / bar caps so PRISM has one abbreviation discipline.
 _HEATMAP_COLUMN_LABEL_MAX_CHARS = 15
+_HEATMAP_FULL_MONTH_LABEL_RE = re.compile(
+    r"^(January|February|March|April|May|June|July|August|"
+    r"September|October|November|December)\s+\d{4}$",
+    re.I,
+)
 
 # Hard cap on per-series name length for ``LastValueLabel`` on
 # ``multi_line`` / ``timeseries``. End-of-line labels paint INSIDE the
@@ -1350,6 +1355,20 @@ def _parse_heatmap_string_to_timestamp(
             return pd.to_datetime(f"{m.group(1)} {year}", format="%b %Y")
         except (ValueError, TypeError):
             pass
+    m = re.match(r"^(\w{3})\s+(\d{2})$", text)
+    if m:
+        try:
+            return pd.to_datetime(f"{m.group(1)} {m.group(2)}", format="%b %y")
+        except (ValueError, TypeError):
+            pass
+    m = re.match(r"^(\d{1,2})\s+(\w{3})\s+(\d{2})$", text)
+    if m:
+        try:
+            return pd.to_datetime(
+                f"{m.group(1)} {m.group(2)} {m.group(3)}", format="%d %b %y",
+            )
+        except (ValueError, TypeError):
+            pass
     m = re.match(r"^(\w{3})\s+(\d{1,2})$", text)
     if m and default_year is not None:
         try:
@@ -1402,6 +1421,23 @@ def _coerce_heatmap_time_only_batch(
     }
 
 
+def _coerce_calendar_year_timestamp(val: Any) -> Optional[pd.Timestamp]:
+    """Map a calendar-year scalar (``2008``, ``2008.0``) to year-end timestamp."""
+    if isinstance(val, (bool, np.bool_)):
+        return None
+    if isinstance(val, (int, np.integer)):
+        year = int(val)
+    elif isinstance(val, (float, np.floating)):
+        if pd.isna(val) or val != int(val):
+            return None
+        year = int(val)
+    else:
+        return None
+    if _HEATMAP_CALENDAR_YEAR_MIN <= year <= _HEATMAP_CALENDAR_YEAR_MAX:
+        return pd.Timestamp(year=year, month=12, day=31)
+    return None
+
+
 def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
     """Best-effort parse of one heatmap x value to a calendar timestamp."""
     if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -1416,6 +1452,9 @@ def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
             return pd.Timestamp(int(n), unit="ms")
         if n > 1e8:
             return pd.Timestamp(n, unit="s")
+        cal = _coerce_calendar_year_timestamp(val)
+        if cal is not None:
+            return cal
         return None
     if isinstance(val, str):
         s = val.strip()
@@ -1447,6 +1486,9 @@ def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
             except (ValueError, TypeError):
                 return None
         parsed = _parse_heatmap_string_to_timestamp(s)
+        if parsed is not None:
+            return parsed
+        parsed = _parse_heatmap_display_label_to_timestamp(s)
         if parsed is not None:
             return parsed
         return None
@@ -1515,6 +1557,8 @@ def _heatmap_x_value_kind(val: Any, ts: Optional[pd.Timestamp]) -> str:
     if isinstance(val, (int, float, np.integer, np.floating)):
         if float(val) > 1e8:
             return "epoch"
+        if _coerce_calendar_year_timestamp(val) is not None:
+            return "year_str"
         return "numeric"
     if isinstance(val, str):
         s = val.strip()
@@ -1538,6 +1582,9 @@ def _parse_heatmap_display_label_to_timestamp(
 ) -> Optional[pd.Timestamp]:
     """Reverse-parse materialised heatmap x labels for calendar thinning."""
     s = str(label).strip()
+    parsed = _parse_heatmap_string_to_timestamp(s, default_year=default_year)
+    if parsed is not None:
+        return parsed
     m = re.match(r"^Q([1-4])\s+(\d{2})$", s, re.I)
     if m:
         q, yy = int(m.group(1)), int(m.group(2))
@@ -1545,12 +1592,6 @@ def _parse_heatmap_display_label_to_timestamp(
         month = q * 3
         last_day = pd.Timestamp(year=year, month=month, day=1).days_in_month
         return pd.Timestamp(year=year, month=month, day=last_day)
-    m = re.match(r"^(\w{3})\s+(\d{2})$", s)
-    if m:
-        try:
-            return pd.to_datetime(f"{m.group(1)} {m.group(2)}", format="%b %y")
-        except (ValueError, TypeError):
-            pass
     m = re.match(r"^(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$", s)
     if m:
         mo, da, hh, mm = map(int, m.groups())
@@ -1673,9 +1714,11 @@ def _heatmap_calendar_tick_subset(ordered_vals: List[Any], k: int) -> List[Any]:
     cadence = _infer_heatmap_period_frequency(parsed_ts)
     anchors = _heatmap_calendar_anchor_indices(ts_list, cadence)
 
-    # Short monthly/daily grids: calendar anchors (month-starts only)
-    # leave huge gaps — use even index spacing (pitch-capped by axis plan).
-    if cadence in ("M", "D") and n <= 24:
+    # Daily grids: month-start anchors leave huge gaps on 30–60 col strips.
+    if cadence == "D":
+        return _evenly_spaced_subset(ordered_vals, k)
+    # Short monthly grids: same — even spacing beats January-only anchors.
+    if cadence == "M" and n <= 24:
         return _evenly_spaced_subset(ordered_vals, k)
     # Intraday short grids: midnight-only anchors are too sparse.
     min_useful_anchors = max(3, k // 2)
@@ -1755,6 +1798,10 @@ def _normalize_heatmap_x_column(
                 continue
             if isinstance(v, str):
                 ts = _parse_heatmap_string_to_timestamp(v, default_year=default_year)
+                if ts is None:
+                    ts = _parse_heatmap_display_label_to_timestamp(
+                        v, default_year=default_year,
+                    )
                 if ts is not None:
                     ts_map[v] = ts
         parsed = {k: v for k, v in ts_map.items() if v is not None}
@@ -1788,22 +1835,29 @@ def _normalize_heatmap_x_column(
         )
 
     freq = _infer_heatmap_period_frequency([ts for _, ts in chronological])
-    label_by_orig = {
-        orig: _heatmap_period_display_label(ts, freq, orig=orig)
-        for orig, ts in chronological
-    }
-
-    # Disambiguate rare label collisions (two distinct timestamps -> same text).
-    # Sub-daily (``T``) labels are already unique per bar; never collapse to days.
-    labels_in_order = [label_by_orig[orig] for orig, _ in chronological]
-    if freq != "T" and len(set(labels_in_order)) < len(labels_in_order):
+    preserve_string_labels = (
+        all(isinstance(orig, str) for orig, _ in chronological)
+        and "epoch" not in value_kinds
+    )
+    if preserve_string_labels:
+        label_by_orig = {orig: orig for orig, _ in chronological}
+    else:
         label_by_orig = {
-            orig: _heatmap_period_display_label(ts, "D")
+            orig: _heatmap_period_display_label(ts, freq, orig=orig)
             for orig, ts in chronological
         }
+        # Disambiguate rare label collisions (two distinct timestamps -> same text).
+        # Sub-daily (``T``) labels are already unique per bar; never collapse to days.
+        labels_in_order = [label_by_orig[orig] for orig, _ in chronological]
+        if freq != "T" and len(set(labels_in_order)) < len(labels_in_order):
+            label_by_orig = {
+                orig: _heatmap_period_display_label(ts, "D")
+                for orig, ts in chronological
+            }
 
     df = df.copy()
-    df[x_field] = df[x_field].map(label_by_orig)
+    if not preserve_string_labels:
+        df[x_field] = df[x_field].map(label_by_orig)
 
     if mapping.get("x_sort") is None:
         mapping["x_sort"] = [label_by_orig[orig] for orig, _ in chronological]
@@ -2698,9 +2752,11 @@ def _validate_seasonal_jaggedness(
     Scope: ``multi_line`` / ``timeseries`` / ``line`` / ``area``. Evaluated
     PER SERIES (including a single-series panel, e.g. one cell of a
     ``make_4pack_grid``). A series trips only when it clears ALL THREE
-    calibrated thresholds -- regularity (``F_S``) AND both amplitude views
-    (swing vs level AND swing vs range) -- so smooth-but-regular series and
-    near-zero-level rate series do not false-trigger. Raises
+    calibrated thresholds -- regularity (``F_S``) AND at least one amplitude
+    view (swing vs level OR swing vs range) -- so smooth-but-regular series
+    and near-zero-level rate series do not false-trigger, while regime-shift
+    series with a strong seasonal overlay (where the full-history range
+    deflates swing/range but swing/level stays high) still trip. Raises
     ``SeasonalJaggednessError`` (a ``ValidationError`` subclass with a
     distinct message prefix so the dual-axis auto-recovery ignores it).
     """
@@ -2731,10 +2787,12 @@ def _validate_seasonal_jaggedness(
             continue
         vals = pd.to_numeric(s[y_field], errors="coerce").dropna().tolist()
         f_s, swing_level, swing_range = _seasonal_diagnostics(vals, period)
+        amp_ok = (
+            (np.isfinite(swing_level) and swing_level >= _SEASONAL_SWING_LEVEL_THRESHOLD)
+            or (np.isfinite(swing_range) and swing_range >= _SEASONAL_SWING_RANGE_THRESHOLD)
+        )
         is_jagged = (
-            np.isfinite(f_s) and f_s >= _SEASONAL_STRENGTH_THRESHOLD
-            and np.isfinite(swing_level) and swing_level >= _SEASONAL_SWING_LEVEL_THRESHOLD
-            and np.isfinite(swing_range) and swing_range >= _SEASONAL_SWING_RANGE_THRESHOLD
+            np.isfinite(f_s) and f_s >= _SEASONAL_STRENGTH_THRESHOLD and amp_ok
         )
         if is_jagged:
             flagged.append((name, period, f_s, swing_level, swing_range))
@@ -8440,6 +8498,12 @@ _PROFILE_MIN_HORIZONTAL_TICKS = 8   # keep horizontal while >= this many fit; el
 # Heatmap column labels are sparser than profile lines: 2x pitch -> ~half the
 # tick count at -45 (intraday 15-min grids stay legible on 700px wide).
 _HEATMAP_MIN_PITCH_45_PX = _PROFILE_MIN_PITCH_45_PX * 2
+# Calendar-year integers on heatmap x (e.g. ``df.groupby('year')``) — same
+# band as ``"2008"`` strings; enables annual cadence + chronological sort.
+_HEATMAP_CALENDAR_YEAR_MIN = 1900
+_HEATMAP_CALENDAR_YEAR_MAX = 2200
+# Band-scale labels are centre-anchored; require breathing room vs column pitch.
+_HEATMAP_COLUMN_PITCH_MARGIN = 1.12
 
 
 def _evenly_spaced_subset(values: List[Any], k: int) -> List[Any]:
@@ -15046,7 +15110,10 @@ def _heatmap_min_column_index_gap(
         _heatmap_column_label_span_px(str(v), label_font_size, label_angle)
         for v in ordered_vals
     )
-    return max(1, math.ceil(max_span / col_pitch))
+    return max(
+        1,
+        math.ceil(max_span * _HEATMAP_COLUMN_PITCH_MARGIN / col_pitch),
+    )
 
 
 def _heatmap_max_ticks_for_column_pitch(
@@ -15129,7 +15196,15 @@ def _heatmap_x_axis_plan(
             ordered_vals, subset, min_index_gap=min_gap,
         ) or subset
 
-    if gap_h <= 1 and horiz_capacity >= n:
+    col_pitch = chart_width / n
+    max_span_h = max(
+        _heatmap_column_label_span_px(str(v), font_px, 0) for v in ordered_vals
+    )
+    if (
+        gap_h <= 1
+        and horiz_capacity >= n
+        and max_span_h * _HEATMAP_COLUMN_PITCH_MARGIN <= col_pitch
+    ):
         return 0, None
     if horiz_capacity >= _PROFILE_MIN_HORIZONTAL_TICKS:
         return 0, _thin(horiz_capacity, gap_h)
@@ -15180,6 +15255,27 @@ def _validate_heatmap_column_labels(
     )
     if not all_labels:
         return label_limit_px
+
+    full_month = sorted(
+        {label for label in all_labels if _HEATMAP_FULL_MONTH_LABEL_RE.match(str(label))},
+        key=str,
+    )
+    if full_month:
+        sample = full_month[0]
+        try:
+            ts = pd.to_datetime(sample, format="%B %Y")
+            abbrev_hint = ts.strftime("%b %y")
+        except (ValueError, TypeError):
+            abbrev_hint = "Jan 24"
+        ctx = "make_*pack_*()" if composite_cell else "make_chart()"
+        raise ValidationError(
+            f"Heatmap column labels must use abbreviated months, not full "
+            f"month names. {x_field!r} value {sample!r} is unsupported. "
+            f"Shorten to '%b %y' style before {ctx} "
+            f"(e.g. {sample!r} -> {abbrev_hint!r}). "
+            f"Offending: {full_month[:4]}"
+            f"{'...' if len(full_month) > 4 else ''}."
+        )
 
     offenders = sorted(
         {label for label in all_labels if len(label) > _HEATMAP_COLUMN_LABEL_MAX_CHARS},
