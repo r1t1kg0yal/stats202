@@ -24308,6 +24308,23 @@ def _tbl_readable_text_color(bg_hex: str) -> str:
     return "#000000" if luma > 140 else "#FFFFFF"
 
 
+_TBL_MIN_TEXT_CONTRAST = 3.0
+
+
+def _tbl_contrast_ratio(fg_hex: str, bg_hex: str) -> float:
+    def _rel_luminance(hex_c: str) -> float:
+        r, g, b = (_hex_to_rgb(hex_c)[i] / 255.0 for i in range(3))
+
+        def _linear(c: float) -> float:
+            return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+        return 0.2126 * _linear(r) + 0.7152 * _linear(g) + 0.0722 * _linear(b)
+
+    l_fg, l_bg = _rel_luminance(fg_hex), _rel_luminance(bg_hex)
+    lighter, darker = (l_fg, l_bg) if l_fg >= l_bg else (l_bg, l_fg)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
 def _tbl_palette_seq(palette: str, value: float, vmin: float, vmax: float) -> Optional[str]:
     if vmax == vmin:
         return None
@@ -25329,6 +25346,13 @@ def _tbl_draw_body(
                         text_color = theme["negative_text"]
                     else:
                         text_color = theme["body_text"]
+                    bg = cell_bg.get(ci)
+                    if (
+                        bg is not None
+                        and text_color != theme["body_text"]
+                        and _tbl_contrast_ratio(text_color, bg) < _TBL_MIN_TEXT_CONTRAST
+                    ):
+                        text_color = _tbl_readable_text_color(bg)
                 else:
                     bg = cell_bg.get(ci)
                     if bg is not None:
