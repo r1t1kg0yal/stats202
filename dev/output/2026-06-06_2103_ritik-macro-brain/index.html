@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ritik Macro Brain</title>
+<style>
+:root { --bg:#0b1020; --panel:#11182d; --panel2:#17213d; --ink:#edf3ff; --muted:#aeb8cf; --line:#33405f; --accent:#7dd3fc; --green:#86efac; --yellow:#fde68a; --red:#fca5a5; --violet:#c4b5fd; }
+* { box-sizing:border-box; }
+body { margin:0; font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Inter,Roboto,Arial,sans-serif; background:linear-gradient(180deg,#090d19,#111827); color:var(--ink); }
+main { max-width:1280px; margin:0 auto; padding:28px; }
+h1 { font-size:42px; margin:0 0 10px; letter-spacing:-0.04em; }
+h2 { margin:34px 0 14px; font-size:26px; letter-spacing:-0.02em; }
+h3 { margin:20px 0 10px; font-size:18px; color:var(--accent); }
+p, li { line-height:1.55; color:#dce6fb; }
+code { color:#e0f2fe; background:#0d1428; padding:2px 5px; border-radius:5px; }
+.header { border:1px solid var(--line); background:rgba(17,24,45,.92); border-radius:18px; padding:22px; box-shadow:0 20px 70px rgba(0,0,0,.35); }
+.grid { display:grid; gap:16px; } .cols2 { grid-template-columns:repeat(2,minmax(0,1fr)); } .cols3 { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.card { background:linear-gradient(180deg,var(--panel),#0e162b); border:1px solid var(--line); border-radius:16px; padding:17px; } .card strong { color:#fff; }
+.badge { display:inline-block; border:1px solid var(--line); background:#101a32; color:#cfe4ff; padding:5px 9px; border-radius:999px; font-size:12px; margin:3px 4px 3px 0; }
+.kpi { font-size:28px; color:var(--green); font-weight:700; } .muted { color:var(--muted); } .small { font-size:13px; }
+.flow { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; white-space:pre; overflow:auto; background:#080d1a; border:1px solid var(--line); border-radius:16px; padding:18px; line-height:1.35; color:#e8f1ff; }
+.lane { display:flex; gap:10px; align-items:stretch; flex-wrap:wrap; } .node { flex:1 1 155px; min-width:145px; background:var(--panel2); border:1px solid var(--line); border-radius:14px; padding:12px; text-align:center; } .arrow { align-self:center; color:var(--accent); font-weight:800; font-size:22px; }
+table { border-collapse:collapse; width:100%; background:#0d1428; border:1px solid var(--line); border-radius:14px; overflow:hidden; } th, td { border-bottom:1px solid var(--line); border-right:1px solid var(--line); padding:11px; vertical-align:top; line-height:1.45; } th { background:#17213d; color:#fff; text-align:left; } tr:last-child td { border-bottom:0; } td:last-child, th:last-child { border-right:0; }
+.good { color:var(--green); } .bad { color:var(--red); } .warn { color:var(--yellow); } .axis { display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:stretch; } .axis .left { border-left:4px solid var(--violet); } .axis .right { border-left:4px solid var(--green); }
+@media (max-width:900px) { .cols2,.cols3,.axis { grid-template-columns:1fr; } .arrow { display:none; } }
+</style>
+</head>
+<body>
+<main>
+<section class="header">
+<div class="badge">Generated 2026-06-06 21:03</div><div class="badge">Scope: eight converted macro papers</div>
+<h1>Ritik Goyal Macro Brain</h1>
+<p>This artifact turns the source papers into a coherent set of mental models: primitives, causal engines, policy inversions, market-reading heuristics, and open tensions. Files touched: <code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/staging/dev/output/2026-06-06_2103_ritik-macro-brain/index.html</code>. Source files read:</p>
+<ul class="small"><li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/papers/converted/1-inflation-is-collateral.md</code></li><li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/papers/converted/2-income-isn&#x27;t-inflation.md</code></li><li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/papers/converted/2-wages-aren&#x27;t-inflation.md</code></li><li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/papers/converted/3-reserves-aren&#x27;t-inflation.md</code></li><li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/papers/converted/4-assets-inflation.md</code></li><li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/papers/converted/5-expensive-collateral-inflation.md</code></li><li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/papers/converted/6-qe-deflationary.md</code></li><li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/papers/converted/8-myth-of-volcker.md</code></li></ul>
+<p class="muted"><strong>What to look for:</strong> the central causal stack below. If it feels right, the next useful move is turning this into a reusable PRISM-style knowledge module or a proper macro ontology.</p>
+</section>
+
+<h2>One Sentence</h2><section class="card"><p class="kpi">Inflation is not "prices rising"; inflation is durable balance-sheet expansion through collateral creation.</p><p>Everything else in the papers is a consequence of that sentence: wages are transfers, reserves are swaps, QE is usually collateral removal, high asset prices are evidence of money scarcity, fiscal issuance can crowd in risk, and Volcker's myth is the story of mistaking market rates for Fed control.</p></section>
+
+<h2>Master Causal Spine</h2>
+<div class="flow">┌──────────────────────┐
+│ Future production    │
+│ promise to be paid   │
+└──────────┬───────────┘
+           ↓ monetized as
+┌──────────────────────┐       ┌──────────────────────┐
+│ Asset / collateral   │  ↔    │ Liability / money    │
+│ bank balance sheet   │       │ spendable claim      │
+└──────────┬───────────┘       └──────────┬───────────┘
+           ↓ expands when banks/public/shadow banks accept risk
+┌──────────────────────┐
+│ More balance-sheet   │
+│ space + more risk    │
+└──────────┬───────────┘
+           ↓
+┌──────────────────────┐       ┌──────────────────────┐
+│ More nominal demand  │  +    │ More collateral      │
+│ can be financed      │       │ supports more credit │
+└──────────┬───────────┘       └──────────┬───────────┘
+           └────────────── self-reinforcing ───────────┘
+                         = monetary inflation</div>
+
+<h2>Primitive Vocabulary</h2>
+<section class="grid cols3">
+<div class="card"><h3>Money</h3><p>Not M1, M2, reserves, or cash in isolation. Money is the broad set of liabilities attached to assets, including observable and unobservable balance sheets.</p></div>
+<div class="card"><h3>Collateral</h3><p>The asset side of money: promises to future payment that can be pledged, sold, financed, or reused. Collateral is the monetary base that matters.</p></div>
+<div class="card"><h3>Inflation</h3><p>Sustained price acceleration financed by new money. Price spikes without new collateral are reallocation and demand destruction.</p></div>
+<div class="card"><h3>Velocity</h3><p>Income / assets. A growth, productivity, or real-rate concept. It can raise nominal activity, but without continuous new collateral it becomes fragile.</p></div>
+<div class="card"><h3>Balance Sheet Space</h3><p>The true production frontier of money. If banks, shadow banks, or the public sector cannot or will not expand balance sheets, inflationary potential falls.</p></div>
+<div class="card"><h3>Risk</h3><p>Risk-taking is money creation. One person's borrowing is another person's asset, collateral, income, or equity.</p></div>
+</section>
+
+<h2>Before / After: Conventional Macro vs Ritik Brain</h2><table><thead><tr><th>Question</th><th>Conventional Frame</th><th>Ritik Frame</th></tr></thead><tbody><tr><td>What is inflation?</td><td>A broad rise in prices, driven by demand, expectations, wages, supply shocks, or money.</td><td><strong>Durable collateral expansion.</strong> Prices can rise without inflation; durable inflation requires financing via new assets/liabilities.</td></tr>
+<tr><td>Do wages cause inflation?</td><td>Wage growth raises costs and spending power, producing a wage-price spiral.</td><td><strong>Wages are a price and a transfer.</strong> They are an outcome of money creation or velocity/dissaving, not an independent monetary engine.</td></tr>
+<tr><td>Do reserves cause inflation?</td><td>The Fed prints reserves; banks multiply them into deposits.</td><td><strong>Reserves are inaccessible collateral substitutes.</strong> They replace better collateral and mostly sit inside the bank/Fed system.</td></tr>
+<tr><td>Is QE easing?</td><td>Buying bonds lowers yields, raises wealth, and pushes investors into risk.</td><td><strong>QE of desirable collateral is tightening.</strong> It removes useful insurance/collateral and replaces it with less useful reserves.</td></tr>
+<tr><td>Are high asset prices inflationary?</td><td>The wealth effect boosts demand.</td><td><strong>High asset prices are deflationary evidence.</strong> They imply low yields, scarce assets, low income from capital, and strong demand for liquidity.</td></tr>
+<tr><td>Do high rates tighten?</td><td>Higher rates raise borrowing costs and slow demand.</td><td><strong>Rates can be conditions, not policy.</strong> High market rates often indicate abundant money, high velocity, high income/assets, and strong nominal activity.</td></tr>
+<tr><td>Does public debt crowd out private risk?</td><td>Government borrowing absorbs savings and raises private borrowing costs.</td><td><strong>Risk crowds in risk.</strong> Public deficits create private surpluses and collateral that can support more private risk-taking.</td></tr></tbody></table>
+
+<h2>Model Families</h2>
+<section class="grid cols2">
+<div class="card"><h3>1. Grease vs Friction Inflation</h3><p><strong>Grease</strong> means new collateral lets higher prices keep clearing without destroying demand. <strong>Friction</strong> means prices rise because supply/growth capacity falls, so the price increase itself tightens the system.</p><div class="flow">Friction shock → Q falls → some promises fail → collateral falls → demand destroyed → transitory price spike
+Grease shock   → assets rise → liabilities rise → demand financed → more assets → persistent inflation</div></div>
+<div class="card"><h3>2. Stock / Flow Balance</h3><p>Financial asset values are the <strong>stock</strong>; income, spending, yields, and cash flows are the <strong>flow</strong>. Without new asset creation, pushing up stock pulls from flow.</p><div class="axis"><div class="card left"><strong>Stock</strong><br>low velocity<br>long duration<br>saving<br>wealth<br>low rates<br>financial economy</div><div class="card right"><strong>Flow</strong><br>high velocity<br>short duration<br>spending<br>income<br>high rates<br>real economy</div></div></div>
+<div class="card"><h3>3. Three Balance-Sheet Forest</h3><p>Inflation analysis fails when it watches only one tree. The supply of money is the sum of public issuance, private observable credit, and private unobservable/shadow/offshore credit.</p><div class="flow">Money creation = Public balance sheet
+               + Private observable balance sheets
+               + Private unobservable balance sheets</div></div>
+<div class="card"><h3>4. Return Parity / Insurance</h3><p>Safe assets are insurance for risky activity. When policymakers make insurance expensive by buying it, risk-taking does not automatically rise; balance sheet space gets consumed by insurance needs.</p><div class="flow">Cheap insurance → less capital needed for hedging → more room for risky lending
+Expensive insurance → more capital needed for hedging → less room for risky lending</div></div>
+</section>
+
+<h2>Policy Inversions</h2><table><thead><tr><th>Policy / Regime</th><th>Mechanical Interpretation</th><th>Inflationary Direction</th></tr></thead><tbody><tr><td>Deficit expansion</td><td>Creates public assets and private surpluses; adds collateral and income.</td><td><span class="good">Inflationary / crowd-in</span></td></tr>
+<tr><td>QT when selling desirable safe assets</td><td>Returns collateral/insurance to private hands; raises future yield/flow.</td><td><span class="good">Often easing for real activity</span></td></tr>
+<tr><td>Rate hikes in fiscal dominance</td><td>Raise public interest outlays and private income; may increase public money creation more than private contraction.</td><td><span class="warn">Can be stimulative</span></td></tr>
+<tr><td>QE of desired Treasuries</td><td>Removes universally accessible collateral and adds bank-only reserves.</td><td><span class="bad">Deflationary / tightening</span></td></tr>
+<tr><td>Rate cuts / ZIRP</td><td>Pull future returns into present asset prices; lower yields; reduce insurance payout.</td><td><span class="bad">Deflationary via stock-over-flow</span></td></tr>
+<tr><td>QE of distressed assets / BTFP-like support</td><td>Buys or lends against unwanted assets at better-than-market terms, adding equity and clearing deadweight.</td><td><span class="good">Stimulative if truly distressed</span></td></tr></tbody></table>
+
+<h2>Market-Reading Heuristics</h2>
+<section class="grid cols3">
+<div class="card"><h3>High Safe Yields</h3><p>Usually not tight money. They can indicate abundant asset creation, high income/assets, and real-economy liquidity.</p></div>
+<div class="card"><h3>Low Safe Yields</h3><p>Often signal scarcity of trusted collateral, high demand for liquidity, poor real-economy liquidity, and deflationary pressure.</p></div>
+<div class="card"><h3>Curve Steepening</h3><p>Can be reflationary when it improves bank profitability and signals more balance-sheet capacity.</p></div>
+<div class="card"><h3>Curve Inversion</h3><p>Signals shortage of longer-duration collateral relative to short-term funding costs; the expansion engine is impaired.</p></div>
+<div class="card"><h3>Expensive Equities</h3><p>Not automatically strong growth. They can be bond-like scarcity assets, especially large-cap/quality/US names in a low-yield regime.</p></div>
+<div class="card"><h3>Dollar Strength</h3><p>Can signal global dollar collateral shortage, not US growth exceptionalism. Watch offshore/shadow balance-sheet stress.</p></div>
+</section>
+
+<h2>Paper-to-Model Map</h2><table><thead><tr><th>Source</th><th>Core Contribution</th><th>Place in the Brain</th></tr></thead><tbody><tr><td><code>1-inflation-is-collateral.md</code></td><td>Inflation is collateral creation; hard money is deflationary; repo/collateralized lending made money elastic.</td><td>Root ontology</td></tr>
+<tr><td><code>2-income-isn&apos;t-inflation.md</code></td><td>Income and velocity are growth concepts; dissaving is finite; wage-price spirals need money or continuous dissaving.</td><td>Transfer vs production distinction</td></tr>
+<tr><td><code>2-wages-aren&apos;t-inflation.md</code></td><td>Wages are a cross-section of prices, not an input to aggregate prices; velocity-led inflation is fragile.</td><td>Labor-market filter</td></tr>
+<tr><td><code>3-reserves-aren&apos;t-inflation.md</code></td><td>Reserves are bank-only Fed liabilities, not broad collateral; QE can replace better collateral with worse collateral.</td><td>Fed balance-sheet demystifier</td></tr>
+<tr><td><code>4-assets-inflation.md</code></td><td>Money is balance sheet space; public/private observable/private unobservable balance sheets jointly create money.</td><td>Balance-sheet forest</td></tr>
+<tr><td><code>5-expensive-collateral-inflation.md</code></td><td>High asset prices/low yields are deflationary signals; stock-flow tradeoff; risk crowds in risk.</td><td>Market-price interpretation</td></tr>
+<tr><td><code>6-qe-deflationary.md</code></td><td>QE of desired assets removes collateral/insurance; QE of distressed assets can add equity; return parity and insurance logic.</td><td>Policy inversion engine</td></tr>
+<tr><td><code>8-myth-of-volcker.md</code></td><td>Volcker created the interest-rate-as-policy myth; rates shifted from conditions signal to Fed communication tool.</td><td>Historical meta-model</td></tr></tbody></table>
+
+<h2>Coherent Macro Operating System</h2>
+<div class="lane"><div class="node"><strong>Observe</strong><br><span class="small">asset creation, yields, curve, credit, dollar, collateral quality</span></div><div class="arrow">→</div><div class="node"><strong>Classify</strong><br><span class="small">grease vs friction, money vs velocity, stock vs flow</span></div><div class="arrow">→</div><div class="node"><strong>Locate</strong><br><span class="small">public, private observable, private unobservable balance sheet</span></div><div class="arrow">→</div><div class="node"><strong>Infer</strong><br><span class="small">is collateral expanding, contracting, or being recomposed?</span></div><div class="arrow">→</div><div class="node"><strong>Trade/Policy</strong><br><span class="small">prefer flow when assets scarce; prefer stock when collateral expands too fast</span></div></div>
+
+<h2>Stress Tests</h2><section class="grid cols2"><div class="card"><h3>Necessary Conditions For Durable Inflation</h3><ul><li>New asset-liability pairs are being created repeatedly, not one-shot.</li>
+<li>Collateral is sufficiently useful, accessible, liquid, and creditworthy.</li>
+<li>Balance-sheet creators are earning enough spread/return to keep expanding.</li>
+<li>Safe assets/insurance are available enough to support true risky lending.</li>
+<li>Policy is adding equity/risk, not only bidding up existing assets.</li></ul></div><div class="card"><h3>False Positives</h3><ul><li>Wage growth without credit or dissaving.</li>
+<li>Commodity/supply shocks that impair future collateral.</li>
+<li>Reserves growth without private collateral growth.</li>
+<li>Asset-price inflation without cash-flow growth.</li>
+<li>Velocity spikes financed by finite savings drawdowns.</li></ul></div></section>
+
+<h2>Open Tensions Worth Preserving</h2>
+<section class="card"><ul><li><strong>Government money creation:</strong> the papers say governments do not create money like banks, but public deficits clearly create collateral and private surpluses. The clean formulation is: governments create collateral directly and money indirectly through bank/dealer absorption and fiscal spending.</li><li><strong>Rates as policy vs conditions:</strong> the same rate move means different things depending on whether markets set it as a condition signal or the Fed hijacks it as a policy signal. This distinction is load-bearing and should always be explicit.</li><li><strong>QE taxonomy:</strong> QE is too broad. The correct taxonomy is desired-asset QE, distressed-asset purchases, par-lending/equity support, maturity swaps, and true fiscal issuance.</li><li><strong>Unobservable money:</strong> the system depends on offshore, shadow, FX-swap, repo, and derivative balance sheets that are hard to measure. Market prices become primary evidence, not secondary evidence.</li></ul></section>
+
+<h2>Compressed Brain Diagram</h2>
+<div class="flow">RITIK MACRO BRAIN
+├─ Ontology
+│  ├─ money = collateral-backed liabilities
+│  ├─ collateral = asset claims on future production
+│  └─ inflation = persistent collateral expansion
+├─ Engines
+│  ├─ commercial banks: private observable money
+│  ├─ shadow/offshore banks: private unobservable money
+│  └─ fiscal authority: public collateral + private surplus
+├─ Filters
+│  ├─ grease vs friction
+│  ├─ money vs velocity
+│  ├─ stock vs flow
+│  ├─ desired vs distressed assets
+│  └─ rates as conditions vs rates as policy
+├─ Policy Inversions
+│  ├─ QE desired collateral = tighten
+│  ├─ QT / issuance = often ease
+│  ├─ rate hikes = can raise velocity/income/public money
+│  └─ rate cuts = can reduce flow and insurance payout
+└─ Market Reading
+   ├─ high yields = plentiful assets / high flow
+   ├─ low yields = collateral shortage / liquidity demand
+   ├─ expensive assets = money scarcity
+   └─ dollar strength = global dollar collateral shortage</div>
+</main></body></html>

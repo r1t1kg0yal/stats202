@@ -881,20 +881,6 @@ _OSCILLATION_LARGE_STEP_THRESHOLD = 0.35   # |dy| / y-range counted as "large"
 _OSCILLATION_LARGE_STEP_RATE_THRESHOLD = 0.55
 _OSCILLATION_MIN_POINTS = 12
 
-# Empty-body gate (multi_line / timeseries / area). A line / area mark
-# interpolates across interior NaNs, so a series that is mostly holes renders
-# as an empty or near-empty plot body even though it clears the
-# >=2-valid-points gate (_validate_chart_data_integrity Validation 2) and the
-# 100%-NaN gate (_validate_encoding_data). This is the canonical "chart
-# rendered but the plot body is empty" failure reported from PRISM: the axes,
-# title, and end-of-line labels paint but no readable line appears. Reject
-# when any single plotted series is missing more than this fraction of its
-# x-grid. Set deliberately high (clearly-degenerate / near-empty) so that
-# legitimately sparse-but-readable series (40-80% missing, points spread
-# across the range) still render -- those are warned about in
-# validate_plot_ready_df, not blocked.
-_MAX_LINE_SERIES_MISSING_FRAC = 0.90
-
 def _axis_label_px_per_char(label_font_size: int) -> float:
     """Average horizontal pixels per character for axis tick labels."""
     return max(1.0, label_font_size * _AXIS_LABEL_CHAR_WIDTH_RATIO)
@@ -1115,12 +1101,6 @@ def _sanitize_column_names(
         mapping["dual_axis_series"] = [
             rename_map.get(s, s) for s in mapping["dual_axis_series"]
         ]
-
-    if "dual_axis_bind" in mapping and isinstance(mapping["dual_axis_bind"], dict):
-        mapping["dual_axis_bind"] = {
-            rename_map.get(k, k): v
-            for k, v in mapping["dual_axis_bind"].items()
-        }
 
     logger.info("[make_chart] Sanitized column names: %s", rename_map)
     return df, mapping
@@ -2111,13 +2091,7 @@ def validate_plot_ready_df(
                 f"Convert with: df['{x_field}'] = pd.to_datetime(df['{x_field}'])"
             )
 
-    # ``multi_line`` is included here too: its y is always the (numeric) value
-    # axis, and it was previously the only line-shaped type missing from this
-    # guard -- a string y-column slipped past type validation and died deeper
-    # with an opaque ``TypeError`` instead of this clean, actionable message.
-    # (Wide-format auto-melt passes a list y; ``_get_field`` returns None for a
-    # list, so this check is skipped for that path and handled post-melt.)
-    if chart_type in {"timeseries", "multi_line", "scatter", "bar", "area", "histogram", "boxplot"}:
+    if chart_type in {"timeseries", "scatter", "bar", "area", "histogram", "boxplot"}:
         y_field = _get_field(mapping, "y")
         if y_field and y_field in df.columns and not pd.api.types.is_numeric_dtype(df[y_field]):
             raise ValidationError(
@@ -2406,14 +2380,6 @@ def _validate_chart_data_integrity(
                 f"Use df[y_field].replace([np.inf, -np.inf], np.nan) to remove them."
             )
 
-    # Validation 4b: empty-body / line coverage. Catches the canonical
-    # "chart rendered but the plot body is empty" failure -- a line-shaped
-    # series that is mostly NaN clears the >=2-points gate (Validation 2) and
-    # the 100%-NaN gate (_validate_encoding_data) but interpolates to nothing
-    # visible. Runs before the flatness gates below, which assume there is
-    # readable data to assess.
-    _validate_line_coverage(df, mapping, chart_type)
-
     # Validation 5: y-axis scale homogeneity for single-axis multi-series
     # time-series charts. Catches the canonical "gold + WTI" pattern where
     # one series compresses to a flat line because its span is a tiny
@@ -2447,113 +2413,6 @@ def _validate_chart_data_integrity(
     # from Validation 8 -- seasonal sawteeth reverse slowly; interleaved
     # merges reverse on nearly every step with large vertical jumps.
     _validate_series_oscillation(df, mapping, chart_type)
-
-
-def _validate_line_coverage(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    chart_type: str,
-) -> None:
-    """Reject line-shaped charts whose plotted series are mostly holes.
-
-    A line / area mark interpolates across interior NaNs, so a series that is
-    mostly missing renders as an empty or near-empty plot body -- yet it still
-    clears the >=2-valid-points gate (``_validate_chart_data_integrity``
-    Validation 2) and the 100%-NaN gate (``_validate_encoding_data``). This is
-    the canonical "chart rendered but the plot body is empty" failure reported
-    from PRISM: the axes, title, and end-of-line labels paint but no readable
-    line appears, because almost none of each series's x-grid carries a value.
-
-    Mechanism in the wild: a join / filter / reindex leaves a dense monthly (or
-    daily) grid where almost every row is NaN -- e.g. an ``isin()`` filter whose
-    category spellings don't match the source, or a wide pivot that only
-    populates a couple of cells per column. Each surviving series has >=2
-    non-null points (so Validation 2 passes) but is ~95-99% holes, so the
-    rendered body is empty.
-
-    Reject when any single plotted series is missing more than
-    ``_MAX_LINE_SERIES_MISSING_FRAC`` of its x-grid. Names the offending
-    series + their missing-% and routes the fix toward the upstream join,
-    a ``dropna`` reshape, or a scatter representation.
-
-    Scope:
-      - ``multi_line`` / ``timeseries`` / ``area`` (the interpolated
-        line-shaped types). ``scatter`` is exempt -- it draws discrete marks,
-        so sparse data is visible rather than empty.
-      - Long format (per ``color`` group), single-series (the ``y`` column),
-        and wide auto-melt (per listed ``y`` column) are all handled.
-      - A series whose x-grid is fully populated (0% missing) never trips, so
-        PRISM's correct path -- passing a tidy long frame with no NaN rows --
-        is unaffected.
-    """
-    if chart_type not in {"multi_line", "timeseries", "area"}:
-        return
-
-    y_field = _get_field(mapping, "y")
-    color_field = _get_field(mapping, "color")
-
-    # Build (label, valid_count, total_count) for every plotted series.
-    coverage: List[Tuple[str, int, int]] = []
-    if (
-        color_field and color_field in df.columns
-        and y_field and y_field in df.columns
-    ):
-        for name, g in df.groupby(color_field):
-            coverage.append((str(name), int(g[y_field].notna().sum()), len(g)))
-    elif isinstance(mapping.get("y"), list):
-        for col in mapping["y"]:
-            if isinstance(col, str) and col in df.columns:
-                coverage.append((col, int(df[col].notna().sum()), len(df)))
-    elif y_field and y_field in df.columns:
-        coverage.append((y_field, int(df[y_field].notna().sum()), len(df)))
-
-    if not coverage:
-        return
-
-    offenders: List[Tuple[str, int, int, float]] = []
-    for label, valid, total in coverage:
-        if total <= 0:
-            continue
-        missing_frac = 1.0 - (valid / total)
-        if missing_frac > _MAX_LINE_SERIES_MISSING_FRAC:
-            offenders.append((label, valid, total, missing_frac))
-
-    if not offenders:
-        return
-
-    offenders.sort(key=lambda t: -t[3])  # worst (most-missing) first
-    detail = "; ".join(
-        f"'{label}' {valid}/{total} valid ({frac * 100:.1f}% missing)"
-        for label, valid, total, frac in offenders
-    )
-    threshold_pct = int(_MAX_LINE_SERIES_MISSING_FRAC * 100)
-    multi = bool(color_field) or isinstance(mapping.get("y"), list)
-    dropna_col = y_field or (mapping.get("y") if isinstance(mapping.get("y"), str) else "value")
-
-    raise ValidationError(
-        f"EMPTY CHART BODY: {len(offenders)} series "
-        f"{'is' if len(offenders) == 1 else 'are'} over {threshold_pct}% "
-        f"missing, so the line would render as an empty / near-empty plot body "
-        f"-- the axes, title, and end-of-line labels paint but no readable line "
-        f"appears. Mostly-missing: {detail}.\n"
-        f"A line mark interpolates across gaps, so a series that is almost all "
-        f"holes draws nothing visible even though it clears the >=2-points "
-        f"check. Pick the fix that matches the cause:\n"
-        f"  (a) If the holes come from a join / filter / reindex, fix it "
-        f"upstream. The usual culprit is a category filter whose spelling "
-        f"doesn't match the source (e.g. "
-        f"isin(['Treasury Inflation-Protected Securities']) when the API spells "
-        f"it differently) -- verify the filter actually matches rows, and check "
-        f"the merge keys, before plotting.\n"
-        f"  (b) If the data is genuinely this sparse, drop the empty rows so the "
-        f"surviving points draw a real line: "
-        f"`df = df.dropna(subset=['{dropna_col}'])`"
-        f"{' (this drops all-NaN rows across series)' if multi else ''} -- then "
-        f"re-plot.\n"
-        f"  (c) If only a few discrete observations exist per series, use "
-        f"`chart_type='scatter'` (or add point markers) so the individual "
-        f"observations are visible rather than interpolated into emptiness."
-    )
 
 
 def _validate_y_scale_homogeneity(
@@ -3205,14 +3064,10 @@ def _maybe_auto_recover_y_scale(
     independently clear the y-scale gates (a dual axis only has two
     scales to give). The 2-series case is the degenerate version (the
     low cluster is the single smaller series). When no 2-cluster split
-    leaves both axes internally homogeneous -- i.e. 3+ irreconcilable
-    magnitude tiers -- the engine does NOT reject; it falls back to a
-    best-effort split at the single largest magnitude gap so a chart
-    always renders, and the audit note flags that a series may still
-    compress (so PRISM can switch to 2-pack / facet / normalize if the
-    shape matters more than co-movement). ``None`` is returned only when
-    auto-recovery does not apply at all (wrong chart type, already
-    dual-axis, < 2 series, a constant series, or non-numeric y).
+    resolves the mismatch -- i.e. 3+ irreconcilable magnitude tiers --
+    the function returns ``None`` so the editorial choice (2-pack /
+    z-score / facet) stays with PRISM. The rejection message names all
+    four options.
 
     Returns:
         ``(new_mapping, recovery_message)`` if the rejection qualifies for
@@ -3278,7 +3133,6 @@ def _maybe_auto_recover_y_scale(
         reverse=True,
     )
     right_group: Optional[List[str]] = None
-    clean_split = False
     for k in candidate_splits:
         low, high = ordered[:k], ordered[k:]
         if (
@@ -3286,19 +3140,9 @@ def _maybe_auto_recover_y_scale(
             and _group_scale_ok(df, mapping, chart_type, high)
         ):
             right_group = low
-            clean_split = True
             break
-
-    # Best-effort fallback: no 2-cluster split leaves BOTH axes internally
-    # homogeneous (3+ irreconcilable magnitude tiers). Rather than reject
-    # and hand the editorial choice back to PRISM, the engine splits at the
-    # single largest magnitude gap -- the least-bad 2-way categorisation --
-    # so a chart always renders. The audit note flags that a series may
-    # still compress so PRISM can switch to a 2-pack / facet if the shape
-    # matters more than co-movement.
-    if right_group is None:
-        best_k = candidate_splits[0]
-        right_group = ordered[:best_k]
+    if not right_group:
+        return None
 
     new_mapping = dict(mapping)
     new_mapping["dual_axis_series"] = list(right_group)
@@ -3315,27 +3159,13 @@ def _maybe_auto_recover_y_scale(
         f"'{right_group[0]}'" if len(right_group) == 1
         else f"the smaller-magnitude group {right_group}"
     )
-    if clean_split:
-        recovery_message = (
-            f"AUTO-RECOVERED: y-axis {gate} gate rejected the single-axis "
-            f"chart. Engine routed {routed} to the right axis "
-            f"(dual_axis_series={right_group}) and re-rendered. Override by "
-            f"setting dual_axis_series explicitly or switching chart shape "
-            f"(e.g. make_2pack_horizontal)."
-        )
-    else:
-        left_group = [n for n in ordered if n not in set(right_group)]
-        recovery_message = (
-            f"AUTO-RECOVERED (best-effort): y-axis {gate} gate rejected the "
-            f"single-axis chart and no clean two-cluster split exists "
-            f"(3+ irreconcilable magnitude tiers). Engine split at the "
-            f"largest magnitude gap -- right axis {right_group}, left axis "
-            f"{left_group} -- so a chart still renders, but a series on the "
-            f"axis carrying the wider magnitude range may compress. If the "
-            f"SHAPE of each series matters more than co-movement, switch to "
-            f"make_2pack_* or mapping['facet'], or z-score / rebase the "
-            f"series onto one scale."
-        )
+    recovery_message = (
+        f"AUTO-RECOVERED: y-axis {gate} gate rejected the single-axis "
+        f"chart. Engine routed {routed} to the right axis "
+        f"(dual_axis_series={right_group}) and re-rendered. Override by "
+        f"setting dual_axis_series explicitly or switching chart shape "
+        f"(e.g. make_2pack_horizontal)."
+    )
     return new_mapping, recovery_message
 
 
@@ -11701,7 +11531,7 @@ def _validate_legend_labels(
     if color_field not in df.columns:
         return
     max_chars = _legend_label_max_chars(chart_width)
-    labels = _legend_labels_for_validation(df, color_field, mapping, chart_width)
+    labels = [str(v) for v in df[color_field].unique()]
     offenders = sorted(
         {label for label in labels if len(label) > max_chars},
         key=lambda s: -len(s),
@@ -12661,327 +12491,6 @@ def _build_multi_line_single_axis(
     return chart
 
 
-_DUAL_AXIS_SIDE_ALIASES: Dict[str, str] = {
-    "left": "left",
-    "lhs": "left",
-    "l": "left",
-    "right": "right",
-    "rhs": "right",
-    "r": "right",
-}
-
-
-def _resolve_dual_axis_binding(
-    mapping: Dict[str, Any],
-    df: pd.DataFrame,
-    color_field: str,
-) -> List[str]:
-    """Normalize per-series axis binding into ``mapping['dual_axis_series']``.
-
-    Accepts either:
-
-      - ``mapping['dual_axis_series']``: names routed to the right axis;
-        every other color category stays on the left.
-      - ``mapping['dual_axis_bind']``: ``{series_name: 'left'|'lhs'|
-        'right'|'rhs', ...}``. Unlisted series default to the left axis.
-
-    Returns the canonical right-axis name list and writes it back into
-    ``mapping`` so downstream gates (LVL strip, legend validation,
-    annotation routing) share one source of truth.
-    """
-    explicit_right = [str(s).strip() for s in (mapping.get("dual_axis_series") or [])]
-    bind = mapping.get("dual_axis_bind")
-
-    if not bind:
-        mapping["dual_axis_series"] = explicit_right
-        return explicit_right
-
-    if not isinstance(bind, dict):
-        raise ValidationError(
-            "dual_axis_bind must be a dict mapping series name to "
-            "'left'/'lhs' or 'right'/'rhs'."
-        )
-    if color_field not in df.columns:
-        raise ValidationError(
-            f"dual_axis_bind requires color field {color_field!r} in DataFrame."
-        )
-
-    series_present = {
-        str(v).strip() for v in df[color_field].dropna().unique()
-    }
-    right_series: List[str] = []
-    seen_bind: set[str] = set()
-
-    for raw_name, raw_side in bind.items():
-        name = str(raw_name).strip()
-        side_key = str(raw_side).strip().lower()
-        side = _DUAL_AXIS_SIDE_ALIASES.get(side_key)
-        if side is None:
-            raise ValidationError(
-                f"dual_axis_bind[{name!r}]={raw_side!r} is invalid; use "
-                f"'left'/'lhs' or 'right'/'rhs'."
-            )
-        if name not in series_present:
-            raise ValidationError(
-                f"dual_axis_bind key {name!r} not found in color column "
-                f"{color_field!r}. Available series: {sorted(series_present)}."
-            )
-        if name in seen_bind:
-            raise ValidationError(
-                f"dual_axis_bind lists {name!r} more than once."
-            )
-        seen_bind.add(name)
-        if side == "right":
-            right_series.append(name)
-
-    implicit_left = sorted(series_present - seen_bind)
-    if explicit_right and set(explicit_right) != set(right_series):
-        raise ValidationError(
-            "dual_axis_bind conflicts with dual_axis_series; pass one "
-            "binding mechanism, not both."
-        )
-
-    if not right_series:
-        raise ValidationError(
-            "dual_axis_bind must route at least one series to the right "
-            f"axis. Implicit-left series: {implicit_left or sorted(series_present)}."
-        )
-    if len(right_series) == len(series_present):
-        raise ValidationError(
-            "dual_axis_bind routed every series to the right axis; at "
-            "least one series must stay on the left."
-        )
-
-    mapping["dual_axis_series"] = right_series
-    return right_series
-
-
-def _dual_axis_flatness_warnings(
-    df: pd.DataFrame,
-    color_field: str,
-    y_field: str,
-    dual_axis_series: List[str],
-) -> List[str]:
-    """Warn when a resolved dual-axis split flattens a series on one axis.
-
-    A dual axis gives two scales; if either side carries series whose
-    magnitudes are themselves incompatible, the smaller one compresses
-    into a flat horizontal rail (the within-axis version of the
-    single-axis scale-mismatch gate). On the AUTO path the engine
-    re-clusters to avoid this; on an EXPLICIT split the caller's intent
-    is honoured but the consequence is surfaced as a non-fatal warning
-    naming the offending series + the recommended re-route.
-    """
-    if color_field not in df.columns or y_field not in df.columns:
-        return []
-    if not pd.api.types.is_numeric_dtype(df[y_field]):
-        return []
-
-    right_set = {str(s).strip() for s in dual_axis_series}
-    color_vals = df[color_field].astype(str).str.strip()
-    unique_names = list(dict.fromkeys(color_vals.tolist()))
-    sides = {
-        "left": [n for n in unique_names if n not in right_set],
-        "right": [n for n in unique_names if n in right_set],
-    }
-
-    messages: List[str] = []
-    for side, names in sides.items():
-        if len(names) < 2:
-            continue
-        spans: Dict[str, float] = {}
-        g_min = float("inf")
-        g_max = float("-inf")
-        for name in names:
-            s = pd.to_numeric(
-                df.loc[color_vals == name, y_field], errors="coerce"
-            ).dropna()
-            if len(s) == 0:
-                continue
-            s_min, s_max = float(s.min()), float(s.max())
-            spans[name] = s_max - s_min
-            g_min = min(g_min, s_min)
-            g_max = max(g_max, s_max)
-        g_span = g_max - g_min
-        if g_span <= 0 or len(spans) < 2:
-            continue
-        flat = [
-            name for name, span in spans.items()
-            if span / g_span < _MIN_SERIES_VERTICAL_SHARE
-        ]
-        if flat:
-            other_side = "right" if side == "left" else "left"
-            messages.append(
-                f"DUAL-AXIS WITHIN-AXIS COMPRESSION: on the {side} axis "
-                f"{flat} would read as a flat rail (span < "
-                f"{int(_MIN_SERIES_VERTICAL_SHARE * 100)}% of that axis's "
-                f"range). The {side} axis carries series of incompatible "
-                f"magnitudes. Move the compressed series to the {other_side} "
-                f"axis (adjust dual_axis_series / dual_axis_bind), z-score / "
-                f"rebase the series, or split into a make_2pack_* composite."
-            )
-    return messages
-
-
-def _dual_axis_legend_tags_enabled(
-    mapping: Dict[str, Any],
-    *,
-    total_series: int,
-    base_names: Optional[List[str]] = None,
-    chart_width: Optional[int] = None,
-) -> bool:
-    """Return whether dual-axis legend entries get LHS/RHS suffixes.
-
-    Auto-tagging (the default for 3+ lines) is best-effort: it yields to
-    the colour-legend legibility budget. In a cramped composite cell the
-    suffix would push labels past ``_legend_label_max_chars`` and trip
-    ``LegendLabelTooLongError``; rather than fail, the engine drops the
-    tags there (per-axis position + axis titles still carry the units).
-    An explicit ``mapping['dual_axis_legend_tags']=True`` is always
-    honoured -- if it then overflows, the budget gate fails loudly so the
-    caller shortens the names.
-    """
-    explicit = mapping.get("dual_axis_legend_tags")
-    if explicit is not None:
-        return bool(explicit)
-    if total_series <= 2:
-        return False
-    if not chart_width or chart_width <= 0 or not base_names:
-        return True
-    budget = _legend_label_max_chars(chart_width)
-    longest_base = max((len(n) for n in base_names), default=0)
-    suffix_len = max(
-        len(_dual_axis_legend_suffix(mapping, side="left")),
-        len(_dual_axis_legend_suffix(mapping, side="right")),
-    )
-    return (longest_base + suffix_len) <= budget
-
-
-def _dual_axis_legend_suffix(
-    mapping: Dict[str, Any],
-    *,
-    side: str,
-) -> str:
-    """LHS/RHS suffix for a dual-axis legend entry."""
-    custom = mapping.get("dual_axis_legend_suffix")
-    if isinstance(custom, dict):
-        return str(custom.get(side, ""))
-    if side == "right":
-        return str(mapping.get("dual_axis_legend_suffix_right", " (RHS)"))
-    return str(mapping.get("dual_axis_legend_suffix_left", " (LHS)"))
-
-
-def _dual_axis_legend_label(
-    series_name: str,
-    *,
-    is_right: bool,
-    mapping: Dict[str, Any],
-    tag_legend: bool,
-) -> str:
-    name = str(series_name).strip()
-    if not tag_legend:
-        return name
-    suffix = _dual_axis_legend_suffix(
-        mapping, side="right" if is_right else "left",
-    )
-    return f"{name}{suffix}"
-
-
-def _dual_axis_legend_color_field(color_field: str) -> str:
-    return f"{color_field}__da_legend"
-
-
-def _apply_dual_axis_legend_tags(
-    df: pd.DataFrame,
-    color_field: str,
-    dual_axis_series: List[str],
-    mapping: Dict[str, Any],
-    chart_width: Optional[int] = None,
-) -> Tuple[pd.DataFrame, str, bool]:
-    """Add a legend-only colour column with optional LHS/RHS suffixes."""
-    right_set = {str(s).strip() for s in dual_axis_series}
-    base_names = list(df[color_field].astype(str).str.strip().unique())
-    total_series = len(set(base_names))
-    tag_legend = _dual_axis_legend_tags_enabled(
-        mapping, total_series=total_series,
-        base_names=base_names, chart_width=chart_width,
-    )
-    legend_field = _dual_axis_legend_color_field(color_field)
-    if not tag_legend:
-        return df, color_field, False
-
-    df = df.copy()
-    df[legend_field] = df[color_field].astype(str).str.strip().map(
-        lambda name: _dual_axis_legend_label(
-            name,
-            is_right=name in right_set,
-            mapping=mapping,
-            tag_legend=True,
-        )
-    )
-    return df, legend_field, True
-
-
-def _dual_axis_legend_sort(
-    df: pd.DataFrame,
-    color_field: str,
-    legend_field: str,
-    dual_axis_series: List[str],
-    mapping: Dict[str, Any],
-) -> Optional[List[str]]:
-    """Preserve base-series legend order when suffixes are applied."""
-    base_sort = _resolve_color_sort(
-        df,
-        color_field,
-        mapping.get("color_sort") or mapping.get("legend_sort"),
-    )
-    right_set = {str(s).strip() for s in dual_axis_series}
-    if base_sort is None:
-        base_sort = [
-            str(v).strip()
-            for v in df[color_field].astype(str).drop_duplicates()
-        ]
-    return [
-        _dual_axis_legend_label(
-            name,
-            is_right=name in right_set,
-            mapping=mapping,
-            tag_legend=True,
-        )
-        for name in base_sort
-    ]
-
-
-def _legend_labels_for_validation(
-    df: pd.DataFrame,
-    color_field: str,
-    mapping: Dict[str, Any],
-    chart_width: Optional[int] = None,
-) -> List[str]:
-    """Legend labels as they will render (incl. dual-axis LHS/RHS tags)."""
-    dual_axis_series = list(mapping.get("dual_axis_series") or [])
-    if not dual_axis_series or color_field not in df.columns:
-        return [str(v) for v in df[color_field].unique()]
-
-    right_set = {str(s).strip() for s in dual_axis_series}
-    names = [str(v).strip() for v in df[color_field].unique()]
-    tag_legend = _dual_axis_legend_tags_enabled(
-        mapping, total_series=len(names),
-        base_names=names, chart_width=chart_width,
-    )
-    if not tag_legend:
-        return names
-    return [
-        _dual_axis_legend_label(
-            name,
-            is_right=name in right_set,
-            mapping=mapping,
-            tag_legend=True,
-        )
-        for name in names
-    ]
-
-
 def _build_multi_line_dual_axis(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -13018,7 +12527,13 @@ def _build_multi_line_dual_axis(
     x_field = _get_field(mapping, "x")
     y_field = _get_field(mapping, "y")
     color_field = _get_field(mapping, "color")
+    dual_axis_series = list(mapping.get("dual_axis_series") or [])
     invert_right = bool(mapping.get("invert_right_axis"))
+
+    logger.debug(
+        "[_build_multi_line_dual_axis] dual_axis_series=%s, invert_right=%s",
+        dual_axis_series, invert_right,
+    )
 
     if not color_field:
         raise ValidationError(
@@ -13057,11 +12572,7 @@ def _build_multi_line_dual_axis(
     # Series-name matching is the #1 dual-axis failure mode. Strip
     # whitespace and coerce to strings so 'Rate' matches 'Rate '.
     df[color_field] = df[color_field].astype(str).str.strip()
-    dual_axis_series = _resolve_dual_axis_binding(mapping, df, color_field)
-    logger.debug(
-        "[_build_multi_line_dual_axis] dual_axis_series=%s, invert_right=%s",
-        dual_axis_series, invert_right,
-    )
+    dual_axis_series = [str(s).strip() for s in dual_axis_series]
 
     series_present = set(df[color_field].unique())
     missing_right = [s for s in dual_axis_series if s not in series_present]
@@ -13073,10 +12584,6 @@ def _build_multi_line_dual_axis(
             f"mismatch between mapping['dual_axis_series'] and the actual "
             f"DataFrame values."
         )
-
-    df, encode_color_field, legend_tagged = _apply_dual_axis_legend_tags(
-        df, color_field, dual_axis_series, mapping, chart_width=width,
-    )
 
     df_left = df[~df[color_field].isin(dual_axis_series)].copy()
     df_right = df[df[color_field].isin(dual_axis_series)].copy()
@@ -13146,34 +12653,8 @@ def _build_multi_line_dual_axis(
         "y_domain_right": right_domain,
     }
 
-    scale_mapping = dict(mapping)
-    if legend_tagged and isinstance(scale_mapping.get("color_map"), dict):
-        right_set = {str(s).strip() for s in dual_axis_series}
-        scale_mapping["color_map"] = {
-            (
-                _dual_axis_legend_label(
-                    key,
-                    is_right=key in right_set,
-                    mapping=mapping,
-                    tag_legend=True,
-                )
-                if isinstance(key, str)
-                else key
-            ): val
-            for key, val in scale_mapping["color_map"].items()
-        }
-
-    if legend_tagged:
-        full_color_sort = _dual_axis_legend_sort(
-            df, color_field, encode_color_field, dual_axis_series, mapping,
-        )
-        left_names = set(df_left[encode_color_field].astype(str))
-        right_names = set(df_right[encode_color_field].astype(str))
-        color_sort_left = [n for n in full_color_sort if n in left_names]
-        color_sort_right = [n for n in full_color_sort if n in right_names]
-    else:
-        color_sort_left = _resolve_color_sort(df_left, color_field)
-        color_sort_right = _resolve_color_sort(df_right, color_field)
+    color_sort_left = _resolve_color_sort(df_left, color_field)
+    color_sort_right = _resolve_color_sort(df_right, color_field)
 
     # ---- left axis chart -------------------------------------------------
     left_chart = (
@@ -13202,9 +12683,9 @@ def _build_multi_line_dual_axis(
     )
     left_chart = _encode_categorical_color_and_opacity(
         left_chart,
-        scale_mapping,
+        mapping,
         skin_config,
-        encode_color_field,
+        color_field,
         df,
         color_sort=color_sort_left,
         opacity_encoding=opacity_encoding,
@@ -13238,9 +12719,9 @@ def _build_multi_line_dual_axis(
     )
     right_chart = _encode_categorical_color_and_opacity(
         right_chart,
-        scale_mapping,
+        mapping,
         skin_config,
-        encode_color_field,
+        color_field,
         df,
         color_sort=color_sort_right,
         opacity_encoding=opacity_encoding,
@@ -18892,39 +18373,6 @@ def _make_chart(
     # ---- Sanitize column names (Vega-Lite safety) -----------------------
     df, mapping = _sanitize_column_names(df, mapping)
 
-    # ---- Resolve dual-axis binding BEFORE the y-scale gates -------------
-    # ``dual_axis_bind`` (and ``dual_axis_series``) must populate
-    # ``mapping['dual_axis_series']`` here -- the gates and the dispatcher
-    # both key off it. Resolving inside the dual builder is too late: the
-    # single-axis gates run first and a bind whose magnitudes happen to be
-    # compatible would silently fall through to a single-axis render.
-    # All-left / all-right binds raise a clear error at this boundary.
-    if chart_type in {"multi_line", "timeseries"}:
-        _da_color = _get_field(mapping, "color")
-        if _da_color and _da_color in df.columns and (
-            mapping.get("dual_axis_bind") or mapping.get("dual_axis_series")
-        ):
-            try:
-                _da_right = _resolve_dual_axis_binding(mapping, df, _da_color)
-            except ValidationError as exc:
-                return ChartResult(
-                    chart_type=chart_type, skin=skin, success=False,
-                    error_message=str(exc), warnings=warnings,
-                    audit_trail=audit_trail,
-                )
-            # Explicit split: honour it, but surface within-axis
-            # compression (a tiny series flattening against a huge one on
-            # the same axis) as a non-fatal warning. The AUTO path
-            # (no caller hint) re-clusters instead; see
-            # ``_maybe_auto_recover_y_scale``.
-            _da_y = _get_field(mapping, "y")
-            if _da_right and isinstance(_da_y, str):
-                warnings.extend(
-                    _dual_axis_flatness_warnings(
-                        df, _da_color, _da_y, _da_right,
-                    )
-                )
-
     # ---- Auto-downsample large time series ------------------------------
     if chart_type in {"timeseries", "multi_line", "area"}:
         x_field = _get_field(mapping, "x")
@@ -19201,17 +18649,6 @@ def _make_chart(
             chart_type, mapping, annotations, df=df,
         )
     ):
-        if mapping.get("dual_axis_bind"):
-            try:
-                _resolve_dual_axis_binding(
-                    mapping, df, _legend_color_field,
-                )
-            except ValidationError as exc:
-                return ChartResult(
-                    chart_type=chart_type, skin=skin, success=False,
-                    error_message=str(exc), warnings=warnings,
-                    audit_trail=audit_trail,
-                )
         try:
             _validate_legend_labels(
                 df, _legend_color_field, width, mapping, composite_cell=False,
@@ -22901,54 +22338,6 @@ def make_6pack_grid(
 _QC_MAX_WORKERS = 8
 
 
-@dataclass
-class _PngPathResult:
-    """Minimal result-shim for the ``check_charts_quality`` path-string
-    convenience overload. Carries just the attributes ``_qc_one`` reads
-    (``png_path`` / ``success`` / ``error_message``) so a bare S3 PNG
-    path can flow through the QC gate as if it were a ``ChartResult``.
-    """
-
-    png_path: Optional[str] = None
-    success: bool = True
-    error_message: Optional[str] = None
-
-
-def _qc_result_png_path(r: Any) -> Optional[str]:
-    """Extract ``png_path`` from any QC-gate input shape (``ChartResult`` /
-    ``CompositeResult`` / bare path string / ``{'png_path': ...}`` dict)."""
-    if isinstance(r, str):
-        return r
-    if isinstance(r, dict):
-        return r.get("png_path")
-    return getattr(r, "png_path", None)
-
-
-def _is_missing_object_error(exc: Exception) -> bool:
-    """True when an S3 fetch error means the OBJECT (key) isn't there -- a
-    stale or mistyped ``png_path`` -- rather than a transient infra outage.
-
-    Key-level not-found is a bad-input signal (fail closed). Bucket-level
-    or transport errors are infra (fail open) -- a missing bucket would
-    otherwise fail every chart closed, defeating the fail-open intent.
-
-    The local ``S3BucketManager`` raises ``FileNotFoundError``; PRISM's
-    boto-backed manager raises a ``NoSuchKey`` / 404 ``ClientError`` whose
-    code lives in ``exc.response['Error']['Code']``. Anything not matched
-    here (including ``NoSuchBucket``) is treated as infra so a real outage
-    never fails otherwise-fine charts closed.
-    """
-    if isinstance(exc, FileNotFoundError):
-        return True
-    if type(exc).__name__ == "NoSuchKey":
-        return True
-    resp = getattr(exc, "response", None)
-    if isinstance(resp, dict):
-        code = str(resp.get("Error", {}).get("Code", ""))
-        return code in ("NoSuchKey", "NotFound", "404")
-    return False
-
-
 def _qc_one(
     r: Any, s3_manager: Any,
 ) -> Dict[str, Any]:
@@ -22957,23 +22346,7 @@ def _qc_one(
     Mirrors PRISM's ``_check_single`` inside ``check_charts_quality_parallel``:
     fail-open on infrastructure errors (S3 fetch, Gemini timeout); a
     real BAD verdict from ``check_chart_quality`` propagates through.
-
-    Convenience overload: ``r`` may be a bare S3 PNG path string (or a
-    dict carrying a ``png_path`` key) rather than a ``ChartResult`` /
-    ``CompositeResult``. Multi-step report / dashboard pipelines collect
-    chart artifacts as path strings across ``execute_analysis_script``
-    steps and pass that list straight to ``check_charts_quality``;
-    accepting the string form here lets the QC gate work on those
-    artifacts without the caller reconstructing result objects.
     """
-    if isinstance(r, str):
-        r = _PngPathResult(png_path=r)
-    elif isinstance(r, dict) and "png_path" in r:
-        r = _PngPathResult(
-            png_path=r.get("png_path"),
-            success=r.get("success", True),
-            error_message=r.get("error_message"),
-        )
     png_path = getattr(r, "png_path", None)
     success = getattr(r, "success", True)
     if not success or not png_path:
@@ -22993,18 +22366,6 @@ def _qc_one(
         verdict.setdefault("png_path", png_path)
         return verdict
     except Exception as exc:  # noqa: BLE001
-        if _is_missing_object_error(exc):
-            # A missing object is a bad-input signal (stale / mistyped path),
-            # not an infra outage -- fail CLOSED so it's flagged rather than
-            # rubber-stamped by the fail-open path below.
-            logger.warning(
-                "[QualityGate] png not found (fail-closed): %s", png_path,
-            )
-            return {
-                "passed": False,
-                "reason": f"png not found (bad or stale path): {png_path}",
-                "png_path": png_path,
-            }
         logger.warning(
             "[QualityGate] Quality check error (fail-open): %s -- %s",
             exc, png_path,
@@ -23024,11 +22385,6 @@ def check_charts_quality(
     """Run the chart-quality gate over a list of ``ChartResult`` /
     ``CompositeResult`` objects in parallel.
 
-    Each element may also be a bare S3 PNG path string (or a dict with a
-    ``png_path`` key) -- handy when a multi-step pipeline has only the
-    artifact paths from an earlier step, not the original result objects.
-    Mixed lists (some results, some path strings) are accepted.
-
     For each result with a valid ``png_path``, fetches the PNG from S3
     and forwards it to ``check_chart_quality`` (PRISM: Gemini Flash;
     local: pass-through). Gemini calls are dispatched concurrently via
@@ -23039,11 +22395,9 @@ def check_charts_quality(
     Returns a list of ``{passed, reason, ...}`` dicts in the same order
     as ``results``.
 
-    Fail-open vs fail-closed: a genuine infrastructure error (S3 outage,
-    missing bucket, Gemini timeout) treats the chart as passing so a
-    quality-gate outage doesn't suppress otherwise-fine charts. A missing
-    object (stale or mistyped ``png_path``) fails CLOSED instead, so a bad
-    path is flagged rather than rubber-stamped.
+    Fail-open: any infrastructure error (missing png, S3 failure,
+    Gemini timeout) treats the chart as passing so a quality-gate
+    outage doesn't suppress otherwise-fine charts.
     """
     if s3_manager is None:
         raise ValueError(
@@ -23075,7 +22429,7 @@ def check_charts_quality(
                 out[idx] = {
                     "passed": True,
                     "reason": f"worker crash (fail-open): {exc}",
-                    "png_path": _qc_result_png_path(results[idx]),
+                    "png_path": getattr(results[idx], "png_path", None),
                 }
     return [v if v is not None else {"passed": True, "reason": "no verdict"} for v in out]
 

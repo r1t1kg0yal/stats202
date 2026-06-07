@@ -16,12 +16,12 @@
 | Primitive | Names | Where |
 |---|---|---|
 | Chart types (11) | `multi_line`, `scatter`, `scatter_multi`, `bar`, `bar_horizontal`, `heatmap`, `histogram`, `boxplot`, `area`, `donut`, `waterfall` | §6 |
-| Mapping keys (30+) | full table with types + defaults in §7.3 | §7.3 |
-| Annotation classes (11) | names + params in §8.3 (usage example §8.1) | §8 |
+| Mapping keys | `x`, `y`, `color`, `value`, `theta`, `y_title`, `y_title_right`, `x_title`, `x_sort`, `y_sort`, `x_type`, `dual_axis_series`, `invert_right_axis`, `dual_axis_config`, `legend`, `trendline`, `trendlines`, `stack`, `strokeDash`, `strokeDashScale`, `strokeDashLegend`, `bins`, `maxbins`, `bin_extent`, `extent`, `scale_type`, `orientation`, `color_sort` (alias `legend_sort`), `value_sort`, `type`, `facet_order` | §7 |
+| Annotation classes (11) | `VLine`, `HLine`, `Segment`, `Band`, `Arrow`, `PointLabel`, `PointHighlight`, `Callout`, `LastValueLabel`, `Trendline`, `PlotText` | §8 |
 | Composite functions (5) | `make_2pack_horizontal`, `make_2pack_vertical`, `make_3pack_triangle`, `make_4pack_grid`, `make_6pack_grid` | §10 |
 | Grid mode | `mapping['facet']`, `facet_cols`, `same_scale`, `share_x` / `share_y` / `share_color` | spoke `chart_context_grids.md` |
 | Chart colour / opacity | `mapping['color_scheme']`, `color_map`, `opacity`, `opacity_map` | spoke `chart_context_colors.md` -- **MUST fetch** |
-| Static tables | `make_table` + `TableResult`; `df=` / `rows=`; 3 color modes (`'rwg'` / `'bw'` / `'rag'`); heatmap groups, multi-level headers, row groups / indent, totals / subtotals, sparklines, mini-bars, signed columns | §13 |
+| Static tables | `make_table` + `TableResult`; `df=` or `rows=`; 3 color modes (`'rwg'` / `'bw'` / `'rag'`); `heatmap_groups` (col/row/group scope); `header_levels`; `row_groups`; `row_indent`; `total_rows` / `subtotal_rows`; `sparkline_columns`; `minibar_columns`; `signed_columns` | §13 |
 | Skin | `gs_clean` | §1 |
 | Intent | `'explore'`, `'publish'`, `'monitor'` | §1 |
 | Layer types | `regression`, `rule`, `point` | §8.5 |
@@ -35,7 +35,7 @@ Mid-session reads use `list_ai_repo` with `mode="full"` -- pass ONLY `file_paths
 | Spoke | Trigger | Tool call |
 |---|---|---|
 | `chart_context_grids.md` | 8-30 entities sharing one shape (G20 GDP, sector PMIs, FX cross-rates, country curves); scatter phase-space with temporal/numeric `color` | `list_ai_repo(file_paths=["context/modules/static/chart_context_grids.md"], mode="full")` |
-| `chart_context_colors.md` | **MANDATORY** before any chart palette / per-series colour / hex / emphasis / fade / highlight / opacity ask on `make_chart`, incl. trivial ones ("US red", "slot 2 fainter") | `list_ai_repo(file_paths=["context/modules/static/chart_context_colors.md"], mode="full")` |
+| `chart_context_colors.md` | **MANDATORY** before any chart palette / per-series colour / hex / emphasis / fade / highlight / opacity ask on `make_chart` -- including trivial ones ("US red", "slot 2 fainter") | `list_ai_repo(file_paths=["context/modules/static/chart_context_colors.md"], mode="full")` |
 
 Skip both for "make me a chart" with no colour / opacity / facet language -- defaults are on-brand. `make_table()` colour (`column_color_modes`, `cell_colors`, `heatmap_groups`) is **§13, NOT the colours spoke.**
 
@@ -47,7 +47,7 @@ Skip both for "make me a chart" with no colour / opacity / facet language -- def
 |---|---|
 | Time series, distribution, scatter, ranking, regime, co-movement, lead-lag | `make_chart` (§1-12) |
 | 8-30 entities sharing one shape | `make_chart` grid mode (grids spoke) |
-| Structured rows × columns a chart can't visualise cleanly: watchlists, term structures, P&L attribution, factor tilts, FX cross-rates, sector tapes, calendars, snapshot dashboards, theme trackers, trade-idea lists | `make_table` (§13) |
+| Structured rows × columns where a chart can't visualise cleanly: watchlists, term structures, P&L attribution, factor tilts, sector tapes, calendars, snapshot dashboards, theme trackers, trade-idea lists | `make_table` (§13) |
 | Single KPI tile | echarts dashboards (not altair) |
 
 ---
@@ -83,27 +83,25 @@ Canvas size engine-decided per `chart_type`. `interactive=True` (default) auto-e
 | `editor_html_path` / `editor_download_url` / `editor_chart_id` | Interactive HTML companion -- surface alongside PNG |
 | `vegalite_json` | Final Vega-Lite spec |
 | `chart_type` / `skin` | Echoed |
-| `success` / `error_message` | `True` on any returned result; failures **raise** (see Failure contract) |
+| `success` / `error_message` | `success` is `True` on any returned result; failures **raise** instead (see Failure contract) |
 | `warnings` | Fail-soft annotations (auto-melt, dropped annotations) -- caller may surface |
 | `audit_trail` | Informational engine decisions (auto-recovered dual-axis, downsampling) -- chart is fine; do NOT surface as failures |
 
 `CompositeResult` (from `make_Npack_*`) adds `layout`, `n_charts`, `chart_errors` (per-sub-chart `df_shape` / `error_type` / `error_message`); editor fields same as single charts.
 
-**Failure contract.** `make_chart`, `make_table`, and the `make_*pack_*` composites **raise** `ValidationError` on failure -- it bubbles out and PRISM surfaces it; do **not** `try/except` to swallow it. A *returned* result therefore always has `success=True` (no `if not r.success` guard needed). **Composites raise if *any* sub-chart fails** -- one empty / broken panel raises the whole call (no partial render). Build every panel from validated, non-empty data before composing.
+**Failure contract.** `make_chart`, `make_table`, and the `make_*pack_*` composites **raise** `ValidationError` on failure -- the error bubbles out of your script and PRISM surfaces it to the user. Do **not** wrap these calls in `try/except` to swallow it. A *returned* result therefore always has `success=True`; no `if not r.success` guard is needed. **Composites raise if *any* sub-chart fails** -- one empty / broken panel raises the whole `make_*pack_*` call (it does not return a partial render). Build every panel from validated, non-empty data before composing.
 
 ---
 
 ## 2. Quality gate (MANDATORY)
 
-This is non-negotiable: **every** chart and composite you render -- in every flow (chat, email, report, interactive companion, one-off, ad-hoc exploration) -- must pass through `check_charts_quality()` before you surface it; there is no situation in which a rendered chart skips the gate. Tables (`make_table`, §13) are the sole exception: they are deterministic and must NOT be sent to `check_charts_quality()`.
-
-Every chart through `check_charts_quality()`. Fail-open if Gemini unavailable. Pass composites as single PNGs. Accepts `ChartResult`/`CompositeResult` objects, bare S3 `png_path` strings, or `{'png_path': ...}` dicts -- pass artifact paths directly when a multi-step pipeline no longer holds the result objects. On QC fail: `s3_manager.delete()` the PNG using `qc['png_path']` (returned on every verdict); fix or remove the call. (Build failures already raised upstream per §1, so every `r` here has rendered.)
+Every chart through `check_charts_quality()`. Fail-open if Gemini unavailable. Pass composites as single PNGs. On QC fail: `s3_manager.delete()` the PNG; fix or remove the call. (Build failures already raised upstream, so every `r` here has rendered.)
 
 ```python
 qc_results = check_charts_quality([r1, r2])
-for qc in qc_results:
+for r, qc in zip([r1, r2], qc_results):
     if not qc['passed']:
-        s3_manager.delete(qc['png_path'])
+        s3_manager.delete(r.png_path)
 ```
 
 "Could not generate" is acceptable; showing a failed chart is not.
@@ -149,17 +147,17 @@ When user hands chart-type pick ("analysis", "what's interesting"), lean toward 
 | Phase orbit | Distribution vs activity loop through time | `'scatter'` + `mapping['connect']=True` + temporal/numeric `color` (or `order`) — §6.1 |
 | Squeeze / diffusion gauge | Single series vs a regime line (0, 50, …) | `'multi_line'` + `mapping['zero_fill']=True` + `zero_fill_baseline` — §6.1 |
 | Dual-axis multi_line in change space | Co-movement over time. Both transformed to SAME change measure (YoY %, MoM %, log-diff) BEFORE charting | `'multi_line'` + `mapping['dual_axis_series']=[...]` (§9) |
-| Lead-lag | Does X anticipate Y? | scatter `Y_t` vs `X_{t-N}`, or time-shift predictor `+N` → dual-axis + `VLine` "Today" — builds in §9.6 |
+| Lead-lag | Does X anticipate Y? | Scatter form: `merged['x_lag'] = x.shift(N)` + `'scatter'` + `mapping['trendline']=True`. Time-shift form: shift predictor `+N` months → dual-axis + `VLine` "Today" (§9.6) |
 
 **Anti-pattern:** single-series `multi_line` on "is anything happening?" -- narrates, doesn't argue.
 
-Engine rejects scatters with < 10 distinct (x, y) coords in the visible region (anecdote; error suggests bar / multi_line / table or a wider data window). For correlation across disparate magnitudes (gold + WTI) or levels (FCI components 30/60/10), single-y-axis `multi_line` is REJECTED -- pick 2-pack or dual-axis (§9.1).
+Engine rejects scatters with < 10 distinct (x, y) coords in visible region (reads as anecdote; error directs you to find a different representation — bar, multi_line, table, or a wider data window). For correlation with disparate magnitudes (gold + WTI) or disparate levels (FCI components 30/60/10), single-y-axis `multi_line` is REJECTED -- pick 2-pack or dual-axis (§9.1).
 
 ---
 
 ## 4. Authoring rules
 
-- **Max 4 lines per `multi_line` / `area`, counted per panel -- engine raises** (5+ overplot, LVL labels collide). For >4: composite (§10), small-multiples facet (grids spoke), or normalize/aggregate to the most important ≤4. Composite cells each stay ≤4.
+- **Max 4 lines per `multi_line` / `area` -- engine-enforced (raises).** 5+ overplot and end-of-line labels collide; the engine rejects with a message routing to a breakup. For >4, don't crowd one panel -- split into a composite (§10), small-multiples facet (grids spoke), or normalize/aggregate to the most important ≤4. Counted per panel, so composite cells must each stay ≤4.
 - **`y_title` plain English; aim ≤16 chars (hard cap 24).** Same cap on `x_title` / `y_title_right`. Series names on `multi_line` / `timeseries` capped 25 (§6.1) -- rename in DataFrame before melting.
 - **X column must be `'date'` for time series, as a column.** `df.rename(columns={'datetime': 'date'}).reset_index()`.
 - **Multi-line long format: rename FIRST, then melt** -- or use auto-melt (no `color` key, pass `y=[list]`).
@@ -204,23 +202,21 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 
 `timeseries` is an alias for `multi_line`. `multi_line` auto-detects non-datetime x → ordinal mode; tenor values (`1M`, `2Y`, `10Y`) auto-sort by maturity.
 
-**Intraday x-axis (minute / hour bars).** Pass ``datetime64[ns]`` (or strings / epoch / tz-aware -- the engine normalizes). **Default clock: US/Eastern (ET).** X labels: **multi-day** → date at midnight only (``May 28``), else ``HH:MM``; **single-session** (one calendar day) → date on the leftmost tick only (``May 27``), else ``HH:MM``. Override clock via ``mapping['x_timezone']``. Do NOT pre-format to strings or set ``x_type='ordinal'``.
+**Intraday x-axis (minute / hour bars).** Pass ``datetime64[ns]`` (or strings / epoch / tz-aware -- the engine normalizes). **Default clock: US/Eastern (ET).** X labels: **multi-day** → date at midnight only (``May 28``), otherwise ``HH:MM``; **single-session** (one calendar day) → date on the leftmost tick only (``May 27``), otherwise ``HH:MM``. Override display clock with ``mapping['x_timezone']``. Do NOT pre-format to strings or set ``x_type='ordinal'``.
 
-**Phase orbit (`scatter` + `connect`).** Goodwin-style phase portraits: plot (x, y) with `mapping['connect']=True` for a time-ordered path instead of isolated dots. Needs `mapping['order']` or a temporal/numeric `mapping['color']` for sequence. Set ramp endpoints via `mapping['color_range']=['#start', '#end']` (early→late, HSV rainbow through the longer hue arc), or `color_scheme='turbo'` etc. — see `chart_context_colors.md` §6. Incompatible with `trendline=True`.
+**Phase orbit (`scatter` + `connect`).** Goodwin-style phase portraits: plot (x, y) with `mapping['connect']=True` to draw a time-ordered path instead of isolated dots. Requires `mapping['order']` or a temporal/numeric `mapping['color']` for sequence. Set ramp endpoints with `mapping['color_range']=['#start', '#end']` (early→late, HSV rainbow through the longer hue arc), or use `color_scheme='turbo'` etc. — see `chart_context_colors.md` §6. Incompatible with `trendline=True`.
 
-**Baseline fill gauge (`multi_line` + `zero_fill`).** Single-series line shaded above/below a horizontal baseline — squeeze gauge at 0, ISM diffusion at 50, etc. Set `mapping['zero_fill']=True` and `mapping['zero_fill_baseline']=50` (default `0`). Optional `zero_fill_positive` / `zero_fill_negative` hex overrides. Single-series only; incompatible with `color`, dual-axis, `strokeDash`, log scale.
+**Baseline fill gauge (`multi_line` + `zero_fill`).** Single-series line with shaded band above/below a horizontal baseline — squeeze gauge at 0, ISM diffusion at 50, etc. Set `mapping['zero_fill']=True` and `mapping['zero_fill_baseline']=50` (default `0`). Optional `zero_fill_positive` / `zero_fill_negative` hex overrides. Single-series only; incompatible with `color`, dual-axis, `strokeDash`, log scale.
 
-**End-of-line labels (LVL), not colour legend, on `multi_line` / `timeseries`.** Series name paints at the line's right end (FT/Bloomberg). Auto-injected on every single panel **and every pack-composite cell**. **Series names ≤25 chars** -- longer raises `LvlSeriesNameTooLongError`; rename in DataFrame (`'United States Equities Index 500'` → `'S&P 500'`). Customise via explicit `LastValueLabel(dx=..., font_size=..., font_weight=...)` (wins). **Dual-axis (`dual_axis_series`): no LVL** -- end-of-line text collides with the right y-axis, so the colour legend renders instead (§9.4). Facet grids (`mapping['facet']`) strip LVL -- see grids spoke.
+**End-of-line labels (LVL), not colour legend, on `multi_line` / `timeseries`.** Series name paints at line's right end in own colour (FT/Bloomberg). Auto-injected on every single panel **and every pack-composite cell** (`make_2pack_*`, `make_3pack_*`, `make_4pack_grid`, `make_6pack_grid`). **Series names ≤25 chars** -- longer raises `LvlSeriesNameTooLongError`; rename in DataFrame (`'United States Equities Index 500'` → `'S&P 500'`). Customise via explicit `LastValueLabel(dx=..., font_size=..., font_weight=...)` -- your annotation wins. **Dual-axis (`dual_axis_series`): no LVL** -- end-of-line text collides with the right y-axis; colour legend renders instead (§9.4). Facet grids (`mapping['facet']`) strip LVL -- see grids spoke.
 
-**Colour-legend series names** apply only when the legend is visible (dual-axis, or explicit `mapping['legend']=True`): must fit the cell-width budget or the engine raises `LegendLabelTooLongError`. On dual-axis with 3+ lines the engine auto-appends ` (LHS)` / ` (RHS)` to disambiguate axis binding; disable via `mapping['dual_axis_legend_tags']=False`. Pack composites with LVL show no colour legend.
+**Colour-legend series names** apply only when the legend is visible (dual-axis, or explicit `mapping['legend']=True`): must fit the cell-width budget or the engine raises `LegendLabelTooLongError`. Pack composites with LVL do not show a colour legend.
 
-**Seasonal-jaggedness gate (`multi_line` / `timeseries` / `line` / `area`).** A weekly/monthly/quarterly series with a strong, regular every-period swing (e.g. raw quarterly revenue with a holiday-quarter spike) is REJECTED with `SEASONAL JAGGEDNESS`. Checked per series, incl. composite cells. Fix: seasonally adjust, plot YoY % change, or take a trailing rolling mean/sum over one full period (e.g. 4-quarter rolling sum).
+**Seasonal-jaggedness gate (`multi_line` / `timeseries` / `line` / `area`).** A weekly / monthly / quarterly series with a strong, regular every-period swing (e.g. raw quarterly revenue with a holiday-quarter spike) is REJECTED with `SEASONAL JAGGEDNESS` — it renders as an unreadable sawtooth. Checked per series, including single-panel composite cells. Fix: seasonally adjust, plot YoY % change, or take a trailing rolling mean / rolling sum over one full period (e.g. a 4-quarter rolling sum for quarterly revenue) before charting.
 
-**Series-oscillation gate (`multi_line` / `timeseries` / `line` / `area`).** When two horizons or series are interleaved at every x-date without `mapping['color']` (canonical: MSFT panel in a Mag-7 EPS facet grid), REJECTED with `SERIES OSCILLATION` — distinct from seasonal jaggedness (reverses on nearly every step with large vertical jumps). Fix: add `mapping['color']`, filter to one horizon per x, use `mapping['facet']`, or split with `dual_axis_series`.
+**Series-oscillation gate (`multi_line` / `timeseries` / `line` / `area`).** When two horizons or series are interleaved at every x-date without `mapping['color']`, a line chart connects the alternating high/low points sequentially and the panel fills with vertical zig-zags that read as solid shading (canonical: MSFT panel in a Mag-7 EPS facet grid). REJECTED with `SERIES OSCILLATION`. Distinct from seasonal jaggedness — oscillation reverses on nearly every step with large vertical jumps. Fix: add `mapping['color']`, filter to one horizon per x, use `mapping['facet']`, or split with `dual_axis_series`.
 
-**Stacked-area alignment gate (`area` + `color`).** When series report on different calendars so layers don't share x-values → REJECTED with `SERIES MISALIGNMENT` (the stack shatters into white gaps). Fix: resample every series onto a common period grid (e.g. quarter-end, forward-filled) before stacking.
-
-**Empty-body / coverage gate (`multi_line` / `timeseries` / `area`).** A line/area interpolates across NaNs, so a series >90% missing (per `color` group; per melted column for wide input; whole `y` for single-series) is REJECTED with `EMPTY CHART BODY` — it clears the ≥2-valid-points check but draws nothing. Usual cause: a filter/join whose category spelling doesn't match the source (e.g. `isin(['Treasury Inflation-Protected Securities'])` when the API spells it otherwise) leaves a dense date grid that's almost all holes. Fix: verify the filter matches rows; `df = df.dropna(subset=['value'])` so surviving points draw a line; or `chart_type='scatter'` if only a few discrete observations exist per series.
+**Stacked-area alignment gate (`area` + `color`).** When series report on different calendars so the layers don't share x-values, the stack shatters into white triangular gaps and the engine REJECTS with `SERIES MISALIGNMENT`. Fix: resample every series onto a common period grid (e.g. quarter-end, forward-filled to the last reported value) before stacking.
 
 ### 6.2 Bar family
 
@@ -233,7 +229,7 @@ mapping = {'x': 'Region', 'y': 'Revenue', 'color': 'Product'}                  #
 mapping = {'x': 'Region', 'y': 'Revenue', 'color': 'Product', 'stack': False}  # grouped
 ```
 
-**Category labels ≤15 chars** on every bar chart (`bar`, `bar_horizontal`, grouped, stacked, single, composite -- same cap regardless of orientation). Longer raises `BarCategoryLabelTooLongError` (names the offending labels, suggests abbreviations); shorten in the DataFrame (`'Information Technology'` → `'Info Tech'` / `'IT'`, `'Manufacturing PMI Composite'` → `'Mfg PMI'`).
+**Category labels ≤15 chars** on every bar chart (`bar`, `bar_horizontal`, grouped, stacked, single, composite -- same cap regardless of orientation or context). Longer raises `BarCategoryLabelTooLongError`; shorten in the DataFrame (`'Information Technology'` → `'Info Tech'` / `'IT'`, `'Manufacturing PMI Composite'` → `'Mfg PMI'`). The engine names the offending labels and suggests abbreviations in the error message.
 
 Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact, ~200+ standalone) engine raises `GROUPED BAR CELL-BUDGET ERROR` -- switch to `stack=True`, reduce categories, or render standalone. `bar_horizontal` same on height.
 
@@ -246,7 +242,7 @@ Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact
 
 ### 6.3 Heatmap
 
-**Data shape:** pass long (`x`/`y`/`value` columns), wide (an id column + one value column per category, e.g. `[ticker, 2016…2023]` or `[date, AAPL, MSFT…]`), or a matrix indexed by the row category — the engine auto-reshapes to long; never melt/pivot by hand. Always name `x`, `y`, `value` as the *intended* fields; for wide/matrix input the field name not present as a column labels the melted axis (or values), and `value` may be omitted (defaults to `value`). Ambiguous shapes (≥2 id-like / non-numeric columns, or a matrix with a default RangeIndex) raise `ValidationError` naming the exact reshape.
+**Data shape:** pass long (`x`/`y`/`value` columns), wide (an id column + one value column per category, e.g. `[ticker, 2016…2023]` or `[date, AAPL, MSFT…]`), or a matrix indexed by the row category — the engine auto-reshapes to long; never melt/pivot by hand. Always name `x`, `y`, `value` as the *intended* fields; for wide/matrix input the field name not present as a column labels the melted axis (or values), and `value` may be omitted (defaults to `value`). Ambiguous shapes (≥2 id-like / non-numeric columns, or a matrix with a default RangeIndex) raise a `ValidationError` naming the exact reshape.
 
 ```python
 mapping = {'x': 'year', 'y': 'ticker', 'value': 'op_margin'}   # wide df=[ticker, 2016…2023] (y is the id col)
@@ -263,11 +259,11 @@ mapping = {'x': 'factor', 'y': 'factor', 'value': 'corr'}      # matrix: index +
 
 For categorical recipe (continuous binned to labels), bin via `pd.cut()` / `np.digitize()`. Override sort via `mapping['value_sort']=[...]`.
 
-**Column labels (x-axis):** hard cap **15 chars** (same discipline as row labels / bar categories). Overlong values raise `HeatmapColumnLabelTooLongError`; shorten in the DataFrame. The engine picks horizontal or -45° and thins dense tick labels (calendar-aware: Q1 anchors for quarterly, month starts for monthly, midnights / 6-hour marks for intraday). Do not pass `labelAngle` / tick counts.
+**Column labels (x-axis):** hard cap **15 chars** (same discipline as row labels / bar categories). Overlong values raise `HeatmapColumnLabelTooLongError`; shorten in the DataFrame. Engine picks horizontal or -45° and thins tick labels when the x grid is dense. Thinning is calendar-aware (Q1 anchors for quarterly grids, month starts for monthly, midnights / 6-hour marks for intraday) using the skin's real 18px label font for pitch math. Intraday heatmaps use ~half the tick frequency of profile-line charts. Do not pass `labelAngle` / tick counts.
 
-**Temporal x columns (epoch ms, datetime64, ``2024-Q1`` strings, pandas Period, calendar-year integers ``2008``):** the engine auto-materialises readable period labels (``Q2 25``, ``2024``, ``Oct 24``, ``05-27 09:30`` for sub-daily) — pass raw timestamps, ``df['year']`` integers from ``.dt.year`` / ``groupby``, or quarter tokens; do not set ``x_type='ordinal'`` to block coercion. Pre-formatted period strings the engine recognises (``Apr 23``, ``01 Sep 25``, ``Mar 07``, ``Dec-24``, ``03/25``) keep caller labels but get chronological ``x_sort``. Full month names (``January 2024``) are rejected — use abbreviated ``%b %y`` (``Jan 24``). Sub-daily ``datetime64`` stays one label per bar (never collapsed to calendar days). True categoricals (region codes, probability buckets, ``T000`` session tags) are left untouched. Mixed temporal + categorical x, or epoch-ms blended with quarter/year strings, raises ``ValidationError``.
+**Temporal x columns (epoch ms, datetime64, ``2024-Q1`` strings, pandas Period, calendar-year integers ``2008``):** the engine auto-materialises readable period labels (``Q2 25``, ``2024``, ``Oct 24``, ``05-27 09:30`` for sub-daily) before the nominal encode — pass raw timestamps, ``df['year']`` integers from ``.dt.year`` / ``groupby``, or quarter tokens when possible; do not set ``x_type='ordinal'`` to block coercion. Dense year grids thin via column-pitch math (band-centre labels need margin vs column width). Pre-formatted period strings the engine recognises (``Apr 23``, ``01 Sep 25``, ``Mar 07``, ``Dec-24``, ``03/25``) keep caller labels but receive chronological ``x_sort``. Full month names (``January 2024``) are rejected — use abbreviated ``%b %y`` (``Jan 24``). Sub-daily ``datetime64`` stays one label per bar (never collapsed to calendar days). True categoricals (region codes, probability buckets, ``T000`` session tags) are left untouched. Mixed temporal + categorical x, or epoch-ms blended with quarter/year strings, raises ``ValidationError``.
 
-**Row labels (y-axis):** always horizontal (`labelAngle=0`); never rotated to -45; never ellipsis-truncated. Hard cap **15 chars** (same discipline as bar category labels). Validated on every heatmap -- overlong values raise `HeatmapRowLabelTooLongError`; shorten in the DataFrame.
+**Row labels (y-axis):** always horizontal (`labelAngle=0`); never rotated to -45; never ellipsis-truncated. Hard cap **15 chars** (same discipline as bar category labels). Row labels are validated on every heatmap -- overlong values raise `HeatmapRowLabelTooLongError`; shorten in the DataFrame.
 
 ```python
 df['prob_bucket'] = pd.cut(df['Probability'], bins=10,
@@ -304,7 +300,7 @@ Haver stores many monthly/quarterly at business-daily granularity (same value ~2
 
 ### 7.1 Axis-title kwargs
 
-`x_title` / `y_title` / `y_title_right` accepted both INSIDE `mapping={}` and as TOP-LEVEL kwargs on `make_chart()` / `ChartSpec(...)`; engine routes top-level into `mapping`, `mapping[...]` wins on conflict. `x_label` / `y_label` are legacy aliases for the top-level form. Composite `title=` / `subtitle=` describe the COMPOSITE; set per-panel axis titles on each `ChartSpec`.
+`x_title` / `y_title` / `y_title_right` accepted both INSIDE `mapping={}` and as TOP-LEVEL kwargs on `make_chart()` / `ChartSpec(...)`. Engine routes top-level into `mapping`; `mapping[...]` wins on conflict. `x_label` / `y_label` are legacy aliases for the top-level form. Composite-level `title=` / `subtitle=` describe the COMPOSITE; per-panel axis titles set on each `ChartSpec`.
 
 ### 7.2 Basic patterns
 
@@ -314,8 +310,10 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series'}                        
 mapping = {'x': 'date', 'y': ['col_a', 'col_b']}                                        # auto-melt (wide)
 mapping = {'x': 'tenor', 'y': 'yield_pct', 'color': 'curve_date'}                       # profile/curve
 mapping = {'x': 'x_var', 'y': 'y_var', 'color': 'group', 'trendlines': True}            # scatter + trendlines
-mapping = {'x': 'util', 'y': 'labor_share', 'color': 'date', 'connect': True}          # phase orbit (§6.1)
-mapping = {'x': 'date', 'y': 'ism_mfg', 'zero_fill': True, 'zero_fill_baseline': 50}    # baseline gauge (§6.1)
+mapping = {'x': 'util', 'y': 'labor_share', 'color': 'date', 'connect': True,
+           'color_range': ['#DC143C', '#003359']}                                     # red → navy orbit
+mapping = {'x': 'date', 'y': 'ulc_yoy', 'zero_fill': True}                              # squeeze gauge @ 0
+mapping = {'x': 'date', 'y': 'ism_mfg', 'zero_fill': True, 'zero_fill_baseline': 50}    # ISM vs 50
 mapping = {'x': 'date', 'y': 'value', 'color': 'series',                                # dual axis (§9)
            'dual_axis_series': ['Right Axis Series'],
            'y_title': 'Left Label', 'y_title_right': 'Right Label'}
@@ -332,9 +330,7 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',                        
 | `x_sort` / `y_sort` | list | Explicit ordinal sort (x) / heatmap y-sort |
 | `x_type` | str | Force `'ordinal'` on non-temporal categoricals (yield-curve tenors); NOT for intraday datetime |
 | `x_timezone` | str | Intraday display clock override (default ET / `America/New_York`). Aliases: `UTC`, `LON`, `US/Eastern` |
-| `dual_axis_series` / `dual_axis_bind` | list / dict | Right-axis series names, **or** per-series bind dict (`{'Series A': 'left', 'Series B': 'right'}`; aliases `lhs`/`rhs`). Pass one mechanism, not both. Unlisted series default left. |
-| `dual_axis_legend_tags` | bool | Append ` (LHS)` / ` (RHS)` to colour-legend entries. Default `True` when 3+ series; `False` on 2-series dual-axis. |
-| `invert_right_axis` | bool | Flip right axis (higher = bottom) |
+| `dual_axis_series` / `invert_right_axis` | list / bool | Right-axis series / flip (higher = bottom) |
 | `dual_axis_config` | dict | Pin dual-axis y domains: `{'y_domain_left': [lo, hi], 'y_domain_right': [lo, hi]}` |
 | `legend` | bool | Show/hide (auto by default) |
 | `trendline` / `trendlines` | bool | Overall (scatter) / per-group (scatter_multi) |
@@ -396,7 +392,7 @@ annotations = [
 | Anti-pattern | Why |
 |---|---|
 | `Segment(...)` "y=x / 45-deg / identity" on scatter | Macro/rates axes are different units; engine drops silently. Use `Trendline` |
-| Any annotation outside the visible plot domain (`Band` edge above data; `Segment`/`Arrow` endpoint off-data; `PointLabel`/`PointHighlight`/`Callout` off-data coord) | Shared scale expands to include the coord, stretching the frame; engine drops silently. Keep coords inside data; put narrative thresholds in title/subtitle. For "highlight above X": `Band(y1=X, y2=df['value'].max())`. `HLine` drops if y outside but doesn't stretch |
+| Any annotation outside visible plot domain (`Band` edge above data; `Segment`/`Arrow` endpoint off-data; `PointLabel`/`PointHighlight`/`Callout` off-data coord) | Shared scale expands to include the coord, stretching frame. Engine drops silently. Keep coords inside data; for narrative thresholds outside use title/subtitle. For "highlight above X": `Band(y1=X, y2=df['value'].max())`. `HLine` drops if y outside but doesn't stretch |
 | `HLine(y=2.0, label='Fed 2% Target')` -- redundant label on known threshold | Drop the label (or shrink to `'2%'`); title carries directional claim |
 | `VLine` at right edge labelled "Today"/"Now" | Right edge IS today |
 | `PointLabel`/`Callout` describing slope ("rising"/"falling") | Geometry conveys. Title for directional claim |
@@ -420,9 +416,9 @@ All inherit `label`, `label_color`, `color`, `axis` (where applicable). Use `sty
 | `PointLabel` | `x`, `y`, `dx`/`dy` (pixel offsets), `font_size`, `align`. Use sparingly |
 | `PointHighlight` | `x`, `y`, `size` (default `100`), `opacity`, `shape` (`'circle'`/`'square'`/`'diamond'`/`'triangle'`/`'cross'`/`'stroke'`), `filled`, `stroke_color`, `stroke_width`. Default `"#C00000"` |
 | `Callout` | `x`, `y`, `background` (`'halo'`/`'box'`/`'none'`, default `'halo'`), `background_color`, `halo_width`, `box_padding_x`/`_y`, `box_opacity`, `box_corner_radius`, `dx`/`dy`, `font_size`, `font_weight`, `align`. `dx` 0-60; `abs(dx)>80` risks off-canvas |
-| `LastValueLabel` | `dx`, `font_size` (default 16), `font_weight`. Auto-injected (§6.1); pass an explicit instance to customise; auto-derives names from color column. Text-only, no endpoint dot. Name cap (≤25 chars, `LvlSeriesNameTooLongError`) + dual-axis stripping: §6.1 |
+| `LastValueLabel` | `dx`, `font_size` (default 16), `font_weight`. **Auto-injected** on every `multi_line` / `timeseries` single panel + pack-composite cell (§6.1); pass explicit instance to customise. Auto-derives names from color column. **Series names > 25 chars raise `LvlSeriesNameTooLongError`** -- rename in DataFrame. **Stripped on dual-axis** (collides with right y-axis). Text-only, no endpoint dot |
 | `Trendline` | `method` (`'linear'`/`'exp'`/`'log'`/`'pow'`/`'poly'`/`'quad'`), `stroke_width`, `stroke_dash`. Scatter only |
-| `PlotText` | `text` (**≤8 words**, hard cap 10), `position` (`'auto'` / `'left'` / `'right'` / `'bottom'`; auto routes right → bottom → left), `font_size`, `italic`, `color`, `align`, `width_pct`. For longer prose pass `make_chart(caption=...)` / `side_left=...` / `side_right=...` (explicit wins). Inside-plot anchor values rejected (`ValidationError`) |
+| `PlotText` | `text` (**≤8 words**, hard cap 10), `position` (`'auto'` / `'left'` / `'right'` / `'bottom'`; auto routes right → bottom → left), `font_size`, `italic`, `color`, `align`, `width_pct`. For longer prose pass `make_chart(caption=...)` / `side_left=...` / `side_right=...` directly. Explicit `caption=` / `side_*=` wins. Inside-plot anchor values removed 2026-05-10 -- now `ValidationError` |
 
 ### 8.4 Compatibility & layers
 
@@ -462,19 +458,22 @@ Engine REJECTS multi-series single-y-axis `multi_line` / `timeseries` when eithe
 | **Flatness** | single series's data span < 10% of visible y | `Y-AXIS SCALE MISMATCH` | gold ($2000) + WTI ($70); equity + 2Y yield |
 | **Level disparity** | every series varies, but gap between two means > 3x the largest individual span | `Y-AXIS LEVEL DISPARITY` | corp saving (~2.5%) vs investment (~9.9%) of GDP |
 
-**Magnitude-driven splits auto-recover, fully engine-side** -- never pre-split a chart whose problem is *magnitude*. When the y-scale gates fire, the engine routes by `|mean|` to two axes, tags the legend `(LHS)`/`(RHS)`, and emits `AUTO-RECOVERED:` on `result.audit_trail` (not `warnings` -- the chart is fine). **3+ irreconcilable tiers no longer reject** -- it splits at the single largest magnitude gap and emits `AUTO-RECOVERED (best-effort)` plus a `DUAL-AXIS WITHIN-AXIS COMPRESSION` warning naming any series that may still flatten. Override via `dual_axis_series=` / `dual_axis_bind=`, or switch to `make_2pack_*` / `facet` if each series's SHAPE matters more than co-movement.
+**2-magnitude-cluster cases auto-recover** -- when the series split cleanly into two magnitude groups (the 2-series case, or e.g. two $-level series + one %-level series), the engine routes the smaller-magnitude group to the right axis, re-renders, and emits `AUTO-RECOVERED:` on `result.audit_trail` (NOT `warnings`; chart is fine). Override via explicit `dual_axis_series=` or switch to `make_2pack_*`.
 
-**Declare dual-axis intent yourself when units differ but magnitudes overlap** -- the gates key off magnitude, so they can't catch a `$T` series (10-40) plotted with a `%` series (20-38): same numbers, different units. That chart needs `dual_axis_series` / `dual_axis_bind` from you (the engine cannot infer units). Once declared, it auto-tags and warns on within-axis compression like the auto path.
+**3+ irreconcilable magnitude tiers stay rejected** -- a dual axis only has two scales; editorial choice required:
 
-| Reshape (when co-movement isn't the point) | Best when |
+| Fix | Best when |
 |---|---|
 | **2-panel composite** (`make_2pack_horizontal` / `_vertical`) | Each panel its own y-axis. Canonical for 2 series; for 3+ split into panels where each panel's content shares a scale |
+| **Dual-axis** -- `mapping['dual_axis_series']=['<name>']` + `mapping['y_title_right']='...'` | 2-3 series, argument is co-movement of differently-scaled shapes |
 | **Normalize** -- z-score, rebase-to-100, pct-change every series | 3+ series; loses absolute level but preserves co-movement |
 | **Small-multiples / facet** -- `mapping['facet']='<color_col>'` (drop `color`) | 3+ series with own y-axis per panel; argument is SHAPE of each component. See grids spoke |
 
+Error message names offending series + provides exact `dual_axis_series=[...]` / `facet=...` payload.
+
 ### 9.2 Series-name discipline
 
-`dual_axis_series` lists right-axis names exactly matching `color` values. For 3+ lines prefer `dual_axis_bind` (every series's axis explicit). Define LEFT/RIGHT constants to keep names in lockstep across DataFrame, binding, and axis titles.
+`dual_axis_series` lists names exactly matching `color` column values. Define LEFT/RIGHT constants -- keeps the 4 places these names appear (DataFrame, `dual_axis_series`, left title, right title) in lockstep.
 
 ```python
 LEFT_SERIES, RIGHT_SERIES = '2s10s Curve (bp)', 'WTI Crude ($/bbl)'
@@ -484,22 +483,13 @@ df_long = pd.concat([curve_df, oil_df], ignore_index=True)
 mapping = {'x': 'date', 'y': 'value', 'color': 'series',
            'dual_axis_series': [RIGHT_SERIES],
            'y_title': '2s10s (bp)', 'y_title_right': 'WTI ($/bbl)'}
-
-# 3+ lines: explicit per-series bind + auto LHS/RHS legend tags
-mapping = {'x': 'date', 'y': 'value', 'color': 'series',
-           'dual_axis_bind': {
-               'Total Debt ($T)': 'left',
-               'Public Held ($T)': 'left',
-               'Intragov %': 'right',
-           },
-           'y_title': 'USD Trillions', 'y_title_right': '% of Total'}
 ```
 
 Hygiene: rename DataFrame columns BEFORE melting; `.str.strip()` series columns from CSV (trailing whitespace silently disqualifies the right-axis row); re-check `df['series'].value_counts()` after any `dropna()`.
 
 ### 9.3 Inverted right axis
 
-`invert_right_axis: True` flips the right axis (higher = bottom). Standard rates pattern: "up = bullish" on both axes (equities up + yields down = risk-on). No value negation needed.
+`invert_right_axis: True` flips the right axis (higher = bottom). Standard rates pattern where "up = bullish" on both axes (equities up + yields down both = risk-on). No value negation needed.
 
 ```python
 mapping = {'x': 'date', 'y': 'value', 'color': 'series',
@@ -509,7 +499,7 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',
 
 ### 9.4 Annotations against the right axis
 
-`HLine`, `Segment`, `PointHighlight`, `Callout`, `Arrow`, `Band` (horizontal), `PointLabel` accept `axis='right'` -- pass y-values in right-axis units. `VLine` is axis-agnostic. Out-of-domain values silently dropped. **`LastValueLabel` and `Trendline` are stripped on dual-axis** (non-fatal warning; end-of-line labels would collide with the right y-axis, so the colour legend renders). For end-of-line labels alongside two y-scales, build single-axis charts and combine via `make_2pack_vertical()`.
+`HLine`, `Segment`, `PointHighlight`, `Callout`, `Arrow`, `Band` (horizontal), `PointLabel` accept `axis='right'` -- pass y-values in right-axis units. `VLine` is axis-agnostic. Out-of-domain values silently dropped. **`LastValueLabel` does not apply on dual-axis** -- engine strips it (non-fatal warning); end-of-line labels collide with the right y-axis, so the colour legend renders. `Trendline` also stripped on dual-axis. For end-of-line labels alongside two y-scales, build single-axis charts and combine via `make_2pack_vertical()`.
 
 ```python
 annotations = [
@@ -524,11 +514,15 @@ annotations = [
 
 ### 9.5 When to switch off dual-axis
 
-Per-series regime annotations → one `multi_line` per series in a composite. Magnitude / scale-problem reshapes (2-pack, z-score normalize, facet): §9.1.
+| Intent | Better shape |
+|---|---|
+| Compare magnitudes side-by-side (not co-movement) | `make_2pack_vertical()` |
+| 3+ series with scale problems | z-score normalize, single axis `multi_line` |
+| Per-series regime annotations | one `multi_line` per series in composite |
 
 ### 9.6 Lead-lag pattern
 
-"Does X anticipate Y?" -- ISM PMI leads equity returns ~6m, jobless claims lead unemployment ~3m, HY spreads lead defaults ~12m. Shift the predictor's date column forward by the lead horizon → its line extends past the predicted series's last actual; past co-movement implies near-term direction.
+"Does X anticipate Y?" -- ISM PMI ahead of equity returns ~6m, jobless claims ahead of unemployment ~3m, HY spreads ahead of defaults ~12m. Shift predictor's date column forward by lead horizon → predictor's line extends past predicted series's last actual; past co-movement implies near-term direction.
 
 | Form | Question | Build |
 |---|---|---|
@@ -553,7 +547,7 @@ make_chart(df=df_long, chart_type='multi_line',
                  Band(x1=today, x2=future_end, label='Implied', opacity=0.18)])
 ```
 
-`VLine` at "Today" canonical; `Band` over future zone optional. For an implied-target callout use `Arrow` / `PointHighlight` / `Callout` -- compute `implied_target` from predictor calibration before charting (engine does not derive it).
+`VLine` at "Today" canonical; `Band` over future zone optional. For implied-target callout: `Arrow` / `PointHighlight` / `Callout` with `implied_target` computed from predictor calibration before charting -- engine does not derive.
 
 | Don't | Why |
 |---|---|
@@ -590,11 +584,11 @@ spec = ChartSpec(df=df, chart_type='multi_line',
 | `make_4pack_grid(tl, tr, bl, br, ...)` | 2x2 | 4 ChartSpecs |
 | `make_6pack_grid(...)` | 3x2 | 6 ChartSpecs (also `specs=[c1..c6]`) |
 
-All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`, `spacing`, `filename_prefix`, `filename_suffix`; return `CompositeResult` (`ChartResult` fields + `chart_errors`). `caption` / `side_*` flank the whole pack (like `make_chart`); per-sub-chart text panels go on each `ChartSpec`.
+All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`, `spacing`, `filename_prefix`, `filename_suffix`; return `CompositeResult` (`ChartResult` fields + `chart_errors`). `caption` / `side_*` flank the whole pack (same shape as `make_chart`); sub-chart text panels go on each `ChartSpec`.
 
-**Composite-global kwargs** (`skin`, `dimensions`, `dimension_preset`, `save_as`, `spacing`, …) go on the `make_*pack_*` call, **not** `ChartSpec` -- `ChartSpec(skin=...)` raises a typed `ValidationError` naming the bad kwarg and pointing at the pack helper (`make_chart(skin=...)` is valid).
+**Composite-global kwargs** (`skin`, `dimensions`, `dimension_preset`, `save_as`, `spacing`, …) belong on the `make_*pack_*` call, **not** on `ChartSpec`. `make_chart(skin=...)` is valid; `ChartSpec(skin=...)` raises a typed `ValidationError` naming the bad kwarg and pointing at the pack helper.
 
-**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC the composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. **Any sub-chart failure raises `ValidationError`** (message names how many failed) -- build every panel from valid, non-empty data. Per-cell label caps still apply in every pack cell: `multi_line` series names ≤25 chars (`LvlSeriesNameTooLongError`, §6.1); `heatmap` row labels must fit horizontally (`HeatmapRowLabelTooLongError`, §6.3) -- shorten before `make_*pack_*()`.
+**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. **Any sub-chart failure raises `ValidationError`** (message names how many failed) -- every panel must build from valid, non-empty data. **`multi_line` series names ≤25 chars in every pack-composite cell** (same LVL cap as standalone; see §6.1). **`heatmap` row labels must fit horizontally in composite cells** -- long y-axis category strings raise `HeatmapRowLabelTooLongError`; shorten before `make_*pack_*()` (§6.3).
 
 **Per-cell colour-legend label budget** (when a sub-chart uses categorical `mapping['color']` and the legend renders): char cap = `floor(0.25 * cell_width_px / 7)`. Composite cells are narrow -- budget before `LegendLabelTooLongError`:
 
@@ -604,7 +598,16 @@ All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`,
 | `make_4pack_grid` (compact) | 280px | ~10 |
 | `make_6pack_grid` (compact) | 260px | ~9 |
 
-Standalone `make_chart` at 600px allows ~21 chars. Shorten colour-category names in the DataFrame before building the composite; aim ≤6 chars in 4-pack / 6-pack cells. (Scenario → layout: §3.1; level + decomposition stacks vertically.)
+Standalone `make_chart` at 600px allows ~21 chars. Shorten colour-category names in the DataFrame before building the composite; aim ≤6 chars in 4-pack / 6-pack cells.
+
+| Situation | Layout |
+|---|---|
+| US vs EU inflation | `make_2pack_horizontal` (same y-concept, different region) |
+| Level + decomposition (rates path + 2s10s) | `make_2pack_vertical` |
+| 4 regional PMIs | `make_4pack_grid` |
+| Headline + 2 supporting | `make_3pack_triangle` |
+| Sector dashboard (6 panels) | `make_6pack_grid` |
+| 7-30 entities (Mag-7, sectors, G20, FX) | grid mode via `mapping['facet']` -- fetch grids spoke |
 
 ---
 
@@ -617,19 +620,21 @@ Standalone `make_chart` at 600px allows ~21 chars. Shorten colour-category names
 | Daily | 2-3 years | Short | Recent acceleration, event reactions |
 | Intraday | 5 trading days | Very Short | Event reaction window, data releases |
 
-Overrides: "highest since 2008" → MUST include 2008. Pre-pandemic → start ≥ 2015. Percentile claims need a full percentile window. Don't show 1-2y of monthly (hides cycle), 30+y of daily (noise), or different ranges for compared charts. Structural shifts ("not seen since X") → Long (20-50y) regardless of frequency.
+Overrides: "highest since 2008" → MUST include 2008. Pre-pandemic → start ≥ 2015. Percentile claims require a full percentile window. Don't show 1-2y of monthly (hides cycle); 30+y of daily (noise); different ranges for compared charts. Structural shifts ("not seen since X") → use Long (20-50y) regardless of frequency.
 
 ---
 
 ## 12. Failure transparency
 
-Never silently substitute a layout. If a requested shape isn't feasible, tell the user and offer alternatives. Max 2 retries per chart concept; after 2, deliver the best version with a note or ask about alternatives.
+Never silently substitute a layout. If a requested shape isn't feasible, tell the user and offer alternatives. Max 2 retries per chart concept; after 2 failures, deliver best version with a note or ask about alternatives.
 
 ---
 
 ## 13. Static tables (`make_table()`)
 
-`make_table()` + `TableResult` auto-injected (§1). Same brand palette + Liberation Sans font as `make_chart`. **Canvas engine-decided**: width fits data (text columns wrap), height grows to fit every row; PRISM never picks a dimension, nothing is truncated. **One hard limit:** a table too wide for a portrait 8.5x11 page **raises** `ValidationError` rather than shrinking to illegible micro-text -- reshape, don't widen (§13.10). When to reach for `make_table`: Tables vs Charts (top).
+`make_table()` + `TableResult` auto-injected (§1). Same brand palette and Liberation Sans font stack as `make_chart`. **Canvas engine-decided**: PNG width fits data (text columns wrap automatically), height grows to fit every row. PRISM never picks a dimension; nothing is truncated. **One hard limit:** a table too wide to read on a portrait 8.5x11 page **raises** `ValidationError`, not shrunk into illegible micro-text -- reshape it instead of widening it (§13.10).
+
+Reach for `make_table` when the answer is structured rows × columns and a chart can't visualise the relationship cleanly: watchlists, term structures, P&L attribution, factor tilts, FX cross-rates, sector tapes, calendars, snapshot dashboards.
 
 `df=` and `rows=` are mutually exclusive; engine errors if both:
 
@@ -648,7 +653,8 @@ result = make_table(df=df, title='Macro Snapshot', subtitle='G15 · Q1 2026',
     column_color_modes={'GDP YoY (%)': 'rwg', 'CPI YoY (%)': 'bw'},
     save_as='tables/macro_snapshot.png')
 
-# Hardcoded -- list-of-dicts. Categorical RAG ('High'/'Medium'/'Low') via cell_colors;
+# Hardcoded -- list-of-dicts (column names from keys).
+# Categorical RAG ('High'/'Medium'/'Low') uses cell_colors directly;
 # column_color_modes='rag' is for NUMERIC + rag_thresholds (§13.4).
 RAG_HEX = {'High': '#1A8754', 'Medium': '#FFC107', 'Low': '#DC3545'}
 themes = [{'Theme': 'Soft Landing', 'Owner': 'Macro', 'Conviction': 'High'},
@@ -693,7 +699,7 @@ result = make_table(
 | `subtotal_rows` | list | Row indices → bold + subtle band |
 | `show_index` | bool | Include DataFrame index as leftmost column |
 
-### 13.3 `TableResult` (dataclass -- dot notation only; failures raise)
+### 13.3 `TableResult` (dataclass -- dot notation only; failures raise, so a returned result has rendered)
 
 | Attribute | Description |
 |---|---|
@@ -725,6 +731,8 @@ rag_thresholds={'Unemp (%)':  (4.0, 6.0),                              # lower-i
 | `{'red_below': X, 'amber_below': Y}` | lower-is-bad (explicit) | same with named keys |
 | `{'amber_above': X, 'red_above': Y}` | higher-is-bad (inflation, unemp, default rate) | `> red_above` red, `> amber_above` amber, else green |
 
+Three modes are the entire surface -- PRISM does not pick palettes.
+
 ### 13.5 Heatmap groups (multi-column shared scales)
 
 When columns belong to the same metric and should share one heatmap scale (yield curve across countries, correlation matrix, all-numeric snapshot block):
@@ -740,19 +748,19 @@ heatmap_groups=[
 
 | Scope | Effect | Use case |
 |---|---|---|
-| `'column'` (default) | Each column scaled to its own min/max | within-column ranking ("where does this tenor sit?") |
-| `'row'` | Each row scaled across the group's columns | cross-entity at a fixed tenor -- yield-curve cross-country |
-| `'group'` | Single shared scale across every cell | absolute level across all cells -- correlation matrix |
+| `'column'` (default) | Each column scaled to its own min/max | "Within this country, where does this tenor sit?" |
+| `'row'` | Each row scaled across the group's columns | "At this tenor, where does each country sit vs peers?" -- yield-curve cross-country |
+| `'group'` | Single shared scale across every cell | "Absolute level -- JPN low everywhere, US high" -- correlation matrix |
 
 `heatmap_groups` wins over `column_color_modes` for any covered column.
 
 ### 13.6 Headers, rows, hierarchy
 
 ```python
-# Multi-level headers -- spans sum to len(df.columns) per level
+# Multi-level column headers -- spans must sum to len(df.columns) per level
 header_levels=[[('', 1), ('Yields (%)', 4), ('Changes (bp)', 2)]]   # 3+ levels degrade
 
-# Navy band between row blocks -- counts sum to len(df)
+# Navy mini-band between row blocks -- counts must sum to len(df)
 row_groups=[('Americas', 3), ('EMEA', 4), ('Asia-Pac', 5)]
 
 # Per-row indent (first column only); 2 levels read, 3+ degrade
@@ -813,7 +821,7 @@ minibar_columns={'MktBar': 'Mkt Cap ($B)'}
 - **`signed_columns` colours TEXT, not the cell.** Combine with `column_color_modes={col: 'rwg'}` for both.
 - **Sparkline series can differ in length per row.** Each row's min/max scales independently.
 - **Wide text columns wrap automatically.** PRISM doesn't opt in.
-- **Width has a hard legibility limit -- reshape, don't widen.** A table whose body text would print below ~6pt across a portrait 8.5x11 page's usable width is rejected (error reports canvas px width + printed pt). Column COUNT isn't the trigger: numeric columns can't compress and headers set a non-compressible floor, so a few long-header numeric columns can fail where a dozen narrow ones pass. When the natural shape is too wide (e.g. a metric × 24-month grid, a 40-column matrix), build it narrow via ONE of: (1) **transpose** (many cols / few rows → months-as-rows, not months-as-columns); (2) **split** by column group into separate tables (one per year / region); (3) **aggregate** (latest + 3m + 12m change instead of every period, or top-N rows); (4) **shorten headers**.
+- **Width has a hard legibility limit -- reshape, don't widen.** A table whose body text would print below ~6pt across a portrait 8.5x11 page's usable width is rejected (the error reports the canvas px width + printed pt). Column COUNT is not the trigger: numeric columns can't compress and headers set a non-compressible floor, so a few long-header numeric columns can fail where a dozen narrow ones pass. When the natural shape is too wide (e.g. a metric × 24-month grid, a 40-column matrix), build it narrow from the start by ONE of: (1) **transpose** -- if many columns and few rows, swap them (months-as-rows, not months-as-columns); (2) **split** by column group into several tables (one per year / region) rendered separately; (3) **aggregate** -- show latest + 3m + 12m change instead of every period, or top-N rows; (4) **shorten headers**. Prefer reshaping at authoring time over emitting a table that will be rejected.
 
 ### 13.11 Anti-patterns
 
@@ -856,7 +864,7 @@ minibar_columns={'MktBar': 'Mkt Cap ($B)'}
 - `row_groups counts sum to X, expected len(df)=Y` -- adjust counts
 - `column_color_modes[col]=... looks like rag thresholds` -- split: `column_color_modes={col: 'rag'}` + `rag_thresholds={col: {...}}`
 - `heatmap_groups=... was passed as a dict-keyed-by-mode` -- use list-of-dicts (§13.5)
-- `too wide to render legibly on a portrait 8.5x11 page` -- reshape (§13.10)
+- `too wide to render legibly on a portrait 8.5x11 page` -- reshape: transpose / split by column group / aggregate to fewer periods / shorten headers (§13.10)
 - `DataFrame has no columns` -- filter upstream
 - `Pass either df= (DataFrame) or rows= (list of dicts/tuples)` -- pass exactly one; `Pass either df= or rows=, not both` -- pick one
 - `s3_manager.put failed: ...` -- check `session_path`; verify manager is alive
