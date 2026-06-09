@@ -11870,7 +11870,7 @@ def _build_tooltip(
         tooltips.append(
             alt.Tooltip(
                 size_field, type="quantitative", format=".2f",
-                title=_format_label(size_field, mapping, "size"),
+                title=size_field.replace("_", " ").title(),
             )
         )
 
@@ -14164,10 +14164,7 @@ def _build_scatter(
             )
 
     if size_field and size_field in df.columns and not connect_path:
-        size_title = _format_label(size_field, mapping, "size")
-        chart = chart.encode(
-            size=alt.Size(size_field, type="quantitative", title=size_title),
-        )
+        chart = chart.encode(size=alt.Size(size_field, type="quantitative"))
 
     if mapping.get("trendline") and not connect_path:
         trend = (
@@ -22988,12 +22985,16 @@ def _qc_one(
         return {
             "passed": False,
             "reason": reason,
+            "description": "",
             "png_path": png_path,
         }
     try:
         png_bytes = s3_manager.get(png_path)
         verdict = check_chart_quality(png_bytes)
         verdict.setdefault("png_path", png_path)
+        # Ensure the Gemini chart description threads through even when an
+        # older verdict shape (pre-description) is returned.
+        verdict.setdefault("description", "")
         return verdict
     except Exception as exc:  # noqa: BLE001
         if _is_missing_object_error(exc):
@@ -23006,6 +23007,7 @@ def _qc_one(
             return {
                 "passed": False,
                 "reason": f"png not found (bad or stale path): {png_path}",
+                "description": "",
                 "png_path": png_path,
             }
         logger.warning(
@@ -23015,6 +23017,7 @@ def _qc_one(
         return {
             "passed": True,
             "reason": f"infra error (fail-open): {exc}",
+            "description": "",
             "png_path": png_path,
         }
 
@@ -23078,9 +23081,13 @@ def check_charts_quality(
                 out[idx] = {
                     "passed": True,
                     "reason": f"worker crash (fail-open): {exc}",
+                    "description": "",
                     "png_path": _qc_result_png_path(results[idx]),
                 }
-    return [v if v is not None else {"passed": True, "reason": "no verdict"} for v in out]
+    return [
+        v if v is not None else {"passed": True, "reason": "no verdict", "description": ""}
+        for v in out
+    ]
 
 
 # ===========================================================================
