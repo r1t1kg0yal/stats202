@@ -328,7 +328,8 @@ mapping = {'x': 'date', 'y': 'value', 'color': 'series',                        
 | `x` | str | X-axis column |
 | `y` | str / list | Y-axis column(s); list triggers auto-melt |
 | `color` | str | Grouping column for multi-series |
-| `y_title` / `y_title_right` / `x_title` | str | Axis labels (≤24 chars hard, aim ≤16); right Y dual-axis only |
+| `size` | str | `scatter` / `scatter_multi`: quantitative column encoding dot area (size legend auto-titles from column name; override with `size_title`) |
+| `y_title` / `y_title_right` / `x_title` / `size_title` | str | Axis / size-legend labels (≤24 chars hard, aim ≤16); right Y dual-axis only for `y_title_right` |
 | `x_sort` / `y_sort` | list | Explicit ordinal sort (x) / heatmap y-sort |
 | `x_type` | str | Force `'ordinal'` on non-temporal categoricals (yield-curve tenors); NOT for intraday datetime |
 | `x_timezone` | str | Intraday display clock override (default ET / `America/New_York`). Aliases: `UTC`, `LON`, `US/Eastern` |

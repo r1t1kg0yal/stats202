@@ -11870,7 +11870,7 @@ def _build_tooltip(
         tooltips.append(
             alt.Tooltip(
                 size_field, type="quantitative", format=".2f",
-                title=size_field.replace("_", " ").title(),
+                title=_format_label(size_field, mapping, "size"),
             )
         )
 
@@ -14164,7 +14164,10 @@ def _build_scatter(
             )
 
     if size_field and size_field in df.columns and not connect_path:
-        chart = chart.encode(size=alt.Size(size_field, type="quantitative"))
+        size_title = _format_label(size_field, mapping, "size")
+        chart = chart.encode(
+            size=alt.Size(size_field, type="quantitative", title=size_title),
+        )
 
     if mapping.get("trendline") and not connect_path:
         trend = (
