@@ -11,15 +11,17 @@
 
 The engine enforces these caps up-front and **raises** rather than silently clipping. Shortening strings in the DataFrame / kwargs is always the fix. When several independent gates fail, the engine raises ONCE with a numbered `N independent problems -- fix ALL, then re-run:` list -- fix every numbered item before re-running, never just the first.
 
+**Caps are ceilings, not targets -- author every label well UNDER its cap, aiming roughly half.** The best label is the shortest string that still reads: prefer `'IT'` over `'Info Tech'` over `'Information Technology'`. A label that merely clears the cap is too long.
+
 | Limit | Cap | Trips | Fix |
 |---|---|---|---|
 | Lines per `multi_line` / `area` panel | **4** | 5+ series on one canvas; LVL labels collide | 5-6: composite (§10) or keep top 4; 7+ same-shape entities: facet (grids spoke); else split / aggregate (§3.1) |
 | Axis title (`y_title` / `x_title` / `y_title_right`) | **24 chars** (aim ≤16) | long descriptive axis labels | abbreviate before `make_chart` |
-| LVL end-of-line series name (`multi_line` / `area`) | **25 chars** | long melt column values auto-become LVL labels | rename in DataFrame before melting |
-| Heatmap row + column labels | **15 chars** | correlation matrix ticker names, long categories | abbreviate row/col strings |
+| LVL end-of-line series name (`multi_line` / `area`) | **25 chars** (aim ≤12) | long melt column values auto-become LVL labels | rename in DataFrame before melting |
+| Heatmap row + column labels | **15 chars** (aim ≤8) | correlation matrix ticker names, long categories | abbreviate row/col strings |
 | Heatmap ROW COUNT (square corr / wide-universe) | rows must fit canvas height | 50×50 corr on one PNG | aggregate, facet, or split tables |
 | Composite subtitle line-wrap | wraps to a cap that scales DOWN with composite width | long subtitles on wide 2-packs | shorten subtitle text |
-| Bar category labels | **15 chars** | long x categories on vertical bars | abbreviate `x` column |
+| Bar category labels | **15 chars** (aim ≤8) | long x categories on vertical bars | abbreviate `x` column |
 | Composite pack ceiling vs facet floor | packs take **2-6** cells; facet needs **7+** panels | 7 G7 lines on one panel, 8-panel ranking | `make_*pack_*` for ≤6 panels, facet 7-36 (grids spoke) |
 
 When a cap is hit the error names the offending strings and suggests an abbreviation. See §4 for authoring rules that mirror these caps.
@@ -218,7 +220,7 @@ Engine rejects scatters with < 10 distinct (x, y) coords in the visible region (
 
 - **Building 2+ charts in one script? Drive them through `build_charts()` (§2a)** instead of a bare sequence -- one run surfaces every failure, not just the first.
 - **Max 4 lines per `multi_line` / `area`, counted per panel -- engine raises** (5+ overplot, LVL labels collide). For 5-6 series: composite (§10) or normalize/aggregate to the most important ≤4. For 7+ same-shape entities: small-multiples facet (grids spoke); heterogeneous 7-8 series: 4-pack split (§10); 9+ series: aggregate or heatmap (§3.1). Composite cells each stay ≤4.
-- **`y_title` plain English; aim ≤16 chars (hard cap 24).** Same cap on `x_title` / `y_title_right`. Series names rendered as LVL end-of-line labels capped 25 (§6.1) -- rename in DataFrame before melting.
+- **Labels: shortest string that still reads -- caps are ceilings, aim roughly half.** `y_title` plain English, aim ≤16 (hard cap 24; same on `x_title` / `y_title_right`). LVL series names aim ≤12 (cap 25, §6.1) -- rename in DataFrame before melting. Bar categories and heatmap row / column labels aim ≤8 (cap 15).
 - **X column must be `'date'` for time series, as a column.** `df.rename(columns={'datetime': 'date'}).reset_index()`.
 - **Multi-line long format: rename FIRST, then melt** -- or use auto-melt (no `color` key, pass `y=[list]`).
 - **No source attribution in title/subtitle.** Title argues; sources in PRISM metadata. Good: `title='Inflation Has Peaked'`, `subtitle='Core CPI decelerating 6 months'`. Bad: `title='US CPI Data'`, `subtitle='Source: Haver'`.
@@ -268,7 +270,7 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 
 **Baseline fill gauge (`multi_line` + `zero_fill`).** Single-series line shaded above/below a horizontal baseline — squeeze gauge at 0, ISM diffusion at 50, etc. Set `mapping['zero_fill']=True` and `mapping['zero_fill_baseline']=50` (default `0`). Optional `zero_fill_positive` / `zero_fill_negative` hex overrides. Single-series only; incompatible with `color`, dual-axis, `strokeDash`, log scale.
 
-**End-of-line labels (LVL), not colour legend, on `multi_line` / `timeseries`.** Series name paints at the line's right end (FT/Bloomberg). Auto-injected on every single panel **and every pack-composite cell**. **Series names ≤25 chars** -- longer raises `LvlSeriesNameTooLongError`; rename in DataFrame (`'United States Equities Index 500'` → `'S&P 500'`). Customise via explicit `LastValueLabel(dx=..., font_size=..., font_weight=...)` (wins). **Dual-axis (`dual_axis_series`): no LVL** -- end-of-line text collides with the right y-axis, so the colour legend renders instead (§9.4). Facet grids (`mapping['facet']`) strip LVL -- see grids spoke.
+**End-of-line labels (LVL), not colour legend, on `multi_line` / `timeseries`.** Series name paints at the line's right end (FT/Bloomberg). Auto-injected on every single panel **and every pack-composite cell**. **Series names ≤25 chars hard, aim ≤12** -- longer raises `LvlSeriesNameTooLongError`; rename in DataFrame (`'United States Equities Index 500'` → `'S&P 500'`). Customise via explicit `LastValueLabel(dx=..., font_size=..., font_weight=...)` (wins). **Dual-axis (`dual_axis_series`): no LVL** -- end-of-line text collides with the right y-axis, so the colour legend renders instead (§9.4). Facet grids (`mapping['facet']`) strip LVL -- see grids spoke.
 
 **Colour-legend series names** apply only when the legend is visible (dual-axis, or explicit `mapping['legend']=True`): must fit the cell-width budget or the engine raises `LegendLabelTooLongError`. On dual-axis with 3+ lines the engine auto-appends ` (LHS)` / ` (RHS)` to disambiguate axis binding; disable via `mapping['dual_axis_legend_tags']=False`. Pack composites with LVL show no colour legend.
 
@@ -291,7 +293,7 @@ mapping = {'x': 'Region', 'y': 'Revenue', 'color': 'Product'}                  #
 mapping = {'x': 'Region', 'y': 'Revenue', 'color': 'Product', 'stack': False}  # grouped
 ```
 
-**Category labels ≤15 chars** on every bar chart (`bar`, `bar_horizontal`, grouped, stacked, single, composite -- same cap regardless of orientation). Longer raises `BarCategoryLabelTooLongError` (names the offending labels, suggests abbreviations); shorten in the DataFrame (`'Information Technology'` → `'Info Tech'` / `'IT'`, `'Manufacturing PMI Composite'` → `'Mfg PMI'`).
+**Category labels ≤15 chars hard, aim ≤8** on every bar chart (`bar`, `bar_horizontal`, grouped, stacked, single, composite -- same cap regardless of orientation). Longer raises `BarCategoryLabelTooLongError` (names the offending labels, suggests abbreviations); shorten in the DataFrame, preferring the shortest readable form (`'Information Technology'` → `'IT'`, `'Manufacturing PMI Composite'` → `'Mfg PMI'`).
 
 Grouped clamps facet width to cell budget; below ~3px per bar (~60+ cats compact, ~200+ standalone) engine raises `GROUPED BAR CELL-BUDGET ERROR` -- switch to `stack=True`, reduce categories, or render standalone. `bar_horizontal` same on height.
 
@@ -321,11 +323,11 @@ mapping = {'x': 'factor', 'y': 'factor', 'value': 'corr'}      # matrix: index +
 
 For categorical recipe (continuous binned to labels), bin via `pd.cut()` / `np.digitize()`. Override sort via `mapping['value_sort']=[...]`.
 
-**Column labels (x-axis):** hard cap **15 chars** (same discipline as row labels / bar categories). Overlong values raise `HeatmapColumnLabelTooLongError`; shorten in the DataFrame. The engine picks horizontal or -45° and thins dense tick labels (calendar-aware: Q1 anchors for quarterly, month starts for monthly, midnights / 6-hour marks for intraday). Do not pass `labelAngle` / tick counts.
+**Column labels (x-axis):** hard cap **15 chars**, aim ≤8 (same discipline as row labels / bar categories). Overlong values raise `HeatmapColumnLabelTooLongError`; shorten in the DataFrame. The engine picks horizontal or -45° and thins dense tick labels (calendar-aware: Q1 anchors for quarterly, month starts for monthly, midnights / 6-hour marks for intraday). Do not pass `labelAngle` / tick counts.
 
 **Temporal x columns (epoch ms, datetime64, ``2024-Q1`` strings, pandas Period, calendar-year integers ``2008``):** the engine auto-materialises readable period labels (``Q2 25``, ``2024``, ``Oct 24``, ``05-27 09:30`` for sub-daily) — pass raw timestamps, ``df['year']`` integers from ``.dt.year`` / ``groupby``, or quarter tokens; do not set ``x_type='ordinal'`` to block coercion. Pre-formatted period strings the engine recognises (``Apr 23``, ``01 Sep 25``, ``Mar 07``, ``Dec-24``, ``03/25``) keep caller labels but get chronological ``x_sort``. Full month names (``January 2024``) are rejected — use abbreviated ``%b %y`` (``Jan 24``). Sub-daily ``datetime64`` stays one label per bar (never collapsed to calendar days). True categoricals (region codes, probability buckets, ``T000`` session tags) are left untouched. Mixed temporal + categorical x, or epoch-ms blended with quarter/year strings, raises ``ValidationError``.
 
-**Row labels (y-axis):** always horizontal (`labelAngle=0`); never rotated to -45; never ellipsis-truncated. Hard cap **15 chars** (same discipline as bar category labels). Validated on every heatmap -- overlong values raise `HeatmapRowLabelTooLongError`; shorten in the DataFrame.
+**Row labels (y-axis):** always horizontal (`labelAngle=0`); never rotated to -45; never ellipsis-truncated. Hard cap **15 chars**, aim ≤8 (same discipline as bar category labels). Validated on every heatmap -- overlong values raise `HeatmapRowLabelTooLongError`; shorten in the DataFrame.
 
 ```python
 df['prob_bucket'] = pd.cut(df['Probability'], bins=10,
@@ -653,7 +655,7 @@ All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`,
 
 **Composite-global kwargs** (`skin`, `dimensions`, `dimension_preset`, `save_as`, `spacing`, …) go on the `make_*pack_*` call, **not** `ChartSpec` -- `ChartSpec(skin=...)` raises a typed `ValidationError` naming the bad kwarg and pointing at the pack helper (`make_chart(skin=...)` is valid).
 
-**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC the composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. **Any sub-chart failure raises `ValidationError`** (message names how many failed) -- build every panel from valid, non-empty data. Per-cell label caps still apply in every pack cell: `multi_line` series names ≤25 chars (`LvlSeriesNameTooLongError`, §6.1); `heatmap` row labels must fit horizontally (`HeatmapRowLabelTooLongError`, §6.3) -- shorten before `make_*pack_*()`.
+**Rules:** ChartSpec args positional, metadata keyword-only (never `top=spec_a`). QC the composite PNG, not sub-specs. "Completely empty" QC fail usually means date still in index, y column all-NaN, or empty DataFrame. Color/x/y scales resolve independently per sub-chart. **Any sub-chart failure raises `ValidationError`** (message names how many failed) -- build every panel from valid, non-empty data. Per-cell label caps still apply in every pack cell -- cells are narrow, so aim even shorter than standalone: `multi_line` series names ≤25 chars, aim ≤12 (`LvlSeriesNameTooLongError`, §6.1); `heatmap` row labels must fit horizontally (`HeatmapRowLabelTooLongError`, §6.3) -- shorten before `make_*pack_*()`.
 
 **Per-cell colour-legend label budget** (when a sub-chart uses categorical `mapping['color']` and the legend renders): char cap = `floor(0.25 * cell_width_px / 7)`. Composite cells are narrow -- budget before `LegendLabelTooLongError`:
 
