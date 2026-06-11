@@ -8,10 +8,10 @@ Spoke fetched on demand from `chart_context.md`. Covers `make_chart()` in grid m
 
 | Situation | Reach for |
 |---|---|
-| 7-36 entities sharing one shape (Mag-7, 11 GICS sectors, G20 GDP, 16 FX pairs) | grid mode (this spoke) |
+| 7-30 entities sharing one shape (Mag-7, 11 GICS sectors, G20 GDP, 16 FX pairs) | grid mode (this spoke) |
 | 2-6 panels making a single ARGUMENT (US vs EU, level + change) | `make_2pack_*` / `make_4pack_grid` / `make_6pack_grid` (hub §10) |
 | One canvas with one comparison | single `make_chart()` + `mapping['color']` |
-| 37+ entities or matrix-of-values | `chart_type='heatmap'` |
+| 30+ entities or matrix-of-values | `chart_type='heatmap'` |
 
 Grid is for cross-sectional dashboards, not arguments. A 2-pack reads tighter for ONE comparison.
 
@@ -85,13 +85,13 @@ make_chart(df=df,                            # cols: country, quarter, cpi, gdp
     title='Inflation vs Growth: time-coloured phase plot')
 ```
 
-10-color cardinality cap BYPASSED for gradient (continuous palette). SINGLE composite-level gradient legend bar renders below grid; per-panel gradient legends stripped.
+12-color cardinality cap BYPASSED for gradient (continuous palette). SINGLE composite-level gradient legend bar renders below grid; per-panel gradient legends stripped.
 
 ---
 
 ## 6. Engine defaults
 
-PRISM passes none of these. Panels are square (squareness > canvas-fill). Y-axis title strip stripped on line/multi_line/bar/area/histogram (composite title carries metric); KEPT on scatter/scatter_multi (x and y are different variables). Per-panel legends always stripped; `share_color=True` rebuilds a single composite legend. Typography uses the `facet_grid` preset (24pt axis labels, 3 tick budget) on every panel regardless of pixel size. `LastValueLabel` is never rendered in facet grids -- the engine silently strips any LVL PRISM passes (n-pack composite cells DO keep LVL; the strip is facet-only, hub §6.1). Bar value labels are suppressed in facet panels. If ANY panel fails validation the entire grid is rejected -- the error names every offending panel id with its complete finding list (same all-or-nothing contract as `make_*pack_*` composites).
+PRISM passes none of these. Panels are square (squareness > canvas-fill). Y-axis title strip stripped on line/multi_line/bar/area/histogram (composite title carries metric); KEPT on scatter/scatter_multi (x and y are different variables). Per-panel legends always stripped; `share_color=True` rebuilds a single composite legend. Typography uses the `facet_grid` preset (24pt axis labels, 3 tick budget) on every panel regardless of pixel size. `LastValueLabel` is never rendered in facet grids or composites -- the engine silently strips any LVL PRISM passes. Bar value labels are suppressed in facet panels. If ANY panel fails validation the entire grid is rejected -- the error names the offending panel id(s) and cause (same fail-fast contract as `make_*pack_*` composites).
 
 ---
 

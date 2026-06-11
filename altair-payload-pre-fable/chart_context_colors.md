@@ -73,7 +73,7 @@ make_chart(df=df_long, chart_type='multi_line',
     title='G7 GDP (colourblind-safe)')
 ```
 
-Series count > palette length → engine cycles. 10-cardinality cap still applies.
+Series count > palette length → engine cycles. 12-cardinality cap still applies.
 
 ---
 
@@ -197,7 +197,7 @@ mapping = {'x': 'cpi', 'y': 'gdp', 'color': 'quarter',
 
 ## 7. Validation errors
 
-Engine **raises** `ValidationError` (hub §1 failure contract) with the right alternative named; independent colour + opacity problems aggregate into one raise:
+Engine returns `ChartResult(success=False, error_message=...)` with the right alternative named:
 
 - Unknown palette name -- lists valid categorical / heatmap names
 - Categorical palette on heatmap / gradient ramp on categorical -- crosses dispatch
@@ -206,7 +206,7 @@ Engine **raises** `ValidationError` (hub §1 failure contract) with the right al
 - Opacity outside 0-1
 - `color_map` / `opacity_map` int key out of range or < 1 (slot 1 is the first colour)
 
-Fix every named problem, then re-render.
+Switch and re-render.
 
 ---
 

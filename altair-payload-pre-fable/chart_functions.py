@@ -492,42 +492,6 @@ def _raise_on_failure(func: Callable) -> Callable:
     return wrapper
 
 
-def _aggregate_finding_messages(messages: List[str]) -> str:
-    """Fold N validation-finding messages into one numbered frame.
-
-    Single-finding lists pass through VERBATIM -- the per-gate message is
-    byte-identical to what the gate raised serially, so the single-failure
-    error surface never changes shape. 2+ findings get the numbered
-    aggregate frame so PRISM fixes every independent problem in ONE retry
-    instead of discovering them serially across tool calls.
-    """
-    if len(messages) == 1:
-        return messages[0]
-    lines = [
-        f"{len(messages)} independent problems -- fix ALL, then re-run:"
-    ]
-    for i, msg in enumerate(messages, 1):
-        indented = str(msg).replace("\n", "\n     ")
-        lines.append(f"  {i}. {indented}")
-    return "\n".join(lines)
-
-
-def _raise_findings(findings: List[Exception]) -> None:
-    """Raise collected validation findings (no-op when the list is empty).
-
-    One finding re-raises the ORIGINAL exception instance (preserving the
-    typed ``*TooLongError`` class and message bytes). 2+ findings raise a
-    base ``ValidationError`` carrying the numbered aggregate frame.
-    """
-    if not findings:
-        return
-    if len(findings) == 1:
-        raise findings[0]
-    raise ValidationError(
-        _aggregate_finding_messages([str(f) for f in findings])
-    )
-
-
 class YAxisLabelTooLongError(ValidationError):
     """Raised when a y-axis label exceeds the configured character limit."""
 
@@ -1054,49 +1018,6 @@ def _validate_bar_category_labels(
         category_field=category_field,
         mapping=mapping,
     )
-
-
-def _grouped_bar_cell_budget(
-    df: pd.DataFrame,
-    x_field: str,
-    color_field: str,
-    width: int,
-) -> Tuple[int, int, float, int]:
-    """Compute grouped-bar facet geometry; raise when bars would be unreadable.
-
-    Cell-budget invariant: total outer width is
-    ``n_x_cats * facet_width + (n_x_cats - 1) * inter_facet_spacing``.
-    Subtract the spacing overhead from the budget BEFORE dividing by
-    ``n_x_cats`` so both terms fit the input ``width``. Shared by
-    ``_build_bar``'s grouped path (which consumes the geometry) and the
-    pre-dispatch finding collector (which runs it as a gate so the
-    budget failure aggregates with sibling findings instead of surfacing
-    one retry later).
-
-    Returns:
-        ``(n_x_cats, facet_width, per_bar_px, spacing_overhead)``.
-
-    Raises:
-        ValidationError: When per-bar pixels fall below the readability
-            threshold.
-    """
-    n_x_cats = df[x_field].nunique()
-    n_color_cats = df[color_field].nunique()
-    spacing_overhead = max(0, n_x_cats - 1) * _GROUPED_BAR_FACET_SPACING_PX
-    usable_width = max(n_x_cats, width - spacing_overhead)
-    facet_width = max(1, usable_width // max(n_x_cats, 1))
-    per_bar_px = facet_width / max(n_color_cats, 1)
-    if per_bar_px < _MIN_GROUPED_BAR_PER_BAR_PX:
-        raise ValidationError(
-            f"GROUPED BAR CELL-BUDGET ERROR: {n_x_cats} x-categories x "
-            f"{n_color_cats} color groups produces ~{per_bar_px:.1f}px "
-            f"per bar in a {width}px-wide cell, below the "
-            f"{_MIN_GROUPED_BAR_PER_BAR_PX}px readability threshold. "
-            f"Use stack=True (stacked bars), reduce x-categories, or "
-            f"render this chart standalone (larger width budget) "
-            f"instead of inside a composite."
-        )
-    return n_x_cats, facet_width, per_bar_px, spacing_overhead
 
 
 def _get_field(mapping: Dict[str, Any], key: str) -> Optional[str]:
@@ -2047,31 +1968,35 @@ def _coerce_string_x_to_datetime(
     return df
 
 
-def _collect_plot_ready_findings(
+def validate_plot_ready_df(
     df: pd.DataFrame,
     chart_type: str,
     mapping: Dict[str, Any],
-) -> Tuple[List[ValidationError], List[ValidationError], List[str], set]:
-    """Collect every plot-readiness finding in one pass (no raising).
+) -> List[str]:
+    """Validate that a DataFrame is ready for plotting.
 
-    Returns ``(tier0_findings, tier1_findings, warnings, flagged_fields)``:
+    Catches the most common failure modes before they reach Vega-Lite,
+    where they would produce silently empty / mis-rendered charts:
+      - empty DataFrames
+      - missing columns referenced by the mapping
+      - all-NaN columns
+      - non-datetime x for ``timeseries`` charts
+      - non-numeric y for chart types that require it
+      - excessive cardinality on color / facet columns
+      - negative values on donut / pie charts
 
-    * **Tier 0 (structural):** empty DataFrame, missing columns, all-NaN
-      columns, no columns, wrong dtypes. Content checks on broken
-      structure are noise, so callers raise these BEFORE looking at
-      tier 1.
-    * **Tier 1 (content):** color cardinality, line-series cap, facet
-      cardinality, donut gates -- independent editorial-shape gates that
-      aggregate with the integrity findings.
-    * **Warnings:** non-fatal accumulations (row count, missingness,
-      heatmap grid size).
-    * **Flagged fields:** column names already covered by an all-NaN /
-      too-sparse finding here, so downstream collectors
-      (``_collect_encoding_findings``) never report the same column twice
-      with two differently-worded messages.
+    Args:
+        df: DataFrame to validate.
+        chart_type: Type of chart being created (``ChartType``).
+        mapping: Column mapping for the chart.
 
-    ``validate_plot_ready_df`` is the raising wrapper that preserves the
-    original serial fail-fast surface for external callers.
+    Returns:
+        A list of warning messages (non-fatal issues) accumulated during
+        validation.
+
+    Raises:
+        ValidationError: If the DataFrame has a fatal issue that would
+            prevent the chart from rendering.
     """
     logger.debug("[validate_plot_ready_df] START: chart_type=%s", chart_type)
     logger.debug(
@@ -2081,19 +2006,12 @@ def _collect_plot_ready_findings(
     )
     logger.debug("[validate_plot_ready_df] mapping=%s", mapping)
 
-    tier0: List[ValidationError] = []
-    tier1: List[ValidationError] = []
     warnings: List[str] = []
-    flagged_fields: set = set()
 
     # ---- empty DataFrame ----------------------------------------------------
-    # Terminal: every downstream check is noise on an empty frame.
     if len(df) == 0:
         logger.error("[validate_plot_ready_df] EMPTY DATAFRAME!")
-        tier0.append(ValidationError(
-            "DataFrame is empty. Cannot create chart from empty data."
-        ))
-        return tier0, tier1, warnings, flagged_fields
+        raise ValidationError("DataFrame is empty. Cannot create chart from empty data.")
 
     fields_to_check = _extract_fields(mapping)
     logger.debug("[validate_plot_ready_df] Fields to check: %s", fields_to_check)
@@ -2121,7 +2039,7 @@ def _collect_plot_ready_findings(
         potential_date_cols = list({*datetime_cols, *index_like_cols})
 
         if "date" in missing_cols and potential_date_cols:
-            tier0.append(ValidationError(
+            raise ValidationError(
                 f"Missing column 'date' in DataFrame. "
                 f"Available columns: {list(df.columns)}\n\n"
                 f"LIKELY CAUSE: melt(id_vars=['date']) was called BEFORE renaming columns. "
@@ -2131,16 +2049,15 @@ def _collect_plot_ready_findings(
                 f"  df = df.reset_index()\n"
                 f"  df.columns = ['date', 'col1', 'col2']  # Rename FIRST\n"
                 f"  df_long = df.melt(id_vars=['date'], ...)  # NOW 'date' exists"
-            ))
-        # Detect missing color field for multi_line / area (long-format API).
-        elif (
-            chart_type in {"multi_line", "area"}
-            and any(
-                col in {"series", "indicator", "category", "group", "variable"}
-                for col in missing_cols
             )
+
+        # Detect missing color field for multi_line / area (long-format API).
+        common_color_fields = {"series", "indicator", "category", "group", "variable"}
+        if (
+            chart_type in {"multi_line", "area"}
+            and any(col in common_color_fields for col in missing_cols)
         ):
-            tier0.append(ValidationError(
+            raise ValidationError(
                 f"Missing columns in DataFrame: {missing_cols}. "
                 f"Available columns: {list(df.columns)}\n\n"
                 f"TIP: For multi_line charts with a 'color' mapping, you need long-format "
@@ -2148,12 +2065,12 @@ def _collect_plot_ready_findings(
                 f"  1. Melt: df.melt(id_vars=['date'], value_vars=[...], "
                 f"var_name='series', value_name='value')\n"
                 f"  2. Use mapping={{'y': ['col1', 'col2']}} to auto-melt wide-format data."
-            ))
-        else:
-            tier0.append(ValidationError(
-                f"Missing columns in DataFrame: {missing_cols}. "
-                f"Available columns: {list(df.columns)}"
-            ))
+            )
+
+        raise ValidationError(
+            f"Missing columns in DataFrame: {missing_cols}. "
+            f"Available columns: {list(df.columns)}"
+        )
 
     # ---- all-NaN columns / sparse columns ----------------------------------
     for field_name in fields_to_check:
@@ -2161,43 +2078,38 @@ def _collect_plot_ready_findings(
             non_null_count = df[field_name].notna().sum()
             total_count = len(df)
             if non_null_count == 0:
-                flagged_fields.add(field_name)
-                tier0.append(ValidationError(
+                raise ValidationError(
                     f"Column '{field_name}' has no valid (non-null) values. "
                     f"All ({total_count}) rows are NaN/None. "
                     f"This would result in an empty chart. "
                     f"Check your data source or fillna() before plotting."
-                ))
-            elif (
+                )
+            if (
                 non_null_count < 2
                 and chart_type in {"timeseries", "multi_line", "scatter", "area", "scatter_multi"}
             ):
-                flagged_fields.add(field_name)
-                tier0.append(ValidationError(
+                raise ValidationError(
                     f"Column '{field_name}' has only {non_null_count} valid value(s). "
                     f"Chart type '{chart_type}' requires at least 2 data points. "
                     f"Check your data filtering."
-                ))
+                )
 
     # ---- empty column count (e.g. .assign() on a Series) -------------------
     if len(df.columns) == 0:
-        tier0.append(ValidationError(
+        raise ValidationError(
             "DataFrame has no columns. This often occurs when using .assign() on a Series "
             "instead of a DataFrame. Use df[['column']].assign() instead."
-        ))
+        )
 
     # ---- type validation per chart type ------------------------------------
     if chart_type == "timeseries":
         x_field = _get_field(mapping, "x")
-        if (
-            x_field and x_field in df.columns
-            and not pd.api.types.is_datetime64_any_dtype(df[x_field])
-        ):
-            tier0.append(ValidationError(
+        if x_field and not pd.api.types.is_datetime64_any_dtype(df[x_field]):
+            raise ValidationError(
                 f"For timeseries charts, x-axis column '{x_field}' must be datetime. "
                 f"Current type: {df[x_field].dtype}. "
                 f"Convert with: df['{x_field}'] = pd.to_datetime(df['{x_field}'])"
-            ))
+            )
 
     # ``multi_line`` is included here too: its y is always the (numeric) value
     # axis, and it was previously the only line-shaped type missing from this
@@ -2208,11 +2120,11 @@ def _collect_plot_ready_findings(
     if chart_type in {"timeseries", "multi_line", "scatter", "bar", "area", "histogram", "boxplot"}:
         y_field = _get_field(mapping, "y")
         if y_field and y_field in df.columns and not pd.api.types.is_numeric_dtype(df[y_field]):
-            tier0.append(ValidationError(
+            raise ValidationError(
                 f"Column '{y_field}' must be numeric for {chart_type} charts. "
                 f"Current type: {df[y_field].dtype}. "
                 f"Convert with: df['{y_field}'] = pd.to_numeric(df['{y_field}'], errors='coerce')"
-            ))
+            )
 
     # ---- cardinality guards ------------------------------------------------
     # Color cardinality is a HARD error: the default GS_PRIMARY palette has
@@ -2242,14 +2154,14 @@ def _collect_plot_ready_findings(
         if not is_gradient_color:
             cardinality = color_series.nunique()
             if cardinality > MAX_COLOR_CARDINALITY:
-                tier1.append(ValidationError(
+                raise ValidationError(
                     f"Color column '{color_field}' has {cardinality} unique values, "
                     f"exceeding MAX_COLOR_CARDINALITY={MAX_COLOR_CARDINALITY}. "
                     f"The GS palette only has {MAX_COLOR_CARDINALITY} colors; "
                     f"beyond this point series repeat hues and become indistinguishable. "
                     f"Filter to top-{MAX_COLOR_CARDINALITY} categories first, e.g. "
                     f"`df = top_k_categories(df, '{color_field}', k={MAX_COLOR_CARDINALITY})`."
-                ))
+                )
     # Donut: same cap, but enforced separately below in the chart-specific
     # block so the suggested fix points at the right column.
 
@@ -2269,20 +2181,7 @@ def _collect_plot_ready_findings(
         if line_color_field and line_color_field in df.columns:
             n_series = df[line_color_field].nunique()
             if n_series > MAX_LINE_SERIES:
-                # Suggestion must be reachable: the facet grid has a
-                # _FACET_MIN_PANELS floor, so suggesting facet for a 5-6
-                # series chart would send PRISM into a second rejection.
-                # Only offer the decompositions that will actually work
-                # at this series count.
-                if n_series >= _FACET_MIN_PANELS:
-                    facet_bullet = (
-                        f"  - Small-multiples: one panel per series via "
-                        f"mapping['facet']='{line_color_field}' (drop 'color') -- "
-                        f"see the grids spoke.\n"
-                    )
-                else:
-                    facet_bullet = ""
-                tier1.append(ValidationError(
+                raise ValidationError(
                     f"{chart_type} has {n_series} series (column "
                     f"'{line_color_field}'), over the {MAX_LINE_SERIES}-line "
                     f"cap. More than {MAX_LINE_SERIES} lines on one panel "
@@ -2292,21 +2191,23 @@ def _collect_plot_ready_findings(
                     f"  - Composite panels grouping related series "
                     f"(make_2pack_horizontal / make_4pack_grid), "
                     f"<= {MAX_LINE_SERIES} lines each.\n"
-                    f"{facet_bullet}"
+                    f"  - Small-multiples: one panel per series via "
+                    f"mapping['facet']='{line_color_field}' (drop 'color') -- "
+                    f"see the grids spoke.\n"
                     f"  - Normalize (z-score / rebase-to-100) and keep the most "
                     f"important <= {MAX_LINE_SERIES} series, aggregating the "
                     f"rest into an 'Other' line or a separate panel."
-                ))
+                )
 
     facet_field = _get_field(mapping, "facet")
     if facet_field and facet_field in df.columns:
         cardinality = df[facet_field].nunique()
         if cardinality > MAX_FACET_CARDINALITY:
-            tier1.append(ValidationError(
+            raise ValidationError(
                 f"Facet column '{facet_field}' has {cardinality} unique values "
                 f"(max allowed: {MAX_FACET_CARDINALITY}). "
                 f"Filter to fewer categories before plotting."
-            ))
+            )
 
     # ---- soft warnings -----------------------------------------------------
     if len(df) > MAX_ROWS_INTERACTIVE:
@@ -2346,10 +2247,10 @@ def _collect_plot_ready_findings(
             or _get_field(mapping, "y")
         )
         if theta_field and theta_field in df.columns and (df[theta_field] < 0).any():
-            tier1.append(ValidationError(
+            raise ValidationError(
                 f"Donut/pie charts require non-negative values. "
                 f"Column '{theta_field}' contains negative values."
-            ))
+            )
 
         # Donut slice cap: the categorical palette has MAX_COLOR_CARDINALITY
         # distinct hues. With more slices than that, neighboring slices end
@@ -2359,7 +2260,7 @@ def _collect_plot_ready_findings(
         if color_field_donut and color_field_donut in df.columns:
             slice_card = df[color_field_donut].nunique()
             if slice_card > MAX_COLOR_CARDINALITY:
-                tier1.append(ValidationError(
+                raise ValidationError(
                     f"Donut has {slice_card} slices, exceeding "
                     f"MAX_COLOR_CARDINALITY={MAX_COLOR_CARDINALITY}. "
                     f"With more slices than colors, hues repeat and adjacent "
@@ -2367,133 +2268,10 @@ def _collect_plot_ready_findings(
                     f"Aggregate the smallest slices into 'Other' first, e.g. "
                     f"`df = top_k_categories(df, '{color_field_donut}', "
                     f"k={MAX_COLOR_CARDINALITY - 1}, value_col='{theta_field}')`."
-                ))
+                )
 
-    logger.debug(
-        "[validate_plot_ready_df] collected %d tier-0, %d tier-1 finding(s), "
-        "%d warning(s)", len(tier0), len(tier1), len(warnings),
-    )
-    return tier0, tier1, warnings, flagged_fields
-
-
-def validate_plot_ready_df(
-    df: pd.DataFrame,
-    chart_type: str,
-    mapping: Dict[str, Any],
-) -> List[str]:
-    """Validate that a DataFrame is ready for plotting.
-
-    Catches the most common failure modes before they reach Vega-Lite,
-    where they would produce silently empty / mis-rendered charts:
-      - empty DataFrames
-      - missing columns referenced by the mapping
-      - all-NaN columns
-      - non-datetime x for ``timeseries`` charts
-      - non-numeric y for chart types that require it
-      - excessive cardinality on color / facet columns
-      - negative values on donut / pie charts
-
-    Raising wrapper around ``_collect_plot_ready_findings``: structural
-    (tier-0) findings raise first -- aggregated into one numbered frame
-    when 2+ fire -- then content (tier-1) findings. The chart pipeline
-    (``_make_chart`` / ``_build_single_chart``) calls the collector
-    directly so tier-1 findings aggregate with the integrity gates.
-
-    Args:
-        df: DataFrame to validate.
-        chart_type: Type of chart being created (``ChartType``).
-        mapping: Column mapping for the chart.
-
-    Returns:
-        A list of warning messages (non-fatal issues) accumulated during
-        validation.
-
-    Raises:
-        ValidationError: If the DataFrame has a fatal issue that would
-            prevent the chart from rendering.
-    """
-    tier0, tier1, warnings, _flagged = _collect_plot_ready_findings(
-        df, chart_type, mapping,
-    )
-    _raise_findings(tier0)
-    _raise_findings(tier1)
     logger.debug("[validate_plot_ready_df] PASSED with %d warnings", len(warnings))
     return warnings
-
-
-def _collect_encoding_findings(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    chart_type: str,
-    *,
-    skip_fields: Optional[set] = None,
-) -> Tuple[List[ValidationError], List[str]]:
-    """Collect encoding-data findings in one pass (no raising).
-
-    Catches the case where data exists but is not plottable:
-      - all values in x or y are NaN
-      - no valid (x, y) pairs exist (both non-null in same row)
-      - insufficient data points for the chart type
-
-    All findings are structural (tier 0). ``skip_fields`` names columns a
-    prior collector (``_collect_plot_ready_findings``) already flagged, so
-    the aggregate frame never reports the same column twice with two
-    differently-worded messages.
-    """
-    findings: List[ValidationError] = []
-    warnings: List[str] = []
-    skip_fields = skip_fields or set()
-
-    x_field = _get_field(mapping, "x")
-    y_field = _get_field(mapping, "y")
-
-    fields_to_check = [
-        f for f in (x_field, y_field)
-        if f and f in df.columns and f not in skip_fields
-    ]
-    flagged_all_nan = False
-    for field_name in fields_to_check:
-        non_null_count = df[field_name].notna().sum()
-        if non_null_count == 0:
-            flagged_all_nan = True
-            findings.append(ValidationError(
-                f"Column '{field_name}' has no valid (non-null) values. "
-                f"All {len(df)} rows are NaN/None. The chart would render empty. "
-                f"Check your data transformations or use df['{field_name}'].fillna(...)."
-            ))
-        elif non_null_count < 2 and chart_type in {
-            "timeseries", "multi_line", "scatter", "area", "scatter_multi",
-        }:
-            warnings.append(
-                f"Column '{field_name}' has only {non_null_count} valid value(s). "
-                f"Chart may not render meaningfully for '{chart_type}' type."
-            )
-
-    # An all-NaN column already explains why no pairs exist -- reporting
-    # the pair gate too would be the same defect worded twice.
-    if (
-        not flagged_all_nan
-        and x_field and y_field
-        and x_field in df.columns and y_field in df.columns
-        and x_field not in skip_fields and y_field not in skip_fields
-    ):
-        valid_pairs = df[[x_field, y_field]].dropna()
-        if len(valid_pairs) == 0:
-            findings.append(ValidationError(
-                f"No valid (x, y) pairs found for chart type '{chart_type}'. "
-                f"Columns '{x_field}' and '{y_field}' have no rows where both are non-null. "
-                f"'{x_field}' has {df[x_field].notna().sum()} non-null values, "
-                f"'{y_field}' has {df[y_field].notna().sum()} non-null values, "
-                f"but they don't overlap. Check your data alignment."
-            ))
-        elif len(valid_pairs) < 2 and chart_type in {"scatter", "multi_line", "area"}:
-            findings.append(ValidationError(
-                f"Only {len(valid_pairs)} valid data point(s) for '{chart_type}' chart. "
-                f"Need at least 2 points to draw a line/trend. "
-                f"Check your data filtering and ensure sufficient non-null values."
-            ))
-
-    return findings, warnings
 
 
 def _validate_encoding_data(
@@ -2503,166 +2281,51 @@ def _validate_encoding_data(
 ) -> List[str]:
     """Validate that encoding fields have plottable data.
 
-    Raising wrapper around ``_collect_encoding_findings`` (the chart
-    pipeline calls the collector directly so findings aggregate).
+    Catches the case where data exists but is not plottable:
+      - all values in x or y are NaN
+      - no valid (x, y) pairs exist (both non-null in same row)
+      - insufficient data points for the chart type
     """
-    findings, warnings = _collect_encoding_findings(df, mapping, chart_type)
-    _raise_findings(findings)
-    return warnings
-
-
-def _collect_integrity_findings(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    chart_type: str,
-    *,
-    skip_pair_checks: bool = False,
-) -> List[ValidationError]:
-    """Collect every data-integrity finding in one pass (no raising).
-
-    Runs all independent integrity gates and returns their findings so
-    the caller can aggregate them into ONE error instead of surfacing
-    them serially across retries. Dependency-aware skips keep the
-    aggregate honest -- a gate whose verdict would be noise given an
-    upstream finding is not run:
-
-      - coverage failure (empty body) -> skip the y-scale gates (they
-        assume there is readable data to assess)
-      - flatness failure -> skip level disparity (alternative diagnoses
-        of the same shape problem; at most one fires, matching the
-        serial behavior)
-      - alignment failure (area) -> skip seasonal jaggedness
-        (misalignment is the dominant defect for stacked areas)
-
-    ``skip_pair_checks=True`` is passed by the chart pipeline when
-    ``_collect_encoding_findings`` already ran -- its pair gates are a
-    superset of Validation 1, so re-running would duplicate findings.
-    """
-    findings: List[ValidationError] = []
+    warnings: List[str] = []
 
     x_field = _get_field(mapping, "x")
     y_field = _get_field(mapping, "y")
-    color_field = _get_field(mapping, "color")
 
-    # Validation 1: x-y pairs exist and are plottable.
-    if (
-        not skip_pair_checks
-        and x_field and y_field
-        and x_field in df.columns and y_field in df.columns
-    ):
-        valid_mask = df[x_field].notna() & df[y_field].notna()
-        valid_count = int(valid_mask.sum())
+    fields_to_check = [f for f in (x_field, y_field) if f and f in df.columns]
+    for field_name in fields_to_check:
+        non_null_count = df[field_name].notna().sum()
+        if non_null_count == 0:
+            raise ValidationError(
+                f"Column '{field_name}' has no valid (non-null) values. "
+                f"All {len(df)} rows are NaN/None. The chart would render empty. "
+                f"Check your data transformations or use df['{field_name}'].fillna(...)."
+            )
+        if non_null_count < 2 and chart_type in {
+            "timeseries", "multi_line", "scatter", "area", "scatter_multi",
+        }:
+            warnings.append(
+                f"Column '{field_name}' has only {non_null_count} valid value(s). "
+                f"Chart may not render meaningfully for '{chart_type}' type."
+            )
 
-        if valid_count == 0:
-            findings.append(ValidationError(
-                f"CHART DATA INTEGRITY ERROR: No valid (x, y) pairs found.\n"
-                f"Column '{x_field}' has {df[x_field].notna().sum()} non-null values.\n"
-                f"Column '{y_field}' has {df[y_field].notna().sum()} non-null values.\n"
-                f"But there are 0 rows where BOTH are non-null.\n"
-                f"This would produce an empty chart. Check data alignment."
-            ))
-        elif valid_count < 2 and chart_type in {"multi_line", "area", "scatter"}:
-            findings.append(ValidationError(
-                f"CHART DATA INTEGRITY ERROR: Only {valid_count} valid data point(s).\n"
-                f"Chart type '{chart_type}' requires at least 2 points to draw.\n"
-                f"Check your data filtering."
-            ))
+    if x_field and y_field and x_field in df.columns and y_field in df.columns:
+        valid_pairs = df[[x_field, y_field]].dropna()
+        if len(valid_pairs) == 0:
+            raise ValidationError(
+                f"No valid (x, y) pairs found for chart type '{chart_type}'. "
+                f"Columns '{x_field}' and '{y_field}' have no rows where both are non-null. "
+                f"'{x_field}' has {df[x_field].notna().sum()} non-null values, "
+                f"'{y_field}' has {df[y_field].notna().sum()} non-null values, "
+                f"but they don't overlap. Check your data alignment."
+            )
+        if len(valid_pairs) < 2 and chart_type in {"scatter", "multi_line", "area"}:
+            raise ValidationError(
+                f"Only {len(valid_pairs)} valid data point(s) for '{chart_type}' chart. "
+                f"Need at least 2 points to draw a line/trend. "
+                f"Check your data filtering and ensure sufficient non-null values."
+            )
 
-    # Validation 2: For multi_line, verify color groups have data.
-    if chart_type == "multi_line" and color_field and color_field in df.columns:
-        empty_groups: List[str] = []
-        for group_name, group_df in df.groupby(color_field):
-            if y_field and y_field in group_df.columns:
-                valid_in_group = int(group_df[y_field].notna().sum())
-                if valid_in_group < 2:
-                    empty_groups.append(f"{group_name} ({valid_in_group} valid points)")
-        if empty_groups:
-            findings.append(ValidationError(
-                f"CHART DATA INTEGRITY ERROR: Some color groups have insufficient data.\n"
-                f"Groups with <2 valid points: {'; '.join(empty_groups)}\n"
-                f"Each line in a multi_line chart needs at least 2 points.\n"
-                f"Check your data or filter out empty groups."
-            ))
-
-    # Validation 3: datetime conversion for x-axis must succeed.
-    if x_field and x_field in df.columns and pd.api.types.is_datetime64_any_dtype(df[x_field]):
-        try:
-            test_values = df[x_field].dropna().head(5)
-            for val in test_values:
-                _ = val.strftime("%Y-%m-%dT%H:%M:%S")
-        except Exception as exc:  # noqa: BLE001 - surface as ValidationError
-            findings.append(ValidationError(
-                f"CHART DATA INTEGRITY ERROR: Datetime conversion will fail.\n"
-                f"Column '{x_field}' has datetime values that cannot be formatted.\n"
-                f"Error: {exc}\n"
-                f"Check for timezone issues or invalid datetime values."
-            ))
-
-    # Validation 4: y values are finite (not inf).
-    if y_field and y_field in df.columns and pd.api.types.is_numeric_dtype(df[y_field]):
-        inf_count = int(np.isinf(df[y_field].dropna()).sum())
-        if inf_count > 0:
-            findings.append(ValidationError(
-                f"CHART DATA INTEGRITY ERROR: y-axis contains {inf_count} infinite values.\n"
-                f"Column '{y_field}' has inf values that cannot be plotted.\n"
-                f"Use df[y_field].replace([np.inf, -np.inf], np.nan) to remove them."
-            ))
-
-    # Validation 4b: empty-body / line coverage. Catches the canonical
-    # "chart rendered but the plot body is empty" failure -- a line-shaped
-    # series that is mostly NaN clears the >=2-points gate (Validation 2) and
-    # the 100%-NaN gate (_validate_encoding_data) but interpolates to nothing
-    # visible.
-    coverage_failed = False
-    try:
-        _validate_line_coverage(df, mapping, chart_type)
-    except ValidationError as exc:
-        coverage_failed = True
-        findings.append(exc)
-
-    # Validations 5 + 6: y-scale gates (flatness, then level disparity).
-    # Skipped when coverage failed -- they assume readable data. Mutually
-    # exclusive with each other: both diagnose the same single-axis shape
-    # problem, so at most one fires (matching the serial behavior).
-    if not coverage_failed:
-        flatness_failed = False
-        try:
-            _validate_y_scale_homogeneity(df, mapping, chart_type)
-        except ValidationError as exc:
-            flatness_failed = True
-            findings.append(exc)
-        if not flatness_failed:
-            try:
-                _validate_y_level_disparity(df, mapping, chart_type)
-            except ValidationError as exc:
-                findings.append(exc)
-
-    # Validation 7: stacked-area series alignment ("shattered" stacks).
-    alignment_failed = False
-    try:
-        _validate_series_alignment(df, mapping, chart_type)
-    except ValidationError as exc:
-        alignment_failed = True
-        findings.append(exc)
-
-    # Validation 8: seasonal jaggedness. Skipped when alignment failed --
-    # misalignment is the dominant defect for stacked areas and the
-    # jaggedness verdict on misaligned data is noise.
-    if not alignment_failed:
-        try:
-            _validate_seasonal_jaggedness(df, mapping, chart_type)
-        except ValidationError as exc:
-            findings.append(exc)
-
-    # Validation 9: interleaved-series oscillation. Distinct from
-    # Validation 8 -- seasonal sawteeth reverse slowly; interleaved
-    # merges reverse on nearly every step with large vertical jumps.
-    try:
-        _validate_series_oscillation(df, mapping, chart_type)
-    except ValidationError as exc:
-        findings.append(exc)
-
-    return findings
+    return warnings
 
 
 def _validate_chart_data_integrity(
@@ -2673,205 +2336,117 @@ def _validate_chart_data_integrity(
     """Deep validation that data will produce a visible chart.
 
     This is the critical check that prevents silent empty charts.
-    Called BEFORE building the Altair chart spec. Raising wrapper around
-    ``_collect_integrity_findings`` -- one finding raises verbatim, 2+
-    raise the numbered aggregate frame.
+    Called BEFORE building the Altair chart spec.
 
     Raises:
         ValidationError: If data would produce an empty / invisible chart.
     """
-    _raise_findings(
-        _collect_integrity_findings(df, mapping, chart_type)
-    )
-
-
-def _collect_content_findings(
-    df: pd.DataFrame,
-    chart_type: str,
-    mapping: Dict[str, Any],
-    annotations: Optional[List[Any]],
-    width: int,
-    *,
-    composite_cell: bool = False,
-    suppress_lvl: bool = False,
-) -> List[ValidationError]:
-    """Collect the label-surface gates that otherwise fire at dispatch time.
-
-    The builders validate label surfaces (axis titles, bar categories,
-    legend budgets, LVL series names, grouped-bar cell budget) at the top
-    of each ``_build_*`` -- AFTER the data-integrity gates have raised.
-    Serially that costs PRISM one retry per surface. This collector runs
-    the SAME validators (same functions, byte-identical messages) before
-    dispatch so their findings aggregate with the integrity findings into
-    one raise. The in-builder calls stay as the failsafe -- they pass
-    silently once this pre-pass has validated.
-
-    Mirrors each builder's validation exactly:
-      - value-axis title per chart-type family (``_validate_y_axis_label``)
-      - dual-axis left + right titles
-      - bar category labels (``bar`` nominal-x; ``bar_horizontal`` y)
-      - grouped-bar cell budget (skipped when the builder's long-label
-        auto-flip to horizontal would bypass the grouped path)
-      - colour-legend label budget (when the legend will render)
-      - LVL series names (simulating the post-dispatch auto-inject /
-        dual-axis-strip state)
-    """
-    findings: List[ValidationError] = []
-
     x_field = _get_field(mapping, "x")
     y_field = _get_field(mapping, "y")
     color_field = _get_field(mapping, "color")
 
-    # ---- value-axis titles ----------------------------------------------
-    is_dual_axis_line = (
-        chart_type in {"multi_line", "timeseries"}
-        and bool(mapping.get("dual_axis_series"))
-    )
-    if chart_type == "bar_horizontal":
-        # x is the value axis on horizontal bars.
-        try:
-            _validate_y_axis_label(_format_label(x_field, mapping, "x"), mapping)
-        except ValidationError as exc:
-            findings.append(exc)
-    elif is_dual_axis_line:
-        for title_text in (
-            _dedup_axis_title(
-                mapping.get("y_title") or _format_label(y_field, mapping, "y")
-            ),
-            _dedup_axis_title(
-                mapping.get("y_title_right") or _format_label(y_field, mapping, "y")
-            ),
-        ):
-            try:
-                _validate_y_axis_label(title_text, mapping)
-            except ValidationError as exc:
-                findings.append(exc)
-    elif chart_type != "donut":
-        try:
-            _validate_y_axis_label(
-                _format_label(
-                    y_field if isinstance(y_field, str) else None,
-                    mapping,
-                    "y",
-                ),
-                mapping,
+    # Validation 1: x-y pairs exist and are plottable.
+    if x_field and y_field and x_field in df.columns and y_field in df.columns:
+        valid_mask = df[x_field].notna() & df[y_field].notna()
+        valid_count = int(valid_mask.sum())
+
+        if valid_count == 0:
+            raise ValidationError(
+                f"CHART DATA INTEGRITY ERROR: No valid (x, y) pairs found.\n"
+                f"Column '{x_field}' has {df[x_field].notna().sum()} non-null values.\n"
+                f"Column '{y_field}' has {df[y_field].notna().sum()} non-null values.\n"
+                f"But there are 0 rows where BOTH are non-null.\n"
+                f"This would produce an empty chart. Check data alignment."
             )
-        except ValidationError as exc:
-            findings.append(exc)
 
-    # ---- bar category labels ---------------------------------------------
-    bar_would_flip = False
-    if (
-        chart_type == "bar"
-        and isinstance(x_field, str)
-        and x_field in df.columns
-        and not pd.api.types.is_datetime64_any_dtype(df[x_field])
-        and not pd.api.types.is_numeric_dtype(df[x_field])
-    ):
-        raw_labels = [str(v) for v in df[x_field].unique()]
-        try:
-            _validate_bar_category_labels(raw_labels, x_field, mapping)
-        except ValidationError as exc:
-            findings.append(exc)
-        # Mirror the builder's auto-flip predicate: when long-but-legal
-        # labels reroute the chart to the horizontal builder, the grouped
-        # path (and its cell budget) never runs.
-        avg_len = sum(len(l) for l in raw_labels) / max(len(raw_labels), 1)
-        max_len = max((len(l) for l in raw_labels), default=0)
-        n_bars = len(raw_labels)
-        bar_would_flip = (
-            (max_len > 20 or (avg_len > 12 and n_bars * 100 > width))
-            and mapping.get("orientation") != "vertical"
-        )
-    elif (
-        chart_type == "bar_horizontal"
-        and isinstance(y_field, str)
-        and y_field in df.columns
-    ):
-        try:
-            _validate_bar_category_labels(
-                [str(v) for v in df[y_field].unique()],
-                category_field=y_field,
-                mapping=mapping,
+        if valid_count < 2 and chart_type in {"multi_line", "area", "scatter"}:
+            raise ValidationError(
+                f"CHART DATA INTEGRITY ERROR: Only {valid_count} valid data point(s).\n"
+                f"Chart type '{chart_type}' requires at least 2 points to draw.\n"
+                f"Check your data filtering."
             )
-        except ValidationError as exc:
-            findings.append(exc)
 
-    # ---- grouped-bar cell budget ------------------------------------------
-    if (
-        chart_type == "bar"
-        and not bar_would_flip
-        and isinstance(x_field, str) and x_field in df.columns
-        and color_field and color_field in df.columns
-        and not mapping.get("stack", True)
-    ):
-        try:
-            _grouped_bar_cell_budget(df, x_field, color_field, width)
-        except ValidationError as exc:
-            findings.append(exc)
-
-    # ---- colour-legend label budget ----------------------------------------
-    if (
-        color_field
-        and color_field in df.columns
-        and _color_legend_will_render(
-            chart_type, mapping, annotations,
-            suppress_lvl=suppress_lvl, df=df,
-        )
-    ):
-        if mapping.get("dual_axis_bind"):
-            try:
-                _resolve_dual_axis_binding(mapping, df, color_field)
-            except ValidationError as exc:
-                findings.append(exc)
-        try:
-            _validate_legend_labels(
-                df, color_field, width, mapping,
-                composite_cell=composite_cell,
+    # Validation 2: For multi_line, verify color groups have data.
+    if chart_type == "multi_line" and color_field and color_field in df.columns:
+        empty_groups: List[str] = []
+        for group_name, group_df in df.groupby(color_field):
+            if y_field and y_field in group_df.columns:
+                valid_in_group = int(group_df[y_field].notna().sum())
+                if valid_in_group < 2:
+                    empty_groups.append(f"{group_name} ({valid_in_group} valid points)")
+        if empty_groups:
+            raise ValidationError(
+                f"CHART DATA INTEGRITY ERROR: Some color groups have insufficient data.\n"
+                f"Groups with <2 valid points: {'; '.join(empty_groups)}\n"
+                f"Each line in a multi_line chart needs at least 2 points.\n"
+                f"Check your data or filter out empty groups."
             )
-        except ValidationError as exc:
-            findings.append(exc)
 
-    # ---- LVL series names ---------------------------------------------------
-    # Simulate the post-dispatch annotation state: dual-axis LVL strip,
-    # then house-style auto-inject. ``suppress_lvl`` (facet grids) skips
-    # LVL entirely, matching ``_build_single_chart``.
-    if not suppress_lvl:
-        sim_annotations, _ = _strip_dual_axis_lvl_annotations(
-            annotations, mapping,
-        )
-        if _should_auto_inject_lvl(chart_type, mapping, sim_annotations):
-            sim_annotations = list(sim_annotations or [])
-            sim_annotations.append(LastValueLabel())
+    # Validation 3: datetime conversion for x-axis must succeed.
+    if x_field and x_field in df.columns and pd.api.types.is_datetime64_any_dtype(df[x_field]):
         try:
-            _validate_lvl_series_names(sim_annotations, df, mapping)
-        except ValidationError as exc:
-            findings.append(exc)
+            test_values = df[x_field].dropna().head(5)
+            for val in test_values:
+                _ = val.strftime("%Y-%m-%dT%H:%M:%S")
+        except Exception as exc:  # noqa: BLE001 - surface as ValidationError
+            raise ValidationError(
+                f"CHART DATA INTEGRITY ERROR: Datetime conversion will fail.\n"
+                f"Column '{x_field}' has datetime values that cannot be formatted.\n"
+                f"Error: {exc}\n"
+                f"Check for timezone issues or invalid datetime values."
+            ) from exc
 
-    return findings
+    # Validation 4: y values are finite (not inf).
+    if y_field and y_field in df.columns and pd.api.types.is_numeric_dtype(df[y_field]):
+        inf_count = int(np.isinf(df[y_field].dropna()).sum())
+        if inf_count > 0:
+            raise ValidationError(
+                f"CHART DATA INTEGRITY ERROR: y-axis contains {inf_count} infinite values.\n"
+                f"Column '{y_field}' has inf values that cannot be plotted.\n"
+                f"Use df[y_field].replace([np.inf, -np.inf], np.nan) to remove them."
+            )
 
+    # Validation 4b: empty-body / line coverage. Catches the canonical
+    # "chart rendered but the plot body is empty" failure -- a line-shaped
+    # series that is mostly NaN clears the >=2-points gate (Validation 2) and
+    # the 100%-NaN gate (_validate_encoding_data) but interpolates to nothing
+    # visible. Runs before the flatness gates below, which assume there is
+    # readable data to assess.
+    _validate_line_coverage(df, mapping, chart_type)
 
-def _collect_explicit_title_findings(
-    mapping: Dict[str, Any],
-) -> List[ValidationError]:
-    """Axis-title cap findings computable from kwargs alone (no data).
+    # Validation 5: y-axis scale homogeneity for single-axis multi-series
+    # time-series charts. Catches the canonical "gold + WTI" pattern where
+    # one series compresses to a flat line because its span is a tiny
+    # fraction of the dominant series's range.
+    _validate_y_scale_homogeneity(df, mapping, chart_type)
 
-    Used by the coercion-failure branches (auto-melt, heatmap reshape):
-    when the data-shape transform fails, the post-transform structure is
-    unknowable, but an explicitly-passed ``y_title`` / ``y_title_right``
-    over the cap is already a fact -- collecting it lets the coercion
-    failure and the title failure surface in ONE raise instead of the
-    title hiding behind the shape fix for a full retry.
-    """
-    findings: List[ValidationError] = []
-    for key in ("y_title", "y_title_right"):
-        val = mapping.get(key)
-        if val:
-            try:
-                _validate_y_axis_label(_dedup_axis_title(val), mapping)
-            except ValidationError as exc:
-                findings.append(exc)
-    return findings
+    # Validation 6: y-axis level disparity for single-axis multi-series
+    # time-series charts. Catches the case where every series clears the
+    # flatness floor (Validation 5 passes) but the series sit at bands
+    # far enough apart that the chart still reads as flat horizontal
+    # rails separated by empty whitespace. Canonical example: FCI tenor
+    # contributions at 10 / 30 / 60 bp with per-series spans of ~7 each.
+    _validate_y_level_disparity(df, mapping, chart_type)
+
+    # Validation 7: stacked-area series alignment. Catches the "shattered"
+    # stack where each series reports on its own calendar so the layers
+    # don't share x-positions and the composition fills with white
+    # triangular gaps (Chart 8). Area-only; runs before the seasonality
+    # gate because misalignment is the dominant defect for stacked areas.
+    _validate_series_alignment(df, mapping, chart_type)
+
+    # Validation 8: seasonal jaggedness. Catches non-seasonally-adjusted
+    # line / area series whose strong, regular every-period swing renders
+    # as an unreadable sawtooth (Charts 8 / 17). Soft, easy-to-fix
+    # rejection routing PRISM to seasonal adjustment / normalisation /
+    # moving average.
+    _validate_seasonal_jaggedness(df, mapping, chart_type)
+
+    # Validation 9: interleaved-series oscillation. Catches two horizons
+    # merged without a color field (MSFT Mag-7 EPS shading repro). Distinct
+    # from Validation 8 -- seasonal sawteeth reverse slowly; interleaved
+    # merges reverse on nearly every step with large vertical jumps.
+    _validate_series_oscillation(df, mapping, chart_type)
 
 
 def _validate_line_coverage(
@@ -11373,57 +10948,25 @@ _HEATMAP_GRADIENT_NAMES: Set[str] = {
 }
 
 
-def _collect_color_kwarg_findings(
-    mapping: Dict[str, Any], chart_type: str,
-    df: Optional[pd.DataFrame] = None,
-) -> List[ValidationError]:
-    """Collect colour-kwarg findings across the three kwarg families.
-
-    ``color_range`` / ``color_scheme`` / ``color_map`` are INDEPENDENT
-    kwargs -- a colour-experimenting call commonly carries a defect in
-    more than one. Each family validates serially within itself (its
-    checks are dependent), but the families collect so every defective
-    kwarg surfaces in ONE raise.
-    """
-    findings: List[ValidationError] = []
-    for family in (
-        _validate_color_range_kwarg,
-        _validate_color_scheme_kwarg,
-        _validate_color_map_kwarg,
-    ):
-        try:
-            family(mapping, chart_type, df)
-        except ValidationError as exc:
-            findings.append(exc)
-    return findings
-
-
 def _validate_color_kwargs(
     mapping: Dict[str, Any], chart_type: str,
     df: Optional[pd.DataFrame] = None,
 ) -> None:
-    """Validate ``mapping['color_scheme']`` / ``color_range`` / ``color_map``.
+    """Validate ``mapping['color_scheme']`` and ``mapping['color_map']``.
 
     Catches typos / off-list palette names + obvious mode mismatches
     (categorical palette on heatmap, gradient ramp on categorical
     chart) at the boundary so PRISM sees an actionable error instead
-    of a silently-wrong render. Raising wrapper around
-    ``_collect_color_kwarg_findings`` (the chart pipeline calls the
-    collector directly so findings aggregate).
+    of a silently-wrong render.
 
     ``df`` is optional; when supplied, integer-key ``color_map`` slots
     are also range-checked against the actual category count for the
     color field, so PRISM hears immediately about
     ``color_map={5: '#hex'}`` on a 3-category chart.
     """
-    _raise_findings(_collect_color_kwarg_findings(mapping, chart_type, df))
+    is_heatmap_path = chart_type == "heatmap"
 
-
-def _validate_color_range_kwarg(
-    mapping: Dict[str, Any], chart_type: str,
-    df: Optional[pd.DataFrame] = None,
-) -> None:
-    """``mapping['color_range']`` family (serial within the family)."""
+    color_scheme = mapping.get("color_scheme")
     color_range = mapping.get("color_range")
     if color_range is not None:
         if not isinstance(color_range, (list, tuple)) or len(color_range) != 2:
@@ -11454,14 +10997,6 @@ def _validate_color_range_kwarg(
                 "a temporal or numeric column (phase-space gradient)."
             )
 
-
-def _validate_color_scheme_kwarg(
-    mapping: Dict[str, Any], chart_type: str,
-    df: Optional[pd.DataFrame] = None,
-) -> None:
-    """``mapping['color_scheme']`` family (serial within the family)."""
-    is_heatmap_path = chart_type == "heatmap"
-    color_scheme = mapping.get("color_scheme")
     if color_scheme is not None and not isinstance(color_scheme, str):
         raise ValidationError(
             f"mapping['color_scheme'] must be a string palette name; "
@@ -11502,13 +11037,6 @@ def _validate_color_scheme_kwarg(
                     f"mapping['color_map'] with explicit hex values."
                 )
 
-
-def _validate_color_map_kwarg(
-    mapping: Dict[str, Any], chart_type: str,
-    df: Optional[pd.DataFrame] = None,
-) -> None:
-    """``mapping['color_map']`` family (serial within the family)."""
-    is_heatmap_path = chart_type == "heatmap"
     color_map = mapping.get("color_map")
     if color_map is None:
         return
@@ -11719,30 +11247,6 @@ def _validate_opacity_value(value: Any, label: str) -> float:
     return opacity
 
 
-def _collect_opacity_kwarg_findings(
-    mapping: Dict[str, Any], chart_type: str,
-    df: Optional[pd.DataFrame] = None,
-) -> List[ValidationError]:
-    """Collect opacity-kwarg findings across the two kwarg families.
-
-    Scalar ``opacity`` and ``opacity_map`` are independent kwargs; each
-    family validates serially within itself, but the families collect
-    so both defects surface in ONE raise.
-    """
-    findings: List[ValidationError] = []
-    opacity = mapping.get("opacity")
-    if opacity is not None:
-        try:
-            _validate_opacity_value(opacity, "mapping['opacity']")
-        except ValidationError as exc:
-            findings.append(exc)
-    try:
-        _validate_opacity_map_kwarg(mapping, chart_type, df)
-    except ValidationError as exc:
-        findings.append(exc)
-    return findings
-
-
 def _validate_opacity_kwargs(
     mapping: Dict[str, Any], chart_type: str,
     df: Optional[pd.DataFrame] = None,
@@ -11753,17 +11257,12 @@ def _validate_opacity_kwargs(
     and 1-indexed legend slot integers). ``opacity_map`` targets
     categorical ``mapping['color']`` series on multi_line, area, bar,
     boxplot, donut, scatter, and related chart types; heatmap rejects
-    it like ``color_map``. Raising wrapper around
-    ``_collect_opacity_kwarg_findings``.
+    it like ``color_map``.
     """
-    _raise_findings(_collect_opacity_kwarg_findings(mapping, chart_type, df))
+    opacity = mapping.get("opacity")
+    if opacity is not None:
+        _validate_opacity_value(opacity, "mapping['opacity']")
 
-
-def _validate_opacity_map_kwarg(
-    mapping: Dict[str, Any], chart_type: str,
-    df: Optional[pd.DataFrame] = None,
-) -> None:
-    """``mapping['opacity_map']`` family (serial within the family)."""
     opacity_map = mapping.get("opacity_map")
     if opacity_map is None:
         return
@@ -15295,12 +14794,24 @@ def _build_bar(
         # Subtract the spacing overhead from the budget BEFORE dividing
         # by n_x_cats so both terms fit; the inter-facet gap keeps groups
         # visually distinguishable without consuming too much budget.
-        # Readability gate (inside ``_grouped_bar_cell_budget``) rejects
-        # the unreadable-blur extreme so the LLM sees a clean
-        # ValidationError instead of a tiny-bar cell.
-        n_x_cats, facet_width, per_bar_px, spacing_overhead = (
-            _grouped_bar_cell_budget(df, x_field, color_field, width)
-        )
+        # Readability gate rejects the unreadable-blur extreme so the
+        # LLM sees a clean ValidationError instead of a tiny-bar cell.
+        n_x_cats = df[x_field].nunique()
+        n_color_cats = df[color_field].nunique()
+        spacing_overhead = max(0, n_x_cats - 1) * _GROUPED_BAR_FACET_SPACING_PX
+        usable_width = max(n_x_cats, width - spacing_overhead)
+        facet_width = max(1, usable_width // max(n_x_cats, 1))
+        per_bar_px = facet_width / max(n_color_cats, 1)
+        if per_bar_px < _MIN_GROUPED_BAR_PER_BAR_PX:
+            raise ValidationError(
+                f"GROUPED BAR CELL-BUDGET ERROR: {n_x_cats} x-categories x "
+                f"{n_color_cats} color groups produces ~{per_bar_px:.1f}px "
+                f"per bar in a {width}px-wide cell, below the "
+                f"{_MIN_GROUPED_BAR_PER_BAR_PX}px readability threshold. "
+                f"Use stack=True (stacked bars), reduce x-categories, or "
+                f"render this chart standalone (larger width budget) "
+                f"instead of inside a composite."
+            )
         logger.debug(
             "[_build_bar] grouped via column faceting: n_x_cats=%d, "
             "facet_width=%d, per_bar_px=%.1f, spacing_overhead=%d",
@@ -16401,39 +15912,22 @@ def _build_heatmap(
 
     x_title = _format_label(x_field, mapping, "x")
     y_title = _format_label(y_field, mapping, "y")
+    _validate_y_axis_label(y_title, mapping)
     x_sort_order = mapping.get("x_sort")
     y_sort_order = mapping.get("y_sort")
     row_label_font_size = _heatmap_axis_label_font_size(skin_config)
     x_label_font_size = row_label_font_size
 
-    # ---- label gates (aggregated) ----------------------------------------
-    # Row labels, column labels, and the y-axis title are INDEPENDENT
-    # label surfaces -- a correlation matrix with long tickers commonly
-    # trips row AND column caps at once. Run all three gates, then raise
-    # ONE error carrying every finding so PRISM fixes the full set in a
-    # single retry (a single finding raises verbatim).
-    _label_findings: List[ValidationError] = []
-    try:
-        _validate_y_axis_label(y_title, mapping)
-    except ValidationError as _exc:
-        _label_findings.append(_exc)
-
-    # Placeholder limits are never consumed on the failure path --
-    # ``_raise_findings`` raises before the axis kwargs are built.
-    row_label_limit_px = 16
-    try:
-        row_label_limit_px = _validate_heatmap_row_labels(
-            df,
-            y_field,
-            y_sort_order,
-            chart_width=width,
-            chart_height=height,
-            label_font_size=row_label_font_size,
-            mapping=mapping,
-            composite_cell=composite_cell,
-        )
-    except ValidationError as _exc:
-        _label_findings.append(_exc)
+    row_label_limit_px = _validate_heatmap_row_labels(
+        df,
+        y_field,
+        y_sort_order,
+        chart_width=width,
+        chart_height=height,
+        label_font_size=row_label_font_size,
+        mapping=mapping,
+        composite_cell=composite_cell,
+    )
 
     # ---- column (x) axis plan -------------------------------------------
     # Heatmap column labels NEVER render vertical (90 deg). When the x
@@ -16443,22 +15937,16 @@ def _build_heatmap(
     x_label_angle, x_tick_values = _heatmap_x_axis_plan(
         x_ordered, width, label_font_size=x_label_font_size,
     )
-    try:
-        column_label_limit_px = _validate_heatmap_column_labels(
-            x_ordered,
-            x_field,
-            chart_width=width,
-            label_font_size=x_label_font_size,
-            label_angle=x_label_angle,
-            tick_values=x_tick_values,
-            mapping=mapping,
-            composite_cell=composite_cell,
-        )
-    except ValidationError as _exc:
-        _label_findings.append(_exc)
-        column_label_limit_px = 16
-
-    _raise_findings(_label_findings)
+    column_label_limit_px = _validate_heatmap_column_labels(
+        x_ordered,
+        x_field,
+        chart_width=width,
+        label_font_size=x_label_font_size,
+        label_angle=x_label_angle,
+        tick_values=x_tick_values,
+        mapping=mapping,
+        composite_cell=composite_cell,
+    )
     y_label_angle = _heatmap_row_label_angle()
 
     # Grid-suppressed axes prevent white-line artifacts on cells.
@@ -16643,15 +16131,12 @@ def _build_heatmap(
             )
 
         if len(value_order) > MAX_COLOR_CARDINALITY:
-            # Suggestion must be reachable: the bin count offered has to
-            # clear this same gate on the retry.
             raise ValidationError(
                 f"Heatmap value column '{value_field}' has "
                 f"{len(value_order)} distinct categorical bins, exceeding "
                 f"MAX_COLOR_CARDINALITY={MAX_COLOR_CARDINALITY}. The "
-                f"sequential color ramp loses readability beyond "
-                f"~{MAX_COLOR_CARDINALITY} bins. "
-                f"Bin to <={MAX_COLOR_CARDINALITY} categories first, e.g. "
+                f"sequential color ramp loses readability beyond ~12 bins. "
+                f"Bin to <=12 categories first, e.g. "
                 f"`pd.cut(df['{value_field}'], bins={MAX_COLOR_CARDINALITY}, "
                 f"labels=[...])`."
             )
@@ -17911,31 +17396,6 @@ def _auto_melt_for_multiline(
                 raise ValidationError(
                     f"None of the y columns {y_field} exist in DataFrame. "
                     f"Available: {list(df.columns)}"
-                )
-
-            # Partial match is a LOUD failure, not a silent drop: melting
-            # only the columns that happen to exist would render a chart
-            # missing the series the caller asked for -- a chart that
-            # looks fine and is wrong.
-            missing_y = [col for col in y_field if col not in df.columns]
-            if missing_y:
-                suggestions = []
-                for col in missing_y:
-                    close = difflib.get_close_matches(
-                        str(col), [str(c) for c in df.columns], n=1, cutoff=0.6,
-                    )
-                    if close:
-                        suggestions.append(f"{col!r} -> {close[0]!r}")
-                hint = (
-                    f" Did you mean: {', '.join(suggestions)}?"
-                    if suggestions else ""
-                )
-                raise ValidationError(
-                    f"y columns {missing_y} do not exist in the DataFrame "
-                    f"(requested y={y_field}; available: {list(df.columns)})."
-                    f"{hint} The engine never silently drops a requested "
-                    f"series -- fix the column names (or remove them from "
-                    f"the y list) before make_chart()."
                 )
 
             # Single-element list -- skip melt, use the column directly.
@@ -19257,32 +18717,29 @@ def _make_chart(
     warnings: List[str] = []
     audit_trail: List[str] = []
 
-    # ---- Argument normalization (tier-0 structural, aggregated) ---------
-    # Structural problems aggregate among themselves so PRISM sees every
-    # bad argument in ONE error instead of discovering them serially.
-    structural_findings: List[ValidationError] = []
+    # ---- Argument normalization ----------------------------------------
     if chart_type not in (
         "scatter", "scatter_multi", "bar", "bar_horizontal", "bullet",
         "waterfall", "heatmap", "histogram", "boxplot", "area", "donut",
         "multi_line", "timeseries",
     ):
-        structural_findings.append(ValidationError(
-            f"Unknown chart_type {chart_type!r}. "
-            f"Valid options: multi_line, scatter, scatter_multi, bar, "
-            f"bar_horizontal, bullet, waterfall, heatmap, histogram, "
-            f"boxplot, area, donut."
-        ))
+        return ChartResult(
+            chart_type=chart_type,
+            skin=skin,
+            success=False,
+            error_message=(
+                f"Unknown chart_type {chart_type!r}. "
+                f"Valid options: multi_line, scatter, scatter_multi, bar, "
+                f"bar_horizontal, bullet, waterfall, heatmap, histogram, "
+                f"boxplot, area, donut."
+            ),
+        )
 
     if skin not in AVAILABLE_SKINS:
-        structural_findings.append(ValidationError(
-            f"Unknown skin {skin!r}. Available: {list(AVAILABLE_SKINS.keys())}"
-        ))
-
-    if structural_findings:
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
-            error_message=_aggregate_finding_messages(
-                [str(f) for f in structural_findings]
+            error_message=(
+                f"Unknown skin {skin!r}. Available: {list(AVAILABLE_SKINS.keys())}"
             ),
         )
 
@@ -19319,53 +18776,12 @@ def _make_chart(
     logger.debug("[make_chart] mapping: %s", mapping)
     logger.debug("[make_chart] columns: %s", list(df.columns))
 
-    # ---- Kwarg-fact findings (collected, NOT an early return) -----------
-    # page_grid misuse, unknown dimension presets, and colour / opacity
-    # kwarg defects are facts independent of data structure. They are
-    # collected here -- BEFORE the facet branch so facet calls get the
-    # same kwarg validation -- and RIDE ALONG with whatever raise fires
-    # first (coercion failure, tier-0, or tier-1), so a kwarg typo never
-    # hides a content problem behind it for a full retry.
-    kwarg_findings: List[ValidationError] = []
-    dims_usable = dimensions is None or dimensions in DIMENSION_PRESETS
-    if dimensions == "page_grid" and "facet" not in mapping:
-        dims_usable = False
-        kwarg_findings.append(ValidationError(
-            "dimension_preset='page_grid' is only valid in facet mode. "
-            "Either set mapping['facet']='<col>' to use the facet grid, "
-            "or pick a different preset (wide / square / compact / ...)."
-        ))
-    elif dimensions is not None and dimensions not in DIMENSION_PRESETS:
-        kwarg_findings.append(ValidationError(
-            f"Unknown dimension preset {dimensions!r}. "
-            f"Available: {list(DIMENSION_PRESETS.keys())}"
-        ))
-
-    # Colour / opacity kwarg validation surfaces typo / off-list palette
-    # names at the boundary so PRISM sees an actionable error instead of
-    # a silently-rendered default. Passing ``df`` lets the validators
-    # range-check integer-slot ``color_map`` / ``opacity_map`` keys
-    # against the actual category count.
-    kwarg_findings.extend(_collect_color_kwarg_findings(mapping, chart_type, df))
-    kwarg_findings.extend(_collect_opacity_kwarg_findings(mapping, chart_type, df))
-
     # ---- Facet (small-multiples) early branch ---------------------------
     # When the caller sets ``mapping['facet']``, dispatch entirely into
     # ``_render_facet_grid``. The facet flow handles its own auto-melt,
     # validation, panel build, layout, PNG render, and S3 upload, then
     # returns a ``ChartResult`` with ``chart_type=<base>_facet``.
     if "facet" in mapping:
-        # Facet runs its own pipeline; kwarg findings return here (they
-        # cannot ride along into the facet flow).
-        if kwarg_findings:
-            return ChartResult(
-                chart_type=chart_type, skin=skin, success=False,
-                error_message=_aggregate_finding_messages(
-                    [str(f) for f in kwarg_findings]
-                ),
-                warnings=warnings,
-                audit_trail=audit_trail,
-            )
         # Histogram facets always share x so bin ranges are comparable
         # across panels (return distributions, etc.). Independent
         # per-panel x scales are never meaningful for facet histograms.
@@ -19402,26 +18818,40 @@ def _make_chart(
             edge_only_axis_titles=edge_only_axis_titles,
         )
 
+    # ---- Reject page_grid for non-facet calls ---------------------------
+    if dimensions == "page_grid":
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                "dimension_preset='page_grid' is only valid in facet mode. "
+                "Either set mapping['facet']='<col>' to use the facet grid, "
+                "or pick a different preset (wide / square / compact / ...)."
+            ),
+        )
+
+    # ---- Validate color customisation kwargs ----------------------------
+    # Surfaces typo / off-list palette names at the boundary so PRISM
+    # sees an actionable error instead of a silently-rendered default.
+    # Passing ``df`` lets the validator range-check integer-slot
+    # ``color_map`` keys against the actual category count.
+    try:
+        _validate_color_kwargs(mapping, chart_type, df)
+        _validate_opacity_kwargs(mapping, chart_type, df)
+    except ValidationError as exc:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=str(exc), warnings=warnings,
+            audit_trail=audit_trail,
+        )
+
     # ---- Auto-melt for multi_line / area --------------------------------
     if chart_type in {"multi_line", "area"}:
         try:
             df, mapping = _auto_melt_for_multiline(df, mapping)
         except ValidationError as exc:
-            # The melt failure is terminal for data-shape checks, but
-            # kwarg-fact findings (colour / opacity / preset defects,
-            # explicit axis titles over the cap) are already facts --
-            # aggregate them so they don't hide behind the shape fix
-            # for a full retry.
-            melt_findings = list(kwarg_findings)
-            melt_findings.append(ValidationError(f"Auto-melt failed: {exc}"))
-            melt_findings.extend(_collect_explicit_title_findings(mapping))
             return ChartResult(
                 chart_type=chart_type, skin=skin, success=False,
-                error_message=_aggregate_finding_messages(
-                    [str(f) for f in melt_findings]
-                ),
-                warnings=warnings,
-                audit_trail=audit_trail,
+                error_message=f"Auto-melt failed: {exc}",
             )
 
     # ---- Auto-coerce string x-axis to datetime (multi_line / timeseries)
@@ -19446,18 +18876,9 @@ def _make_chart(
         try:
             df, mapping = _auto_reshape_heatmap(df, mapping)
         except ValidationError as exc:
-            # Same aggregation as the auto-melt branch: the reshape
-            # failure is terminal for data-shape checks, but kwarg-fact
-            # findings and explicit over-cap axis titles ride along.
-            reshape_findings = list(kwarg_findings)
-            reshape_findings.append(exc)
-            reshape_findings.extend(_collect_explicit_title_findings(mapping))
             return ChartResult(
                 chart_type=chart_type, skin=skin, success=False,
-                error_message=_aggregate_finding_messages(
-                    [str(f) for f in reshape_findings]
-                ),
-                warnings=warnings,
+                error_message=str(exc), warnings=warnings,
                 audit_trail=audit_trail,
             )
 
@@ -19486,35 +18907,9 @@ def _make_chart(
             try:
                 _da_right = _resolve_dual_axis_binding(mapping, df, _da_color)
             except ValidationError as exc:
-                # Bind failure is terminal for the dual-axis routing, but
-                # independent facts ride along: kwarg-fact findings,
-                # explicit over-cap axis titles, and the colour-legend
-                # label budget (dual-axis charts always render the
-                # legend, so over-budget names will fail after the bind
-                # fix anyway -- surface them NOW).
-                bind_findings = list(kwarg_findings)
-                bind_findings.append(exc)
-                bind_findings.extend(
-                    _collect_explicit_title_findings(mapping)
-                )
-                _bind_width = DIMENSION_PRESETS[
-                    dimensions
-                    if (dimensions is not None and dims_usable)
-                    else _auto_dimensions(chart_type)
-                ][0]
-                try:
-                    _validate_legend_labels(
-                        df, _da_color, _bind_width, mapping,
-                        composite_cell=False,
-                    )
-                except ValidationError as legend_exc:
-                    bind_findings.append(legend_exc)
                 return ChartResult(
                     chart_type=chart_type, skin=skin, success=False,
-                    error_message=_aggregate_finding_messages(
-                        [str(f) for f in bind_findings]
-                    ),
-                    warnings=warnings,
+                    error_message=str(exc), warnings=warnings,
                     audit_trail=audit_trail,
                 )
             # Explicit split: honour it, but surface within-axis
@@ -19542,97 +18937,12 @@ def _make_chart(
                     f"(frequency: {freq}) to avoid Altair row limit."
                 )
 
-    # ---- Skin / dimensions ----------------------------------------------
-    # Canvas size is engine-decided per chart_type. PRISM does not pass
-    # dimensions; the kwarg remains on the signature for staging-side
-    # power-user use (demos, fixture rendering) and is private-by-
-    # convention (not taught in the skill). When not passed, route
-    # through ``_auto_dimensions`` -- the same table the v2 ``Chart``
-    # class consults. Resolved BEFORE validation: the content collectors
-    # need the canvas width for legend / grouped-bar / title budgets.
-    # A defective explicit ``dimensions`` was collected as a kwarg-fact
-    # finding above; fall back to the auto preset so the collectors can
-    # still run (the finding surfaces with whatever raise fires).
-    skin_config = get_skin(skin, intent)
-    if dimensions is None or not dims_usable:
-        dimensions = _auto_dimensions(chart_type)
-    width, height = DIMENSION_PRESETS[dimensions]
-
-    # ---- Validate plot-ready DataFrame (single-pass aggregation) --------
-    # Tier 0 (structural) findings aggregate among themselves and gate
-    # tier 1 -- content verdicts on broken structure are noise. Tier 1
-    # runs EVERY independent content gate (data integrity + the label
-    # surfaces the builders would otherwise raise one retry later) and
-    # aggregates all findings into one error.
-    t0_plot, t1_plot, plot_warnings, flagged_fields = (
-        _collect_plot_ready_findings(df, chart_type, mapping)
-    )
-    warnings.extend(plot_warnings)
-
-    tier0_findings: List[ValidationError] = list(t0_plot)
-    if len(df) > 0:
-        enc_findings, enc_warnings = _collect_encoding_findings(
-            df, mapping, chart_type, skip_fields=flagged_fields,
-        )
-        warnings.extend(enc_warnings)
-        tier0_findings.extend(enc_findings)
-
-    if tier0_findings:
-        # Kwarg-fact findings ride along with the structural raise --
-        # they are independent of data structure, so withholding them
-        # here would cost a retry.
-        return ChartResult(
-            chart_type=chart_type, skin=skin, success=False,
-            error_message=_aggregate_finding_messages(
-                [str(f) for f in kwarg_findings + tier0_findings]
-            ),
-            warnings=warnings,
-            audit_trail=audit_trail,
-        )
-
-    # Kwarg-fact findings aggregate with the content gates: a colour /
-    # opacity / preset defect does not make content verdicts noise, so
-    # both families surface in the same raise.
-    tier1_findings: List[ValidationError] = list(kwarg_findings)
-    tier1_findings.extend(t1_plot)
-    tier1_findings.extend(
-        _collect_integrity_findings(
-            df, mapping, chart_type, skip_pair_checks=True,
-        )
-    )
-    tier1_findings.extend(
-        _collect_content_findings(
-            df, chart_type, mapping, annotations, width,
-            composite_cell=False, suppress_lvl=False,
-        )
-    )
-    if title:
-        # Same slot kinds as the post-build render site, which therefore
-        # cannot fail once this pre-pass is clean.
-        try:
-            _validate_and_wrap_text(
-                title, slot_kind="title", width_px=width,
-                slot_label="make_chart() title",
-                widening_hint=(
-                    "use a wider dimension_preset (e.g. 'wide' or "
-                    "'presentation')"
-                ),
-            )
-        except ValueError as exc:
-            tier1_findings.append(ValidationError(str(exc)))
-        try:
-            _validate_and_wrap_text(
-                subtitle, slot_kind="subtitle", width_px=width,
-                slot_label="make_chart() subtitle",
-                widening_hint=(
-                    "use a wider dimension_preset (e.g. 'wide' or "
-                    "'presentation')"
-                ),
-            )
-        except ValueError as exc:
-            tier1_findings.append(ValidationError(str(exc)))
-
-    if tier1_findings:
+    # ---- Validate plot-ready DataFrame ----------------------------------
+    try:
+        warnings.extend(validate_plot_ready_df(df, chart_type, mapping))
+        warnings.extend(_validate_encoding_data(df, mapping, chart_type))
+        _validate_chart_data_integrity(df, mapping, chart_type)
+    except ValidationError as exc:
         # ---- Y-axis 2-series auto-recovery (Principle #7 absorption) ----
         # When the y-scale flatness gate or level-disparity gate rejects
         # a 2-series multi_line / timeseries chart, the canonical fix is
@@ -19642,66 +18952,72 @@ def _make_chart(
         # ``_auto_recover_depth=1`` to prevent infinite loops.
         # 3+ series cases stay rejected -- the editorial choice between
         # 2-pack / dual / z-score / facet belongs to PRISM, not the
-        # engine. Under aggregation, the scan looks for a recoverable
-        # y-scale finding anywhere in the list; any sibling findings
-        # re-fire (and aggregate) inside the recursive call.
-        recoverable = next(
-            (
-                f for f in tier1_findings
-                if str(f).startswith(
-                    ("Y-AXIS SCALE MISMATCH", "Y-AXIS LEVEL DISPARITY")
-                )
-            ),
-            None,
+        # engine.
+        recovered = _maybe_auto_recover_y_scale(
+            exc, df, chart_type, mapping, depth=_auto_recover_depth,
         )
-        if recoverable is not None:
-            recovered = _maybe_auto_recover_y_scale(
-                recoverable, df, chart_type, mapping,
-                depth=_auto_recover_depth,
+        if recovered is not None:
+            new_mapping, recovery_msg = recovered
+            audit_trail.append(recovery_msg)
+            recovered_result = _make_chart(
+                df=df, chart_type=chart_type, mapping=new_mapping,
+                title=title, subtitle=subtitle, skin=skin, intent=intent,
+                dimensions=dimensions, annotations=annotations,
+                output_dir=output_dir,
+                filename_prefix=filename_prefix,
+                filename_suffix=filename_suffix,
+                session_path=session_path,
+                s3_manager=s3_manager, save_as=save_as,
+                interactive=interactive, auto_beautify=auto_beautify,
+                layers=layers, x_label=x_label, y_label=y_label,
+                x_title=x_title, y_title=y_title,
+                y_title_right=y_title_right,
+                user_id=user_id, caption=caption,
+                side_left=side_left, side_right=side_right,
+                facet_cols=facet_cols,
+                share_x=share_x, share_y=share_y, share_color=share_color,
+                same_scale=same_scale,
+                edge_only_ticks=edge_only_ticks,
+                edge_only_axis_titles=edge_only_axis_titles,
+                _auto_recover_depth=_auto_recover_depth + 1,
             )
-            if recovered is not None:
-                new_mapping, recovery_msg = recovered
-                audit_trail.append(recovery_msg)
-                recovered_result = _make_chart(
-                    df=df, chart_type=chart_type, mapping=new_mapping,
-                    title=title, subtitle=subtitle, skin=skin, intent=intent,
-                    dimensions=dimensions, annotations=annotations,
-                    output_dir=output_dir,
-                    filename_prefix=filename_prefix,
-                    filename_suffix=filename_suffix,
-                    session_path=session_path,
-                    s3_manager=s3_manager, save_as=save_as,
-                    interactive=interactive, auto_beautify=auto_beautify,
-                    layers=layers, x_label=x_label, y_label=y_label,
-                    x_title=x_title, y_title=y_title,
-                    y_title_right=y_title_right,
-                    user_id=user_id, caption=caption,
-                    side_left=side_left, side_right=side_right,
-                    facet_cols=facet_cols,
-                    share_x=share_x, share_y=share_y, share_color=share_color,
-                    same_scale=same_scale,
-                    edge_only_ticks=edge_only_ticks,
-                    edge_only_axis_titles=edge_only_axis_titles,
-                    _auto_recover_depth=_auto_recover_depth + 1,
-                )
-                # Merge accumulated warnings + audit_trail (recovery
-                # message + any soft warnings raised before the rejection)
-                # ahead of what the recursive call surfaced.
-                recovered_result.warnings = (
-                    warnings + list(recovered_result.warnings or [])
-                )
-                recovered_result.audit_trail = (
-                    audit_trail + list(recovered_result.audit_trail or [])
-                )
-                return recovered_result
+            # Merge accumulated warnings + audit_trail (recovery
+            # message + any soft warnings raised before the rejection)
+            # ahead of what the recursive call surfaced.
+            recovered_result.warnings = (
+                warnings + list(recovered_result.warnings or [])
+            )
+            recovered_result.audit_trail = (
+                audit_trail + list(recovered_result.audit_trail or [])
+            )
+            return recovered_result
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
-            error_message=_aggregate_finding_messages(
-                [str(f) for f in tier1_findings]
+            error_message=str(exc), warnings=warnings,
+            audit_trail=audit_trail,
+        )
+
+    # ---- Skin / dimensions ----------------------------------------------
+    # Canvas size is engine-decided per chart_type. PRISM does not pass
+    # dimensions; the kwarg remains on the signature for staging-side
+    # power-user use (demos, fixture rendering) and is private-by-
+    # convention (not taught in the skill). When not passed, route
+    # through ``_auto_dimensions`` -- the same table the v2 ``Chart``
+    # class consults.
+    skin_config = get_skin(skin, intent)
+    if dimensions is None:
+        dimensions = _auto_dimensions(chart_type)
+    if dimensions not in DIMENSION_PRESETS:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=(
+                f"Unknown dimension preset {dimensions!r}. "
+                f"Available: {list(DIMENSION_PRESETS.keys())}"
             ),
             warnings=warnings,
             audit_trail=audit_trail,
         )
+    width, height = DIMENSION_PRESETS[dimensions]
 
     # ---- Pre-dispatch annotation absorption (Phase 1 of collision sweep)
     # ---- See dev/scratch/_collision_audit_2026-05-10_1955/inventory.md
@@ -19876,11 +19192,38 @@ def _make_chart(
             except Exception:  # noqa: BLE001
                 pass
 
+    # ---- Colour-legend label validation (when legend will render) ------
+    _legend_color_field = _get_field(mapping, "color")
+    if (
+        _legend_color_field
+        and _legend_color_field in df.columns
+        and _color_legend_will_render(
+            chart_type, mapping, annotations, df=df,
+        )
+    ):
+        if mapping.get("dual_axis_bind"):
+            try:
+                _resolve_dual_axis_binding(
+                    mapping, df, _legend_color_field,
+                )
+            except ValidationError as exc:
+                return ChartResult(
+                    chart_type=chart_type, skin=skin, success=False,
+                    error_message=str(exc), warnings=warnings,
+                    audit_trail=audit_trail,
+                )
+        try:
+            _validate_legend_labels(
+                df, _legend_color_field, width, mapping, composite_cell=False,
+            )
+        except ValidationError as exc:
+            return ChartResult(
+                chart_type=chart_type, skin=skin, success=False,
+                error_message=str(exc), warnings=warnings,
+                audit_trail=audit_trail,
+            )
+
     # ---- Build the chart ------------------------------------------------
-    # Colour-legend label validation moved into the pre-dispatch
-    # ``_collect_content_findings`` pass (aggregated with the other
-    # content gates). The annotation-absorption steps above never touch
-    # legend visibility, so the pre-pass verdict still holds here.
     try:
         chart = _dispatch_builder(
             chart_type, df, mapping, skin_config, width, height, layers,
@@ -20613,55 +19956,27 @@ def _build_single_chart(
     df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
 
-    # Validation (single-pass aggregation, mirroring ``_make_chart``):
-    # tier-0 structural findings gate tier-1; every independent tier-1
-    # content gate -- data integrity plus the label surfaces the
-    # builders would otherwise raise one retry later -- runs in one
-    # pass, so a failing cell reports its COMPLETE finding list to the
-    # composite / facet error collector in one go.
-    t0_plot, t1_plot, _plot_warnings, flagged_fields = (
-        _collect_plot_ready_findings(df, chart_type, mapping)
-    )
-    cell_tier0: List[ValidationError] = list(t0_plot)
-    if len(df) > 0:
-        enc_findings, _enc_warnings = _collect_encoding_findings(
-            df, mapping, chart_type, skip_fields=flagged_fields,
-        )
-        cell_tier0.extend(enc_findings)
-    _raise_findings(cell_tier0)
+    # Validation.
+    validate_plot_ready_df(df, chart_type, mapping)
+    _validate_encoding_data(df, mapping, chart_type)
+    _validate_chart_data_integrity(df, mapping, chart_type)
 
-    cell_tier1: List[ValidationError] = list(t1_plot)
-    cell_tier1.extend(
-        _collect_integrity_findings(
-            df, mapping, chart_type, skip_pair_checks=True,
+    _legend_color_field = _get_field(mapping, "color")
+    if (
+        _legend_color_field
+        and _legend_color_field in df.columns
+        and _color_legend_will_render(
+            chart_type, mapping, spec.annotations, suppress_lvl=suppress_lvl,
+            df=df,
         )
-    )
-    cell_tier1.extend(
-        _collect_content_findings(
-            df, chart_type, mapping, spec.annotations, width,
-            composite_cell=suppress_lvl, suppress_lvl=suppress_lvl,
+    ):
+        _validate_legend_labels(
+            df,
+            _legend_color_field,
+            width,
+            mapping,
+            composite_cell=suppress_lvl,
         )
-    )
-    if spec.title:
-        # Same slot kinds as the post-build per-cell title site below,
-        # which therefore cannot fail once this pre-pass is clean.
-        try:
-            _validate_and_wrap_text(
-                spec.title, slot_kind="subchart_title", width_px=width,
-                slot_label=f"ChartSpec.title ({spec.chart_type!r})",
-                widening_hint="use a wider dimension_preset (e.g. 'wide')",
-            )
-        except ValueError as exc:
-            cell_tier1.append(ValidationError(str(exc)))
-        try:
-            _validate_and_wrap_text(
-                spec.subtitle, slot_kind="subchart_subtitle", width_px=width,
-                slot_label=f"ChartSpec.subtitle ({spec.chart_type!r})",
-                widening_hint="use a wider dimension_preset (e.g. 'wide')",
-            )
-        except ValueError as exc:
-            cell_tier1.append(ValidationError(str(exc)))
-    _raise_findings(cell_tier1)
 
     # Build.
     chart = _dispatch_builder(
@@ -23023,10 +22338,7 @@ def make_composite(
     # try/except, so a non-ChartSpec input (most commonly a ``CompositeResult``
     # from a nested ``make_*pack_*`` call) would otherwise surface as a raw
     # ``AttributeError`` from deep inside a helper instead of a typed,
-    # actionable failure at the entry point. EVERY bad cell is named in
-    # one return -- serial first-cell-only reporting would cost PRISM a
-    # retry per cell.
-    cell_type_findings: List[str] = []
+    # actionable failure at the entry point.
     for i, spec in enumerate(charts):
         if not isinstance(spec, ChartSpec):
             got = type(spec).__name__
@@ -23036,19 +22348,17 @@ def make_composite(
                 "feeding one composite into another."
                 if got == "CompositeResult" else ""
             )
-            cell_type_findings.append(
-                f"Composite cell {i + 1} is a {got}, but make_composite "
-                f"requires ChartSpec inputs. Build each panel with "
-                f"ChartSpec(df=..., chart_type=..., mapping=...)."
-                f"{nested_hint}"
+            return CompositeResult(
+                png_path=None, layout=layout, n_charts=n_charts,
+                success=False,
+                error_message=(
+                    f"Composite cell {i + 1} is a {got}, but make_composite "
+                    f"requires ChartSpec inputs. Build each panel with "
+                    f"ChartSpec(df=..., chart_type=..., mapping=...)."
+                    f"{nested_hint}"
+                ),
+                skin=skin,
             )
-    if cell_type_findings:
-        return CompositeResult(
-            png_path=None, layout=layout, n_charts=n_charts,
-            success=False,
-            error_message=_aggregate_finding_messages(cell_type_findings),
-            skin=skin,
-        )
 
     skin_config = get_skin(skin, "explore")
     if s3_manager is None:
@@ -23063,14 +22373,12 @@ def make_composite(
     layout_dims = COMPOSITE_DIMENSIONS.get(layout_family, COMPOSITE_DIMENSIONS["4_grid"])
     chart_width, chart_height = layout_dims.get(dimension_preset, (350, 280))
 
-    # Pre-validate the composite super-title and super-subtitle. A
-    # too-long string is collected as a finding (NOT an early return):
-    # the cells still build so their failures aggregate with the title
-    # finding into ONE error -- a serial title gate would hide every
-    # cell problem behind it for a full retry. The super-title spans the
-    # widest row of the layout: ``cols * chart_width +
+    # Pre-validate the composite super-title and super-subtitle so a
+    # too-long string fails the whole composite fast (rather than
+    # letting sub-chart building succeed and only blowing up when the
+    # title is applied at the bottom of this function). The super-title
+    # spans the widest row of the layout: ``cols * chart_width +
     # (cols - 1) * spacing``.
-    super_title_findings: List[str] = []
     super_title_lines: Optional[List[str]] = None
     super_subtitle_lines: Optional[List[str]] = None
     if title or subtitle:
@@ -23088,9 +22396,6 @@ def make_composite(
                     "title row gets more horizontal pixels"
                 ),
             )
-        except ValueError as exc:
-            super_title_findings.append(str(exc))
-        try:
             super_subtitle_lines = _validate_and_wrap_text(
                 subtitle, slot_kind="composite_super_subtitle",
                 width_px=super_title_width,
@@ -23100,7 +22405,11 @@ def make_composite(
                 ),
             )
         except ValueError as exc:
-            super_title_findings.append(str(exc))
+            return CompositeResult(
+                png_path=None, layout=layout, n_charts=n_charts,
+                success=False, error_message=str(exc),
+                warnings=warnings_list, skin=skin,
+            )
 
     # Pre-compute a consensus x-axis label rotation so every temporal
     # sub-chart shares the same tick angle. Without this, panels with
@@ -23158,16 +22467,11 @@ def make_composite(
             }
             chart_errors.append(error_detail)
 
-    if chart_errors or super_title_findings:
-        # Fold composite-level title findings and per-cell failures into
-        # ONE message so PRISM fixes the complete set in a single retry.
-        parts = list(super_title_findings)
-        if chart_errors:
-            parts.append(_summarize_chart_errors(chart_errors, n_charts))
+    if chart_errors:
         return CompositeResult(
             png_path=None, layout=layout, n_charts=n_charts,
             success=False,
-            error_message=_aggregate_finding_messages(parts),
+            error_message=_summarize_chart_errors(chart_errors, n_charts),
             warnings=warnings_list, skin=skin, chart_errors=chart_errors,
         )
 
@@ -23554,17 +22858,14 @@ def make_6pack_grid(
             "make_6pack_grid: all 6 chart slots are required (positional or specs=)."
         )
 
-    # Pre-flight validation -- check every cell, raise once with the
-    # complete offender list (one bad cell raises its message verbatim).
+    # Pre-flight validation -- fail fast with a useful message.
     chart_names = ["R1-Left", "R1-Right", "R2-Left", "R2-Right", "R3-Left", "R3-Right"]
-    preflight_findings: List[ValidationError] = []
     for spec, name in zip(charts, chart_names):
         if spec.df is None or len(spec.df) == 0:
-            preflight_findings.append(ValidationError(
+            raise ValidationError(
                 f"COMPOSITE CHART ERROR: Chart {name} ('{spec.title}') has empty "
                 f"DataFrame. Cannot create 6-pack with empty charts."
-            ))
-            continue
+            )
         y_field = spec.mapping.get("y")
         if (
             isinstance(y_field, str)
@@ -23572,11 +22873,10 @@ def make_6pack_grid(
             and int(spec.df[y_field].notna().sum()) < 2
         ):
             valid_count = int(spec.df[y_field].notna().sum())
-            preflight_findings.append(ValidationError(
+            raise ValidationError(
                 f"COMPOSITE CHART ERROR: Chart {name} ('{spec.title}') has only "
                 f"{valid_count} valid y-value(s). Need at least 2 points to render."
-            ))
-    _raise_findings(preflight_findings)
+            )
 
     return make_composite(
         charts,
@@ -23592,100 +22892,6 @@ def make_6pack_grid(
         side_left=side_left, narrative_left=narrative_left,
         side_right=side_right, narrative_right=narrative_right,
     )
-
-
-# ===========================================================================
-# MODULE: BATCH BUILD
-# ===========================================================================
-
-
-def build_charts(
-    chart_specs: List[Tuple[str, Callable[[], Any]]],
-) -> List[Tuple[str, Any]]:
-    """Build every chart in a batch; aggregate ALL failures into one raise.
-
-    A bare sequence of ``make_chart`` / ``make_*pack_*`` calls dies at the
-    FIRST raise -- charts 2..N are never attempted and their failures stay
-    invisible until the next run. ``build_charts`` attempts EVERY thunk:
-    survivors render / save / QC normally and are returned; failures are
-    collected and raised ONCE after the full pass, each under its chart
-    name with its complete finding list (the per-chart validation pipeline
-    already aggregates findings within a chart). One run therefore
-    surfaces the complete independently-fixable set across the whole
-    script -- one fix pass, one retry, by construction.
-
-    Args:
-        chart_specs: List of ``(name, thunk)`` pairs. ``name`` is a short
-            snake_case label used in the aggregate error; ``thunk`` is a
-            zero-arg callable invoking exactly one chart-building call
-            with all kwargs wired, e.g.::
-
-                built = build_charts([
-                    ("us_cpi", lambda: make_chart(df=us_cpi, ...)),
-                    ("spread", lambda: make_2pack_horizontal(lhs, rhs, ...)),
-                ])
-
-    Returns:
-        ``[(name, result), ...]`` for the charts that built successfully,
-        in input order.
-
-    Raises:
-        ValidationError: When any chart fails. The message names every
-            failed chart with its full error (non-``ValidationError``
-            exceptions are reported as ``ExcType: message`` under the
-            same chart name), plus which survivors rendered. Fix every
-            named failure before re-running the batch.
-
-    Note:
-        PRISM-side wiring: injected into the code-sandbox namespace via a
-        one-line addition to the namespace literal in
-        ``mcp/tools/script_exec_tools.py`` at promotion (alongside
-        ``make_chart``); see the drag-and-drop contract in staging.
-    """
-    if not isinstance(chart_specs, (list, tuple)):
-        raise ValidationError(
-            "build_charts() expects a list of (name, thunk) pairs, got "
-            f"{type(chart_specs).__name__}. Wrap each chart call as "
-            "(name, lambda: make_chart(...)) and pass them all in one list."
-        )
-    for i, item in enumerate(chart_specs):
-        if (
-            not isinstance(item, (list, tuple))
-            or len(item) != 2
-            or not callable(item[1])
-        ):
-            raise ValidationError(
-                f"build_charts() entry {i} is not a (name, thunk) pair: "
-                f"{item!r}. Each entry must be (name, zero-arg callable), "
-                "e.g. ('us_cpi', lambda: make_chart(...))."
-            )
-
-    survivors: List[Tuple[str, Any]] = []
-    failures: List[Tuple[str, Exception]] = []
-    for name, thunk in chart_specs:
-        try:
-            survivors.append((str(name), thunk()))
-        except Exception as exc:  # noqa: BLE001 - aggregate everything
-            failures.append((str(name), exc))
-
-    if failures:
-        lines = [
-            f"{len(failures)} of {len(chart_specs)} chart(s) failed to build:"
-        ]
-        for name, exc in failures:
-            msg = (
-                str(exc) if isinstance(exc, ValidationError)
-                else f"{type(exc).__name__}: {exc}"
-            )
-            indented = msg.replace("\n", "\n    ")
-            lines.append(f"  [{name}]  {indented}")
-        if survivors:
-            names = ", ".join(f"'{name}'" for name, _ in survivors)
-            noun = "survivor" if len(survivors) == 1 else "survivors"
-            lines.append(f"({noun} {names} rendered)")
-        raise ValidationError("\n".join(lines))
-
-    return survivors
 
 
 # ===========================================================================
@@ -26394,36 +25600,33 @@ def make_table(
     total_rows = list(total_rows or [])
     subtotal_rows = list(subtotal_rows or [])
     row_colors = dict(row_colors or {})
-
-    # ---- Kwarg-family validation (single-pass aggregation) --------------
-    # header_levels / row_groups / column_color_modes / heatmap_groups are
-    # INDEPENDENT styling kwargs -- a styled table commonly carries several
-    # defects at once, and serial gates would cost PRISM one retry per
-    # defect. Collect every finding across the whole family, then return
-    # ONE failure (a single finding keeps its message verbatim).
-    kwarg_findings: List[ValidationError] = []
-
     # Detect heatmap_groups dict-keyed-by-mode shape BEFORE list() coercion
     # (which would discard the values, leaving only the mode keys).
-    heatmap_groups_dict_shaped = isinstance(heatmap_groups, dict)
-    if heatmap_groups_dict_shaped:
-        kwarg_findings.append(ValidationError(
-            f"heatmap_groups={heatmap_groups!r} was passed as a "
-            f"dict-keyed-by-mode. Canonical shape is list-of-dicts: "
-            f"heatmap_groups=[{{'columns': [...], 'scope': 'column'/'row'/'group', "
-            f"'mode': 'sequential'/'diverging'}}, ...] per chart_context.md §13.5."
-        ))
-        heatmap_groups = []
+    if isinstance(heatmap_groups, dict):
+        return TableResult(
+            success=False,
+            error_message=(
+                f"heatmap_groups={heatmap_groups!r} was passed as a "
+                f"dict-keyed-by-mode. Canonical shape is list-of-dicts: "
+                f"heatmap_groups=[{{'columns': [...], 'scope': 'column'/'row'/'group', "
+                f"'mode': 'sequential'/'diverging'}}, ...] per chart_context.md §13.5."
+            ),
+            warnings=warnings,
+        )
     heatmap_groups = list(heatmap_groups or [])
 
     raw_modes = column_color_modes or {}
-    normalized_modes: Dict[str, Dict[str, Any]] = {}
-    for col, spec in raw_modes.items():
-        try:
-            normalized_modes[col] = _tbl_normalize_mode(spec, col_name=col)
-        except ValidationError as exc:
-            kwarg_findings.append(exc)
-    column_color_modes = normalized_modes
+    try:
+        column_color_modes = {
+            col: _tbl_normalize_mode(spec, col_name=col)
+            for col, spec in raw_modes.items()
+        }
+    except ValidationError as exc:
+        return TableResult(
+            success=False,
+            error_message=str(exc),
+            warnings=warnings,
+        )
 
     # Warn loudly when a column is set to 'rag' but no rag_thresholds entry
     # exists for it -- previously the cells rendered silently uncoloured
@@ -26457,110 +25660,106 @@ def make_table(
         normalised_levels: List[List[Tuple[str, int]]] = []
         for level_idx, level in enumerate(header_levels):
             if not isinstance(level, (list, tuple)):
-                kwarg_findings.append(ValidationError(
-                    f"header_levels[{level_idx}] must be a list of "
-                    f"(label, span) tuples; got {type(level).__name__}. "
-                    f"Canonical shape: header_levels=[[(label, span), ...]] "
-                    f"per chart_context.md §13.6."
-                ))
-                continue
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"header_levels[{level_idx}] must be a list of "
+                        f"(label, span) tuples; got {type(level).__name__}. "
+                        f"Canonical shape: header_levels=[[(label, span), ...]] "
+                        f"per chart_context.md §13.6.1."
+                    ),
+                )
             normalised_level: List[Tuple[str, int]] = []
-            level_shape_ok = True
             for entry_idx, entry in enumerate(level):
                 if isinstance(entry, dict):
                     if "label" in entry and "span" in entry:
                         normalised_level.append((str(entry["label"]), int(entry["span"])))
                         continue
-                    level_shape_ok = False
-                    kwarg_findings.append(ValidationError(
-                        f"header_levels[{level_idx}][{entry_idx}]={entry!r} "
-                        f"is a dict without both 'label' and 'span' keys. "
-                        f"Canonical shape: header_levels=[[(label, span), ...]] "
-                        f"per chart_context.md §13.6; the engine accepts "
-                        f"dict form ONLY when both 'label' and 'span' are present."
-                    ))
-                    continue
+                    return TableResult(
+                        success=False,
+                        error_message=(
+                            f"header_levels[{level_idx}][{entry_idx}]={entry!r} "
+                            f"is a dict without both 'label' and 'span' keys. "
+                            f"Canonical shape: header_levels=[[(label, span), ...]] "
+                            f"per chart_context.md §13.6.1; the engine accepts "
+                            f"dict form ONLY when both 'label' and 'span' are present."
+                        ),
+                    )
                 if isinstance(entry, (tuple, list)) and len(entry) == 2:
                     label, span = entry
                     normalised_level.append((str(label), int(span)))
                     continue
-                level_shape_ok = False
-                kwarg_findings.append(ValidationError(
-                    f"header_levels[{level_idx}][{entry_idx}]={entry!r} "
-                    f"is not a (label, span) tuple. Canonical shape: "
-                    f"header_levels=[[(label, span), ...]] per "
-                    f"chart_context.md §13.6."
-                ))
-            # Span totals on a malformed level are noise -- only check
-            # levels whose every entry normalised cleanly.
-            if level_shape_ok:
-                total_span = sum(span for _, span in normalised_level)
-                if total_span != len(df.columns):
-                    kwarg_findings.append(ValidationError(
-                        f"header_levels[{level_idx}] spans sum to "
-                        f"{total_span}, expected {len(df.columns)}"
-                    ))
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"header_levels[{level_idx}][{entry_idx}]={entry!r} "
+                        f"is not a (label, span) tuple. Canonical shape: "
+                        f"header_levels=[[(label, span), ...]] per "
+                        f"chart_context.md §13.6.1."
+                    ),
+                )
             normalised_levels.append(normalised_level)
         header_levels = normalised_levels
+        for level_idx, level in enumerate(header_levels):
+            total_span = sum(span for _, span in level)
+            if total_span != len(df.columns):
+                return TableResult(
+                    success=False,
+                    error_message=f"header_levels[{level_idx}] spans sum to "
+                                  f"{total_span}, expected {len(df.columns)}",
+                )
 
     if row_groups:
         normalised_groups: List[Tuple[str, int]] = []
-        groups_shape_ok = True
         for grp_idx, grp in enumerate(row_groups):
             if not isinstance(grp, (tuple, list)) or len(grp) != 2:
-                groups_shape_ok = False
-                kwarg_findings.append(ValidationError(
-                    f"row_groups[{grp_idx}]={grp!r} is not a (label, count) "
-                    f"tuple. Canonical shape: "
-                    f"row_groups=[(label, n_rows), ...] per "
-                    f"chart_context.md §13.6."
-                ))
-                continue
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"row_groups[{grp_idx}]={grp!r} is not a (label, count) "
+                        f"tuple. Canonical shape: "
+                        f"row_groups=[(label, n_rows), ...] per "
+                        f"chart_context.md §13.6.2."
+                    ),
+                )
             label, count = grp
             normalised_groups.append((str(label), int(count)))
         row_groups = normalised_groups
-        # Count totals on a malformed list are noise -- only check when
-        # every group normalised cleanly.
-        if groups_shape_ok:
-            total = sum(c for _, c in row_groups)
-            if total != len(df):
-                kwarg_findings.append(ValidationError(
-                    f"row_groups counts sum to {total}, "
-                    f"expected len(df)={len(df)}"
-                ))
+        total = sum(c for _, c in row_groups)
+        if total != len(df):
+            return TableResult(
+                success=False,
+                error_message=f"row_groups counts sum to {total}, "
+                              f"expected len(df)={len(df)}",
+            )
 
     # heatmap_groups list elements: each must be a dict carrying at least
     # 'columns' (per chart_context.md §13.5). The outer dict-keyed-by-mode
-    # case was already collected above (before list() coercion).
+    # case was already rejected above (before list() coercion).
     if heatmap_groups:
         normalised_hg: List[Dict[str, Any]] = []
         for hg_idx, hg in enumerate(heatmap_groups):
             if not isinstance(hg, dict):
-                kwarg_findings.append(ValidationError(
-                    f"heatmap_groups[{hg_idx}]={hg!r} must be a dict "
-                    f"with 'columns' (and optional 'scope', 'mode', 'palette'). "
-                    f"See chart_context.md §13.5."
-                ))
-                continue
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"heatmap_groups[{hg_idx}]={hg!r} must be a dict "
+                        f"with 'columns' (and optional 'scope', 'mode', 'palette'). "
+                        f"See chart_context.md §13.5."
+                    ),
+                    warnings=warnings,
+                )
             if "columns" not in hg:
-                kwarg_findings.append(ValidationError(
-                    f"heatmap_groups[{hg_idx}] is missing required 'columns' key. "
-                    f"See chart_context.md §13.5."
-                ))
-                continue
+                return TableResult(
+                    success=False,
+                    error_message=(
+                        f"heatmap_groups[{hg_idx}] is missing required 'columns' key. "
+                        f"See chart_context.md §13.5."
+                    ),
+                    warnings=warnings,
+                )
             normalised_hg.append(dict(hg))
         heatmap_groups = normalised_hg
-
-    if kwarg_findings:
-        return TableResult(
-            success=False,
-            error_message=_aggregate_finding_messages(
-                [str(f) for f in kwarg_findings]
-            ),
-            warnings=warnings,
-            n_rows=len(df),
-            n_cols=len(df.columns),
-        )
 
     # total_rows / subtotal_rows: coerce numpy scalars to plain int.
     total_rows = [int(r) for r in total_rows]
@@ -26781,7 +25980,6 @@ __all__ = [
     "make_3pack_triangle",
     "make_4pack_grid",
     "make_6pack_grid",
-    "build_charts",
     "check_charts_quality",
     "profile_df",
     # ---- v2 entry points ------------------------------------------
