@@ -7571,6 +7571,7 @@ def render_annotations(
     chart_type: Optional[str] = None,
     chart_width: Optional[int] = None,
     chart_height: Optional[int] = None,
+    dropped_log: Optional[List[str]] = None,
 ) -> alt.Chart:
     """Render every annotation and combine with the base chart.
 
@@ -7606,9 +7607,18 @@ def render_annotations(
 
     Returns:
         Chart with annotations layered on top.
+
+    ``dropped_log``: optional caller-owned list; every annotation the
+    engine suppresses appends a human-readable reason here so the drop
+    surfaces on ``result.warnings`` instead of dying in the server log.
     """
     if not annotations:
         return chart
+
+    def _note_drop(msg: str) -> None:
+        logger.warning("[render_annotations] %s", msg)
+        if dropped_log is not None:
+            dropped_log.append(f"Annotation dropped: {msg}")
 
     # On a heatmap, every cell carries its own value label. A halo-style
     # Callout overlapped by that cell label produces unreadable mud
@@ -7643,10 +7653,11 @@ def render_annotations(
             if isinstance(a, _RULE_ANNOTATIONS)
         ]
         if suppressed:
-            logger.warning(
-                "[render_annotations] Suppressing %d rule-style "
-                "annotation(s) on '%s' chart (no Cartesian y-axis): %s",
-                len(suppressed), chart_type, suppressed,
+            _note_drop(
+                f"{len(suppressed)} rule-style annotation(s) "
+                f"({', '.join(suppressed)}) suppressed on "
+                f"'{chart_type}' (no Cartesian y-axis). Put the point in "
+                f"title/subtitle instead."
             )
         annotations = [
             a for a in annotations if not isinstance(a, _RULE_ANNOTATIONS)
@@ -7672,13 +7683,11 @@ def render_annotations(
     if is_dual_axis:
         trendlines = [a for a in annotations if isinstance(a, Trendline)]
         if trendlines:
-            logger.warning(
-                "[render_annotations] Suppressed %d Trendline annotation"
-                "(s) on a dual-axis chart -- Trendline is not supported "
-                "on dual-axis ``multi_line``. Build a single-axis chart "
-                "per series and combine via ``make_2pack_vertical()`` "
-                "instead.",
-                len(trendlines),
+            _note_drop(
+                f"{len(trendlines)} Trendline annotation(s) suppressed on "
+                f"a dual-axis chart -- Trendline is not supported on "
+                f"dual-axis multi_line. Build a single-axis chart per "
+                f"series and combine via make_2pack_vertical() instead."
             )
             annotations = [a for a in annotations if not isinstance(a, Trendline)]
             if not annotations:
@@ -7963,15 +7972,17 @@ def render_annotations(
                 and seg_y1 is not None and seg_y2 is not None
                 and seg_x1 == seg_y1 and seg_x2 == seg_y2
             ):
-                logger.warning(
+                _note_drop(
                     "Suppressed identity-line Segment on %s (x1==y1, "
                     "x2==y2)%s: a 'y=x' reference line on a macro / "
                     "rates scatter has no analytical meaning -- the axes "
                     "are typically in different units. Use Trendline "
                     "(or mapping['trendline']=True) for a regression "
-                    "overlay instead.",
-                    chart_type,
-                    f" with label {annotation.label!r}" if annotation.label else "",
+                    "overlay instead." % (
+                        chart_type,
+                        f" with label {annotation.label!r}"
+                        if annotation.label else "",
+                    )
                 )
                 continue
 
@@ -8002,14 +8013,14 @@ def render_annotations(
                     which = (
                         "both endpoints" if (out_y1 and out_y2) else "one endpoint"
                     )
-                    logger.warning(
+                    _note_drop(
                         "Suppressed Segment with %s outside the visible "
                         "y-axis domain [%g, %g]: y1=%g, y2=%g. Endpoints "
                         "outside the data range stretch the chart frame "
                         "and create whitespace; use Segment endpoints "
                         "inside the y range or rely on HLine for "
-                        "full-axis horizontal lines.",
-                        which, lo, hi, seg_y1, seg_y2,
+                        "full-axis horizontal lines."
+                        % (which, lo, hi, seg_y1, seg_y2)
                     )
                     continue
 
@@ -8045,9 +8056,21 @@ def render_annotations(
                     lo = min(right_domain[0], right_domain[1])
                     hi = max(right_domain[0], right_domain[1])
                     if annotation.y < lo or annotation.y > hi:
+                        _note_drop(
+                            f"HLine(y={annotation.y:g}, axis='right') is "
+                            f"outside the right axis's visible domain "
+                            f"[{lo:g}, {hi:g}]; pass a y inside the data "
+                            f"range or put the threshold in the title."
+                        )
                         continue
             elif clamped_domain is not None:
                 if annotation.y < clamped_domain[0] or annotation.y > clamped_domain[1]:
+                    _note_drop(
+                        f"HLine(y={annotation.y:g}) is outside the visible "
+                        f"y domain [{clamped_domain[0]:g}, "
+                        f"{clamped_domain[1]:g}]; pass a y inside the data "
+                        f"range or put the threshold in the title."
+                    )
                     continue
 
         # ---- out-of-range filtering: VLine ------------------------------
@@ -8076,6 +8099,12 @@ def render_annotations(
                             vline_val < (x_min_val - x_pad_td)
                             or vline_val > (x_max_val + x_pad_td)
                         ):
+                            _note_drop(
+                                f"VLine(x={annotation.x!r}) is outside the "
+                                f"visible x range "
+                                f"[{x_min_val}, {x_max_val}]; pass an x "
+                                f"inside the plotted window."
+                            )
                             continue
                     elif pd.api.types.is_numeric_dtype(df[x_col]):
                         vline_val = float(annotation.x)
@@ -8091,6 +8120,12 @@ def render_annotations(
                             vline_val < (x_min_val - x_pad_val)
                             or vline_val > (x_max_val + x_pad_val)
                         ):
+                            _note_drop(
+                                f"VLine(x={annotation.x!r}) is outside the "
+                                f"visible x range "
+                                f"[{x_min_val:g}, {x_max_val:g}]; pass an "
+                                f"x inside the plotted window."
+                            )
                             continue
                 except Exception:  # noqa: BLE001
                     # If we can't parse, fall through and let it render.
@@ -8188,12 +8223,11 @@ def render_annotations(
                         pass
             if band_y_drop or band_x_drop:
                 reason = band_y_reason or band_x_reason
-                logger.warning(
-                    "Suppressed %s. Out-of-range Band edges stretch the "
-                    "chart frame and push the title up; clamp band "
-                    "endpoints to the visible data range, or use HLine / "
-                    "VLine for full-axis rules.",
-                    reason,
+                _note_drop(
+                    f"Suppressed {reason}. Out-of-range Band edges stretch "
+                    f"the chart frame and push the title up; clamp band "
+                    f"endpoints to the visible data range, or use HLine / "
+                    f"VLine for full-axis rules."
                 )
                 continue
 
@@ -8256,10 +8290,11 @@ def render_annotations(
                     except (TypeError, ValueError):
                         pass
             if callout_outside:
-                logger.warning(
-                    "[render_annotations] Suppressing Callout outside "
-                    "the visible data range: x=%s y=%s label=%r",
-                    annotation.x, annotation.y, annotation.label,
+                _note_drop(
+                    f"Callout(x={annotation.x!r}, y={annotation.y!r}, "
+                    f"label={annotation.label!r}) is outside the visible "
+                    f"data range; move the coordinate onto the data or "
+                    f"put the note in the subtitle."
                 )
                 continue
 
@@ -8291,13 +8326,13 @@ def render_annotations(
                     which = (
                         "both endpoints" if (out_y1 and out_y2) else "one endpoint"
                     )
-                    logger.warning(
+                    _note_drop(
                         "Suppressed Arrow with %s outside the visible "
                         "y-axis domain [%g, %g] (10%% tolerance): y1=%g, "
                         "y2=%g. Endpoints outside the data range stretch "
                         "the chart frame and push the title up; clamp "
-                        "Arrow endpoints to the visible y range.",
-                        which, lo, hi, arr_y1, arr_y2,
+                        "Arrow endpoints to the visible y range."
+                        % (which, lo, hi, arr_y1, arr_y2)
                     )
                     continue
 
@@ -8362,11 +8397,10 @@ def render_annotations(
                     except (TypeError, ValueError):
                         pass
             if pl_outside:
-                logger.warning(
-                    "Suppressed PointLabel outside the visible data "
-                    "range: x=%s y=%s label=%r. Off-data points stretch "
-                    "the chart frame.",
-                    annotation.x, annotation.y, annotation.label,
+                _note_drop(
+                    f"PointLabel(x={annotation.x!r}, y={annotation.y!r}, "
+                    f"label={annotation.label!r}) is outside the visible "
+                    f"data range; off-data points stretch the chart frame."
                 )
                 continue
 
@@ -8432,11 +8466,11 @@ def render_annotations(
                     except (TypeError, ValueError):
                         pass
             if ph_outside:
-                logger.warning(
-                    "Suppressed PointHighlight outside the visible data "
-                    "range: x=%s y=%s axis=%s. Off-data markers stretch "
-                    "the chart frame.",
-                    annotation.x, annotation.y, annotation.axis,
+                _note_drop(
+                    f"PointHighlight(x={annotation.x!r}, "
+                    f"y={annotation.y!r}, axis={annotation.axis!r}) is "
+                    f"outside the visible data range; off-data markers "
+                    f"stretch the chart frame."
                 )
                 continue
 
@@ -8457,6 +8491,13 @@ def render_annotations(
                     lo = min(domain[0], domain[1])
                     hi = max(domain[0], domain[1])
                     if annotation.y < lo or annotation.y > hi:
+                        _note_drop(
+                            f"HLine(y={annotation.y:g}, "
+                            f"axis={annotation.axis!r}) is outside that "
+                            f"side's visible domain [{lo:g}, {hi:g}] on "
+                            f"the dual-axis chart; pass a y in that "
+                            f"axis's units inside its range."
+                        )
                         continue
 
                 # Boundary-aware label dy on the left axis: when the line
@@ -11398,6 +11439,91 @@ def _collect_color_kwarg_findings(
     return findings
 
 
+# Curated common-name -> brand-adjacent hex map for mapping['color_map'] /
+# mapping['color_range'] values. PRISM users say "make US red"; PRISM
+# shouldn't have to remember the brand crimson hex to comply. Names are
+# resolved case-insensitively BEFORE hex validation, so only inputs that
+# would otherwise raise are affected. Unknown names still raise (with this
+# list in the message).
+_NAMED_COLOR_HEX: Dict[str, str] = {
+    "red": "#DC143C",
+    "crimson": "#DC143C",
+    "blue": "#1F77B4",
+    "navy": "#003359",
+    "green": "#2CA02C",
+    "grey": "#A6A6A6",
+    "gray": "#A6A6A6",
+    "black": "#000000",
+    "white": "#FFFFFF",
+    "orange": "#FF7F0E",
+    "purple": "#6A0DAD",
+    "yellow": "#FFC107",
+    "amber": "#FFC107",
+    "teal": "#17A2B8",
+    "pink": "#E377C2",
+    "brown": "#8C564B",
+}
+
+
+def _resolve_named_color(value: Any) -> Any:
+    """Map a common colour name to its curated hex; pass everything else."""
+    if isinstance(value, str) and not value.startswith("#"):
+        return _NAMED_COLOR_HEX.get(value.strip().lower(), value)
+    return value
+
+
+def _normalize_named_colors_in_mapping(mapping: Dict[str, Any]) -> None:
+    """Rewrite common colour names to hex in ``color_map`` / ``color_range``.
+
+    Mutates the (already-copied) mapping in place. Fail-path-only: hex
+    strings and unrecognised names are untouched, so any input that
+    validates today behaves identically; only inputs that would raise
+    "must be a hex string" are absorbed.
+    """
+    color_map = mapping.get("color_map")
+    if isinstance(color_map, dict):
+        mapping["color_map"] = {
+            k: _resolve_named_color(v) for k, v in color_map.items()
+        }
+    elif isinstance(color_map, (list, tuple)):
+        mapping["color_map"] = [_resolve_named_color(v) for v in color_map]
+    color_range = mapping.get("color_range")
+    if isinstance(color_range, (list, tuple)):
+        mapping["color_range"] = [_resolve_named_color(v) for v in color_range]
+
+
+# Chart types whose builders consume mapping['scale_type']. The line
+# family auto-detects log candidates and honours 'linear'/'log' overrides;
+# scatter honours an explicit 'log' y. Everything else ignores the kwarg,
+# which must be LOUD: a silently-linear axis on a chart the caller asked
+# to be log renders fine and is wrong.
+_SCALE_TYPE_CHART_TYPES = {"multi_line", "timeseries", "scatter"}
+
+
+def _collect_scale_type_findings(
+    mapping: Dict[str, Any], chart_type: str,
+) -> List[ValidationError]:
+    """Kwarg-fact findings for ``mapping['scale_type']``."""
+    findings: List[ValidationError] = []
+    val = mapping.get("scale_type")
+    if val is None:
+        return findings
+    if val not in {"linear", "log"}:
+        findings.append(ValidationError(
+            f"mapping['scale_type']={val!r} is not recognised. "
+            f"Valid values: 'linear', 'log'."
+        ))
+    elif chart_type not in _SCALE_TYPE_CHART_TYPES:
+        findings.append(ValidationError(
+            f"mapping['scale_type'] is honoured on multi_line / timeseries "
+            f"(y log-scale override) and scatter (explicit log y); it has "
+            f"no effect on chart_type={chart_type!r}. Drop the kwarg, or "
+            f"pre-transform the data (e.g. np.log10) if a log axis is the "
+            f"intent."
+        ))
+    return findings
+
+
 def _validate_color_kwargs(
     mapping: Dict[str, Any], chart_type: str,
     df: Optional[pd.DataFrame] = None,
@@ -11435,7 +11561,8 @@ def _validate_color_range_kwarg(
             if not isinstance(hex_val, str) or not hex_val.startswith("#"):
                 raise ValidationError(
                     f"mapping['color_range'][{idx}]={hex_val!r} must be a "
-                    f"hex string like '#DC143C'."
+                    f"hex string like '#DC143C', or one of the common "
+                    f"names {sorted(set(_NAMED_COLOR_HEX))}."
                 )
         if chart_type not in {"scatter", "scatter_multi"}:
             raise ValidationError(
@@ -11519,6 +11646,18 @@ def _validate_color_map_kwarg(
             "On heatmap, override the ramp with mapping['color_scheme'] "
             "(e.g. 'blues', 'redblue')."
         )
+    if chart_type in {"bullet", "waterfall"} and isinstance(color_map, dict):
+        # These builders have no categorical colour encoding for dict keys
+        # to match -- a dict here silently changed nothing before this
+        # gate. List form stays valid (entry [0] sets the primary colour).
+        raise ValidationError(
+            f"mapping['color_map'] dict form has no effect on "
+            f"chart_type={chart_type!r}: waterfall colours are keyed by "
+            f"bar type (positive green / negative red / totals brand "
+            f"primary) and bullet by 'color_by'. Use the single-entry "
+            f"list form (['#hex'] sets the primary colour) or drop the "
+            f"kwarg."
+        )
     if isinstance(color_map, dict):
         for key, hex_val in color_map.items():
             # Booleans are int subclasses in Python; reject them so
@@ -11541,7 +11680,8 @@ def _validate_color_map_kwarg(
             if not isinstance(hex_val, str) or not hex_val.startswith("#"):
                 raise ValidationError(
                     f"mapping['color_map'][{key!r}]={hex_val!r} must be "
-                    f"a hex string like '#1A2B3C'."
+                    f"a hex string like '#1A2B3C', or one of the common "
+                    f"names {sorted(set(_NAMED_COLOR_HEX))}."
                 )
         # Range-check int keys against the actual category count when
         # we have df + color_field. Surfaces "color_map={5: ...} on a
@@ -11569,7 +11709,8 @@ def _validate_color_map_kwarg(
             if not isinstance(hex_val, str) or not hex_val.startswith("#"):
                 raise ValidationError(
                     f"mapping['color_map'] entries must be hex strings "
-                    f"like '#1A2B3C'; got {hex_val!r}."
+                    f"like '#1A2B3C' (or one of the common names "
+                    f"{sorted(set(_NAMED_COLOR_HEX))}); got {hex_val!r}."
                 )
     else:
         raise ValidationError(
@@ -14361,6 +14502,23 @@ def _build_scatter(
         y_padding = (y_max - y_min) * 0.05 if y_max != y_min else max(abs(y_max), 1.0) * 0.05
         y_domain = [y_min - y_padding, y_max + y_padding]
 
+    # ---- scale_type: explicit log y -------------------------------------
+    # Same kwarg the line family honours. Log needs strictly positive y;
+    # the domain is recomputed multiplicatively (additive padding from
+    # _auto_domain can push the floor through zero on a log axis).
+    y_scale_extra: Dict[str, Any] = {}
+    if mapping.get("scale_type") == "log":
+        _y_num = pd.to_numeric(df[y_field], errors="coerce").dropna()
+        _y_min_val = float(_y_num.min()) if len(_y_num) else 0.0
+        if _y_min_val <= 0:
+            raise ValidationError(
+                f"mapping['scale_type']='log' requires every y value > 0; "
+                f"{y_field!r} has min {_y_min_val:g}. Filter the non-positive "
+                f"rows or drop the log override."
+            )
+        y_domain = [_y_min_val * 0.9, float(_y_num.max()) * 1.1]
+        y_scale_extra["type"] = "log"
+
     connect_path = bool(mapping.get("connect"))
     if connect_path and mapping.get("trendline"):
         raise ValidationError(
@@ -14486,7 +14644,7 @@ def _build_scatter(
         y_field,
         type="quantitative",
         axis=alt.Axis(title=y_title, titleFontWeight="normal"),
-        scale=alt.Scale(domain=y_domain),
+        scale=alt.Scale(domain=y_domain, **y_scale_extra),
     )
     tooltips = _build_tooltip(mapping, "scatter", df)
 
@@ -14690,7 +14848,7 @@ def _build_scatter(
                 y=alt.Y(
                     y_field,
                     type="quantitative",
-                    scale=alt.Scale(domain=y_domain),
+                    scale=alt.Scale(domain=y_domain, **y_scale_extra),
                 ),
             )
         )
@@ -17869,6 +18027,72 @@ def _apply_extra_layers(
 # MODULE: PRE-CHART TRANSFORMS (auto-melt, auto-downsample)
 # ===========================================================================
 
+def _promote_index_to_x_column(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+    audit_trail: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """Promote a meaningful pandas index to the ``mapping['x']`` column.
+
+    Fail-path-only absorption: fires ONLY when ``mapping['x']`` names a
+    field that is NOT a DataFrame column -- i.e. the call is otherwise
+    headed for a missing-column ``ValidationError`` -- and the index can
+    unambiguously supply it:
+
+      * the index name matches the x field (case-insensitive), any dtype
+        (``df.set_index('country')`` + ``mapping['x']='country'``), or
+      * the index is a ``DatetimeIndex`` / ``PeriodIndex`` (the canonical
+        data-pull shape: dates in the index, ``mapping['x']='date'``).
+
+    ``PeriodIndex`` converts via ``to_timestamp()`` (period start).
+    Heatmaps are excluded (``_auto_reshape_heatmap`` owns index recovery
+    there); ``MultiIndex`` is ambiguous and falls through to the normal
+    missing-column error. Calls whose x already exists as a column are
+    returned untouched -- success paths never change.
+    """
+    x_field = _get_field(mapping, "x")
+    if not x_field or not isinstance(x_field, str):
+        return df
+    if x_field in df.columns:
+        return df
+    if chart_type == "heatmap":
+        return df
+    if isinstance(df.index, pd.MultiIndex):
+        return df
+
+    idx = df.index
+    name_match = (
+        idx.name is not None
+        and str(idx.name).strip().lower() == x_field.strip().lower()
+    )
+    datetime_like = isinstance(idx, (pd.DatetimeIndex, pd.PeriodIndex))
+    if not (name_match or datetime_like):
+        return df
+
+    promoted = df.copy()
+    if isinstance(promoted.index, pd.PeriodIndex):
+        promoted.index = promoted.index.to_timestamp()
+    index_kind = type(idx).__name__
+    promoted.index.name = x_field
+    try:
+        promoted = promoted.reset_index()
+    except ValueError:
+        # reset_index can collide with an existing same-named column;
+        # fall through to the normal missing-column error untouched.
+        return df
+
+    note = (
+        f"AUTO-RECOVERED: mapping['x']={x_field!r} was not a DataFrame "
+        f"column; promoted the {index_kind} to a {x_field!r} column "
+        f"(df.reset_index())."
+    )
+    logger.info("[_promote_index_to_x_column] %s", note)
+    if audit_trail is not None:
+        audit_trail.append(note)
+    return promoted
+
+
 def _auto_melt_for_multiline(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -17976,6 +18200,21 @@ def _auto_melt_for_multiline(
             new_mapping.setdefault(
                 "color_sort", [friendly_map[c] for c in value_cols]
             )
+            # Dual-axis references follow the melt: entries that named
+            # the raw wide columns are remapped to the friendly series
+            # labels so ``y=[list]`` + ``dual_axis_series`` /
+            # ``dual_axis_bind`` works in one call instead of failing on
+            # a name mismatch after the rename.
+            _das = new_mapping.get("dual_axis_series")
+            if isinstance(_das, list):
+                new_mapping["dual_axis_series"] = [
+                    friendly_map.get(s, s) for s in _das
+                ]
+            _dab = new_mapping.get("dual_axis_bind")
+            if isinstance(_dab, dict):
+                new_mapping["dual_axis_bind"] = {
+                    friendly_map.get(k, k): v for k, v in _dab.items()
+                }
             return df_long, new_mapping
 
         # Case 2: y and color don't exist; auto-melt numerics.
@@ -19143,6 +19382,7 @@ def _make_chart(
     skin: str = "gs_clean",
     intent: IntentType = "explore",
     dimensions: Optional[DimensionPreset] = None,
+    dimension_preset: Optional[DimensionPreset] = None,
     annotations: Optional[List[Annotation]] = None,
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -19303,6 +19543,25 @@ def _make_chart(
         if kwarg_val is not None and mapping_key not in mapping:
             mapping[mapping_key] = kwarg_val
 
+    # ---- Promote a meaningful index to the x column (fail-path only) ----
+    # Data pulls routinely land with dates in the index; without this the
+    # call dies on a missing-column error PRISM fixes with reset_index()
+    # homework. Runs before the facet branch and auto-melt so both see
+    # the promoted column. No-ops whenever mapping['x'] already exists.
+    df = _promote_index_to_x_column(df, mapping, chart_type, audit_trail)
+
+    # ---- Common colour names -> hex (fail-path only) ---------------------
+    # "Make US red" shouldn't require PRISM to recall the brand crimson
+    # hex. Hex strings and unknown names pass through untouched.
+    _normalize_named_colors_in_mapping(mapping)
+
+    # ---- dimension_preset= alias ------------------------------------------
+    # The composite helpers accept ``dimension_preset``; the single-chart
+    # path historically only took ``dimensions``. Accept both here so the
+    # name carries across surfaces; ``dimensions`` wins when both are set.
+    if dimensions is None and dimension_preset is not None:
+        dimensions = dimension_preset
+
     if s3_manager is None:
         raise ValueError(
             "make_chart() requires an s3_manager. PRISM injects one via the "
@@ -19348,6 +19607,7 @@ def _make_chart(
     # against the actual category count.
     kwarg_findings.extend(_collect_color_kwarg_findings(mapping, chart_type, df))
     kwarg_findings.extend(_collect_opacity_kwarg_findings(mapping, chart_type, df))
+    kwarg_findings.extend(_collect_scale_type_findings(mapping, chart_type))
 
     # ---- Facet (small-multiples) early branch ---------------------------
     # When the caller sets ``mapping['facet']``, dispatch entirely into
@@ -19528,6 +19788,16 @@ def _make_chart(
                     _dual_axis_flatness_warnings(
                         df, _da_color, _da_y, _da_right,
                     )
+                )
+            # strokeDash is single-y-axis only: the dual-axis builder
+            # renames series into per-side fields and never reads it.
+            # Surface the drop instead of silently rendering solid lines.
+            if _da_right and mapping.get("strokeDash"):
+                warnings.append(
+                    "mapping['strokeDash'] is ignored on dual-axis charts "
+                    "(the dual-axis builder renders solid lines per side). "
+                    "Drop the kwarg, or use a single y-axis / "
+                    "make_2pack_vertical() if the line-style split matters."
                 )
 
     # ---- Auto-downsample large time series ------------------------------
@@ -20003,6 +20273,7 @@ def _make_chart(
                 chart, annotations, df, mapping, skin_config,
                 chart_type=chart_type,
                 chart_width=width, chart_height=height,
+                dropped_log=warnings,
             )
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Annotation layer failed (non-fatal): {exc}")
@@ -20607,6 +20878,8 @@ def _build_single_chart(
     chart_type = spec.chart_type
 
     # Pre-chart transforms.
+    df = _promote_index_to_x_column(df, mapping, chart_type)
+    _normalize_named_colors_in_mapping(mapping)
     if chart_type in {"multi_line", "area"}:
         df, mapping = _auto_melt_for_multiline(df, mapping)
     df, mapping = _sanitize_column_names(df, mapping)
@@ -22455,8 +22728,20 @@ def _render_facet_grid(
     panel_mapping.pop("facet", None)
 
     # Strip LVL annotations at the grid level; per-panel build also
-    # passes ``suppress_lvl=True`` so auto-injection is off.
+    # passes ``suppress_lvl=True`` so auto-injection is off. Explicit
+    # caller-passed LVLs surface a warning -- the strip is by design
+    # (panel density makes end-of-line labels collide) but must not be
+    # invisible to the caller.
+    _n_explicit_lvl = sum(
+        1 for a in (annotations or []) if isinstance(a, LastValueLabel)
+    )
     annotations = _strip_lvl_annotations(annotations)
+    if _n_explicit_lvl:
+        warnings_list.append(
+            f"{_n_explicit_lvl} LastValueLabel annotation(s) stripped: "
+            f"facet grids never render end-of-line labels (panel titles "
+            f"identify each series)."
+        )
 
     # Histogram facets always share x (also enforced at make_chart dispatch).
     if chart_type == "histogram":
