@@ -177,7 +177,7 @@ MAX_ROWS_INTERACTIVE = 50_000       # Above this, warn (do not block)
 # a HARD error so the engine routes PRISM toward a better decomposition
 # instead of shipping an illegible chart. Facet/grid mode is the sanctioned
 # breakup and is exempt.
-MAX_LINE_SERIES = 4                 # Max series on a single line/area panel
+MAX_LINE_SERIES = 6                 # Max series on a single line/area panel
 
 # Auto-downsample thresholds for time-series rendering.
 MAX_ROWS_BEFORE_DOWNSAMPLE = 5_000  # Trigger downsample above this
@@ -793,7 +793,7 @@ _SKIN_AXIS_LABEL_FONT_PX = 18
 # the visual sweet spot; we hard-fail past 24 to surface obvious abuses
 # (raw column names, generated tokens) without being too pedantic about
 # borderline-long human labels.
-_Y_AXIS_LABEL_MAX_CHARS = 24
+_Y_AXIS_LABEL_MAX_CHARS = 28
 
 # Left-gutter fraction of chart width reserved for heatmap row labels.
 # Widened (0.38->0.43, 0.28->0.32) in lockstep with the per-char ratio bump
@@ -807,10 +807,10 @@ _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX = 4
 # category cap so PRISM has one abbreviation discipline across matrix
 # and bar charts. Gutter math may allow more in wide canvases; this cap
 # still wins so labels stay efficient.
-_HEATMAP_ROW_LABEL_MAX_CHARS = 15
+_HEATMAP_ROW_LABEL_MAX_CHARS = 20
 # Absolute char ceiling for heatmap column (x) labels -- aligned with
 # row / bar caps so PRISM has one abbreviation discipline.
-_HEATMAP_COLUMN_LABEL_MAX_CHARS = 15
+_HEATMAP_COLUMN_LABEL_MAX_CHARS = 20
 _HEATMAP_FULL_MONTH_LABEL_RE = re.compile(
     r"^(January|February|March|April|May|June|July|August|"
     r"September|October|November|December)\s+\d{4}$",
@@ -825,7 +825,7 @@ _HEATMAP_FULL_MONTH_LABEL_RE = re.compile(
 # char because series names tend to need slightly more room than axis
 # titles (``"S&P 500 Energy"`` 14 vs ``"Energy ($/bbl)"`` 14 -- the
 # series carries the entity, the y-title carries the unit).
-_LVL_SERIES_NAME_MAX_CHARS = 25
+_LVL_SERIES_NAME_MAX_CHARS = 32
 
 # Hard cap on bar-chart category label length. Long labels surface
 # multiple failure modes that no labelLimit / labelOverlap setting can
@@ -848,7 +848,7 @@ _LVL_SERIES_NAME_MAX_CHARS = 25
 # gallery at projects/altair/dev/build_long_label_audit.py (42 cards;
 # every CLEAN render has max_len <= 15; every TRUNC / COLLIDE has
 # max_len > 15).
-_BAR_CATEGORY_LABEL_MAX_CHARS = 15
+_BAR_CATEGORY_LABEL_MAX_CHARS = 22
 
 # Minimum distinct (x, y) coordinates that fall inside the visible plot
 # region for a scatter to read as a relationship rather than an anecdote.
@@ -857,7 +857,7 @@ _BAR_CATEGORY_LABEL_MAX_CHARS = 15
 # representation instead of shipping a misleading chart. Inherited by
 # ``_build_scatter_multi`` because it dispatches through ``_build_scatter``
 # on the full DataFrame (chart-level total, not per-color group).
-_MIN_SCATTER_VISIBLE_DOTS = 10
+_MIN_SCATTER_VISIBLE_DOTS = 8
 
 # Minimum fraction of the visible y-axis span that any single series in a
 # multi-series single-y-axis time-series chart (``multi_line`` /
@@ -2283,7 +2283,7 @@ def _collect_plot_ready_findings(
                 else:
                     facet_bullet = ""
                 tier1.append(ValidationError(
-                    f"{chart_type} has {n_series} series (column "
+              ``      f"{chart_type} has {n_series} series (column "
                     f"'{line_color_field}'), over the {MAX_LINE_SERIES}-line "
                     f"cap. More than {MAX_LINE_SERIES} lines on one panel "
                     f"overplot and the end-of-line labels collide -- break the "

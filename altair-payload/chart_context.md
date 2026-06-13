@@ -15,7 +15,7 @@ The engine enforces these caps up-front and **raises** rather than silently clip
 
 | Limit | Cap | Trips | Fix |
 |---|---|---|---|
-| Lines per `multi_line` / `area` panel | **4** | 5+ series on one canvas; LVL labels collide | 5-6: composite (§10) or keep top 4; 7+ same-shape entities: facet (grids spoke); else split / aggregate (§3.1) |
+| Lines per `multi_line` / `area` panel | **6** (aim ≤4) | 7+ series on one canvas; LVL labels collide | 5-6 render but crowd → prefer composite (§10) or keep top 4; 7+ same-shape entities: facet (grids spoke); else split / aggregate (§3.1) |
 | Axis title (`y_title` / `x_title` / `y_title_right`) | **24 chars** (aim ≤16) | long descriptive axis labels | abbreviate before `make_chart` |
 | LVL end-of-line series name (`multi_line` / `area`) | **25 chars** (aim ≤12) | long melt column values auto-become LVL labels | rename in DataFrame before melting |
 | Heatmap row + column labels | **15 chars** (aim ≤8) | correlation matrix ticker names, long categories | abbreviate row/col strings |
@@ -158,8 +158,8 @@ On failure the raise reads:
 
 ```
 2 of 3 chart(s) failed to build:
-  [six_sectors]  2 independent problems -- fix ALL, then re-run:
-    1. multi_line has 6 series ... over the 4-line cap ...
+  [seven_sectors]  2 independent problems -- fix ALL, then re-run:
+    1. multi_line has 7 series ... over the 6-line cap ...
     2. Y-axis label '...' is 35 characters (max 24) ...
   [corr_matrix]  Heatmap row labels ... exceed ...
 (survivor 'us_cpi' rendered)
@@ -219,7 +219,7 @@ Engine rejects scatters with < 10 distinct (x, y) coords in the visible region (
 ## 4. Authoring rules
 
 - **Building 2+ charts in one script? Drive them through `build_charts()` (§2a)** instead of a bare sequence -- one run surfaces every failure, not just the first.
-- **Max 4 lines per `multi_line` / `area`, counted per panel -- engine raises** (5+ overplot, LVL labels collide). For 5-6 series: composite (§10) or normalize/aggregate to the most important ≤4. For 7+ same-shape entities: small-multiples facet (grids spoke); heterogeneous 7-8 series: 4-pack split (§10); 9+ series: aggregate or heatmap (§3.1). Composite cells each stay ≤4.
+- **Up to 6 lines per `multi_line` / `area` panel (hard cap; engine raises at 7+) — but aim ≤4.** 4 or fewer reads cleanest; 5-6 still render but crowd and the LVL end-of-line labels start to collide, so prefer a composite (§10) or normalize/aggregate to the most important ≤4. For 7+ same-shape entities: small-multiples facet (grids spoke); heterogeneous 7-8 series: 4-pack split (§10); 9+ series: aggregate or heatmap (§3.1). Composite cells each aim ≤4.
 - **Labels: shortest string that still reads -- caps are ceilings, aim roughly half.** `y_title` plain English, aim ≤16 (hard cap 24; same on `x_title` / `y_title_right`). LVL series names aim ≤12 (cap 25, §6.1) -- rename in DataFrame before melting. Bar categories and heatmap row / column labels aim ≤8 (cap 15).
 - **X column must be `'date'` for time series, as a column.** `df.rename(columns={'datetime': 'date'}).reset_index()`.
 - **Multi-line long format: rename FIRST, then melt** -- or use auto-melt (no `color` key, pass `y=[list]`).
@@ -274,7 +274,7 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 
 **Colour-legend series names** apply only when the legend is visible (dual-axis, or explicit `mapping['legend']=True`): must fit the cell-width budget or the engine raises `LegendLabelTooLongError`. On dual-axis with 3+ lines the engine auto-appends ` (LHS)` / ` (RHS)` to disambiguate axis binding; disable via `mapping['dual_axis_legend_tags']=False`. Pack composites with LVL show no colour legend.
 
-**Seasonal-jaggedness gate (`multi_line` / `timeseries` / `line` / `area`).** A weekly/monthly/quarterly series with a strong, regular every-period swing (e.g. raw quarterly revenue with a holiday-quarter spike) is REJECTED with `SEASONAL JAGGEDNESS`. Checked per series, incl. composite cells. Fix: seasonally adjust, plot YoY % change, or take a trailing rolling mean/sum over one full period (e.g. 4-quarter rolling sum).
+**Seasonal-jaggedness gate (`multi_line` / `timeseries` / `line` / `area`).** A weekly/monthly/quarterly series with a strong, regular every-period swing (e.g. raw quarterly revenue with a holiday-quarter spike) is REJECTED with `SEASONAL JAGGEDNESS`. Checked per series, incl. composite cells. Fix: seasonally adjust, plot YoY % change, or take a trailing rolling mean/sum over one full period (e.g. 4-quarter rolling sum). A low-frequency series (quarterly SEP dots, an annual projection) step-filled onto a denser grid manufactures the same flat-then-jump sawtooth — keep it at native cadence (concat in long format; the sparse line draws between its observation dates) or plot it as `scatter` point markers on the shared timeline, not forward-filled onto the dense grid (this is the §6.5 carve-out).
 
 **Series-oscillation gate (`multi_line` / `timeseries` / `line` / `area`).** When two horizons or series are interleaved at every x-date without `mapping['color']` (canonical: MSFT panel in a Mag-7 EPS facet grid), REJECTED with `SERIES OSCILLATION` — distinct from seasonal jaggedness (reverses on nearly every step with large vertical jumps). Fix: add `mapping['color']`, filter to one horizon per x, use `mapping['facet']`, or split with `dual_axis_series`.
 
@@ -287,6 +287,8 @@ profile.date_range      # {'date': {'min': '...', 'max': '...'}}
 **Bars are categorical-only.** `bar` / `bar_horizontal` require a categorical (string / ordinal) `x` -- NEVER a datetime / temporal axis. There is no bar-chart time series: continuous time series route to `multi_line` / `area` (additive decomposition → `waterfall`), including signed flow / issuance / surprise / net-position tapes that might otherwise read as thin bars over time. Discrete periods (quarters, months) belong on bars ONLY as string labels (`"Q1 2025"`, `"Jan"`), which makes them categorical -- never pass the raw datetime.
 
 `stack=True` (default with color) for parts-of-whole; `stack=False` for grouped side-by-side. Don't sign-key colour (`'Positive'`/`'Negative'`) -- bar position vs zero conveys sign.
+
+**One unit per value axis.** A bar's length IS its value, so categories carrying different units on one shared axis (`'HY chg (bp)'` ≈58, `'SPX (%)'` ≈-2.5, `'VIX (pts)'` ≈3.1) let a large-unit bar dwarf an economically larger small-unit one — the engine **raises** when it detects 2+ unit families. Split into one panel per unit (`make_3pack_triangle` / `make_2pack_*`) or normalize every category to a common unit (z-score / rebase-to-100 / %-change) before charting. (Bars always anchor at zero and zero-valued bars draw a baseline tick — no author action.)
 
 ```python
 mapping = {'x': 'Region', 'y': 'Revenue', 'color': 'Product'}                  # stacked
@@ -350,7 +352,7 @@ mapping = {'x': 'component', 'y': 'contribution', 'type': 'type', 'y_title': 'CP
 
 ### 6.5 Haver frequency hygiene
 
-Haver stores many monthly/quarterly at business-daily granularity (same value ~22 days). Symptom: stair-step lines. Resample to native frequency BEFORE charting. Merging mixed-frequency creates NaN gaps -- resample to lowest common frequency before `concat` / `merge`.
+Haver stores many monthly/quarterly at business-daily granularity (same value ~22 days). Symptom: stair-step lines. Resample to native frequency BEFORE charting. Merging mixed-frequency creates NaN gaps -- resample to lowest common frequency before `concat` / `merge`. Carve-out: do NOT *upsample* a sparse low-frequency projection (SEP dots, annual targets) onto a denser grid to align it with a daily series -- that manufactures the §6.1 step-sawtooth. Concat at native cadences in long format (dense series draws continuously, sparse draws between its dates), or split into a 2-pack.
 
 | Series type | Resample | Example |
 |---|---|---|
@@ -629,9 +631,9 @@ Composites > individuals for related data (shared x-axis, y-concept, comparison 
 
 | Series count | Approach |
 |---|---|
-| 2-4 | Single `multi_line` (ideal) |
-| 5-6 | `make_2pack_horizontal()`, 2-3 lines each |
-| 7-8 | `make_4pack_grid()`, 2 lines each |
+| ≤4 | Single `multi_line` (ideal) |
+| 5-6 | Single panel still renders (hard cap 6) — prefer `make_2pack_horizontal()`, 2-3 lines each, for clarity |
+| 7-8 | `make_4pack_grid()`, 2 lines each (single panel raises at 7+) |
 | 9+ | Aggregate/group, or `heatmap` |
 
 ```python

@@ -1056,6 +1056,82 @@ def _validate_bar_category_labels(
     )
 
 
+# Unit tokens (lower-cased) -> the unit FAMILY they belong to. Used by
+# ``_validate_bar_unit_homogeneity`` to detect a single bar chart whose
+# categories carry 2+ incompatible units on one shared value axis (a
+# ``bp`` magnitude dwarfs a ``%`` magnitude at equal economic size). Only
+# RECOGNISED unit tokens count, so a parenthetical sector / year / note
+# ("AAPL (tech)", "Q1 (2024)") never trips the guard.
+_BAR_UNIT_FAMILY: Dict[str, str] = {
+    "%": "percent", "pct": "percent", "percent": "percent", "ppt": "percent",
+    "pp": "percent", "ppts": "percent",
+    "bp": "bp", "bps": "bp", "bp(s)": "bp",
+    "$": "currency", "usd": "currency", "eur": "currency", "gbp": "currency",
+    "jpy": "currency", "bn": "currency", "mn": "currency", "trn": "currency",
+    "$b": "currency", "$m": "currency", "$bn": "currency", "$mn": "currency",
+    "$t": "currency", "$tn": "currency",
+    "pt": "points", "pts": "points", "point": "points", "points": "points",
+    "index": "points", "idx": "points",
+    "x": "ratio", "ratio": "ratio", "multiple": "ratio", "z": "zscore",
+    "yrs": "years", "yr": "years", "years": "years",
+}
+
+
+def _unit_family(token: str) -> Optional[str]:
+    """Map a parenthetical unit token to its unit family (or None)."""
+    t = token.strip().lower()
+    if not t:
+        return None
+    if t in _BAR_UNIT_FAMILY:
+        return _BAR_UNIT_FAMILY[t]
+    # Containment fallbacks for compound tokens ("HY chg (bp)", "($bn)").
+    if "%" in t or "basis point" in t:
+        return "percent" if "%" in t else "bp"
+    if "$" in t:
+        return "currency"
+    return None
+
+
+def _validate_bar_unit_homogeneity(
+    labels: List[str],
+    category_field: str,
+    mapping: Dict[str, Any],
+) -> None:
+    """Reject a bar chart whose categories mix 2+ unit FAMILIES on a single
+    shared value axis.
+
+    A bar's length is its value, so "HY chg (bp)" (≈58), "SPX (%)" (≈-2.5)
+    and "VIX (pts)" (≈3.1) on one axis lets the bp bar dwarf an
+    economically larger equity move -- the chart lies. The fix is one
+    panel per unit (a composite) or a normalised common unit; the engine
+    raises here rather than render the misleading single axis. Keys ONLY
+    off recognised unit tokens in parentheses, so non-unit parentheticals
+    never trip it. A user-supplied ``y_title`` is not consulted -- the
+    per-category units are the signal.
+    """
+    families: Dict[str, str] = {}
+    for raw in labels:
+        groups = re.findall(r"\(([^)]*)\)", str(raw))
+        if not groups:
+            continue
+        fam = _unit_family(groups[-1])
+        if fam:
+            families.setdefault(fam, str(raw))
+    if len(families) < 2:
+        return
+    fam_list = ", ".join(f"{fam} (e.g. '{lbl}')" for fam, lbl in families.items())
+    raise ValidationError(
+        f"Bar categories in '{category_field}' mix {len(families)} "
+        f"incompatible unit families on one shared value axis: {fam_list}. "
+        f"Bar length encodes magnitude, so a larger-unit value visually "
+        f"dwarfs a smaller-unit one even when the latter is economically "
+        f"bigger. Split into one panel per unit "
+        f"(make_3pack_triangle / make_2pack_*), or normalise every "
+        f"category to a common unit (z-score / rebase-to-100 / %-change) "
+        f"before charting."
+    )
+
+
 def _grouped_bar_cell_budget(
     df: pd.DataFrame,
     x_field: str,
@@ -14648,6 +14724,14 @@ def _build_scatter(
     )
     tooltips = _build_tooltip(mapping, "scatter", df)
 
+    # The dataframe whose values get inlined into the final spec. The
+    # gradient-color branch below builds the chart on a derived frame that
+    # carries the normalised ``_grad_norm`` colour column; that frame --
+    # not the original df -- must be embedded, or the colour encoding
+    # references a column the spec never carries and every point paints
+    # null (the empty-body temporal-colour scatter bug).
+    embed_df = df
+
     if connect_path:
         line_config = skin_config.get("mark_config", {}).get("line", {})
         if pd.api.types.is_datetime64_any_dtype(df[order_field]):
@@ -14775,6 +14859,7 @@ def _build_scatter(
             grad_df["_grad_norm"] = _scatter_gradient_norm_series(
                 grad_df[color_field],
             )
+            embed_df = grad_df
             grad_scale = _scatter_gradient_color_scale(mapping)
             chart = alt.Chart(grad_df).mark_point(
                 size=mark_config.get("size", 60),
@@ -14858,7 +14943,7 @@ def _build_scatter(
     if layers:
         chart = _apply_extra_layers(chart, df, layers, skin_config)
 
-    chart = _force_data_embedding(chart, df)
+    chart = _force_data_embedding(chart, embed_df)
     logger.debug("[_build_scatter] DONE")
     return chart
 
@@ -15085,6 +15170,7 @@ def _build_bar(
         # collision modes for long category labels).
         raw_labels = [str(v) for v in df[x_field].unique()]
         _validate_bar_category_labels(raw_labels, x_field, mapping)
+        _validate_bar_unit_homogeneity(raw_labels, x_field, mapping)
         # Auto-switch to horizontal-bar when category labels are too long
         # to render vertically without ellipsis truncation. Heuristic:
         # average label > 12 chars or any label > 20 chars on a normal-
@@ -15121,19 +15207,29 @@ def _build_bar(
         )
 
     # ---- y-domain calc --------------------------------------------------
+    # Bars encode magnitude by LENGTH, so the value axis must anchor at
+    # zero -- a non-zero baseline visually lies about ratios (a 2.2 bar
+    # reads ~10x a 0.8 bar when it is really ~3x; the canonical
+    # beta-by-regime QC reject). Always include zero; pad only the
+    # away-from-zero end(s) so outside value labels clear the frame and
+    # the category-axis tick labels. Stacked-color bars defer to Vega's
+    # summed-stack domain (an explicit row-level domain would clip it).
     if pd.api.types.is_numeric_dtype(df[y_field]):
-        y_min = float(df[y_field].min())
-        y_max = float(df[y_field].max())
-        y_range = y_max - y_min
-        # All-positive data far from zero: explicit padded domain so
-        # variation stays visible. Otherwise anchor at zero.
-        if y_min > 0 and y_range > 0 and y_min > y_range * 0.5:
-            y_scale = alt.Scale(
-                domain=[y_min - y_range * 0.1, y_max + y_range * 0.1],
-                zero=False,
-            )
-        else:
+        if color_field and stack:
             y_scale = alt.Scale(zero=True)
+        else:
+            y_min = float(df[y_field].min())
+            y_max = float(df[y_field].max())
+            lo = min(0.0, y_min)
+            hi = max(0.0, y_max)
+            span = (hi - lo) or 1.0
+            y_scale = alt.Scale(
+                domain=[
+                    lo - (span * 0.10 if y_min < 0 else 0.0),
+                    hi + (span * 0.10 if y_max > 0 else 0.0),
+                ],
+                zero=True,
+            )
     else:
         y_scale = alt.Scale()
 
@@ -15319,6 +15415,35 @@ def _build_bar(
             df_pos = df_for_labels[df_for_labels[y_field] >= 0]
             df_neg = df_for_labels[df_for_labels[y_field] < 0]
             value_fmt = _smart_number_format(df[y_field])
+
+            # Zero-valued bars have no height and disappear -- a blank slot
+            # reads as MISSING data, not "present and zero" (the neutral-
+            # stance QC reject). Draw a thin baseline tick at y=0 for those
+            # categories so the bar is visibly present; the value label
+            # still prints above it.
+            df_zero = df_for_labels[df_for_labels[y_field] == 0]
+            if len(df_zero) > 0:
+                zero_tick = (
+                    alt.Chart(df_zero)
+                    .mark_tick(
+                        thickness=3,
+                        size=(
+                            bar_size_override
+                            if isinstance(bar_size_override, (int, float))
+                            else 40
+                        ),
+                        color=primary_color,
+                        opacity=1.0,
+                    )
+                    .encode(
+                        x=alt.X(
+                            x_field, type=x_type, sort=mapping.get("x_sort"),
+                        ),
+                        y=alt.Y(y_field, type="quantitative"),
+                    )
+                    .properties(width=width, height=height)
+                )
+                chart = chart + zero_tick
 
             if len(df_pos) > 0:
                 pos_text = (
@@ -15660,6 +15785,11 @@ def _build_bar_horizontal(
     # the caller invokes bar_horizontal explicitly, this is the only
     # validation site, so it must live here.
     _validate_bar_category_labels(
+        [str(v) for v in df[y_field].unique()],
+        category_field=y_field,
+        mapping=mapping,
+    )
+    _validate_bar_unit_homogeneity(
         [str(v) for v in df[y_field].unique()],
         category_field=y_field,
         mapping=mapping,
@@ -16557,6 +16687,16 @@ def _build_heatmap(
             grid_size,
         )
 
+    # Heatmap axes are labeled by their tick values (the row / column
+    # categories), so an auto-derived field-name title is redundant noise
+    # -- the 'View' / 'Lbl' / 'Short' leak QC keeps rejecting. Only a
+    # USER-supplied title shows; otherwise blank both axes. A single space
+    # is the engine's blank sentinel ('' is falsy and would fall back to
+    # the field name inside _format_label).
+    if not mapping.get("x_title"):
+        mapping["x_title"] = " "
+    if not mapping.get("y_title"):
+        mapping["y_title"] = " "
     x_title = _format_label(x_field, mapping, "x")
     y_title = _format_label(y_field, mapping, "y")
     x_sort_order = mapping.get("x_sort")
@@ -18449,21 +18589,29 @@ def _auto_reshape_heatmap(
                 f"the {y_field!r} category."
             )
         header_order = [str(c) for c in numeric_cols]
+        # Correlation-matrix canonical: x and y name the SAME field (both
+        # 'ticker'). The long form then needs DISTINCT column names, or
+        # df[x_field] resolves to a 2-column frame downstream and
+        # .unique() raises 'DataFrame has no attribute unique'. Give the
+        # row axis a distinct internal column; the cell tick labels still
+        # carry the (identical) category meaning and the axis title is
+        # blanked (heatmap axes self-label).
+        y_col = y_field if y_field != x_field else f"{y_field}_row"
         melted = reset.melt(
             id_vars=[idx_col],
             value_vars=numeric_cols,
             var_name=x_field,
             value_name=value_name,
         )
-        melted = melted.rename(columns={idx_col: y_field})
+        melted = melted.rename(columns={idx_col: y_col})
         new_mapping = dict(mapping)
         new_mapping["x"] = x_field
-        new_mapping["y"] = y_field
+        new_mapping["y"] = y_col
         new_mapping["value"] = value_name
         new_mapping.pop("z", None)
         new_mapping.setdefault("x_sort", header_order)
         new_mapping.setdefault("y_sort", row_keys)
-        _blank_heatmap_placeholder_titles(new_mapping, x_field, y_field)
+        _blank_heatmap_placeholder_titles(new_mapping, x_field, y_col)
         logger.info(
             "[make_chart] auto-reshaped matrix heatmap: %s -> %s",
             df.shape, melted.shape,
