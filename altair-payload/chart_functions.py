@@ -11057,6 +11057,31 @@ def apply_beautification_to_spec(
                 if "scale" not in enc["y"]:
                     enc["y"]["scale"] = {}
                 enc["y"]["scale"]["type"] = "log"
+                # A log scale requires a strictly-positive domain. A
+                # builder may have already set a LINEAR domain whose floor
+                # sits at or below zero -- e.g. ``_build_scatter``'s
+                # additive padding pushes the floor below a small positive
+                # data min (realized move 0.10 -> domain floor -1.11).
+                # Because the domain-injection above only fires when the
+                # builder set none, that negative-floored domain survives,
+                # and bolting ``type:'log'`` onto it yields an invalid
+                # scale: Vega-Lite drops every axis tick and collapses all
+                # marks to the top edge. Repair the floor in place with
+                # the log-safe minimum the config already computed
+                # (``positive_min * 0.5``), leaving the upper bound as the
+                # builder set it so no point is newly clipped.
+                log_domain = enc["y"]["scale"].get("domain")
+                if (
+                    isinstance(log_domain, (list, tuple))
+                    and len(log_domain) == 2
+                    and isinstance(log_domain[0], (int, float))
+                    and not isinstance(log_domain[0], bool)
+                    and log_domain[0] <= 0
+                    and y_config.domain_min is not None
+                ):
+                    enc["y"]["scale"]["domain"] = [
+                        y_config.domain_min, log_domain[1],
+                    ]
 
             # y-axis label wrapping (3 words per line).
             #
