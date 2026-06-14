@@ -5514,37 +5514,31 @@ class LastValueLabel(Annotation):
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
 
-        # Per-row precomputed label colors. Source palette is
-        # ``skin['label_color_scheme']`` (falling back to
-        # ``skin['color_scheme']`` then GS_CLEAN's color_scheme so
-        # custom skins without a label palette keep today's
-        # match-line-exactly behaviour). For GS_CLEAN the label
-        # palette is GS_PRIMARY's ``label_colors``: identical to the
-        # line palette for the dark slots (navy / red / cobalt /
-        # purple / orange / teal) and a darker HSL-derived hex
-        # (L * 0.55, hue/sat preserved) for the readability-weak
-        # slots (light blue / mid blue / grey / olive). Vega-Lite
-        # defaults to ``shared`` color-scale resolution across
-        # layers, so any ``alt.Scale`` declared on the LVL inner
-        # layer is silently overridden by the base line chart's
-        # palette. ``resolve_scale(color='independent')`` would also
-        # break legitimate shared-color encodings on other
-        # annotation types (Trendline, etc.). Instead, materialize
-        # the literal label hex per row and encode with
-        # ``scale=None`` so Vega-Lite uses the hex values directly
-        # and bypasses scale merging entirely. Slot index follows
-        # the sorted-unique convention Vega-Lite applies by default
-        # to nominal color domains, so the LVL slot-to-series
-        # mapping matches the line layer's mapping one-to-one.
-        scheme = skin.get(
-            "label_color_scheme",
-            skin.get("color_scheme", GS_CLEAN["color_scheme"]),
+        # Per-row precomputed label colors, resolved through the SAME
+        # path the line layer uses (``_resolve_categorical_color_scale``)
+        # so the labels track the lines under every colour-override path
+        # -- ``mapping['color_map']`` (dict or list) and
+        # ``mapping['color_scheme']`` included. Each series' resolved
+        # line hex is then mapped to its readability-tuned label hex:
+        # for the GS_CLEAN palette that means identical to the line for
+        # the dark slots (navy / red / cobalt / purple / orange / teal)
+        # and a darker HSL-derived hex (L * 0.55, hue/sat preserved) for
+        # the readability-weak slots (light blue / mid blue / grey /
+        # olive); custom hues outside the skin palette pass through
+        # unchanged (exact line/label colour identity). See
+        # ``_resolve_lvl_series_label_colors``.
+        #
+        # Vega-Lite defaults to ``shared`` color-scale resolution across
+        # layers, so any ``alt.Scale`` declared on the LVL inner layer is
+        # silently overridden by the base line chart's palette.
+        # ``resolve_scale(color='independent')`` would also break
+        # legitimate shared-color encodings on other annotation types
+        # (Trendline, etc.). Instead, materialize the literal label hex
+        # per row and encode with ``scale=None`` so Vega-Lite uses the
+        # hex values directly and bypasses scale merging entirely.
+        series_to_color = _resolve_lvl_series_label_colors(
+            df_clean, color_field, mapping, skin,
         )
-        unique_series = sorted(last_rows[color_field].astype(str).unique())
-        series_to_color: Dict[str, str] = {
-            s: scheme[i % len(scheme)]
-            for i, s in enumerate(unique_series)
-        }
         last_rows["_label_color"] = (
             last_rows[color_field].astype(str).map(series_to_color)
         )
@@ -5703,14 +5697,20 @@ class LastValueLabel(Annotation):
             x_kwargs["sort"] = x_sort
 
         layers: List[alt.Chart] = []
-        # Default to the same color the single-series line itself renders
-        # in (skin.primary_color), so the LVL label and the line share
-        # the same hex by construction. Explicit ``label_color`` on the
-        # annotation still wins.
-        line_color = (
-            skin.get("primary_color", "#003359") if skin else "#003359"
-        )
-        color = self.label_color or line_color
+        # Resolve the colour the single-series line itself renders in --
+        # through the same helper the line builder uses, so a custom
+        # ``mapping['color_map']=['#hex']`` / ``mapping['color_scheme']``
+        # is honoured -- then map that line hex to its readability-tuned
+        # label hex. The label and the line share the same hue by
+        # construction. Explicit ``label_color`` on the annotation wins.
+        if skin:
+            line_color = _resolve_single_series_color(mapping or {}, skin)
+            label_color = _line_to_label_color_map(skin).get(
+                str(line_color).upper(), line_color,
+            )
+        else:
+            label_color = "#003359"
+        color = self.label_color or label_color
 
         text_chart = (
             alt.Chart(end_df)
@@ -11944,6 +11944,90 @@ def _resolve_categorical_color_scale(
         return alt.Scale(range=_CATEGORICAL_PALETTES[color_scheme])
 
     return _get_color_scale(skin_config)
+
+
+def _line_to_label_color_map(skin_config: Dict[str, Any]) -> Dict[str, str]:
+    """Map each line-palette hex to its readability-tuned label hex.
+
+    The skin keeps two parallel per-slot palettes: ``color_scheme`` for
+    line strokes and ``label_color_scheme`` for ``LastValueLabel`` text
+    -- identical for the slots that read cleanly as text on white and a
+    darker HSL-derived hex for the readability-weak slots (light blue,
+    mid blue, grey, olive). Keyed on the LINE hex so a series' label
+    colour can be derived from whatever colour its line actually
+    resolved to, rather than from a slot index.
+
+    Custom skins without a ``label_color_scheme`` get an identity map
+    (label == line); custom ``color_map`` / ``color_scheme`` hues that
+    aren't in the skin palette therefore pass through unchanged so the
+    label matches its line exactly.
+    """
+    line_scheme = list(skin_config.get("color_scheme") or GS_CLEAN["color_scheme"])
+    label_scheme = list(skin_config.get("label_color_scheme") or line_scheme)
+    out: Dict[str, str] = {}
+    for i, line_hex in enumerate(line_scheme):
+        label_hex = label_scheme[i] if i < len(label_scheme) else line_hex
+        out.setdefault(str(line_hex).upper(), str(label_hex))
+    return out
+
+
+def _resolve_lvl_series_label_colors(
+    df: pd.DataFrame,
+    color_field: str,
+    mapping: Dict[str, Any],
+    skin_config: Dict[str, Any],
+) -> Dict[str, str]:
+    """Per-series ``LastValueLabel`` colours that track the LINE colours.
+
+    The line layer resolves its categorical colours through
+    ``_resolve_categorical_color_scale`` (honouring ``color_map`` dict /
+    list and ``color_scheme``). The LVL labels MUST resolve through the
+    same scale so they never drift from the lines they label. Each
+    series' resolved line colour is then mapped to its readability-tuned
+    label hex via ``_line_to_label_color_map`` (a no-op for custom hues
+    outside the skin palette -> exact line/label colour identity).
+
+    Returns ``{str(series): label_hex}`` for every series in ``df``.
+    """
+    series = sorted(df[color_field].astype(str).unique())
+    scale = _resolve_categorical_color_scale(
+        mapping, skin_config, color_field, df,
+    )
+    domain = getattr(scale, "domain", None)
+    rng = getattr(scale, "range", None)
+
+    line_color: Dict[str, str] = {}
+    if (
+        isinstance(domain, (list, tuple)) and domain
+        and isinstance(rng, (list, tuple)) and rng
+    ):
+        # Explicit domain->range (dict ``color_map`` path): pair directly
+        # so each series gets exactly the hex its line renders in.
+        for d, r in zip(domain, rng):
+            line_color[str(d)] = str(r)
+    elif isinstance(rng, (list, tuple)) and rng:
+        # Range-only scale (list ``color_map`` / ``color_scheme`` / skin
+        # default). The line's LVL-mode colour re-encode passes no
+        # ``sort=``, so Vega-Lite assigns ``range`` in ascending-domain
+        # (sorted-unique) order. Mirror that exact assignment.
+        for i, s in enumerate(series):
+            line_color[s] = str(rng[i % len(rng)])
+
+    line_to_label = _line_to_label_color_map(skin_config)
+    label_fallback = list(
+        skin_config.get("label_color_scheme")
+        or skin_config.get("color_scheme")
+        or GS_CLEAN["color_scheme"]
+    )
+
+    out: Dict[str, str] = {}
+    for i, s in enumerate(series):
+        ln = line_color.get(s)
+        if ln is None:
+            out[s] = label_fallback[i % len(label_fallback)]
+        else:
+            out[s] = line_to_label.get(str(ln).upper(), ln)
+    return out
 
 
 def _validate_opacity_value(value: Any, label: str) -> float:
