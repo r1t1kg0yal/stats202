@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>worldstate — question bank + timeline</title>
+<style>
+  :root { --bg:#0f1117; --card:#1a1d27; --text:#e8eaed; --muted:#9aa0a6; --accent:#7cacf8; --border:#2d3142; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 2rem; line-height: 1.55; max-width: 1100px; margin-inline: auto; }
+  h1 { font-size: 1.5rem; margin-bottom: .25rem; }
+  .meta { color: var(--muted); font-size: .9rem; margin-bottom: 1.5rem; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+  h2 { font-size: 1.1rem; color: var(--accent); margin-top: 0; }
+  ul { margin: .5rem 0; padding-left: 1.25rem; }
+  code, pre { font-family: ui-monospace, monospace; font-size: .82rem; }
+  pre { background: #0a0c10; border: 1px solid var(--border); border-radius: 6px; padding: 1rem; overflow-x: auto; white-space: pre-wrap; max-height: 420px; overflow-y: auto; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .tag { display: inline-block; background: #2a3348; color: var(--accent); padding: .1rem .45rem; border-radius: 4px; font-size: .75rem; margin-right: .35rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  th, td { border: 1px solid var(--border); padding: .45rem .6rem; text-align: left; }
+  th { background: #222633; }
+  .pointer { border-left: 3px solid var(--accent); padding-left: 1rem; margin: 1rem 0; }
+</style>
+</head>
+<body>
+<h1>worldstate project — initial question bank</h1>
+<p class="meta">2026-06-21 · Files touched below · Focus: reject timeline + hyper-timely PRISM edge-case questions</p>
+
+<section>
+<h2>Summary</h2>
+<p>Built out <code>projects/worldstate/</code> as a lightweight markdown SSOT: (1) post-cutoff event timeline with FOMC/holiday calendars, (2) representative world-state questions with gold answers and WS/API/GAP tags. Researched current market context as of Jun 21, 2026 (SpaceX IPO, FOMC hold, Iran MOU, May CPI/PPI, Cursor deal, treasury auction week).</p>
+<p><strong>Files:</strong></p>
+<ul>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/projects/worldstate/reject_events.md</code></li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/projects/worldstate/world_state_questions.md</code></li>
+</ul>
+<div class="pointer"><strong>What to look for:</strong> Open <code>world_state_questions.md</code> — scroll to <em>Known failure modes</em> and the NVDA/SpaceX trap questions. Those are the internet-free edge cases this project is meant to regression-test.</div>
+</section>
+
+<section>
+<h2>BEFORE / AFTER — reject_events.md</h2>
+<div class="grid">
+  <div>
+    <p><strong>BEFORE</strong> — timeline only, no calendars, ended Jun 16</p>
+    <pre>## 2026-06-16 — SpaceX agrees to buy Cursor / Anysphere
+## 2026-06-16 — EU Parliament approves EU-U.S. trade deal</pre>
+  </div>
+  <div>
+    <p><strong>AFTER</strong> — Jan 26 start, FOMC + holiday blocks, through Jun 19</p>
+    <pre>## FOMC calendar (brief)
+Jul 28–29 | Sep 15–16 (dot plot) | ...
+
+## U.S. equity holiday calendar (brief)
+Jun 19 Juneteenth | Jul 3 Independence Day observed | ...
+
+## 2026-06-17 — FOMC holds at 3.50–3.75%
+## 2026-06-17 — U.S.-Iran 14-point MOU unveiled</pre>
+  </div>
+</div>
+</section>
+
+<section>
+<h2>Question bank sample (world_state_questions.md)</h2>
+<table>
+  <tr><th>Question</th><th>Gold answer (abbrev)</th><th>Tag</th></tr>
+  <tr><td>NVDA earnings today?</td><td>No — last May 20 ($81.6B rev); next Aug 26</td><td><span class="tag">GAP</span></td></tr>
+  <tr><td>SpaceX IPO price?</td><td>SPCX @ $135, traded Jun 12, ~$85.7B raise</td><td><span class="tag">WS</span></td></tr>
+  <tr><td>June FOMC?</td><td>Hold 3.50–3.75%, 12-0, Warsh 1st mtg</td><td><span class="tag">WS</span></td></tr>
+  <tr><td>May CPI?</td><td>4.2% y/y, core 2.9%, energy-driven</td><td><span class="tag">API</span></td></tr>
+  <tr><td>Treasury auctions this week?</td><td>2y Jun 23, 5y Jun 24, 7y Jun 25</td><td><span class="tag">WS</span></td></tr>
+  <tr><td>SpaceX buy Cursor?</td><td>Yes — $60B all-stock, Jun 16, Q3 close</td><td><span class="tag">WS</span></td></tr>
+  <tr><td>U.S.-Iran deal?</td><td>14-pt MOU Jun 17; Hormuz 60d toll-free; 60d talks</td><td><span class="tag">WS</span></td></tr>
+</table>
+</section>
+
+<section>
+<h2>Coverage model</h2>
+<pre>
+  User question
+       │
+       ▼
+  ┌─────────────────────────────────────┐
+  │  world_state modules (no raw web)   │
+  │  calendars · markets · news ·       │
+  │  auctions · earnings · timeline   │
+  └──────────────┬──────────────────────┘
+                 │
+     ┌───────────┼───────────┐
+     ▼           ▼           ▼
+   [WS]        [API]       [GAP]
+  covered    data pull   hyper-timely /
+  well       needed      scrape lag /
+                           trap Qs
+</pre>
+</section>
+</body>
+</html>
