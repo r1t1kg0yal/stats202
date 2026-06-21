@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>worldstate — question sets</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f1117; color: #e8eaed; padding: 2rem; max-width: 900px; margin: auto; line-height: 1.5; }
+  section { background: #1a1d27; border: 1px solid #2d3142; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+  h1 { font-size: 1.4rem; }
+  h2 { color: #7cacf8; font-size: 1rem; margin-top: 0; }
+  pre { background: #0a0c10; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: .85rem; }
+  .meta { color: #9aa0a6; font-size: .9rem; }
+  ul { padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+<h1>world_state_questions.md — question sets layout</h1>
+<p class="meta">2026-06-21 · <code>staging/worldstate/world_state_questions.md</code></p>
+<section>
+<h2>What changed</h2>
+<p>Reorganized from per-question sections into <strong>5 copy-paste prompt blocks</strong>. Each set = one PRISM message + answer-key table for grading.</p>
+<ul>
+  <li><strong>Set 1</strong> — Hyper-timely traps (NVDA, SpaceX, Cursor, AI IPOs)</li>
+  <li><strong>Set 2</strong> — Fed, inflation, priced-in</li>
+  <li><strong>Set 3</strong> — Treasury auctions & market plumbing</li>
+  <li><strong>Set 4</strong> — Geopolitics, energy, tariffs</li>
+  <li><strong>Set 5</strong> — Monday briefing smoke test</li>
+</ul>
+<p><strong>Look for:</strong> fenced <code>```</code> blocks under each set — copy entire block into PRISM as one prompt.</p>
+</section>
+<section>
+<h2>Example — Set 1 prompt (truncated)</h2>
+<pre>Quick fire — answer each in order, use world state / data tools as needed:
+
+1. How did NVIDIA do on its latest earnings?
+2. Did NVDA beat or miss today?
+3. When does NVDA report next?
+...</pre>
+</section>
+</body>
+</html>
