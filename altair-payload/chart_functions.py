@@ -19561,7 +19561,7 @@ def _render_chart_to_png(
         import vl_convert as vlc  # type: ignore[import-not-found]
 
         try:
-            vlc.register_font_directory("/usr/share/fonts/liberation/")
+            vlc.register_font_directory(os.path.join(_PRISM_REPO_ROOT, "mysite", "fonts"))
         except Exception:  # noqa: BLE001 - non-fatal: macOS / dev machines
             pass
 
@@ -25592,8 +25592,18 @@ _TBL_FONT_TIER_CEIL = 22   # do not grow body font above this
 _TBL_CELL_PAD_X = 10        # Per-cell horizontal padding
 _TBL_BODY_PAD_BOTTOM = 6    # Padding between last row and caption / edge
 
+# GS Sans (repo-local, mysite/fonts/) is the preferred font; falls back to
+# system Liberation Sans (Linux/dnf) and macOS Arial only if the repo font is
+# unavailable. Paths under mysite/fonts/ are anchored to REPO_ROOT so they
+# resolve in dev, scheduled processes, and detached subprocesses.
+from prism_meta import REPO_ROOT as _PRISM_REPO_ROOT
+
+_MYSITE_FONTS = os.path.join(_PRISM_REPO_ROOT, "mysite", "fonts")
+
 _TBL_FONT_SEARCH_PATHS: Dict[str, List[str]] = {
     "regular": [
+        os.path.join(_MYSITE_FONTS, "GSSans_Rg.ttf"),
+        "/usr/share/fonts/liberation-sans/LiberationSans-Regular.ttf",
         "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
@@ -25601,6 +25611,8 @@ _TBL_FONT_SEARCH_PATHS: Dict[str, List[str]] = {
         "/System/Library/Fonts/Helvetica.ttc",
     ],
     "bold": [
+        os.path.join(_MYSITE_FONTS, "GSSans_Bd.ttf"),
+        "/usr/share/fonts/liberation-sans/LiberationSans-Bold.ttf",
         "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -25608,6 +25620,8 @@ _TBL_FONT_SEARCH_PATHS: Dict[str, List[str]] = {
         "/System/Library/Fonts/Helvetica.ttc",
     ],
     "italic": [
+        os.path.join(_MYSITE_FONTS, "GSSans_It.ttf"),
+        "/usr/share/fonts/liberation-sans/LiberationSans-Italic.ttf",
         "/usr/share/fonts/liberation/LiberationSans-Italic.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
         "/System/Library/Fonts/Supplemental/Arial Italic.ttf",
