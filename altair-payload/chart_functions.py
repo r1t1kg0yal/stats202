@@ -32,12 +32,11 @@ Annotation primitives (``VLine``, ``HLine``, ``Segment``, ``Band``,
 ``profile_df`` are shared between the two surfaces.
 
 PRISM-coupled helpers (S3, presigned URLs, Gemini vision QC) are
-imported from ``ai_development.mcp.utils.*`` -- the same paths
-PRISM uses in production. In this staging repo the same import paths
-resolve to the colocated ``ai_development/`` stub package, which
-provides filesystem-backed / no-op equivalents sufficient for local
-development. This file is the canonical PRISM-bound payload; nothing
-under ``ai_development/`` ships with it.
+imported from ``prism_mcp.utils.*`` -- the same paths PRISM uses in
+production. In this staging repo the same import paths resolve to the
+colocated ``prism_mcp/`` stub package, which provides filesystem-backed
+/ no-op equivalents sufficient for local development. This file is the
+canonical PRISM-bound payload; nothing under ``prism_mcp/`` ships with it.
 
 Usage (v1)::
 
@@ -90,16 +89,16 @@ import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 
 # ---------------------------------------------------------------------------
-# PRISM utilities -- imported from ``ai_development.mcp.utils.*``.
+# PRISM utilities -- imported from ``prism_mcp.utils.*``.
 # In PRISM these resolve to the production implementations. In this
 # staging repo they resolve to the local stub package at
-# ``projects/altair/ai_development/`` which provides filesystem-backed /
+# ``projects/altair/prism_mcp/`` which provides filesystem-backed /
 # no-op equivalents.
 # ---------------------------------------------------------------------------
-from ai_development.mcp.utils.download_links import generate_presigned_download_url
-from ai_development.mcp.utils.unit_helper_functions import guess_units_from_name
-from ai_development.mcp.utils.vision_functions import check_chart_quality
-from ai_development.mcp.utils.chart_functions_studio import (
+from prism_mcp.utils.download_links import generate_presigned_download_url
+from prism_mcp.utils.unit_helper_functions import guess_units_from_name
+from prism_mcp.utils.vision_functions import check_chart_quality
+from prism_mcp.utils.chart_functions_studio import (
     GS_PRIMARY, MONO_BLUE, MONO_GREY, VIVID, TABLEAU, OKABE_ITO, PASTEL,
 )
 
@@ -1393,6 +1392,18 @@ def _is_intraday_datetime_series(date_series: pd.Series) -> bool:
     return median_diff_seconds < 20 * 3600
 
 
+# Regex for explicit quarter tokens: ``2024-Q1``, ``2024Q1``, ``24Q2``, ``Q1 2024``.
+HEATMAP_QUARTER_RE = re.compile(
+    r"^(?:"
+    r"Q\s*(?P<q1>[1-4])\s*(?P<y1>\d{2,4})"
+    r"|(?P<y2>\d{4})\s*[-_]?\s*Q\s*(?P<q2>[1-4])"
+    r"|(?P<y3>\d{4})\s*[-_]?\s*(?P<q3>[1-4])"
+    r"|(?P<y4>\d{2})Q(?P<q4>[1-4])"
+    r")$",
+    re.IGNORECASE,
+)
+
+
 def _normalize_intraday_x_column(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -1455,6 +1466,23 @@ def _normalize_intraday_x_column(
     else:
         import warnings as _warnings
 
+        # --------------- Quarter-label guard (Bug fix 2026-07-02) ------------------
+        # pd.to_datetime("24Q2") silently parses as 2024-04-01. On a grouped
+        # bar chart this converts the nominal x column to temporal, then
+        # beautification injects a temporal tick_step on the nominal inner
+        # axis -> Vega error "Only time and utc scales accept interval
+        # strings". Detect quarter-style labels and bail early.
+        _sample = series.dropna().head(20).astype(str)
+        if len(_sample) > 0 and _sample.apply(
+            lambda v: bool(HEATMAP_QUARTER_RE.match(v.strip()))
+        ).mean() >= 0.5:
+            logger.info(
+                "[chart_functions] x_field=%r looks like quarter labels "
+                "(e.g. %r); skipping intraday normalization.",
+                x_field, str(_sample.iloc[0]),
+            )
+            return df
+
         converted = None
         for fmt in (
             None,
@@ -1496,17 +1524,6 @@ def _normalize_intraday_x_column(
         x_field, display_tz, chart_type,
     )
     return df
-
-
-# Regex for explicit quarter tokens: ``2024-Q1``, ``2024Q1``, ``Q1 2024``.
-_HEATMAP_QUARTER_RE = re.compile(
-    r"^(?:"
-    r"Q\s*(?P<q1>[1-4])\s*(?P<y1>\d{2,4})"
-    r"|(?P<y2>\d{4})\s*[-_]?\s*Q\s*(?P<q2>[1-4])"
-    r"|(?P<y3>\d{4})\s*[-_]?\s*(?P<q3>[1-4])"
-    r")$",
-    re.IGNORECASE,
-)
 
 
 def _parse_heatmap_string_to_timestamp(
@@ -1641,7 +1658,7 @@ def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
                 return pd.Timestamp(n, unit="ms")
             if n > 1e8:
                 return pd.Timestamp(n, unit="s")
-        m = _HEATMAP_QUARTER_RE.match(s)
+        m = HEATMAP_QUARTER_RE.match(s)
         if m:
             q = int(m.group("q1") or m.group("q2") or m.group("q3"))
             y_raw = m.group("y1") or m.group("y2") or m.group("y3")
@@ -1739,7 +1756,7 @@ def _heatmap_x_value_kind(val: Any, ts: Optional[pd.Timestamp]) -> str:
         s = val.strip()
         if s.isdigit() and int(s) > 1e11:
             return "epoch"
-        if _HEATMAP_QUARTER_RE.match(s):
+        if HEATMAP_QUARTER_RE.match(s):
             return "quarter_str"
         if re.fullmatch(r"\d{4}", s):
             return "year_str"
@@ -4732,11 +4749,6 @@ class Arrow(Annotation):
         mapping: Dict[str, Any],
         skin: Dict[str, Any],
     ) -> alt.Chart:
-        if self.curved:
-            logger.warning(
-                "[Arrow] curved=True is deprecated and ignored; rendering as straight arrow."
-            )
-
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
         x_type = _annotation_x_axis_type(df, x_col, mapping)
@@ -11008,7 +11020,7 @@ def apply_beautification_to_spec(
                 enc["x"]["axis"]["tickCount"] = x_config.tick_count
             if x_config.label_limit:
                 enc["x"]["axis"]["labelLimit"] = x_config.label_limit
-            enc["x"]["axis"]["labelFont"] = "Liberation Sans, Arial, sans-serif"
+            enc["x"]["axis"]["labelFont"] = "GS Sans, Liberation Sans, Arial, sans-serif"
             # Explicit tick-label subset (profile / yield-curve thinning):
             # show ticks/labels only at these values so a dense ordinal
             # axis stops colliding. The plotted line keeps every knot.
@@ -11326,7 +11338,7 @@ GS_CLEAN: Dict[str, Any] = {
     "color_scheme":       list(GS_PRIMARY["colors"]),
     "label_color_scheme": list(GS_PRIMARY["label_colors"]),
     "heatmap_scheme": "blues",
-    "font_family": "Liberation Sans, Arial, sans-serif",
+    "font_family": "GS Sans, Liberation Sans, Arial, sans-serif",
     "title_font_size": 26,
     "label_font_size": 18,
     "mark_config": {
@@ -11352,30 +11364,30 @@ GS_CLEAN: Dict[str, Any] = {
             "domainColor": "#000000",
             "tickColor": "#000000",
             "labelColor": "#000000",
-            "labelFont": "Liberation Sans, Arial, sans-serif",
-            "titleFont": "Liberation Sans, Arial, sans-serif",
+            "labelFont": "GS Sans, Liberation Sans, Arial, sans-serif",
+            "titleFont": "GS Sans, Liberation Sans, Arial, sans-serif",
             "titleFontWeight": "normal",
             "labelFontWeight": "normal",
             "labelFontSize": 18,   # axis tick labels
             "titleFontSize": 16,   # axis title (e.g. "Yield (%)")
         },
         "legend": {
-            "labelFont": "Liberation Sans, Arial, sans-serif",
-            "titleFont": "Liberation Sans, Arial, sans-serif",
+            "labelFont": "GS Sans, Liberation Sans, Arial, sans-serif",
+            "titleFont": "GS Sans, Liberation Sans, Arial, sans-serif",
             "titleFontSize": 14,
             "labelFontSize": 14,
             "labelLimit": 800,
             "rowPadding": 2,
         },
         "title": {
-            "font": "Liberation Sans, Arial, sans-serif",
+            "font": "GS Sans, Liberation Sans, Arial, sans-serif",
             "fontSize": 26,
             "fontWeight": "bold",
             "color": "#000000",
             "anchor": "start",
             "offset": 4,
             "subtitleFontSize": 14,
-            "subtitleFont": "Liberation Sans, Arial, sans-serif",
+            "subtitleFont": "GS Sans, Liberation Sans, Arial, sans-serif",
             "subtitleFontWeight": "normal",
             "subtitleColor": "#333333",
         },
@@ -19561,7 +19573,12 @@ def _render_chart_to_png(
         import vl_convert as vlc  # type: ignore[import-not-found]
 
         try:
-            vlc.register_font_directory(os.path.join(_PRISM_REPO_ROOT, "mysite", "fonts"))
+            # Register GS Sans / GS Sans Condensed (repo-local fonts/) so
+            # vl-convert resolves them by family name. Idempotent; harmless
+            # to call per-render. Matches the table-side font dir.
+            vlc.register_font_directory(
+                os.path.join(_PRISM_REPO_ROOT, "web", "backend_django", "fonts")
+            )
         except Exception:  # noqa: BLE001 - non-fatal: macOS / dev machines
             pass
 
@@ -19823,7 +19840,7 @@ def _make_chart(
         raise ValueError(
             "make_chart() requires an s3_manager. PRISM injects one via the "
             "code sandbox; for local dev, instantiate "
-            "ai_development.core.s3_bucket_manager.S3BucketManager and pass it "
+            "core.s3_bucket_manager.S3BucketManager and pass it "
             "explicitly."
         )
     use_s3 = bool(session_path) or save_as is not None
@@ -20714,6 +20731,24 @@ def _make_chart(
         png_error_message = str(exc)
         png_path = None
         warnings.append(f"PNG export failed: {png_error_message}")
+        try:
+            from prism_mcp.utils.error_handler import (
+                send_error_email as _send_err,
+            )
+            _send_err(
+                error_message=f"Vega chart render failed: {png_error_message}",
+                traceback_info=traceback.format_exc(),
+                tool_name="make_chart",
+                metadata={
+                    "chart_type": chart_type,
+                    "title": title,
+                    "df_shape": list(df.shape),
+                    "stage": "png_render",
+                },
+                context=f"session_path={session_path}, save_as={save_as}",
+            )
+        except Exception:
+            pass
 
     # ---- Presigned download URL ----------------------------------------
     if png_path and not png_save_failed:
@@ -21675,7 +21710,7 @@ def _build_text_panel(
     y_px = padding_chart if chart_edge == "top" else padding
 
     font_family = skin_config.get(
-        "font_family", "Liberation Sans, Arial, sans-serif",
+        "font_family", "GS Sans, Liberation Sans, Arial, sans-serif",
     )
 
     # Asymmetric outer padding kills the dead gap on the edge that
@@ -23597,7 +23632,7 @@ def make_composite(
         raise ValueError(
             "make_composite() requires an s3_manager. PRISM injects one via "
             "the code sandbox; for local dev, instantiate "
-            "ai_development.core.s3_bucket_manager.S3BucketManager and pass it "
+            "core.s3_bucket_manager.S3BucketManager and pass it "
             "explicitly."
         )
 
@@ -23755,7 +23790,7 @@ def make_composite(
             subtitle_lines=super_subtitle_lines,
             fontSize=32,
             font=skin_config.get(
-                "font_family", "Liberation Sans, Arial, sans-serif",
+                "font_family", "GS Sans, Liberation Sans, Arial, sans-serif",
             ),
             anchor="middle",
             offset=20,
@@ -23831,6 +23866,23 @@ def make_composite(
         png_error_message = str(exc)
         png_path = None
         warnings_list.append(f"Composite PNG export failed: {png_error_message}")
+        try:
+            from prism_mcp.utils.error_handler import (
+                send_error_email as _send_err,
+            )
+            _send_err(
+                error_message=f"Vega composite render failed: {png_error_message}",
+                traceback_info=traceback.format_exc(),
+                tool_name="make_composite",
+                metadata={
+                    "layout": layout,
+                    "n_charts": n_charts,
+                    "stage": "png_render",
+                },
+                context=f"session_path={session_path}, save_as={save_as}",
+            )
+        except Exception:
+            pass
 
     if png_path and not png_save_failed:
         try:
@@ -24391,7 +24443,7 @@ def check_charts_quality(
         raise ValueError(
             "check_charts_quality() requires an s3_manager. PRISM injects one "
             "via the code sandbox; for local dev, instantiate "
-            "ai_development.core.s3_bucket_manager.S3BucketManager and pass it "
+            "core.s3_bucket_manager.S3BucketManager and pass it "
             "explicitly."
         )
 
@@ -25592,13 +25644,16 @@ _TBL_FONT_TIER_CEIL = 22   # do not grow body font above this
 _TBL_CELL_PAD_X = 10        # Per-cell horizontal padding
 _TBL_BODY_PAD_BOTTOM = 6    # Padding between last row and caption / edge
 
-# GS Sans (repo-local, mysite/fonts/) is the preferred font; falls back to
-# system Liberation Sans (Linux/dnf) and macOS Arial only if the repo font is
-# unavailable. Paths under mysite/fonts/ are anchored to REPO_ROOT so they
-# resolve in dev, scheduled processes, and detached subprocesses.
-from prism_meta import REPO_ROOT as _PRISM_REPO_ROOT
+# GS Sans (repo-local, web/backend_django/fonts/) is the preferred font;
+# falls back to system Liberation Sans (Linux/dnf) and macOS Arial only if
+# the repo font is unavailable. Paths under web/backend_django/fonts/ are
+# anchored to REPO_ROOT so they resolve in dev, scheduled processes, and
+# detached subprocesses.
+from prism.meta import REPO_ROOT as _PRISM_REPO_ROOT
 
-_MYSITE_FONTS = os.path.join(_PRISM_REPO_ROOT, "mysite", "fonts")
+_MYSITE_FONTS = os.path.join(
+    _PRISM_REPO_ROOT, "web", "backend_django", "fonts",
+)
 
 _TBL_FONT_SEARCH_PATHS: Dict[str, List[str]] = {
     "regular": [
@@ -25789,6 +25844,13 @@ def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
     if not isinstance(value, (int, float)):
         return str(value)
     v = float(value)
+    # ---- Year-detection heuristic (engine-side fix) ----
+    # When no hint is provided and the value is an integer in the
+    # plausible calendar-year range [1900, 2200], render it as a bare
+    # integer with NO thousands separator and NO decimal point.
+    # This prevents "2024" from rendering as "2,024.0".
+    if hint is None and v == int(v) and 1900 <= int(v) <= 2200:
+        return str(int(v))
     if hint == "pct" or hint == "percent":
         return f"{v:.1f}%"
     if hint == "pct_signed":

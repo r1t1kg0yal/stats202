@@ -287,10 +287,11 @@ UNIVERSAL_KNOBS: List[Dict[str, Any]] = [
 
     # --- Typography ---
     {"name": "fontFamily", "label": "Font family", "type": "select",
-     "options": ["Liberation Sans, Arial, sans-serif", "Arial", "Helvetica",
+     "options": ["GS Sans, Liberation Sans, Arial, sans-serif",
+                 "Liberation Sans, Arial, sans-serif", "Arial", "Helvetica",
                  "sans-serif", "Georgia", "Times", "serif", "Monaco",
                  "Menlo", "monospace"],
-     "default": "Liberation Sans, Arial, sans-serif",
+     "default": "GS Sans, Liberation Sans, Arial, sans-serif",
      "path": "config.font", "group": "Typography"},
     {"name": "labelSize", "label": "Tick label size", "type": "range",
      "min": 6, "max": 22, "step": 1, "default": 18,
@@ -684,7 +685,7 @@ GS_CLEAN: Dict[str, Any] = {
         "subtitleColor": "#333333",
         "subtitleWeight": "normal",
         # Typography
-        "fontFamily": "Liberation Sans, Arial, sans-serif",
+        "fontFamily": "GS Sans, Liberation Sans, Arial, sans-serif",
         "labelSize": 18,
         "axisTitleSize": 16,
         "legendLabelSize": 14,
