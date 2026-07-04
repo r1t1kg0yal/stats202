@@ -15,7 +15,7 @@ The engine enforces these caps up-front and **raises** rather than silently clip
 
 | Limit | Cap | Trips | Fix |
 |---|---|---|---|
-| Lines per `multi_line` / `area` panel | **6** (aim ≤4) | 7+ series on one canvas; LVL labels collide | 5-6 render but crowd → prefer composite (§10) or keep top 4; 7+ same-shape entities: facet (grids spoke); else split / aggregate (§3.1) |
+| Lines per `multi_line` / `area` panel | **6** (aim ≤4) | 7+ series on one canvas; LVL labels collide | 5-6 render but crowd → prefer composite (§10) or keep to 4; 7+ same-shape entities: facet (grids spoke); else split / aggregate (§3.1) |
 | Axis title (`y_title` / `x_title` / `y_title_right`) | **24 chars** (aim ≤16) | long descriptive axis labels | abbreviate before `make_chart` |
 | LVL end-of-line series name (`multi_line` / `area`) | **25 chars** (aim ≤12) | long melt column values auto-become LVL labels | rename in DataFrame before melting |
 | Heatmap row + column labels | **15 chars** (aim ≤8) | correlation matrix ticker names, long categories | abbreviate row/col strings |
@@ -219,8 +219,13 @@ Engine rejects scatters with < 10 distinct (x, y) coords in the visible region (
 ## 4. Authoring rules
 
 - **Building 2+ charts in one script? Drive them through `build_charts()` (§2a)** instead of a bare sequence -- one run surfaces every failure, not just the first.
-- **Up to 6 lines per `multi_line` / `area` panel (hard cap; engine raises at 7+) — but aim ≤4.** 4 or fewer reads cleanest; 5-6 still render but crowd and the LVL end-of-line labels start to collide, so prefer a composite (§10) or normalize/aggregate to the most important ≤4. For 7+ same-shape entities: small-multiples facet (grids spoke); heterogeneous 7-8 series: 4-pack split (§10); 9+ series: aggregate or heatmap (§3.1). Composite cells each aim ≤4.
-- **Labels: shortest string that still reads -- caps are ceilings, aim roughly half.** `y_title` plain English, aim ≤16 (hard cap 24; same on `x_title` / `y_title_right`). LVL series names aim ≤12 (cap 25, §6.1) -- rename in DataFrame before melting. Bar categories and heatmap row / column labels aim ≤8 (cap 15).
+- **Up to 6 lines per `multi_line` / `area` panel (hard cap; engine raises at 7+) — but aim ≤4.** 4 or fewer reads cleanest; 5-6 still render but crowd and the LVL end-of-line labels start to collide, so prefer a composite (§10) or keep to 4. For 7+ same-shape entities: small-multiples facet (grids spoke); heterogeneous 7-8 series: 4-pack split (§10); 9+ series: aggregate or heatmap (§3.1). Composite cells each aim ≤4.
+- **Axis titles: aim ≤16 (hard cap 24).** `y_title`, `x_title`, and `y_title_right` — abbreviate long descriptive labels before `make_chart`.
+- **LVL end-of-line series names: aim ≤12 (hard cap 25).** Long melt column values auto-become LVL labels on `multi_line` / `area` — rename in the DataFrame before melting (§6.1).
+- **Heatmap row + column labels: aim ≤8 (hard cap 15).** Correlation-matrix tickers and long categories — abbreviate row/col strings in the DataFrame (§6.3).
+- **Bar category labels: aim ≤8 (hard cap 15).** Long x categories on vertical bars — abbreviate the `x` column before `make_chart` (§6.2).
+- **Composite pack ceiling vs facet floor.** `make_*pack_*` helpers take **2-6** cells; facet (grids spoke) needs **7+** panels. Seven G7 lines on one panel or an 8-panel ranking: use packs for ≤6 panels, facet for 7-36 (grids spoke).
+- **Labels: shortest string that still reads — caps are ceilings, aim roughly half.** Prefer `'IT'` over `'Info Tech'` over `'Information Technology'`.
 - **X column must be `'date'` for time series, as a column.** `df.rename(columns={'datetime': 'date'}).reset_index()`.
 - **Multi-line long format: rename FIRST, then melt** -- or use auto-melt (no `color` key, pass `y=[list]`).
 - **No source attribution in title/subtitle.** Title argues; sources in PRISM metadata. Good: `title='Inflation Has Peaked'`, `subtitle='Core CPI decelerating 6 months'`. Bad: `title='US CPI Data'`, `subtitle='Source: Haver'`.
@@ -627,7 +632,7 @@ make_chart(df=df_long, chart_type='multi_line',
 
 ## 10. Composite layouts
 
-Composites > individuals for related data (shared x-axis, y-concept, comparison dimension). Individuals only for unrelated topics. For 7-36 entities sharing the same shape, use grid mode (grids spoke) instead of `make_*pack_*`.
+Composites > individuals for related data (shared x-axis, y-concept, comparison dimension). Individuals only for unrelated topics. **`make_*pack_*` helpers take 2-6 cells** (`make_2pack_*` through `make_6pack_grid`); **facet (grids spoke) is the floor at 7+ panels** — do not cram seven G7 lines onto one canvas or force an 8-panel ranking into a pack.
 
 | Series count | Approach |
 |---|---|
