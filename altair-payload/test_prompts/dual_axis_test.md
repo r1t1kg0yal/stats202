@@ -14,11 +14,11 @@ Build a dual-axis chart of equity vol (VIX, left) and credit vol (CDX IG spread,
 
 ---
 
-Build a dual-axis chart of US headline CPI YoY (left) and the trade-weighted USD index (right). Verify the long-format requirement is enforced when you wire dual_axis_series. Let me know if frictions.
+Build a dual-axis chart of US headline CPI YoY (left) and the trade-weighted USD index (right), starting from a WIDE DataFrame: pass `y` as the two-column list (auto-melt) and name the right-axis column in `dual_axis_series`. Confirm the engine remaps the raw column name through the melt and renders both axes. Let me know if frictions.
 
 ---
 
-Try to build a dual-axis chart with FOUR series total (two left, two right). If the API blocks this, switch to a stacked composite (`make_2pack_vertical`) showing the same four series across two panels. Let me know if frictions.
+Build a dual-axis chart with FOUR series total (two left, two right) using `dual_axis_bind` to make every series's axis explicit. Confirm the colour legend carries ` (LHS)` / ` (RHS)` tags and report any `DUAL-AXIS WITHIN-AXIS COMPRESSION` warning; if one fires, resolve it (rebind or z-score) or switch to `make_2pack_vertical`. Let me know if frictions.
 
 ---
 

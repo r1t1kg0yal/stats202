@@ -18,7 +18,7 @@ Build a `make_6pack_grid` (3x2) of macro indicators for the US: headline CPI, co
 
 ---
 
-Build a `make_4pack_grid` where one of the four sub-panels deliberately fails (e.g. an empty DataFrame). Confirm that the surviving 3 panels render and that the failed panel's error lands in `result.chart_errors`. Let me know if frictions.
+Build a `make_4pack_grid` where one of the four sub-panels deliberately fails (e.g. an empty DataFrame). Confirm the whole call raises a single ValidationError (no partial render) whose message names the failing cell by index and title (e.g. `1 of 4 sub-charts failed validation ([4] 'Empty Panel')`) plus that panel's complete finding list. Let me know if frictions.
 
 ---
 

@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>prism-main doc refresh — 2026-07-07</title>
+<style>
+  body { font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; margin: 0; background: #f4f5f7; color: #1a1d21; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 28px 32px 80px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  h2 { font-size: 19px; margin: 42px 0 10px; border-bottom: 2px solid #d6dae0; padding-bottom: 6px; }
+  p, li { font-size: 14px; line-height: 1.55; }
+  code { background: #e8eaee; padding: 1px 5px; border-radius: 3px; font-size: 12.5px; }
+  .meta { color: #5a6270; font-size: 13px; margin-bottom: 18px; }
+  .summary { background: #fff; border: 1px solid #d6dae0; border-radius: 8px; padding: 18px 22px; }
+  .lookfor { background: #fff8e6; border: 1px solid #e8d9a0; border-radius: 8px; padding: 14px 20px; margin-top: 14px; }
+  .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 14px 0 26px; }
+  .panel { background: #fff; border: 1px solid #d6dae0; border-radius: 8px; overflow: hidden; }
+  .panel .tag { font-size: 11px; font-weight: 700; letter-spacing: 1px; padding: 6px 12px; }
+  .before .tag { background: #fbe9e7; color: #a3392b; }
+  .after .tag { background: #e5f3e8; color: #1f6b34; }
+  .single .tag { background: #e8eaee; color: #3c4450; }
+  pre { margin: 0; padding: 12px 14px; font-size: 11.5px; line-height: 1.5; overflow-x: auto;
+        font-family: "SF Mono", Menlo, Consolas, monospace; white-space: pre; }
+  .caption { font-size: 12.5px; color: #5a6270; margin: 2px 0 0; }
+  table.files { border-collapse: collapse; width: 100%; background: #fff; }
+  table.files td, table.files th { border: 1px solid #d6dae0; padding: 6px 10px; font-size: 12.5px; text-align: left; }
+  table.files th { background: #eceef2; }
+  .ok { color: #1f6b34; font-weight: 600; }
+  .warn { color: #a3392b; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>prism-main doc refresh</h1>
+<p class="meta">2026-07-07 01:17 &middot; staging/dev/output/2026-07-07_0117_prism-main-doc-refresh/</p>
+
+<div class="summary">
+<p><strong>What happened:</strong> PRISM's verbatim module-structure introspection reply (scanned tonight) confirmed the
+repo moved from the documented <code>ai_development/</code> layout to a <strong>prism-main / prism-core split checkout</strong>.
+Every load-bearing staging doc was refreshed in place to the new layout, the altair stub mirror was aligned
+(verbatim <code>prism_meta</code> package; legacy stub trees archived), and the one place where staging <em>code</em> is
+behind prod — the echarts payload's imports — is now flagged as a promotion blocker with the verbatim prod hunks cited.</p>
+<p><strong>Files touched (absolute paths):</strong></p>
+<ul>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/.cursor/rules/viz-platforms.mdc</code> — new layout section, destination table, status, import contracts, stub layout</li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/.cursor/rules/prism.mdc</code> — layout note added to the staleness banner</li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/.cursor/rules/api-clients.mdc</code> — client + proxy destinations to <code>core/mcp/</code></li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/projects/altair/README.md</code> — status, destinations, layout, import paragraph</li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/projects/altair/prism_meta/__init__.py</code> + <code>version.py</code> — NEW verbatim-parity stub package (replaces guessed flat stub)</li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/projects/altair/{ai_development,prism}/</code> — ARCHIVED to <code>dev/archive/2026-07-07_pre_prism_main_stubs/</code></li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/projects/echarts/README.md</code> — status (drift caution), destinations, asset-resolution paragraphs</li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/projects/echarts/dev/notes.md</code> — "Still open" gained the prism-main housekeeping blocker (verbatim drift inventory)</li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/staging/README.md</code> — roster rows (altair / echarts / apis), payload-flow diagram, per-project cells, blanket re-verify note</li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/prism/_prompting-guide.md</code> — ship destinations + installed sizes</li>
+  <li><code>/Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/scans/prism/2026-07-07_prism_main_module_structure.md</code> — scan filed (from inbox); prompt archived to <code>staging/prompts/archive/</code>; <code>scans/README.md</code> catalog updated</li>
+</ul>
+<div class="lookfor"><strong>What to look for:</strong> (1) the BEFORE/AFTER destination tables below — every
+<code>ai_development/...</code> path is gone from the active contracts; (2) the echarts drift caution — staging payload
+imports vs prod's migrated imports — this is the one thing that must land before the next echarts promotion;
+(3) the altair harness evidence: 90/90 unit tests pass against the new stub packages.</div>
+</div>
+
+<h2>1. PRISM runtime layout — what the scan established</h2>
+<div class="panel single">
+<div class="tag">VERIFIED 2026-07-07 (scans/prism/2026-07-07_prism_main_module_structure.md)</div>
+<pre>prism-main/                          repo root = prism_meta.REPO_ROOT; on sys.path
+├── core/                            s3_bucket_manager.py, code_execution.py, common.py,
+│                                    user_manifest.py, mcp/clients/*.py, mcp/gs_app_proxy_negotiate.py
+├── jobs/hourly/refresh_dashboards.py
+├── prism_meta/__init__.py           REPO_ROOT anchor (__file__-based SSOT)
+├── web/backend_django/fonts/        20 GS Sans TTFs
+├── web/backend_django/news/static/js/echarts.js
+└── prism-core/                      git submodule; ALSO on sys.path
+    ├── prism_mcp/tools/script_exec_tools.py     (sole importer of chart_functions)
+    ├── prism_mcp/utils/chart_functions.py       + param_validator.py, background_execution.py
+    ├── context/modules/static/tools/            chart_context.md, dashboards*.md
+    │   ├── charts/                              chart_context_grids.md, chart_context_colors.md
+    │   └── dashboards/                          7 spokes
+    └── dashboards/                              echarts compiler (dir itself on sys.path)
+
+sys.path (load-bearing entries): prism-main  ·  prism-main/prism-core  ·  prism-main/prism-core/dashboards
+There is NO ai_development/ tree anywhere in the checkout.</pre>
+</div>
+
+<h2>2. Drag-and-drop contract (viz-platforms.mdc)</h2>
+<div class="pair">
+  <div class="panel before"><div class="tag">BEFORE</div>
+<pre>altair-payload/chart_functions.py         → ai_development/mcp/utils/
+altair-payload/chart_functions_studio.py  → ai_development/mcp/utils/
+altair-payload/chart_context.md           → context/modules/static/
+altair-payload/chart_context_grids.md     → context/modules/static/
+altair-payload/chart_context_colors.md    → context/modules/static/
+echarts-payload/*.py                      → ai_development/dashboards/
+echarts-payload/refresh_dashboards.py     → ai_development/jobs/hourly/
+echarts-payload/dashboards*.md            → context/modules/static/tools/</pre>
+  </div>
+  <div class="panel after"><div class="tag">AFTER</div>
+<pre>altair-payload/chart_functions.py         → prism-core/prism_mcp/utils/
+altair-payload/chart_functions_studio.py  → prism-core/prism_mcp/utils/
+altair-payload/chart_context.md           → prism-core/context/modules/static/tools/
+altair-payload/chart_context_grids.md     → prism-core/context/modules/static/tools/charts/
+altair-payload/chart_context_colors.md    → prism-core/context/modules/static/tools/charts/
+echarts-payload/*.py                      → prism-core/dashboards/
+echarts-payload/refresh_dashboards.py     → jobs/hourly/   (prism-main parent tree)
+echarts-payload/dashboards*.md            → prism-core/context/modules/static/tools/</pre>
+  </div>
+</div>
+<p class="caption">Note the two chart spokes moved into a <code>charts/</code> subfolder — that was not knowable before the scan.
+Same table refreshed in <code>projects/altair/README.md</code>, <code>projects/echarts/README.md</code>, <code>staging/README.md</code>, <code>prism/_prompting-guide.md</code>.</p>
+
+<h2>3. Altair import contract + stub mirror</h2>
+<div class="pair">
+  <div class="panel before"><div class="tag">BEFORE (docs + tree)</div>
+<pre>docs: chart_functions.py imports from ai_development.mcp.utils.*
+      (README: "from prism.meta import REPO_ROOT")
+
+projects/altair/
+├── prism_mcp/utils/          (added Jul 4, undocumented in rule)
+├── prism/meta.py             stub for the WRONG import path
+├── ai_development/mcp/...    stale duplicate stub tree
+└── (no prism_meta anywhere → harness broken:
+     ModuleNotFoundError: No module named 'prism_meta')</pre>
+  </div>
+  <div class="panel after"><div class="tag">AFTER (verbatim-parity)</div>
+<pre>docs: chart_functions.py imports from prism_mcp.utils.*
+      + from prism_meta import REPO_ROOT (fonts at
+      &lt;REPO_ROOT&gt;/web/backend_django/fonts/)
+
+projects/altair/
+├── prism_mcp/utils/          5 helper stubs (unchanged)
+├── prism_meta/__init__.py    verbatim parity w/ prod (§3.2)
+│   └── version.py            staging stand-in
+├── core/s3_bucket_manager.py (unchanged)
+├── web/backend_django/fonts/ (empty locally; 20 TTFs in prod)
+└── dev/archive/2026-07-07_pre_prism_main_stubs/
+    ├── ai_development/       archived, never on sys.path again
+    └── prism/                archived</pre>
+  </div>
+</div>
+<div class="panel single"><div class="tag">EVIDENCE — harness + regression suite after the stub swap</div>
+<pre>$ .venv/bin/python  (import probe)
+prism_meta.REPO_ROOT = /Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/projects/altair
+smoke chart success: True
+
+$ .venv/bin/python dev/tests.py unit
+Ran 90 tests in 24.850s
+OK</pre>
+</div>
+
+<h2>4. Echarts: the one place staging is BEHIND prod (promotion blocker)</h2>
+<div class="pair">
+  <div class="panel before"><div class="tag">STAGING PAYLOAD (current)</div>
+<pre># refresh_dashboards.py
+from ai_development.core.common import UserRegistry
+from ai_development.core.s3_bucket_manager import s3_manager
+from ai_development.core.user_manifest import UserManifestManager
+from ai_development.dashboards import refresh_runner ...
+from ai_development.mcp.utils.s3_log_streamer import ( ... )
+
+# rendering.py :: _get_echarts_js
+from ai_development import REPO_ROOT as _REPO_ROOT
+js_path = os.path.join(_REPO_ROOT,
+    "ai_development", "mysite", "news", "static", "js",
+    "echarts.js")</pre>
+  </div>
+  <div class="panel after"><div class="tag">PROD INSTALLED (scan §6.2 / §6.3, verbatim)</div>
+<pre># jobs/hourly/refresh_dashboards.py
+from core.common import UserRegistry
+from core.s3_bucket_manager import s3_manager
+from core.user_manifest import UserManifestManager
+from dashboards import refresh_runner as _refresh_runner_module
+from prism_mcp.utils.s3_log_streamer import ( ... )
+
+# dashboards/rendering.py :: _get_echarts_js
+from prism_meta import REPO_ROOT as _REPO_ROOT
+candidate_paths = [
+  os.path.join(_REPO_ROOT, "web", "backend_django",
+               "news", "static", "js", "echarts.js"),
+  os.path.join(_REPO_ROOT, "mysite", "news",
+               "static", "js", "echarts.js"),  # legacy
+]</pre>
+  </div>
+</div>
+<p class="caption">Prod's copies were migrated in place during the repo reorg, so the byte-identical invariant is currently broken
+in the prod→staging direction. The housekeeping inventory (which hunks are verbatim-known vs which need a diff scan:
+<code>refresh_runner.py</code>, <code>echart_dashboard.py</code> lazy imports) is filed at the TOP of
+<code>projects/echarts/dev/notes.md</code> "Still open", and both the README and the staging roster row carry the caution.</p>
+
+<h2>5. Everything filed / archived this pass</h2>
+<table class="files">
+<tr><th>Action</th><th>Path</th></tr>
+<tr><td class="ok">FILED (scan)</td><td><code>scans/inbox/Scan Jul 7, 2026 at 12.51 AM.md</code> → <code>scans/prism/2026-07-07_prism_main_module_structure.md</code> (+ catalog row in <code>scans/README.md</code>)</td></tr>
+<tr><td class="ok">ARCHIVED (prompt answered)</td><td><code>staging/prompts/open/2026-07-06_prism_main_module_structure.md</code> → <code>staging/prompts/archive/</code></td></tr>
+<tr><td class="ok">ARCHIVED (stale stubs)</td><td><code>projects/altair/{ai_development, prism}/</code> → <code>projects/altair/dev/archive/2026-07-07_pre_prism_main_stubs/</code></td></tr>
+<tr><td class="ok">NEW (stub package)</td><td><code>projects/altair/prism_meta/</code> — verbatim parity with <code>prism-main/prism_meta/__init__.py</code></td></tr>
+<tr><td class="warn">FLAGGED (blocker)</td><td>echarts payload import drift — <code>projects/echarts/dev/notes.md</code> "Still open" (first item)</td></tr>
+<tr><td class="warn">FLAGGED (unverified)</td><td>frontend / whitepapers / bloomberg destinations (scan could not locate <code>white_papers/</code>; portal + bloomberg trees not enumerated) — blanket note in <code>staging/README.md</code></td></tr>
+</table>
+
+<h2>6. Bonus facts absorbed from the scan (recorded, not yet acted on)</h2>
+<ul>
+<li><code>check_charts_quality</code> background-mode NameError root cause confirmed: the background preamble in <code>prism_mcp/utils/background_execution.py</code> (L230-242) omits it (and <code>build_charts</code>) while the foreground namespace injects it — matches friction #27 from the Jul 6 chart scan.</li>
+<li><code>param_validator.validate_params</code> is the OUTERMOST wrapper on injected chart functions (signature-enriching TypeError decorator) — new module, now documented via the scan.</li>
+<li><code>list_ai_repo</code> resolves bare basenames via a repo-wide index, so spoke fetches like <code>file_paths=["chart_context_grids.md"]</code> keep working across the move.</li>
+<li>Installed altair payload is byte-current with staging (27,456 vs 27,460 lines; &lt;2% everywhere) — no altair housekeeping needed.</li>
+</ul>
+
+</div>
+</body>
+</html>
