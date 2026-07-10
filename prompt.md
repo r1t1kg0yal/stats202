@@ -116,3 +116,96 @@ End with:
 If NO, identify the specific missing block.
 Can you run the bounded follow-up prompt above?
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Continue the same read-only dashboards reconciliation against the current production source tree. Do not use old/ as a runtime target and do not return full file contents or unified diffs.
+Resolve only these final ambiguities.
+## 1. Freshness and completeness
+Return the current:
+- prism-main HEAD SHA
+- prism-core submodule SHA
+Then confirm YES/NO:
+1. Is the prior executable ledger exhaustive for all eight Python payload files, including production-only __init__.py?
+2. Are the only genuine Markdown semantic changes the two documented widgets.md changes?
+3. Are canonical_showcase.json and test_prompts/ both outside the current production-overlap promotion?
+If any answer is NO, identify the missing file or behavior precisely.
+## 2. Exact local-mock signatures
+Return the exact production import path and inspect.signature output for:
+- type(s3_manager).get
+- type(s3_manager).put
+- type(s3_manager).exists
+- type(s3_manager).list
+- UserRegistry.__init__
+- UserRegistry.get_all_kerberos_ids
+- UserManifestManager.__init__
+- UserManifestManager.update_dashboard_pointer
+- S3LogPathBuilder.build
+- S3LogPathBuilder.build_session_side
+- S3LogStreamer.__init__
+- register_completion_marker
+- core.mcp.clients.newyorkfed_client.pull_nyfed_data
+Also state:
+- whether prism_meta.REPO_ROOT is str or Path
+- the actual return shapes of s3_manager.list and both S3LogPathBuilder methods
+- whether any dashboard payload call uses an unlisted method
+Do not abbreviate signatures with prose or ellipses.
+## 3. Import-resolution edge cases
+Search the current production echart_dashboard.py and return every import statement containing dashboards_time, including imports nested inside functions.
+Answer explicitly:
+1. Are any bare `from dashboards_time import ...` statements retained?
+2. If yes, why do they resolve when echart_dashboard is imported as dashboards.echart_dashboard?
+3. Should the staging mirror preserve those bare imports exactly?
+4. Is pull_market_data intentionally retained in the executable refresh namespace even though authoring guidance migrated to pull_plottool_data?
+## 4. No-op textual differences
+Classify each as EXECUTABLE, EMITTED-ARTIFACT, or INERT:
+- changing the _get_prism_logo_b64 docstring from the stale ai_development.* wording to core.*
+- a final trailing-LF difference
+- em-dash/hyphen substitutions in comments and Markdown
+- dashboards.md to dashboards_hub.md prose-only cross-reference changes
+- mysite/news to web/backend_django/news docstring changes
+State whether any of these would prevent a candidate from being accepted as runtime/semantic-equivalent to production.
+## 5. Candidate-versus-live verification
+The prior recipe compares old/ against production. We instead need to compare a newly uploaded candidate snapshot directly against live production.
+Provide:
+1. The recommended session-folder layout for uploading the candidate’s eight Python and nine Markdown files.
+2. A bounded command or script that compares candidate → live production and emits only:
+   - BYTE_IDENTICAL
+   - RUNTIME_EQUIVALENT_ONLY
+   - SEMANTIC_EQUIVALENT_ONLY
+   - REAL_EXECUTABLE_DELTA
+   - REAL_SEMANTIC_DELTA
+   - UNMAPPED
+3. The exact expected file inventory.
+4. Confirmation that canonical_showcase.json and test_prompts/ are excluded.
+Do not output the underlying full diff.
+End with:
+FINAL AMBIGUITIES RESOLVED: YES/NO
+If NO, list only the unresolved questions.
