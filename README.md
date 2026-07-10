@@ -104,6 +104,9 @@ PRISM right now.
 │                                       promotion; production-oracle │
 │                                       closure passed locally:      │
 │                                       Python 7/7, Markdown 9/9.    │
+│                                       MOCK CONTRACT: live          │
+│                                       signatures + return shapes  │
+│                                       verified and mirrored.      │
 │                                       LOCAL GATE: showcase 1/1,    │
 │                                       demos 15/15, roleplay 6/6;   │
 │                                       full unit 836/845 with 8     │
