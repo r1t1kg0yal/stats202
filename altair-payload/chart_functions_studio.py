@@ -845,27 +845,17 @@ def list_themes() -> List[Dict[str, Any]]:
 
 GS_PRIMARY: Dict[str, Any] = {
     "name": "gs_primary", "label": "GS Primary (PRISM default)", "kind": "categorical",
-    # All 10 slots are pairwise-distinct hues (min deltaE-76 ~22 across
-    # the palette). Slots 5 + 9 were re-hued on 2026-07-07: the old
-    # slot-5 cobalt #4F81BD sat at deltaE 6.9 from slot-2 mid blue
-    # (read as THE SAME color on adjacent donut slices / lines -- the
-    # most persistent visual QC reject across the 2026-07-06 friction
-    # waves), and the old slot-9 teal #4BACC6 sat at 15.8 from slot-1
-    # light blue. Green #2E7D5B and magenta #B0578D restore 10
-    # distinguishable slots without touching the brand anchors
-    # (navy / light blue / mid blue / grey / red / olive / purple /
-    # orange).
     "colors":       ["#003359", "#94C7DD", "#5C92CB", "#A6A6A6", "#C00000",
-                     "#2E7D5B", "#9BBB59", "#8064A2", "#F79646", "#B0578D"],
+                     "#4F81BD", "#9BBB59", "#8064A2", "#F79646", "#4BACC6"],
     # Per-slot LastValueLabel hex. Identical to ``colors`` for slots that
-    # are readable as 15pt text on white (slots 0 navy, 4 red, 5 green,
-    # 7 purple, 8 orange, 9 magenta). Darker derived hex (HSL L * 0.55,
+    # are readable as 15pt text on white (slots 0 navy, 4 red, 5 cobalt,
+    # 7 purple, 8 orange, 9 teal). Darker derived hex (HSL L * 0.55,
     # hue/sat preserved) for the readability-weak slots (1 light blue,
     # 2 mid blue, 3 grey, 6 olive). Engine reads via
     # ``skin['label_color_scheme']``; falls back to ``colors`` when
     # not set so other palettes keep today's match-line behaviour.
     "label_colors": ["#003359", "#307A9A", "#274F7B", "#5B5B5B", "#C00000",
-                     "#2E7D5B", "#566B2C", "#8064A2", "#F79646", "#B0578D"],
+                     "#4F81BD", "#566B2C", "#8064A2", "#F79646", "#4BACC6"],
 }
 GS_DIVERGING: Dict[str, Any] = {
     "name": "gs_diverging", "label": "GS Diverging", "kind": "diverging",

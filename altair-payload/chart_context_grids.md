@@ -70,8 +70,6 @@ Set `same_scale=True` for direct cross-panel comparison (G20 GDP in same y-range
 
 `share_color=True` is separate -- locks categorical color domain across panels + renders a SINGLE shared legend below the grid (gradient color uses the gradient bar, §5).
 
-**Two lines per panel** (each sector vs a composite reference): keep `mapping['color']` alongside `mapping['facet']` -- one row per (panel, series, date), duplicating the reference series into every panel id -- and pass `share_color=True` so the shared legend identifies the pair (per-panel legends are always stripped, §6). Style the reference via `mapping['strokeDash']` (hub §7.4).
-
 ---
 
 ## 5. Scatter phase-space gradient

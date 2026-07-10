@@ -1,4 +1,4 @@
-Build a dual-axis chart of US 10y nominal yields (left) and 10y breakeven inflation (right) over the last 5 years. Use the LEFT/RIGHT series-name constants and confirm both axes auto-scale independently. Let me know if frictions.
+Build a dual-axis chart of US 10y nominal yields (left) and 10y breakeven inflation (right) over the last 5 years. Use the LEFT/RIGHT series-name constants, give both axes short semantic metric + unit titles, and confirm both axes auto-scale independently. Positional labels such as "Right Axis" are unacceptable. Let me know if frictions.
 
 ---
 
@@ -14,11 +14,11 @@ Build a dual-axis chart of equity vol (VIX, left) and credit vol (CDX IG spread,
 
 ---
 
-Build a dual-axis chart of US headline CPI YoY (left) and the trade-weighted USD index (right), starting from a WIDE DataFrame: pass `y` as the two-column list (auto-melt) and name the right-axis column in `dual_axis_series`. Confirm the engine remaps the raw column name through the melt and renders both axes. Let me know if frictions.
+Build a dual-axis chart of US headline CPI YoY (left) and the trade-weighted USD index (right) from a wide DataFrame using `y: [list]`. Verify auto-melt preserves `dual_axis_series` binding and the semantic right-axis title. Let me know if frictions.
 
 ---
 
-Build a dual-axis chart with FOUR series total (two left, two right) using `dual_axis_bind` to make every series's axis explicit. Confirm the colour legend carries ` (LHS)` / ` (RHS)` tags and report any `DUAL-AXIS WITHIN-AXIS COMPRESSION` warning; if one fires, resolve it (rebind or z-score) or switch to `make_2pack_vertical`. Let me know if frictions.
+Try to build a dual-axis chart with FOUR series total (two left, two right), including a short semantic `y_title_right` for the shared right-side unit. If the API blocks this, switch to a stacked composite (`make_2pack_vertical`) showing the same four series across two panels. Let me know if frictions.
 
 ---
 

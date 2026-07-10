@@ -527,22 +527,6 @@ def _raise_findings(findings: List[Exception]) -> None:
     )
 
 
-def _note_builder_warning(mapping: Dict[str, Any], msg: str) -> None:
-    """Record a builder-level soft warning destined for ``result.warnings``.
-
-    The ``_build_*`` functions receive no warnings channel, so anything
-    they merely ``logger.warning`` dies in the server log -- PRISM never
-    sees it (2026-07-06 friction scan: the waterfall totals-mismatch
-    "warning" was confirmed invisible five times). Builders stash the
-    message on the SHARED mapping dict under ``_builder_warnings``;
-    ``_make_chart`` / ``_build_single_chart`` drain the key right after
-    dispatch and fold the entries into the result's warnings.
-    """
-    logger.warning("[builder] %s", msg)
-    if isinstance(mapping, dict):
-        mapping.setdefault("_builder_warnings", []).append(msg)
-
-
 class YAxisLabelTooLongError(ValidationError):
     """Raised when a y-axis label exceeds the configured character limit."""
 
@@ -810,6 +794,22 @@ _SKIN_AXIS_LABEL_FONT_PX = 18
 # borderline-long human labels.
 _Y_AXIS_LABEL_MAX_CHARS = 28
 
+# Dual-axis charts must never ship a positional placeholder as the semantic
+# right-axis title.  Normalise punctuation/case before comparing so variants
+# such as ``Right Axis``, ``right-axis``, and ``RIGHT AXIS`` are equivalent.
+_DUAL_AXIS_RIGHT_TITLE_PLACEHOLDERS = frozenset({
+    "right",
+    "right axis",
+    "right label",
+    "right y axis",
+    "rhs",
+    "rhs axis",
+    "secondary axis",
+    "secondary y axis",
+    "value",
+    "values",
+})
+
 # Left-gutter fraction of chart width reserved for heatmap row labels.
 # Widened (0.38->0.43, 0.28->0.32) in lockstep with the per-char ratio bump
 # (0.55->0.62) so the honest-but-stricter width estimate does NOT shrink the
@@ -919,11 +919,6 @@ _SEASONAL_MIN_CYCLES = 2                 # need >= 2 full cycles to assess seaso
 # demos (coverage 1.0) pass and the misaligned-fiscal-calendar repro
 # (~0.14) is rejected.
 _AREA_SERIES_COVERAGE_MIN = 0.60
-# Per-series x-WINDOW coverage floor for stacked areas: a series whose own
-# [first, last] span covers less than this fraction of the union window is
-# staggered (late start / early end) and tears the stack open with white
-# gaps even when its per-x overlap inside its own window is perfect.
-_AREA_SERIES_WINDOW_COVERAGE_MIN = 0.85
 
 # Interleaved-series / shading gate (MSFT Mag-7 EPS repro). Trips when a
 # single encoded series reverses direction on most steps AND each step
@@ -987,94 +982,81 @@ def _validate_y_axis_label(y_title: Optional[str], mapping: Dict[str, Any]) -> N
         )
 
 
-# Tenor / duration tokens compact to number+unit-initial ('10-Year' ->
-# '10Y'); generic instrument-noun tails add no identity and drop cleanly.
-_ABBREV_TENOR_RE = re.compile(
-    r"^(\d+(?:\.\d+)?)[-\u2013 ]?"
-    r"(year|yr|y|month|mo|m|week|wk|w|day|d)s?$",
-    re.IGNORECASE,
-)
-_ABBREV_DROP_TAIL_WORDS = frozenset({
-    "note", "bond", "bill", "yield", "index", "rate", "price", "level",
-    "series", "sector", "industry", "composite", "total", "government",
-})
+def _validate_dual_axis_right_title(mapping: Dict[str, Any]) -> str:
+    """Require a semantic, non-placeholder right-axis title.
+
+    Dual-axis scales encode different metrics or units.  A positional label
+    such as ``Right Axis`` does not identify either, while falling back to the
+    shared long-form y field (usually ``value``) can silently duplicate the
+    left title.  Fail at the engine boundary instead of inventing either.
+    """
+    raw_title = mapping.get("y_title_right")
+    if not isinstance(raw_title, str) or not raw_title.strip():
+        raise ValidationError(
+            "DUAL-AXIS RIGHT TITLE REQUIRED: every dual-axis chart must pass "
+            "a non-empty semantic `y_title_right` naming the right-side metric "
+            "and unit (inside mapping or as a top-level kwarg). The engine "
+            "will not invent a generic label. Example: "
+            "`y_title_right='10Y Yield (%)'`."
+        )
+
+    title = _dedup_axis_title(raw_title.strip())
+    normalized = re.sub(r"[^a-z0-9]+", " ", title.lower()).strip()
+    positional_prefixes = (
+        "right axis",
+        "right label",
+        "right y axis",
+        "rhs axis",
+        "secondary axis",
+        "secondary y axis",
+    )
+    if (
+        normalized in _DUAL_AXIS_RIGHT_TITLE_PLACEHOLDERS
+        or any(
+            normalized.startswith(f"{prefix} ")
+            for prefix in positional_prefixes
+        )
+    ):
+        raise ValidationError(
+            "DUAL-AXIS RIGHT TITLE PLACEHOLDER: "
+            f"`y_title_right={raw_title!r}` is positional, not semantic. "
+            "Name the right-side metric and unit instead (for example "
+            "`y_title_right='10Y Yield (%)'`). Generic labels such as "
+            "'Right Axis', 'RHS', and 'Value' are rejected."
+        )
+
+    _validate_y_axis_label(title, mapping)
+    return title
 
 
 def _suggest_bar_label_abbreviations(label: str) -> str:
-    """Produce 1-2 abbreviation suggestions for an over-cap category label.
+    """Produce 1-2 abbreviation suggestions for an over-cap bar category label.
 
-    Number-preserving strategy (the 2026-07-06 friction waves flagged the
-    old pure-initials approach as domain-blind: 'United States 10-Year
-    Note' suggested 'USN' -- reads as US Navy -- because numeric tokens
-    were skipped entirely):
-
-      1. Initials for the leading alpha words + compacted tenor tokens +
-         generic instrument-noun tails dropped:
-         'United States 10-Year Note'   -> 'US 10Y'
-         'US Treasury 2-Year Note Yield' -> 'UST 2Y'
-         'Information Technology Sector' -> 'IT'
-      2. First word + compact rest ('Manufacturing PMI Composite'
-         -> 'Manufacturing PMI').
-
-    Falls back to a hard truncation when neither stays under the cap.
+    Strategy:
+      1. Acronym from word initials (e.g. 'Information Technology' -> 'IT').
+      2. First word + acronymised rest (e.g. 'Manufacturing PMI Composite'
+         -> 'Mfg PMI').
+    Returns both joined with ' / '; falls back to a hard truncation when
+    neither acronym strategy stays under the cap.
     """
     cap = _BAR_CATEGORY_LABEL_MAX_CHARS
     words = label.split()
 
-    def _compact_token(w: str) -> Optional[str]:
-        """Tenor token -> '10Y' form; droppable tail -> None; else word."""
-        m = _ABBREV_TENOR_RE.match(w)
-        if m:
-            return f"{m.group(1)}{m.group(2)[0].upper()}"
-        if w.lower().strip(".,") in _ABBREV_DROP_TAIL_WORDS:
-            return None
-        return w
-
-    compacted = [c for c in (_compact_token(w) for w in words) if c]
-
-    # Strategy 1: shortest natural form. When dropping tails + compacting
-    # tenors already lands near the AIM length (~half the cap, floor 8),
-    # keep the real words ('Japan Government Bond 10Y' -> 'Japan 10Y').
-    # Otherwise initial-ise the remaining multi-char alpha words, MERGING
-    # initials into a preceding short all-caps token so 'US' + 'Treasury'
-    # reads 'UST', not 'US T'.
-    target_len = max(8, cap // 2)
-    plain = " ".join(compacted).strip()
-    if 2 <= len(plain) <= target_len:
-        first_suggestion = plain
+    initials = "".join(w[0].upper() for w in words if w and w[0].isalpha())
+    if 2 <= len(initials) <= cap:
+        first_suggestion = initials
     else:
-        parts: List[str] = []
+        first_suggestion = label[:cap]
 
-        def _flush(run: List[str]) -> None:
-            if not run:
-                return
-            initials = "".join(run)
-            if parts and parts[-1].isupper() and len(parts[-1]) <= 4:
-                parts[-1] += initials
-            else:
-                parts.append(initials)
-
-        acronym_run: List[str] = []
-        for tok in compacted:
-            if tok.isalpha() and len(tok) > 3 and not tok.isupper():
-                acronym_run.append(tok[0].upper())
-                continue
-            _flush(acronym_run)
-            acronym_run = []
-            parts.append(tok)
-        _flush(acronym_run)
-        first_suggestion = " ".join(parts).strip()
-        if not (2 <= len(first_suggestion) <= cap):
-            first_suggestion = label[:cap]
-
-    # Strategy 2: first word verbatim + compacted rest.
-    if len(compacted) >= 2:
-        candidate = " ".join([compacted[0]] + [
-            t if (len(t) <= 4 or t.isupper() or not t.isalpha())
-            else t[0].upper()
-            for t in compacted[1:]
-        ]).strip()
-        second_suggestion = candidate if len(candidate) <= cap else label[:cap]
+    if len(words) >= 2:
+        first_word = words[0]
+        rest_initials = "".join(
+            w[0].upper() for w in words[1:] if w and w[0].isalpha()
+        )
+        candidate = f"{first_word} {rest_initials}".strip()
+        second_suggestion = (
+            candidate if len(candidate) <= cap else label[:cap]
+        )
     else:
         second_suggestion = label[:cap]
 
@@ -2908,18 +2890,17 @@ def _collect_content_findings(
         except ValidationError as exc:
             findings.append(exc)
     elif is_dual_axis_line:
-        for title_text in (
-            _dedup_axis_title(
-                mapping.get("y_title") or _format_label(y_field, mapping, "y")
-            ),
-            _dedup_axis_title(
-                mapping.get("y_title_right") or _format_label(y_field, mapping, "y")
-            ),
-        ):
-            try:
-                _validate_y_axis_label(title_text, mapping)
-            except ValidationError as exc:
-                findings.append(exc)
+        left_title = _dedup_axis_title(
+            mapping.get("y_title") or _format_label(y_field, mapping, "y")
+        )
+        try:
+            _validate_y_axis_label(left_title, mapping)
+        except ValidationError as exc:
+            findings.append(exc)
+        try:
+            _validate_dual_axis_right_title(mapping)
+        except ValidationError as exc:
+            findings.append(exc)
     elif chart_type != "donut":
         try:
             _validate_y_axis_label(
@@ -3021,11 +3002,6 @@ def _collect_content_findings(
             _validate_lvl_series_names(sim_annotations, df, mapping)
         except ValidationError as exc:
             findings.append(exc)
-
-    try:
-        _validate_trendline_series(annotations, df, mapping)
-    except ValidationError as exc:
-        findings.append(exc)
 
     return findings
 
@@ -3702,34 +3678,17 @@ def _validate_series_alignment(
     mapping: Dict[str, Any],
     chart_type: str,
 ) -> None:
-    """Reject a multi-series stacked ``area`` that cannot stack coherently.
+    """Reject a multi-series stacked ``area`` whose series sit on disjoint x.
 
-    Three gates, cheapest-semantics first:
-
-    1. NEGATIVE VALUES. A stack encodes parts-of-a-whole; negative parts
-       are incoherent (layers overlap and occlude). Swap spreads, invoice
-       spreads, or any independent level series that dips negative belongs
-       on ``multi_line`` -- the repeat visual-QC reject class from the
-       2026-07-06 friction waves.
-    2. Per-x coverage. When each series reports on its own calendar, most
-       x-positions carry only a subset of the series, so the stack
-       collapses into white triangular gaps. Coverage =
-       mean(series-present-per-x) / n_series: 1.0 means every series is
-       present at every x (clean stack); 1/n means fully disjoint. Below
-       ``_AREA_SERIES_COVERAGE_MIN`` -> ``SeriesMisalignmentError``.
-    3. Staggered windows. A series whose own [first, last] span covers
-       < ``_AREA_SERIES_WINDOW_COVERAGE_MIN`` of the union window (late
-       start / early end) tears the stack open even when its per-x
-       overlap inside its own window is perfect -- invisible to gate 2
-       (a 55%-window series still averages ~78% per-x coverage).
-
-    Area-only -- a multi_line with different x per line is not visually
-    broken the way a stack is. All gates respect ``mapping['stack']=False``
-    (overlapping non-stacked areas draw from zero independently).
+    When each series reports on its own calendar, most x-positions carry
+    only a subset of the series, so the stack collapses into white
+    triangular gaps. Coverage = mean(series-present-per-x) / n_series:
+    1.0 means every series is present at every x (clean stack); 1/n means
+    fully disjoint. Below ``_AREA_SERIES_COVERAGE_MIN`` the engine raises
+    ``SeriesMisalignmentError``. Area-only -- a multi_line with different
+    x per line is not visually broken the way a stack is.
     """
     if chart_type != "area":
-        return
-    if mapping.get("stack") is False:
         return
     color_field = _get_field(mapping, "color")
     x_field = _get_field(mapping, "x")
@@ -3743,113 +3702,35 @@ def _validate_series_alignment(
     if n_series < 2:
         return
 
-    # ---- Gate 1: negative values in a stack -----------------------------
-    y_field = _get_field(mapping, "y")
-    if (
-        y_field
-        and y_field in df.columns
-        and pd.api.types.is_numeric_dtype(df[y_field])
-    ):
-        y_vals = pd.to_numeric(df[y_field], errors="coerce").dropna()
-        n_neg = int((y_vals < 0).sum())
-        if n_neg > 0 and len(y_vals) > 0:
-            neg_series = sorted(
-                str(s) for s in df.loc[
-                    pd.to_numeric(df[y_field], errors="coerce") < 0,
-                    color_field,
-                ].dropna().unique()
-            )
-            raise ValidationError(
-                f"STACKED AREA WITH NEGATIVE VALUES: {n_neg} of "
-                f"{len(y_vals)} values are negative "
-                f"(series: {neg_series[:5]}). A stacked area encodes "
-                f"parts-of-a-whole, and negative parts make the layers "
-                f"overlap and occlude each other -- these series are "
-                f"independent levels, not components. Pick one:\n"
-                f"  (a) chart_type='multi_line' -- independent series as "
-                f"lines (the usual fix for spreads / rates / returns).\n"
-                f"  (b) If the data IS an additive decomposition with "
-                f"negative contributions, use chart_type='waterfall' (one "
-                f"period) or a bar with mapping['color'] (per-period "
-                f"contributions).\n"
-                f"  (c) mapping['stack']=False for overlapping "
-                f"transparency areas (rarely the right read)."
-            )
-
     pairs = df[[color_field, x_field]].dropna().drop_duplicates()
     if pairs.empty:
         return
-
-    # ---- Gate 2: per-x coverage ------------------------------------------
     per_x = pairs.groupby(x_field)[color_field].nunique()
     if per_x.empty:
         return
     coverage = float(per_x.mean()) / n_series
-    if coverage < _AREA_SERIES_COVERAGE_MIN:
-        raise SeriesMisalignmentError(
-            f"SERIES MISALIGNMENT: this stacked area has {n_series} series but on "
-            f"average only {coverage * 100:.0f}% of them report at each "
-            f"x-position (a clean stack needs ~100%). The series sit on "
-            f"different calendars, so the layers don't share x-values and the "
-            f"stack collapses into white triangular gaps. Resample every series "
-            f"onto a COMMON calendar before stacking -- easy fix, pick one:\n"
-            f"  (a) Reindex each series to a shared period grid (e.g. "
-            f"quarter-end) and forward-fill / interpolate to the last reported "
-            f"value.\n"
-            f"  (b) Aggregate to a common frequency (e.g. resample to "
-            f"quarter-end, or a rolling sum) so every series lands on the same "
-            f"x.\n"
-            f"  (c) If only the overlapping window matters, filter to the dates "
-            f"all series share before charting.",
-            coverage=coverage,
-            n_series=n_series,
-            mapping=mapping,
-        )
-
-    # ---- Gate 3: staggered start / end windows ---------------------------
-    try:
-        firsts = pairs.groupby(color_field)[x_field].min()
-        lasts = pairs.groupby(color_field)[x_field].max()
-        union_lo = _to_numeric_x(firsts.min())
-        union_hi = _to_numeric_x(lasts.max())
-        union_span = union_hi - union_lo
-        if union_span <= 0:
-            return
-        window_cov = {
-            str(name): (
-                (_to_numeric_x(lasts[name]) - _to_numeric_x(firsts[name]))
-                / union_span
-            )
-            for name in firsts.index
-        }
-    except Exception:  # noqa: BLE001 - defensive; alignment gate is advisory
+    if coverage >= _AREA_SERIES_COVERAGE_MIN:
         return
-    staggered = {
-        name: cov for name, cov in window_cov.items()
-        if cov < _AREA_SERIES_WINDOW_COVERAGE_MIN
-    }
-    if staggered:
-        desc = "; ".join(
-            f"'{name}' covers {cov * 100:.0f}%"
-            for name, cov in sorted(staggered.items(), key=lambda kv: kv[1])[:5]
-        )
-        floor_pct = int(_AREA_SERIES_WINDOW_COVERAGE_MIN * 100)
-        raise SeriesMisalignmentError(
-            f"SERIES MISALIGNMENT (staggered windows): {len(staggered)} of "
-            f"{n_series} series start late or end early relative to the "
-            f"union x-window ({desc}; a clean stack needs every series "
-            f"spanning >= {floor_pct}%). Where a series is absent the stack "
-            f"tears open into white gaps and the total misreads. Pick one:\n"
-            f"  (a) Trim to the COMMON window all series share: "
-            f"df[df['<x>'] >= max(per-series first date)].\n"
-            f"  (b) Fill the missing early/late region with 0 when absence "
-            f"genuinely means zero contribution (reindex + fillna(0)).\n"
-            f"  (c) chart_type='multi_line' if these are independent series "
-            f"rather than parts of a whole.",
-            coverage=min(staggered.values()),
-            n_series=n_series,
-            mapping=mapping,
-        )
+
+    raise SeriesMisalignmentError(
+        f"SERIES MISALIGNMENT: this stacked area has {n_series} series but on "
+        f"average only {coverage * 100:.0f}% of them report at each "
+        f"x-position (a clean stack needs ~100%). The series sit on "
+        f"different calendars, so the layers don't share x-values and the "
+        f"stack collapses into white triangular gaps. Resample every series "
+        f"onto a COMMON calendar before stacking -- easy fix, pick one:\n"
+        f"  (a) Reindex each series to a shared period grid (e.g. "
+        f"quarter-end) and forward-fill / interpolate to the last reported "
+        f"value.\n"
+        f"  (b) Aggregate to a common frequency (e.g. resample to "
+        f"quarter-end, or a rolling sum) so every series lands on the same "
+        f"x.\n"
+        f"  (c) If only the overlapping window matters, filter to the dates "
+        f"all series share before charting.",
+        coverage=coverage,
+        n_series=n_series,
+        mapping=mapping,
+    )
 
 
 def _group_scale_ok(
@@ -3898,6 +3779,11 @@ def _maybe_auto_recover_y_scale(
     exactly TWO magnitude clusters, the canonical fix is unambiguous:
     put each cluster on its own y-axis. The engine does this in-line so
     PRISM isn't punished for a deterministic shape problem.
+
+    Auto-recovery is allowed only when the caller already supplied a semantic
+    ``y_title_right``.  Without one, the caller receives the original scale
+    finding plus ``DUAL-AXIS RIGHT TITLE REQUIRED`` and must retry explicitly;
+    the engine never invents a positional title.
 
     The split is found by sorting series by ``|mean|`` and cutting at the
     largest magnitude gap, then VERIFYING that both resulting clusters
@@ -3999,12 +3885,14 @@ def _maybe_auto_recover_y_scale(
         best_k = candidate_splits[0]
         right_group = ordered[:best_k]
 
+    try:
+        right_title = _validate_dual_axis_right_title(mapping)
+    except ValidationError:
+        return None
+
     new_mapping = dict(mapping)
     new_mapping["dual_axis_series"] = list(right_group)
-    if not new_mapping.get("y_title_right"):
-        new_mapping["y_title_right"] = (
-            right_group[0] if len(right_group) == 1 else "Right axis"
-        )
+    new_mapping["y_title_right"] = right_title
 
     gate = (
         "scale-mismatch" if msg.startswith("Y-AXIS SCALE MISMATCH")
@@ -5068,20 +4956,12 @@ class Arrow(Annotation):
 
 @dataclass
 class Trendline(Annotation):
-    """Regression trendline overlaid on a scatter or line chart.
-
-    On a multi-series chart (``mapping['color']`` set, or wide ``y``
-    list auto-melted), ``series='<name>'`` fits the regression against
-    that one series' points. Omitting ``series`` fits ONE pooled
-    regression across every visible point -- correct for a scatter
-    cloud, almost never what a multi-line caller wants.
-    """
+    """Regression trendline overlaid on a scatter chart."""
 
     method: Literal["linear", "exp", "log", "pow", "poly", "quad"] = "linear"
     color: str = "#888888"
     stroke_width: float = 1.5
     stroke_dash: List[int] = field(default_factory=lambda: [6, 3])
-    series: Optional[str] = None
 
     def to_layer(
         self,
@@ -5092,38 +4972,6 @@ class Trendline(Annotation):
     ) -> alt.Chart:
         x_field = mapping["x"] if isinstance(mapping["x"], str) else mapping["x"]["field"]
         y_field = mapping["y"] if isinstance(mapping["y"], str) else mapping["y"]["field"]
-
-        if self.series is not None:
-            color_field = mapping.get("color")
-            if not (isinstance(color_field, str) and color_field in df.columns):
-                raise ValidationError(
-                    f"Trendline(series={self.series!r}) targets one series, "
-                    f"but this chart has no series column "
-                    f"(mapping['color'] is not set). Drop the series= "
-                    f"argument on a single-series chart."
-                )
-            series_values = df[color_field].astype(str)
-            if str(self.series) not in set(series_values):
-                available = sorted(series_values.unique())
-                raise ValidationError(
-                    f"Trendline(series={self.series!r}) does not match any "
-                    f"series in column '{color_field}'. Available: "
-                    f"{available}."
-                )
-            df = df[series_values == str(self.series)]
-
-        # The trend layer's x encoding MUST agree with the base chart's.
-        # A hardcoded ':Q' on a datetime x deterministically kills the
-        # PNG export: the layer merge leaves the temporal axis's
-        # interval-string tickCount on a quantitative scale, vega raises
-        # "Only time and utc scales accept interval strings", and the
-        # scenegraph surfaces it as the opaque 'marktype' TypeError
-        # (2026-07-06 friction scan).
-        x_enc_type = (
-            "temporal"
-            if _annotation_x_axis_type(df, x_field, mapping) == "temporal"
-            else "quantitative"
-        )
 
         method = self.method
         order: Optional[int] = None
@@ -5137,32 +4985,16 @@ class Trendline(Annotation):
         if order is not None:
             regression_kwargs["order"] = order
 
-        trend_base = alt.Chart(df)
-        if x_enc_type == "temporal":
-            # The regression transform runs BEFORE encoding-driven date
-            # parsing. When Altair dedups this layer's data into a NAMED
-            # dataset (it shares the base chart's DataFrame), the date
-            # field is still a raw ISO string at transform time, the
-            # regression numerifies it to NaN, and the trend silently
-            # renders as an empty path. Parse explicitly first and
-            # regress on the parsed field.
-            trend_x = "__trendline_x"
-            trend_base = trend_base.transform_calculate(
-                **{trend_x: f"toDate(datum['{x_field}'])"}
-            )
-        else:
-            trend_x = x_field
-
         trend = (
-            trend_base
-            .transform_regression(trend_x, y_field, **regression_kwargs)
+            alt.Chart(df)
+            .transform_regression(x_field, y_field, **regression_kwargs)
             .mark_line(
                 color=self.color,
                 strokeWidth=self.stroke_width,
                 strokeDash=self.stroke_dash,
             )
             .encode(
-                x=alt.X(trend_x, type=x_enc_type, title=None),
+                x=alt.X(f"{x_field}:Q"),
                 y=alt.Y(f"{y_field}:Q"),
             )
         )
@@ -5179,7 +5011,7 @@ class Trendline(Annotation):
                 color=self.label_color or self.color,
             )
             .encode(
-                x=alt.X(x_field, type=x_enc_type),
+                x=alt.X(f"{x_field}:Q"),
                 y=alt.Y(f"{y_field}:Q"),
                 text=alt.value(self.label),
             )
@@ -6008,11 +5840,6 @@ _PLOTTEXT_LEGACY_POSITIONS: frozenset = frozenset({
     "top", "top-left", "top-center", "top-right",
     "middle-left", "middle-center", "middle-right",
     "bottom-left", "bottom-center", "bottom-right",
-    # Common natural-language spellings of the same inside-corner
-    # anchors -- caught here so they draw the migration message rather
-    # than the generic unknown-value error.
-    "upper-left", "upper-center", "upper-right",
-    "lower-left", "lower-center", "lower-right",
 })
 
 # Hard word cap on ``PlotText.text``. Engine raises above this; the
@@ -7457,45 +7284,6 @@ def _validate_lvl_series_names(
     )
 
 
-def _validate_trendline_series(
-    annotations: Optional[List["Annotation"]],
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-) -> None:
-    """Raise ``ValidationError`` when ``Trendline(series=...)`` cannot bind.
-
-    Runs pre-render (alongside ``_validate_lvl_series_names``) because
-    the annotation layer pass is fail-open -- a raise from ``to_layer``
-    would be downgraded to a warning and the chart would ship without
-    the requested trendline. Skipped on dual-axis charts (Trendline is
-    stripped there with its own warning).
-    """
-    if not annotations or mapping.get("dual_axis_series"):
-        return
-    targeted = [
-        a for a in annotations
-        if isinstance(a, Trendline) and a.series is not None
-    ]
-    if not targeted:
-        return
-    color_field = mapping.get("color")
-    if not (isinstance(color_field, str) and color_field in df.columns):
-        names = ", ".join(repr(a.series) for a in targeted)
-        raise ValidationError(
-            f"Trendline(series={names}) targets one series, but this "
-            f"chart has no series column (mapping['color'] is not set). "
-            f"Drop the series= argument on a single-series chart."
-        )
-    available = set(df[color_field].astype(str))
-    missing = [a.series for a in targeted if str(a.series) not in available]
-    if missing:
-        raise ValidationError(
-            f"Trendline(series=...) does not match any series in column "
-            f"'{color_field}': {sorted(set(map(str, missing)))}. "
-            f"Available: {sorted(available)}."
-        )
-
-
 def _should_auto_inject_lvl(
     chart_type: str,
     mapping: Dict[str, Any],
@@ -7989,64 +7777,6 @@ def render_annotations(
         if dropped_log is not None:
             dropped_log.append(f"Annotation dropped: {msg}")
 
-    # ---- auto-flip transposition (bar -> bar_horizontal) ---------------
-    # ``_build_bar`` may have flipped a vertical-bar request into a
-    # horizontal chart for long category labels, marking the mapping
-    # with ``_bar_auto_flipped``. Everything below still holds the
-    # VERTICAL-orientation mapping (category on x, value on y), so
-    # without transposition two defects fire (2026-07-06 friction scan,
-    # bar + HLine + caption):
-    #   1. the clamped-domain pass re-encodes the shared y channel with
-    #      the NUMERIC value domain while the flipped chart has the
-    #      category axis on y -- the render collapses into a solid
-    #      full-frame bar block;
-    #   2. an ``HLine(y=0)`` (zero line on the VALUE axis) renders as a
-    #      horizontal rule across the category axis instead of a
-    #      vertical rule at value 0.
-    # Transpose the working mapping into rendered (flipped) space and
-    # convert rule/point annotations coordinate-wise so their semantics
-    # follow the value axis.
-    if mapping.get("_bar_auto_flipped"):
-        flipped_mapping = dict(mapping)
-        flipped_mapping["x"] = mapping.get("y")
-        flipped_mapping["y"] = mapping.get("x")
-        flipped_mapping["x_title"] = mapping.get("y_title")
-        flipped_mapping["y_title"] = mapping.get("x_title")
-        flipped_mapping["x_sort"] = mapping.get("y_sort")
-        flipped_mapping["y_sort"] = mapping.get("x_sort")
-        flipped_mapping.pop("_bar_auto_flipped", None)
-        mapping = flipped_mapping
-
-        transposed: List[Annotation] = []
-        for a in annotations:
-            if isinstance(a, HLine):
-                transposed.append(VLine(
-                    x=a.y, label=a.label, label_color=a.label_color,
-                    color=a.color, stroke_width=a.stroke_width,
-                    stroke_dash=list(a.stroke_dash),
-                ))
-            elif isinstance(a, VLine):
-                _note_drop(
-                    f"VLine(x={a.x!r}) dropped: the bar chart auto-"
-                    f"flipped to horizontal for long category labels, "
-                    f"and a category-axis rule cannot be transposed. "
-                    f"Pass mapping['orientation']='vertical' to keep "
-                    f"the vertical layout, or use PointHighlight on "
-                    f"the category instead."
-                )
-            elif isinstance(a, Band) and (a.y1 is not None or a.y2 is not None):
-                transposed.append(replace(a, x1=a.y1, x2=a.y2, y1=None, y2=None))
-            elif isinstance(a, (Callout, PointLabel, PointHighlight)):
-                transposed.append(replace(a, x=a.y, y=a.x))
-            elif isinstance(a, (Arrow, Segment)):
-                transposed.append(replace(
-                    a, x1=a.y1, y1=a.x1, x2=a.y2, y2=a.x2,
-                ))
-            else:
-                transposed.append(a)
-        annotations = transposed
-        chart_type = "bar_horizontal"
-
     # On a heatmap, every cell carries its own value label. A halo-style
     # Callout overlapped by that cell label produces unreadable mud
     # (vision audit 22/C1). Force ``background='box'`` for any Callout
@@ -8477,24 +8207,6 @@ def render_annotations(
 
         # ---- out-of-range filtering: HLine ------------------------------
         if isinstance(annotation, HLine):
-            # axis='right' on a single-axis chart: no right axis exists,
-            # so the request is a no-op that used to pass silently
-            # (documented-but-not-firing gate, 2026-07-06 friction waves
-            # iter5). Render against the ONLY axis and say so.
-            if annotation.axis == "right" and not dual_axis_config:
-                if dropped_log is not None:
-                    dropped_log.append(
-                        f"Annotation adjusted: HLine(y={annotation.y:g}, "
-                        f"axis='right') requested but this chart has no "
-                        f"right axis (no dual_axis_series declared) -- "
-                        f"rendered against the single left axis. Drop "
-                        f"axis='right', or declare dual_axis_series if a "
-                        f"second scale was intended."
-                    )
-                logger.warning(
-                    "[render_annotations] HLine(axis='right') on a "
-                    "single-axis chart; rendering on the left axis.",
-                )
             if annotation.axis == "right" and dual_axis_config:
                 right_domain = dual_axis_config.get("y_domain_right")
                 if right_domain is not None:
@@ -11810,15 +11522,10 @@ AVAILABLE_SKINS: Dict[str, Dict[str, Any]] = {
 def get_skin(name: str, intent: str = "explore") -> Dict[str, Any]:
     """Get a deep-copied skin configuration by name, modulated by intent.
 
-    Intent affects interactivity only:
-      - ``explore`` (default): full interactive params.
-      - ``publish``: drop interactive sliders (report artifacts).
-      - ``monitor``: dashboard tiles.
-
-    The ``width`` / ``height`` keys set below are historical and have
-    no consumer -- canvas size comes from ``_auto_dimensions`` /
-    ``dimension_preset`` in the chart pipeline. Kept so any external
-    reader of the returned dict sees the same shape as before.
+    Intent affects layout / interactivity:
+      - ``explore`` (default): full interactive params, default dimensions.
+      - ``publish``: drop interactive sliders, fixed 700x400 dimensions.
+      - ``monitor``: fixed 500x300 dimensions for dashboard tiles.
 
     Raises:
         ValueError: If ``name`` is not in ``AVAILABLE_SKINS``.
@@ -11996,217 +11703,6 @@ def _collect_scale_type_findings(
             f"pre-transform the data (e.g. np.log10) if a log axis is the "
             f"intent."
         ))
-    return findings
-
-
-_BAR_SORT_VALUES = frozenset({"asc", "ascending", "desc", "descending"})
-
-
-def _collect_bar_sort_findings(
-    mapping: Dict[str, Any], chart_type: str,
-) -> List[ValidationError]:
-    """Kwarg-fact findings for ``mapping['sort']`` (bar value ordering).
-
-    'Rank these categories by value' is a routine bar ask; before this
-    kwarg the caller had to pre-sort the DataFrame. Restricted to the
-    bar family: on other chart types the kwarg would change nothing
-    (lines/areas are chronological, heatmaps have ``value_sort``), so
-    it raises instead of silently no-opping.
-    """
-    findings: List[ValidationError] = []
-    val = mapping.get("sort")
-    if val is None:
-        return findings
-    if not isinstance(val, str) or val.lower() not in _BAR_SORT_VALUES:
-        findings.append(ValidationError(
-            f"mapping['sort']={val!r} is not recognised. Valid values: "
-            f"'desc' / 'asc' (aliases 'descending' / 'ascending'). For "
-            f"an explicit category order use mapping['x_sort'] / "
-            f"['y_sort'] with a list."
-        ))
-    elif chart_type not in {"bar", "bar_horizontal"}:
-        findings.append(ValidationError(
-            f"mapping['sort'] orders bar categories by value and is "
-            f"honoured on bar / bar_horizontal only; it has no effect on "
-            f"chart_type={chart_type!r}. Use mapping['x_sort'] / "
-            f"['y_sort'] for an explicit ordinal-axis order, or "
-            f"mapping['value_sort'] on heatmaps."
-        ))
-    return findings
-
-
-def _apply_bar_value_sort(
-    df: pd.DataFrame, mapping: Dict[str, Any], chart_type: str,
-) -> None:
-    """Translate ``mapping['sort']`` into an explicit category order.
-
-    Mutates ``mapping`` in place, setting ``x_sort`` (vertical) or
-    ``y_sort`` (horizontal) to the category list ordered by value --
-    aggregate sum per category when a ``color`` split is present, so
-    stacked / grouped bars rank by total. Riding the existing
-    ``x_sort`` / ``y_sort`` plumbing means the order survives the
-    long-label auto-flip and the orientation swap unchanged.
-
-    Silent-skip cases append a builder warning instead: an explicit
-    ``x_sort`` / ``y_sort`` already set (explicit list wins), a
-    datetime category axis (temporal scales render chronologically and
-    ignore nominal sort), or an unresolvable category/value split.
-    """
-    val = mapping.get("sort")
-    if val is None:
-        return
-    if not (isinstance(val, str) and val.lower() in _BAR_SORT_VALUES):
-        # make_chart's kwarg-fact collector raises on this shape; in a
-        # composite cell (no kwarg-fact pass) stay loud via the warning
-        # channel rather than silently no-opping.
-        _note_builder_warning(
-            mapping,
-            f"mapping['sort']={val!r} ignored: valid values are 'desc' / "
-            f"'asc' (aliases 'descending' / 'ascending').",
-        )
-        return
-    ascending = val.lower() in {"asc", "ascending"}
-
-    x_field = _get_field(mapping, "x")
-    y_field = _get_field(mapping, "y")
-    if (
-        not (isinstance(x_field, str) and x_field in df.columns)
-        or not (isinstance(y_field, str) and y_field in df.columns)
-    ):
-        return  # missing-column findings fire elsewhere
-
-    x_num = pd.api.types.is_numeric_dtype(df[x_field])
-    y_num = pd.api.types.is_numeric_dtype(df[y_field])
-    if y_num and not x_num:
-        cat_field, value_field, sort_key = x_field, y_field, "x_sort"
-    elif x_num and not y_num:
-        cat_field, value_field, sort_key = y_field, x_field, "y_sort"
-    else:
-        _note_builder_warning(
-            mapping,
-            f"mapping['sort']={val!r} skipped: could not tell the "
-            f"category axis from the value axis (x '{x_field}' and y "
-            f"'{y_field}' are both {'numeric' if x_num else 'non-numeric'}). "
-            f"Pre-sort the DataFrame or pass mapping['x_sort']/['y_sort'].",
-        )
-        return
-
-    if pd.api.types.is_datetime64_any_dtype(df[cat_field]):
-        _note_builder_warning(
-            mapping,
-            f"mapping['sort']={val!r} skipped: '{cat_field}' is a "
-            f"datetime axis, which always renders chronologically.",
-        )
-        return
-    if mapping.get(sort_key):
-        _note_builder_warning(
-            mapping,
-            f"mapping['sort']={val!r} skipped: explicit "
-            f"mapping['{sort_key}'] already sets the category order.",
-        )
-        return
-
-    order = (
-        df.groupby(cat_field, sort=False)[value_field]
-        .sum()
-        .sort_values(ascending=ascending)
-        .index.tolist()
-    )
-    mapping[sort_key] = order
-
-
-_LAYER_TYPES = frozenset({"regression", "trendline", "rule", "point"})
-
-
-def _collect_layer_findings(
-    layers: Optional[List[Dict[str, Any]]], chart_type: str,
-) -> List[ValidationError]:
-    """Kwarg-fact findings for ``layers=[...]`` overlay dicts.
-
-    The overlay loop used to skip malformed entries silently -- an
-    unknown ``type``, a regression missing ``x``/``y``, or a point
-    layer without a ``data`` DataFrame simply never drew, with no
-    signal anywhere (the MC15 'catch-all' probe documented this).
-    Content validation only applies on the scatter family; elsewhere
-    the whole kwarg is ignored with its own warning.
-    """
-    findings: List[ValidationError] = []
-    if not layers or chart_type not in {"scatter", "scatter_multi"}:
-        return findings
-    for i, spec in enumerate(layers, start=1):
-        label = f"layers[{i}]"
-        if not isinstance(spec, dict):
-            findings.append(ValidationError(
-                f"{label} is {type(spec).__name__!s}, not a dict. Each "
-                f"layer is a dict with a 'type' key: "
-                f"{sorted(_LAYER_TYPES)}."
-            ))
-            continue
-        layer_type = spec.get("type")
-        if layer_type not in _LAYER_TYPES:
-            findings.append(ValidationError(
-                f"{label} has unknown type={layer_type!r}. Valid layer "
-                f"types: {sorted(_LAYER_TYPES)}. The layer would render "
-                f"nothing."
-            ))
-            continue
-        if layer_type in {"regression", "trendline"}:
-            if not (spec.get("x") and spec.get("y")):
-                findings.append(ValidationError(
-                    f"{label} (type={layer_type!r}) needs both 'x' and "
-                    f"'y' column names; got x={spec.get('x')!r}, "
-                    f"y={spec.get('y')!r}."
-                ))
-        elif layer_type == "rule":
-            if "x" not in spec and "y" not in spec:
-                findings.append(ValidationError(
-                    f"{label} (type='rule') needs 'x' (vertical rule) or "
-                    f"'y' (horizontal rule)."
-                ))
-        elif layer_type == "point":
-            if not isinstance(spec.get("data"), pd.DataFrame):
-                findings.append(ValidationError(
-                    f"{label} (type='point') needs data=<DataFrame> for "
-                    f"the overlay points (plus 'x' and 'y' column "
-                    f"names). Without it the layer draws nothing."
-                ))
-            elif not (spec.get("x") and spec.get("y")):
-                findings.append(ValidationError(
-                    f"{label} (type='point') needs 'x' and 'y' column "
-                    f"names for the overlay DataFrame."
-                ))
-    return findings
-
-
-_TRENDLINE_FLAG_CHART_TYPES = frozenset({"scatter", "scatter_multi"})
-
-
-def _collect_trendline_flag_findings(
-    mapping: Dict[str, Any], chart_type: str,
-) -> List[ValidationError]:
-    """Kwarg-fact findings for ``mapping['trendline']`` / ``'trendlines'``.
-
-    The boolean flags are consumed only by the scatter builders; on any
-    other chart type they used to change nothing, silently -- the caller
-    asked for a regression and got a bare chart (RBR verification,
-    2026-07-08). A kwarg that changes nothing is an intent mismatch:
-    raise with the working alternative named.
-    """
-    findings: List[ValidationError] = []
-    flags = [
-        k for k in ("trendline", "trendlines") if mapping.get(k)
-    ]
-    if not flags or chart_type in _TRENDLINE_FLAG_CHART_TYPES:
-        return findings
-    key = flags[0]
-    findings.append(ValidationError(
-        f"mapping['{key}']=True is honoured on scatter / scatter_multi "
-        f"only; it has no effect on chart_type={chart_type!r}. For a "
-        f"regression on a line chart use the Trendline annotation "
-        f"instead: annotations=[Trendline()] on a single-series chart, "
-        f"or annotations=[Trendline(series='<name>')] to fit one series "
-        f"of a multi-series chart."
-    ))
     return findings
 
 
@@ -14528,11 +14024,8 @@ def _build_multi_line_dual_axis(
     y_title_left = _dedup_axis_title(
         mapping.get("y_title") or _format_label(y_field, mapping, "y")
     )
-    y_title_right = _dedup_axis_title(
-        mapping.get("y_title_right") or _format_label(y_field, mapping, "y")
-    )
+    y_title_right = _validate_dual_axis_right_title(mapping)
     _validate_y_axis_label(y_title_left, mapping)
-    _validate_y_axis_label(y_title_right, mapping)
 
     # Rename the y column per-side so each layer's y-encoding references a
     # unique field name. Without this Vega-Lite collapses both layers'
@@ -15894,11 +15387,6 @@ def _build_bar(
             # x_sort -> y_sort in the new orientation (and vice-versa).
             flipped["y_sort"] = mapping.get("x_sort")
             flipped["x_sort"] = mapping.get("y_sort")
-            # Mark the CALLER's mapping so downstream passes that still
-            # hold the vertical-orientation mapping (render_annotations,
-            # axis beautification) know the rendered chart is flipped
-            # and can transpose annotations / axis configs to match.
-            mapping["_bar_auto_flipped"] = True
             return _build_bar_horizontal(df, flipped, skin_config, width, height)
         # Wrap nominal x labels for horizontal readability.
         df[x_field] = df[x_field].apply(
@@ -16473,32 +15961,6 @@ def _build_bar_horizontal(
         raise ValidationError(f"x_field '{x_field}' has no valid values.")
     if y_non_null == 0:
         raise ValidationError(f"y_field '{y_field}' has no valid values.")
-
-    # Orientation absorption: this builder's contract is categorical y /
-    # numeric x, but callers routinely pass the VERTICAL-bar mapping
-    # (category on x, value on y) with chart_type='bar_horizontal' and
-    # expect the engine to sort it out. Without the swap the value-label
-    # pass dies with a raw ``TypeError: '>=' not supported between
-    # instances of 'str' and 'int'`` (df[x] >= 0 on the category column).
-    # Detect the swapped shape and flip in place -- same absorption as
-    # _build_bar's long-label auto-flip, in the opposite direction.
-    if (
-        not pd.api.types.is_numeric_dtype(df[x_field])
-        and pd.api.types.is_numeric_dtype(df[y_field])
-    ):
-        logger.info(
-            "[_build_bar_horizontal] mapping arrived in vertical "
-            "orientation (categorical x=%r, numeric y=%r) -> swapping "
-            "axes to the horizontal contract.", x_field, y_field,
-        )
-        swapped = dict(mapping)
-        swapped["x"], swapped["y"] = mapping.get("y"), mapping.get("x")
-        swapped["x_title"] = mapping.get("y_title")
-        swapped["y_title"] = mapping.get("x_title")
-        swapped["x_sort"] = mapping.get("y_sort")
-        swapped["y_sort"] = mapping.get("x_sort")
-        mapping = swapped
-        x_field, y_field = y_field, x_field
 
     # Validate category label lengths. The same cap as _build_bar applies
     # because the failure modes are symmetric: 22+ ch labels truncate at
@@ -17077,41 +16539,15 @@ def _validate_heatmap_row_labels(
     sample = offending[0]
     n_rows = max(len(labels), 1)
     ctx = "make_*pack_*()" if composite_cell else "make_chart()"
-
-    if vertical_reason:
-        # ROW COUNT is the binding constraint, not label length --
-        # "shorten your labels" is a misdirected remediation when the
-        # labels are already 2 chars (confirmed twice in the 2026-07-06
-        # friction waves: 50 numeric-strike rows drew "Try abbreviating
-        # 'r0' -> 'r0'"). Prescribe row-count reduction instead.
-        fit_rows = max(
-            1,
-            int(chart_height
-                // (label_font_size + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX)),
-        )
-        raise HeatmapRowLabelTooLongError(
-            f"HEATMAP ROW-COUNT OVERFLOW: {vertical_reason}. The limiting "
-            f"factor is the NUMBER OF ROWS, not label length -- at this "
-            f"height at most ~{fit_rows} rows fit with readable labels. "
-            f"Reduce the row count before {ctx}: (a) BIN the y values "
-            f"(e.g. `df['y_bin'] = pd.cut(df['{y_field}'], bins={fit_rows})` "
-            f"then aggregate), (b) filter to the top-{fit_rows} most "
-            f"relevant rows (`top_k_categories`), or (c) use a taller "
-            f"canvas (`dimension_preset='tall'` or render standalone "
-            f"instead of inside a composite cell).",
-            offending_labels=offending,
-            y_field=y_field,
-            mapping=mapping,
-            max_chars=max_chars,
-            chart_height=chart_height,
-        )
-
     abbrev_hint = _suggest_bar_label_abbreviations(sample)
-    detail = (
-        f"{y_field!r} value {sample!r} ({len(sample)} chars) exceeds the "
-        f"~{max_chars}-char left-gutter budget for a "
-        f"{chart_width}x{chart_height}px canvas"
-    )
+    if vertical_reason:
+        detail = vertical_reason
+    else:
+        detail = (
+            f"{y_field!r} value {sample!r} ({len(sample)} chars) exceeds the "
+            f"~{max_chars}-char left-gutter budget for a "
+            f"{chart_width}x{chart_height}px canvas"
+        )
     raise HeatmapRowLabelTooLongError(
         f"Heatmap row labels must stay horizontal and cannot be truncated, "
         f"but {detail}. Shorten row labels in the DataFrame before "
@@ -18546,10 +17982,6 @@ def _build_waterfall(
 
     # F2 fix: validate that intermediate values sum to (last - first).
     # Off by >15% suggests the data is not a true additive decomposition.
-    # The finding surfaces on result.warnings via the ``_builder_warnings``
-    # side-channel -- the 2026-07-06 friction waves confirmed 5x that a
-    # log-only warning never reaches PRISM (documented-but-not-firing
-    # gate; the skill promises this warning fires).
     if len(df) >= 3 and df.iloc[0]["_wf_type"] == "total" and df.iloc[-1]["_wf_type"] == "total":
         first_total = float(df[y_field].iloc[0])
         last_total = float(df[y_field].iloc[-1])
@@ -18558,18 +17990,12 @@ def _build_waterfall(
         if abs(expected_diff) > 1e-9:
             ratio = intermediate_sum / expected_diff
             if abs(ratio - 1) > 0.15:
-                _note_builder_warning(
-                    mapping,
-                    f"WATERFALL TOTALS MISMATCH: the intermediate bars sum "
-                    f"to {intermediate_sum:.2f} but (last - first) = "
-                    f"{expected_diff:.2f} ({abs(ratio - 1):.0%} off; "
-                    f"tolerance 15%). The chart rendered, but the "
-                    f"decomposition visually will not reconcile: the "
-                    f"running bars won't land on the final total. Fix the "
-                    f"data so components sum to the total delta, or "
-                    f"provide an explicit 'type' column with "
-                    f"'total'/'positive'/'negative' if some rows are "
-                    f"standalone totals.",
+                logger.warning(
+                    "[_build_waterfall] intermediate values sum to %.2f but "
+                    "(last - first) = %.2f. Data may not be a true additive "
+                    "decomposition. Consider providing an explicit 'type' "
+                    "column with 'total'/'positive'/'negative'.",
+                    intermediate_sum, expected_diff,
                 )
 
     # ---- compute floating bar positions ---------------------------------
@@ -18749,15 +18175,6 @@ def _build_layer(
     layer_type = layer_spec.get("type", "line")
     layer_df = layer_spec.get("data", df)
 
-    def _x_type(x_field: Optional[str]) -> str:
-        # Overlay encodings must agree with the base chart's x dtype: a
-        # hardcoded 'quantitative' on a datetime x survives Altair
-        # validation but kills the PNG export (interval-string tickCount
-        # on a quantitative scale -- same defect as Trendline.to_layer).
-        if x_field and _resolve_axis_type(layer_df, x_field) == "temporal":
-            return "temporal"
-        return "quantitative"
-
     if layer_type == "line":
         x_field = layer_spec.get("x")
         y_field = layer_spec.get("y")
@@ -18770,7 +18187,7 @@ def _build_layer(
                 strokeDash=layer_spec.get("stroke_dash", []),
             )
             .encode(
-                x=alt.X(x_field, type=_x_type(x_field)),
+                x=alt.X(x_field, type="quantitative"),
                 y=alt.Y(y_field, type="quantitative"),
             )
         )
@@ -18779,19 +18196,9 @@ def _build_layer(
         x_field = layer_spec.get("x")
         y_field = layer_spec.get("y")
         method = layer_spec.get("method", "linear")
-        reg_base = alt.Chart(layer_df)
-        reg_x = x_field
-        if _x_type(x_field) == "temporal":
-            # Parse dates BEFORE the regression transform -- on a named
-            # (deduped) dataset the field is still an ISO string at
-            # transform time and the regression numerifies it to NaN.
-            reg_x = "__regression_x"
-            reg_base = reg_base.transform_calculate(
-                **{reg_x: f"toDate(datum['{x_field}'])"}
-            )
         return (
-            reg_base
-            .transform_regression(reg_x, y_field, method=method)
+            alt.Chart(layer_df)
+            .transform_regression(x_field, y_field, method=method)
             .mark_line(
                 color=layer_spec.get(
                     "color", skin_config.get("trendline_color", "#888888")
@@ -18799,7 +18206,7 @@ def _build_layer(
                 strokeDash=layer_spec.get("stroke_dash", [4, 4]),
             )
             .encode(
-                x=alt.X(reg_x, type=_x_type(x_field), title=None),
+                x=alt.X(x_field, type="quantitative"),
                 y=alt.Y(y_field, type="quantitative"),
             )
         )
@@ -18816,28 +18223,14 @@ def _build_layer(
                 .encode(y="y:Q")
             )
         if "x" in layer_spec:
-            x_val = layer_spec["x"]
-            if not isinstance(x_val, (int, float)):
-                # Date-like rule position (e.g. '2023-03-10') on a
-                # temporal x-axis: coerce so the encoding matches the
-                # base chart instead of silently landing on ':Q'.
-                try:
-                    x_val = pd.Timestamp(x_val)
-                except Exception:  # noqa: BLE001
-                    pass
-            rule_df = pd.DataFrame({"x": [x_val]})
-            rule_x_type = (
-                "temporal"
-                if pd.api.types.is_datetime64_any_dtype(rule_df["x"])
-                else "quantitative"
-            )
+            rule_df = pd.DataFrame({"x": [layer_spec["x"]]})
             return (
                 alt.Chart(rule_df)
                 .mark_rule(
                     color=layer_spec.get("color", "#666666"),
                     strokeDash=layer_spec.get("stroke_dash", [4, 4]),
                 )
-                .encode(x=alt.X("x", type=rule_x_type))
+                .encode(x="x:Q")
             )
 
     if layer_type == "point":
@@ -18853,7 +18246,7 @@ def _build_layer(
                 filled=True,
             )
             .encode(
-                x=alt.X(x_field, type=_x_type(x_field)),
+                x=alt.X(x_field, type="quantitative"),
                 y=alt.Y(y_field, type="quantitative"),
             )
         )
@@ -18871,7 +18264,7 @@ def _build_layer(
                 color=layer_spec.get("color", "#333333"),
             )
             .encode(
-                x=alt.X(x_field, type=_x_type(x_field)),
+                x=alt.X(x_field, type="quantitative"),
                 y=alt.Y(y_field, type="quantitative"),
                 text=alt.value(text),
             )
@@ -18905,24 +18298,9 @@ def _apply_extra_layers(
             x_col = spec.get("x")
             y_col = spec.get("y")
             if x_col and y_col:
-                # Match the base chart's x dtype: a hardcoded ':Q' on a
-                # datetime x kills the PNG export (interval-string
-                # tickCount on a quantitative scale).
-                x_t = _resolve_axis_type(df, x_col)
-                x_t = "temporal" if x_t == "temporal" else "quantitative"
-                trend_base = alt.Chart(df)
-                trend_x = x_col
-                if x_t == "temporal":
-                    # Parse dates BEFORE the regression transform (on a
-                    # named/deduped dataset the field is a raw ISO string
-                    # at transform time; regression numerifies to NaN).
-                    trend_x = "__regression_x"
-                    trend_base = trend_base.transform_calculate(
-                        **{trend_x: f"toDate(datum['{x_col}'])"}
-                    )
                 trend = (
-                    trend_base
-                    .transform_regression(trend_x, y_col, method=method)
+                    alt.Chart(df)
+                    .transform_regression(x_col, y_col, method=method)
                     .mark_line(
                         color=spec.get(
                             "color", skin_config.get("trendline_color", "#999999")
@@ -18930,7 +18308,7 @@ def _apply_extra_layers(
                         strokeWidth=spec.get("stroke_width", 1.5),
                         strokeDash=spec.get("stroke_dash", [6, 3]),
                     )
-                    .encode(x=alt.X(trend_x, type=x_t, title=None), y=f"{y_col}:Q")
+                    .encode(x=f"{x_col}:Q", y=f"{y_col}:Q")
                 )
                 out = alt.layer(out, trend)
         elif layer_type == "rule":
@@ -18946,35 +18324,19 @@ def _apply_extra_layers(
                 )
                 out = alt.layer(out, rule)
             elif "x" in spec:
-                x_val = spec["x"]
-                if not isinstance(x_val, (int, float)):
-                    # Date-like rule position on a temporal axis: coerce
-                    # so the encoding matches the base chart instead of
-                    # silently landing on a mismatched scale.
-                    try:
-                        x_val = pd.Timestamp(x_val)
-                    except Exception:  # noqa: BLE001
-                        pass
-                rule_df = pd.DataFrame({"x": [x_val]})
-                rule_x_type = (
-                    "temporal"
-                    if pd.api.types.is_datetime64_any_dtype(rule_df["x"])
-                    else "quantitative"
-                )
+                rule_df = pd.DataFrame({"x": [spec["x"]]})
                 rule = (
                     alt.Chart(rule_df)
                     .mark_rule(
                         color=spec.get("color", "#666666"),
                         strokeDash=spec.get("stroke_dash", [4, 4]),
                     )
-                    .encode(x=alt.X("x", type=rule_x_type, title=None))
+                    .encode(x="x")
                 )
                 out = alt.layer(out, rule)
         elif layer_type == "point":
             data = spec.get("data")
             if isinstance(data, pd.DataFrame):
-                pt_x_t = _resolve_axis_type(data, spec["x"])
-                pt_x_t = "temporal" if pt_x_t == "temporal" else "quantitative"
                 pt = (
                     alt.Chart(data)
                     .mark_point(
@@ -18982,7 +18344,7 @@ def _apply_extra_layers(
                         size=spec.get("size", 200),
                         filled=True,
                     )
-                    .encode(x=alt.X(spec["x"], type=pt_x_t), y=f"{spec['y']}:Q")
+                    .encode(x=f"{spec['x']}:Q", y=f"{spec['y']}:Q")
                 )
                 out = alt.layer(out, pt)
     return out
@@ -20263,71 +19625,6 @@ def _compress_png(png_bytes: bytes) -> bytes:
     return out if len(out) < len(png_bytes) else png_bytes
 
 
-def _normalize_nested_layer_sizing(node: Any) -> None:
-    """Hoist ``width`` / ``height`` off sub-layer specs, in place.
-
-    The builders size some charts by calling ``.properties(width, height)``
-    on each sub-layer of a LayerChart (bar value-label text layers, zero
-    ticks, ...). Vega-Lite's schema only allows sizing on unit / layer
-    specs at the view top level; sizing on a layer's CHILDREN is
-    tolerated when the chart renders standalone but breaks as soon as
-    the chart is nested inside an ``hconcat`` / ``vconcat`` (the
-    ``caption=`` / ``side_*`` text-panel wrap, composites): the Vega
-    compiler then references a ``concat_N_height`` signal that never
-    gets defined and PNG export dies with
-    ``Error: Unrecognized signal name: "concat_0_height"`` (2026-07-06
-    PRISM friction scan, bar + HLine + caption).
-
-    This pass runs at the single render chokepoint and rewrites the
-    spec into the schema-valid shape: every direct child of a
-    ``layer`` list loses its ``width`` / ``height``, and the first
-    value seen is hoisted onto the layer spec itself when it doesn't
-    already carry one. Children are processed depth-first so a nested
-    LayerChart hoists its own children's sizing before its parent
-    inspects it. Concat / facet members keep their sizing -- those are
-    view-level specs where sizing is legal.
-    """
-    if isinstance(node, list):
-        for item in node:
-            _normalize_nested_layer_sizing(item)
-        return
-    if not isinstance(node, dict):
-        return
-
-    for key in ("hconcat", "vconcat", "concat", "spec"):
-        if key in node:
-            _normalize_nested_layer_sizing(node[key])
-
-    children = node.get("layer")
-    if not isinstance(children, list):
-        return
-    for child in children:
-        _normalize_nested_layer_sizing(child)
-    for child in children:
-        if not isinstance(child, dict):
-            continue
-        for dim in ("width", "height"):
-            val = child.pop(dim, None)
-            if val is not None and dim not in node:
-                node[dim] = val
-
-
-def _condense_vega_error(raw: str) -> str:
-    """Reduce a vega / vl-convert failure to its load-bearing line.
-
-    The JS runtime raises with a full minified stack trace pointing at
-    CDN bundle URLs (``cdn.jsdelivr.net/npm/vega-*``). Neither PRISM nor
-    the user can act on those frames; keep only the first ``Error:``
-    line (or the first non-empty line as fallback).
-    """
-    for line in str(raw).splitlines():
-        line = line.strip()
-        if line.startswith("Error") or "Error:" in line:
-            return line
-    first = str(raw).strip().splitlines()
-    return first[0] if first else "unknown rendering error"
-
-
 def _render_chart_to_png(
     chart_or_spec: Any,
     scale: float = 2.0,
@@ -20337,13 +19634,6 @@ def _render_chart_to_png(
     Tries ``vl-convert-python`` first (no Selenium dependency). When the
     package isn't installed, falls back to ``altair_saver``-style
     ``chart.save()`` via a temporary file.
-
-    Rendering-layer failures never propagate raw: the spec is
-    normalized first (``_normalize_nested_layer_sizing``), the
-    conversion is retried once (the vega-scenegraph ``marktype`` crash
-    observed on scatter_multi + Trendline is flaky, not deterministic),
-    and a persistent failure raises a condensed, actionable message
-    instead of a minified JS stack trace with CDN URLs.
     """
     try:
         import vl_convert as vlc  # type: ignore[import-not-found]
@@ -20367,36 +19657,7 @@ def _render_chart_to_png(
         else:
             spec = chart_or_spec.to_dict()  # last-resort duck typing
 
-        try:
-            _normalize_nested_layer_sizing(spec)
-        except Exception:  # noqa: BLE001 - normalization must never block
-            pass
-
-        last_exc: Optional[Exception] = None
-        for attempt in (1, 2):
-            try:
-                return _compress_png(
-                    vlc.vegalite_to_png(vl_spec=spec, scale=scale)
-                )
-            except ImportError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                logger.warning(
-                    "[_render_chart_to_png] vega render attempt %d failed: %s",
-                    attempt, _condense_vega_error(exc),
-                )
-        raise ValidationError(
-            "RENDERING-LAYER FAILURE: the chart passed validation but the "
-            "Vega renderer could not export it to PNG (retried once). "
-            f"Underlying renderer error: {_condense_vega_error(last_exc)}. "
-            "This is an engine-side defect, not a data problem. Try one "
-            "of: (a) simplify the chart (remove the most recently added "
-            "annotation or overlay, e.g. Trendline); (b) switch to a "
-            "close chart_type (scatter_multi -> scatter, area -> "
-            "multi_line); (c) drop caption/side panels. Report the call "
-            "that produced this so the engine can absorb it."
-        )
+        return _compress_png(vlc.vegalite_to_png(vl_spec=spec, scale=scale))
 
     except ImportError:
         # vl-convert not installed -- fall back to altair's own save().
@@ -20526,7 +19787,7 @@ def _make_chart(
         x_title / y_title / y_title_right: Canonical axis-title kwargs at
             top-level. Equivalent to setting ``mapping['x_title']`` /
             ``mapping['y_title']`` / ``mapping['y_title_right']``;
-            mapping[...] wins when both are set.
+            a non-empty mapping value wins when both are set.
         user_id: Optional Kerberos ID resolved from the runtime context.
         caption: Below-chart caption text (str) or style-override dict
             (``{"text": ..., "italic": True, "font_size": 10, ...}``).
@@ -20610,8 +19871,9 @@ def _make_chart(
     # ``x_label``/``y_label`` aliases (legacy) and the canonical
     # ``x_title``/``y_title``/``y_title_right`` names are accepted at
     # the call site for ergonomics; mapping[...] wins when both are
-    # set so the more-specific call site (mapping) overrides the
-    # convenience kwarg.
+    # set so a non-empty value at the more-specific call site (mapping)
+    # overrides the convenience kwarg.  ``None`` / ``""`` are missing,
+    # not intentional titles, and must not shadow a semantic top-level value.
     for kwarg_val, mapping_key in (
         (x_label, "x_title"),
         (y_label, "y_title"),
@@ -20619,7 +19881,7 @@ def _make_chart(
         (y_title, "y_title"),
         (y_title_right, "y_title_right"),
     ):
-        if kwarg_val is not None and mapping_key not in mapping:
+        if kwarg_val is not None and not mapping.get(mapping_key):
             mapping[mapping_key] = kwarg_val
 
     # ---- Promote a meaningful index to the x column (fail-path only) ----
@@ -20687,9 +19949,6 @@ def _make_chart(
     kwarg_findings.extend(_collect_color_kwarg_findings(mapping, chart_type, df))
     kwarg_findings.extend(_collect_opacity_kwarg_findings(mapping, chart_type, df))
     kwarg_findings.extend(_collect_scale_type_findings(mapping, chart_type))
-    kwarg_findings.extend(_collect_trendline_flag_findings(mapping, chart_type))
-    kwarg_findings.extend(_collect_bar_sort_findings(mapping, chart_type))
-    kwarg_findings.extend(_collect_layer_findings(layers, chart_type))
 
     # ---- Facet (small-multiples) early branch ---------------------------
     # When the caller sets ``mapping['facet']``, dispatch entirely into
@@ -20708,24 +19967,6 @@ def _make_chart(
                 warnings=warnings,
                 audit_trail=audit_trail,
             )
-        # Grid kwargs routinely arrive INSIDE mapping alongside 'facet'
-        # (mapping={'facet': ..., 'same_scale': True, 'facet_cols': 4}).
-        # They are top-level kwargs; before this hoist the mapping-placed
-        # copies were silently ignored and the grid rendered with
-        # defaults -- shared-scale asks came back independent-scaled with
-        # no signal (RBR grids pass, 2026-07-08). Fail-path-only: an
-        # explicitly-passed top-level kwarg wins.
-        if mapping.pop("same_scale", None) and not same_scale:
-            same_scale = True
-        _m_facet_cols = mapping.pop("facet_cols", None)
-        if _m_facet_cols is not None and facet_cols is None:
-            facet_cols = int(_m_facet_cols)
-        if mapping.pop("share_x", None) and not share_x:
-            share_x = True
-        if mapping.pop("share_y", None) and not share_y:
-            share_y = True
-        if mapping.pop("share_color", None) and not share_color:
-            share_color = True
         # Histogram facets always share x so bin ranges are comparable
         # across panels (return distributions, etc.). Independent
         # per-panel x scales are never meaningful for facet histograms.
@@ -21003,18 +20244,13 @@ def _make_chart(
             tier1_findings.append(ValidationError(str(exc)))
 
     if tier1_findings:
-        # ---- Y-axis 2-series auto-recovery (Principle #7 absorption) ----
+        # ---- Y-axis auto-recovery (semantic-title gated) ----------------
         # When the y-scale flatness gate or level-disparity gate rejects
-        # a 2-series multi_line / timeseries chart, the canonical fix is
-        # routing the smaller-magnitude series to a dual right axis.
-        # Inject ``mapping['dual_axis_series']=[<smallest>]`` +
-        # ``y_title_right=<smallest>`` and recurse once with
-        # ``_auto_recover_depth=1`` to prevent infinite loops.
-        # 3+ series cases stay rejected -- the editorial choice between
-        # 2-pack / dual / z-score / facet belongs to PRISM, not the
-        # engine. Under aggregation, the scan looks for a recoverable
-        # y-scale finding anywhere in the list; any sibling findings
-        # re-fire (and aggregate) inside the recursive call.
+        # a multi_line / timeseries chart, the engine may route magnitude
+        # clusters to independent axes -- but ONLY when the caller supplied
+        # a semantic ``y_title_right``.  Without one, append the title
+        # requirement to the same aggregate raise; never invent "Right axis"
+        # or reuse the shared y-field label.
         recoverable = next(
             (
                 f for f in tier1_findings
@@ -21025,10 +20261,17 @@ def _make_chart(
             None,
         )
         if recoverable is not None:
-            recovered = _maybe_auto_recover_y_scale(
-                recoverable, df, chart_type, mapping,
-                depth=_auto_recover_depth,
-            )
+            try:
+                _validate_dual_axis_right_title(mapping)
+            except ValidationError as title_exc:
+                if str(title_exc) not in {str(f) for f in tier1_findings}:
+                    tier1_findings.append(title_exc)
+                recovered = None
+            else:
+                recovered = _maybe_auto_recover_y_scale(
+                    recoverable, df, chart_type, mapping,
+                    depth=_auto_recover_depth,
+                )
             if recovered is not None:
                 new_mapping, recovery_msg = recovered
                 audit_trail.append(recovery_msg)
@@ -21269,10 +20512,6 @@ def _make_chart(
             warnings=warnings,
             audit_trail=audit_trail,
         )
-    finally:
-        # Drain builder-level soft warnings (waterfall totals mismatch,
-        # ...) into the result's warnings channel.
-        warnings.extend(mapping.pop("_builder_warnings", []))
 
     # ---- LastValueLabel on dual-axis: prohibited, drop with warning ----
     # LVL paints past the last data point and collides with the right-hand
@@ -21619,25 +20858,6 @@ def _dispatch_builder(
     ``multi_line`` itself routes between single-axis, dual-axis, and
     profile (ordinal x) modes inside ``_build_multi_line``.
     """
-    if layers and chart_type not in {"scatter", "scatter_multi"}:
-        # ``layers=`` is consumed only by the scatter builders. It used
-        # to be silently dropped everywhere else -- the caller's
-        # regression/rule/point overlay just never appeared (2026-07-06
-        # friction scan: "dots disappear"). Surface the drop and point
-        # at the annotation equivalents.
-        _note_builder_warning(
-            mapping,
-            f"layers=[...] ignored on chart_type='{chart_type}' -- the "
-            f"layers overlay system is scatter / scatter_multi only. "
-            f"Use annotations instead: Trendline (regression), HLine / "
-            f"VLine (threshold or event rule), PointHighlight (point "
-            f"emphasis).",
-        )
-    if chart_type in {"bar", "bar_horizontal"} and mapping.get("sort") is not None:
-        # Translate the value-sort intent into x_sort / y_sort BEFORE
-        # dispatch so the order rides the existing plumbing (including
-        # the long-label auto-flip and the orientation swap).
-        _apply_bar_value_sort(df, mapping, chart_type)
     if chart_type in {"multi_line", "timeseries"}:
         x_field = _get_field(mapping, "x")
         x_type_override = mapping.get("x_type")
@@ -21828,8 +21048,8 @@ class ChartSpec:
     Axis-title kwargs (``x_title`` / ``y_title`` / ``y_title_right``,
     plus ``x_label`` / ``y_label`` aliases) accept the same canonical-
     or-mapping pattern as ``make_chart``: pass at top level for
-    ergonomics OR set on ``mapping``; ``mapping[...]`` wins if both
-    are set.
+    ergonomics OR set on ``mapping``; a non-empty ``mapping[...]`` value
+    wins if both are set.
 
     Unknown keyword arguments raise a typed ``ValidationError`` naming the
     bad kwarg, listing the valid set, and suggesting the nearest match --
@@ -21918,8 +21138,9 @@ class ChartSpec:
     def __post_init__(self) -> None:
         # Route top-level axis-title kwargs into ``mapping`` so the
         # downstream renderer doesn't have to know about the
-        # convenience kwargs. Mirrors ``make_chart``'s behaviour;
-        # mapping[...] wins when both are set.
+        # convenience kwargs. Mirrors ``make_chart``'s behaviour; a
+        # non-empty mapping value wins when both are set, while ``None`` /
+        # ``""`` cannot shadow a semantic top-level title.
         merged = dict(self.mapping or {})
         for kwarg_val, mapping_key in (
             (self.x_label, "x_title"),
@@ -21928,7 +21149,7 @@ class ChartSpec:
             (self.y_title, "y_title"),
             (self.y_title_right, "y_title_right"),
         ):
-            if kwarg_val is not None and mapping_key not in merged:
+            if kwarg_val is not None and not merged.get(mapping_key):
                 merged[mapping_key] = kwarg_val
         self.mapping = merged
 
@@ -21979,8 +21200,6 @@ def _build_single_chart(
     title_fontsize_override: Optional[int] = None,
     subtitle_fontsize_override: Optional[int] = None,
     suppress_lvl: bool = False,
-    cell_log: Optional[List[str]] = None,
-    cell_label: Optional[str] = None,
 ) -> alt.Chart:
     """Build a single Altair chart from a ``ChartSpec`` for composite use.
 
@@ -22006,15 +21225,6 @@ def _build_single_chart(
             uses this to harmonise tick rotation across sub-charts so a
             two-pack doesn't render one panel with horizontal labels and
             another with diagonal ones.
-        cell_log: optional caller-owned list. Auto-recovery audit notes
-            and annotation-drop reasons for THIS cell append here so the
-            composite can surface them on the result's warnings /
-            audit_trail instead of dying in the server log.
-        cell_label: optional positional identity ("sub-chart 2/4",
-            "panel 'US'") woven into validation-error labels so a
-            failing cell is identifiable even when several cells share
-            a chart_type (recurring composite UX gap in the 2026-07-06
-            friction waves).
 
     Returns:
         An ``alt.Chart`` (or ``LayerChart``) ready to feed into
@@ -22070,16 +21280,10 @@ def _build_single_chart(
     if spec.title:
         # Same slot kinds as the post-build per-cell title site below,
         # which therefore cannot fail once this pre-pass is clean.
-        # ``cell_label`` (e.g. "sub-chart 2/4") identifies WHICH cell in
-        # a pack of same-type panels raised the finding.
-        _ident = (
-            f"{cell_label}, {spec.chart_type}" if cell_label
-            else f"{spec.chart_type!r}"
-        )
         try:
             _validate_and_wrap_text(
                 spec.title, slot_kind="subchart_title", width_px=width,
-                slot_label=f"ChartSpec.title ({_ident})",
+                slot_label=f"ChartSpec.title ({spec.chart_type!r})",
                 widening_hint="use a wider dimension_preset (e.g. 'wide')",
             )
         except ValueError as exc:
@@ -22087,55 +21291,18 @@ def _build_single_chart(
         try:
             _validate_and_wrap_text(
                 spec.subtitle, slot_kind="subchart_subtitle", width_px=width,
-                slot_label=f"ChartSpec.subtitle ({_ident})",
+                slot_label=f"ChartSpec.subtitle ({spec.chart_type!r})",
                 widening_hint="use a wider dimension_preset (e.g. 'wide')",
             )
         except ValueError as exc:
             cell_tier1.append(ValidationError(str(exc)))
-
-    # ---- Y-axis auto-recovery (composite parity with make_chart) -------
-    # Standalone charts auto-route a y-scale-mismatch / level-disparity
-    # rejection to a dual axis; composite cells used to RAISE the same
-    # finding, failing the whole pack for a shape problem the engine can
-    # fix deterministically (2026-07-06 friction scan, wave 4 #16: "the
-    # user would expect the same auto-recovery behavior"). Mirror the
-    # standalone branch: recover the mapping, drop the recovered finding,
-    # re-run the content collectors against the new mapping, and surface
-    # the audit note on ``cell_log``.
-    recoverable = next(
-        (
-            f for f in cell_tier1
-            if str(f).startswith(
-                ("Y-AXIS SCALE MISMATCH", "Y-AXIS LEVEL DISPARITY")
-            )
-        ),
-        None,
-    )
-    if recoverable is not None:
-        recovered = _maybe_auto_recover_y_scale(
-            recoverable, df, chart_type, mapping, depth=0,
-        )
-        if recovered is not None:
-            new_mapping, recovery_msg = recovered
-            mapping = new_mapping
-            cell_tier1 = [f for f in cell_tier1 if f is not recoverable]
-            if cell_log is not None:
-                cell_log.append(recovery_msg)
-            logger.info("[_build_single_chart] %s", recovery_msg)
     _raise_findings(cell_tier1)
 
     # Build.
-    try:
-        chart = _dispatch_builder(
-            chart_type, df, mapping, skin_config, width, height, spec.layers,
-            composite_cell=True,
-        )
-    finally:
-        # Drain builder-level soft warnings into the composite's per-cell
-        # log (same channel as _make_chart's warnings drain).
-        _cell_builder_warnings = mapping.pop("_builder_warnings", [])
-        if cell_log is not None:
-            cell_log.extend(_cell_builder_warnings)
+    chart = _dispatch_builder(
+        chart_type, df, mapping, skin_config, width, height, spec.layers,
+        composite_cell=True,
+    )
 
     # Per-sub-chart title/subtitle. Length-validated + auto-wrapped so a
     # long ``ChartSpec.title`` doesn't blow past the panel boundary the
@@ -22255,17 +21422,13 @@ def _build_single_chart(
                 "[_build_single_chart] %r: %s", spec.title, _w,
             )
 
-    # Annotations. ``dropped_log=cell_log`` threads every suppressed
-    # annotation's reason up to the composite result's warnings (the
-    # 2026-07-06 friction scan hit a 4-pack whose per-panel HLine(y=0)
-    # drops were visible only in server logs).
+    # Annotations.
     if cell_annotations:
         try:
             chart = render_annotations(
                 chart, cell_annotations, df, mapping, skin_config,
                 chart_type=spec.chart_type,
                 chart_width=width, chart_height=height,
-                dropped_log=cell_log,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -24043,14 +23206,11 @@ def _render_facet_grid(
             layers=layers,
         )
 
-        panel_log: List[str] = []
         try:
             chart = _build_single_chart(
                 sub_spec, skin_config, panel_w, panel_h,
                 title_fontsize_override=26,
                 suppress_lvl=True,
-                cell_log=panel_log,
-                cell_label=f"panel {panel_id!r}",
             )
         except Exception as exc:  # noqa: BLE001
             panel_errors.append({
@@ -24059,9 +23219,6 @@ def _render_facet_grid(
                 "error_message": str(exc),
             })
             continue
-        warnings_list.extend(
-            f"Panel {panel_id!r}: {msg}" for msg in panel_log
-        )
 
         spec_dict = chart.to_dict()
         _strip_schema_and_config(spec_dict)
@@ -24416,30 +23573,14 @@ def _summarize_chart_errors(
         if n_failed >= n_charts
         else f"{n_failed} of {n_charts} sub-charts failed validation"
     )
-
-    def _cell_name(ce: Dict[str, Any]) -> str:
-        idx = ce.get("chart_index")
-        title = ce.get("title")
-        return (
-            f"[{idx}] {title!r}" if title
-            else f"[{idx}] ({ce.get('chart_type')})"
-        )
-
     distinct = {(ce.get("error_message") or "").strip() for ce in chart_errors}
     if len(distinct) == 1:
         only = next(iter(distinct))
-        # Name WHICH cells failed even when the error dedupes -- "1 of 6
-        # failed" without a cell identity forces the caller to hunt
-        # (recurring UX gap in the 2026-07-06 friction waves).
-        if n_failed < n_charts:
-            who = ", ".join(_cell_name(ce) for ce in chart_errors)
-            return (
-                f"{scope} ({who}) -- every failing cell raised the same "
-                f"error: {only}"
-            )
         return f"{scope} -- every failing cell raised the same error: {only}"
     lines = [
-        f"  {_cell_name(ce)}: {(ce.get('error_message') or '').strip()}"
+        f"  [{ce.get('chart_index')}] "
+        f"{ce.get('title') or ce.get('chart_type')}: "
+        f"{(ce.get('error_message') or '').strip()}"
         for ce in chart_errors
     ]
     return scope + ":\n" + "\n".join(lines)
@@ -24633,14 +23774,11 @@ def make_composite(
     reserve_left_w_arg: Optional[int] = reserve_left_w or None
     reserve_right_w_arg: Optional[int] = reserve_right_w or None
 
-    # Build each sub-chart, collecting errors. Per-cell audit notes
-    # (dual-axis auto-recovery, dropped annotations) surface on the
-    # composite's warnings with a cell-identifying prefix.
+    # Build each sub-chart, collecting errors.
     built: List[alt.Chart] = []
     chart_errors: List[Dict[str, Any]] = []
     for i, spec in enumerate(charts):
         chart_index = i + 1
-        cell_log: List[str] = []
         try:
             built.append(
                 _build_single_chart(
@@ -24650,15 +23788,8 @@ def make_composite(
                     reserve_side_left_w=reserve_left_w_arg,
                     reserve_side_right_w=reserve_right_w_arg,
                     suppress_lvl=False,
-                    cell_log=cell_log,
-                    cell_label=f"sub-chart {chart_index}/{n_charts}",
                 )
             )
-            cell_name = (
-                f"Sub-chart {chart_index}/{n_charts}"
-                + (f" ({spec.title!r})" if spec.title else "")
-            )
-            warnings_list.extend(f"{cell_name}: {msg}" for msg in cell_log)
             logger.info(
                 "[make_composite] Sub-chart %d/%d (%s) built.",
                 chart_index, n_charts, spec.chart_type,
@@ -28119,238 +27250,9 @@ def make_table(
             n_cols=len(df.columns),
         )
 
-    # ---- header_levels display-alias absorption -------------------------
-    # The engine ALWAYS renders df.columns as the bottom header row. A
-    # final all-span-1 header level is therefore PRISM saying "display
-    # THESE column names" -- keeping both used to print a redundant raw
-    # column-name row under the custom labels (2026-07-06 friction waves,
-    # iter4 3-level-header QC reject). Absorb: apply the level as display
-    # column names (styling kwargs keyed on either the old or new name
-    # keep working), or drop it when it just duplicates df.columns.
-    if header_levels:
-        _last = header_levels[-1]
-        if len(_last) == len(df.columns) and all(s == 1 for _, s in _last):
-            _labels = [lbl for lbl, _ in _last]
-            if _labels == [str(c) for c in df.columns]:
-                header_levels = header_levels[:-1]
-                warnings.append(
-                    "header_levels: final level duplicates the column names "
-                    "and was dropped -- the engine always renders column "
-                    "names as the bottom header row."
-                )
-            elif len(set(_labels)) == len(_labels):
-                _rename = {str(c): l for c, l in zip(df.columns, _labels)}
-                df = df.rename(
-                    columns={c: _rename[str(c)] for c in df.columns}
-                )
-                header_levels = header_levels[:-1]
-
-                def _remap_dict_keys(d: Dict[Any, Any]) -> Dict[Any, Any]:
-                    return {
-                        _rename.get(str(k), k): v for k, v in d.items()
-                    }
-
-                column_formats = _remap_dict_keys(column_formats)
-                column_aligns = _remap_dict_keys(column_aligns)
-                column_color_modes = _remap_dict_keys(column_color_modes)
-                rag_thresholds = _remap_dict_keys(rag_thresholds)
-                sparkline_columns = _remap_dict_keys(sparkline_columns)
-                minibar_columns = _remap_dict_keys(minibar_columns)
-                highlight_columns = [
-                    _rename.get(str(c), c) for c in highlight_columns
-                ]
-                signed_columns = [
-                    _rename.get(str(c), c) for c in signed_columns
-                ]
-                for _hg in heatmap_groups:
-                    _hg["columns"] = [
-                        _rename.get(str(c), c)
-                        for c in (_hg.get("columns") or [])
-                    ]
-            else:
-                warnings.append(
-                    "header_levels: final all-span-1 level has duplicate "
-                    "labels, so it cannot replace the column-name row -- "
-                    "the raw column names render beneath it. Make the "
-                    "labels unique (or rename the DataFrame columns) to "
-                    "avoid the redundant header row."
-                )
-
     # total_rows / subtotal_rows: coerce numpy scalars to plain int.
     total_rows = [int(r) for r in total_rows]
     subtotal_rows = [int(r) for r in subtotal_rows]
-
-    # ---- Orphan-key / out-of-bounds sweep (warn + skip, never silent) ---
-    # Every styling kwarg that references a column name or row index gets
-    # the same treatment ``cell_colors`` already had: unknown / OOB
-    # references are dropped AND reported on ``result.warnings``. The
-    # 2026-07-06 friction waves catalogued 9+ of these as silent no-ops
-    # (total_rows/subtotal_rows OOB, highlight_columns / column_formats /
-    # rag_thresholds / minibar orphan columns, heatmap_groups orphan
-    # columns + unknown scope, row_indent length mismatch, sparkline
-    # count mismatch) -- a typo produced an unstyled table with no signal.
-    def _warn_skip(msg: str) -> None:
-        warnings.append(msg)
-
-    _n_rows = len(df)
-    _cols = set(map(str, df.columns))
-
-    def _prune_rows(indices: List[int], kwarg: str) -> List[int]:
-        kept = []
-        for r in indices:
-            if 0 <= r < _n_rows:
-                kept.append(r)
-            else:
-                _warn_skip(
-                    f"{kwarg}=[{r}]: row index out of bounds for a "
-                    f"{_n_rows}-row table (valid: 0..{_n_rows - 1}); skipping"
-                )
-        return kept
-
-    total_rows = _prune_rows(total_rows, "total_rows")
-    subtotal_rows = _prune_rows(subtotal_rows, "subtotal_rows")
-
-    _kept_row_colors: Dict[int, str] = {}
-    for _r, _v in row_colors.items():
-        if 0 <= int(_r) < _n_rows:
-            _kept_row_colors[_r] = _v
-        else:
-            _warn_skip(
-                f"row_colors[{_r}]: row index out of bounds for a "
-                f"{_n_rows}-row table; skipping"
-            )
-    row_colors = _kept_row_colors
-
-    def _prune_cell_keys(d: Dict[Any, Any], kwarg: str) -> Dict[Any, Any]:
-        kept: Dict[Any, Any] = {}
-        for k, v in d.items():
-            if (
-                isinstance(k, tuple)
-                and len(k) == 2
-                and isinstance(k[0], int)
-                and not 0 <= k[0] < _n_rows
-            ):
-                _warn_skip(
-                    f"{kwarg} key {k!r}: row index out of bounds for a "
-                    f"{_n_rows}-row table; skipping"
-                )
-                continue
-            kept[k] = v
-        return kept
-
-    cell_colors = _prune_cell_keys(cell_colors, "cell_colors")
-    cell_text_colors = _prune_cell_keys(cell_text_colors, "cell_text_colors")
-
-    def _prune_cols(names: List[str], kwarg: str) -> List[str]:
-        kept = []
-        for c in names:
-            if str(c) in _cols:
-                kept.append(c)
-            else:
-                _warn_skip(
-                    f"{kwarg}=[{c!r}]: column name not in df.columns; skipping"
-                )
-        return kept
-
-    highlight_columns = _prune_cols(highlight_columns, "highlight_columns")
-    signed_columns = _prune_cols(signed_columns, "signed_columns")
-    for _kwarg_name, _d in (
-        ("column_formats", column_formats),
-        ("column_aligns", column_aligns),
-        ("column_color_modes", column_color_modes),
-        ("rag_thresholds", rag_thresholds),
-        ("minibar_columns", minibar_columns),
-    ):
-        for _c in [c for c in _d if str(c) not in _cols]:
-            _warn_skip(
-                f"{_kwarg_name}[{_c!r}]: column name not in df.columns; skipping"
-            )
-            _d.pop(_c, None)
-
-    # rag_thresholds with no matching rag mode is a guaranteed no-op:
-    # thresholds only apply through column_color_modes[col]='rag'.
-    for _c in rag_thresholds:
-        _mode = (column_color_modes.get(_c) or {}).get("mode")
-        if _mode != "rag":
-            _warn_skip(
-                f"rag_thresholds[{_c!r}] set but column_color_modes[{_c!r}] "
-                f"is {_mode!r}, not 'rag' -- thresholds are ignored. Add "
-                f"column_color_modes={{{_c!r}: 'rag'}} to activate them."
-            )
-
-    _valid_hg_scopes = {"column", "row", "group"}
-    _pruned_hg: List[Dict[str, Any]] = []
-    for hg_idx, hg in enumerate(heatmap_groups):
-        hg_cols = [c for c in (hg.get("columns") or [])]
-        missing_hg = [c for c in hg_cols if str(c) not in _cols]
-        if missing_hg:
-            _warn_skip(
-                f"heatmap_groups[{hg_idx}]: column(s) {missing_hg!r} not in "
-                f"df.columns; "
-                + ("skipping the whole group"
-                   if len(missing_hg) == len(hg_cols)
-                   else "colouring the remaining columns")
-            )
-            hg = dict(hg)
-            hg["columns"] = [c for c in hg_cols if str(c) in _cols]
-            if not hg["columns"]:
-                continue
-        _scope = hg.get("scope")
-        if _scope is not None and _scope not in _valid_hg_scopes:
-            _warn_skip(
-                f"heatmap_groups[{hg_idx}]: unknown scope {_scope!r} "
-                f"(valid: 'column', 'row', 'group'); falling back to 'column'"
-            )
-            hg = dict(hg)
-            hg["scope"] = "column"
-        _pruned_hg.append(hg)
-    heatmap_groups = _pruned_hg
-
-    if row_indent is not None and len(row_indent) != _n_rows:
-        _warn_skip(
-            f"row_indent has {len(row_indent)} entries for a {_n_rows}-row "
-            f"table; padding/truncating to fit (indent must be 1:1 with rows)"
-        )
-        row_indent = (list(row_indent) + [0] * _n_rows)[:_n_rows]
-    if row_indent is not None and any(int(i) > 2 for i in row_indent):
-        _warn_skip(
-            "row_indent uses depth 3+; indentation degrades beyond 2 levels "
-            "(labels collide). Consider collapsing the hierarchy or using "
-            "row_groups instead."
-        )
-
-    for _c in [c for c in sparkline_columns if str(c) not in _cols]:
-        _warn_skip(
-            f"sparkline_columns[{_c!r}]: column name not in df.columns; "
-            f"skipping"
-        )
-        sparkline_columns.pop(_c, None)
-    for _c, _series_lists in list(sparkline_columns.items()):
-        try:
-            _n_lists = len(_series_lists)
-        except TypeError:
-            _warn_skip(
-                f"sparkline_columns[{_c!r}] must be a list of per-row value "
-                f"lists; got {type(_series_lists).__name__}; skipping"
-            )
-            sparkline_columns.pop(_c, None)
-            continue
-        if _n_lists != _n_rows:
-            _warn_skip(
-                f"sparkline_columns[{_c!r}] has {_n_lists} value list(s) for "
-                f"a {_n_rows}-row table -- rows without a list render an "
-                f"EMPTY sparkline cell. Pass one list per row."
-            )
-        _thin = [
-            i for i, vals in enumerate(_series_lists)
-            if not hasattr(vals, "__len__") or len(vals) < 2
-        ]
-        if _thin:
-            _warn_skip(
-                f"sparkline_columns[{_c!r}]: value list(s) at row(s) {_thin} "
-                f"have < 2 points -- a sparkline needs >= 2 points to draw a "
-                f"line; those cells render empty/flat."
-            )
 
     # Option-C canvas normalization. _tbl_normalize_theme_for_display
     # adapts theme font sizes so the rendered canvas hits the target
