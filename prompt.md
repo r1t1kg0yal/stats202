@@ -68,3 +68,51 @@ Give commands PRISM can run after a candidate staging version is re-promoted to 
 - omitted/unmapped files
 Do not include the full unified diff. Do not summarize away exact executable replacement blocks or exact semantic old/new text.
 If part of this prompt cannot be answered, add a brief “## Could not resolve” section at the end.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Continue the same read-only reconciliation. Return ONLY the four bounded artifacts below, copied verbatim from production. Do not use `...`, prose placeholders, reconstructed snippets, or omitted lines.
+## A. Production-only __init__.py
+Return the complete current contents of:
+prism-core/dashboards/__init__.py
+This file is production-only relative to old/, so there is no meaningful diff. Include its full SHA-256 and line count.
+## B. Complete range-slider JavaScript
+From production `prism-core/dashboards/rendering.py`, return:
+1. The complete enclosing event-binding function/block containing the scalar-input `row.querySelector(...)`, including every input/change listener.
+2. Every complete function whose name contains `Range`, especially `_toolUpdateRangeDisplay`.
+3. The complete `_toolReadScalarValue` function.
+4. State explicitly whether `_toolFormatRangeDisplay` exists in production.
+5. List every executable old→production range-slider delta with exact production line ranges.
+All code must be verbatim and complete. The prior response’s `_toolUpdateRangeDisplay` block contained `...`, so it cannot be applied.
+## C. Complete widgets.md semantic blocks
+From production `prism-core/context/modules/static/tools/dashboards/widgets.md`, return verbatim:
+1. The entire `Widget shape & width contract` section, from its heading through the line immediately before the next heading.
+2. The complete production provenance example changed from old.
+3. The complete production `symbol` field/table row changed from old.
+Also return the exact old text for items 2 and 3. No truncation.
+## D. Rendering logo import
+Compare the executable `_get_prism_logo_b64` function in old/rendering.py and production rendering.py. Return the complete old and production function only if executable bytes differ. Otherwise state byte-identical. Explicitly confirm whether production imports `s3_manager` from `core.s3_bucket_manager`.
+End with:
+`All requested blocks verbatim and complete: YES/NO`
+If NO, identify the specific missing block.
+Can you run the bounded follow-up prompt above?
+
