@@ -10530,6 +10530,10 @@ def audit_dashboard_layout(
     return True
 
 
+# Backward-compatible private name used by existing callers and tests.
+_audit_dashboard_layout = audit_dashboard_layout
+
+
 def _manifest_template_bytes(s3_manager, folder: str) -> bytes:
     path = f"{folder}/manifest_template.json"
     raw = s3_manager.get(path)
@@ -13734,7 +13738,7 @@ __all__ = [
     "df_to_source", "manifest_template", "populate_template",
     "Diagnostic", "chart_data_diagnostics",
     "run_pull", "build_dashboard", "refresh_dashboard",
-    "audit_dashboard_layout",
+    "audit_dashboard_layout", "_audit_dashboard_layout",
     "apply_manifest_operations", "inspect_dashboard",
     "synchronize_refresh_frequency", "sync_refresh_frequency",
     "_AUDIT_REQUIRED_PATHS",

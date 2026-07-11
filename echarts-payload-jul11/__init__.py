@@ -100,6 +100,7 @@ from dashboards.echart_dashboard import (  # noqa: E402,F401
     save_manifest,
     chart_data_diagnostics,
     audit_dashboard_layout,
+    _audit_dashboard_layout,
     apply_manifest_operations,
     inspect_dashboard,
     synchronize_refresh_frequency,
