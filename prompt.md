@@ -11,8 +11,7 @@ For every dashboards-subsystem file represented by old/ OR present in the curren
 Explicitly resolve why the migration package says 16 files while staging currently has:
 - 8 Python files, including __init__.py
 - 9 shipped context Markdown files
-- dashboards/canonical_showcase.json
-State whether __init__.py and canonical_showcase.json differ from production. Do not omit them merely because the prior mapping omitted them.
+State whether __init__.py differs from production. Do not omit it merely because the prior mapping omitted it.
 ## 2. Exact executable Python delta ledger
 Ignore whitespace, comments, docstrings, and prose-only cross-reference renames. For each Python file, list every remaining executable/runtime difference between old/ and production.
 For each runtime difference provide:
@@ -155,7 +154,7 @@ Return the current:
 Then confirm YES/NO:
 1. Is the prior executable ledger exhaustive for all eight Python payload files, including production-only __init__.py?
 2. Are the only genuine Markdown semantic changes the two documented widgets.md changes?
-3. Are canonical_showcase.json and test_prompts/ both outside the current production-overlap promotion?
+3. Is test_prompts/ outside the current production-overlap promotion?
 If any answer is NO, identify the missing file or behavior precisely.
 ## 2. Exact local-mock signatures
 Return the exact production import path and inspect.signature output for:
@@ -204,7 +203,7 @@ Provide:
    - REAL_SEMANTIC_DELTA
    - UNMAPPED
 3. The exact expected file inventory.
-4. Confirmation that canonical_showcase.json and test_prompts/ are excluded.
+4. Confirmation that test_prompts/ is excluded.
 Do not output the underlying full diff.
 End with:
 FINAL AMBIGUITIES RESOLVED: YES/NO
