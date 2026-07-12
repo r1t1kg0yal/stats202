@@ -21,7 +21,7 @@ manifest_template.json slots
 build_dashboard → manifest.json + dashboard.html
 ```
 
-Only the three persisted inputs—pull script, build script, and template—survive refresh. They are also the complete definition recipe recorded automatically after each successful changed build. CSVs, populated manifests, and HTML are current generated state, not version history.
+Only the three persisted inputs—pull script, build script, and template—survive refresh. Do not edit generated CSV, manifest, or HTML as the durable change.
 
 `scripts/pull_data.py` exclusively owns imports, source/client calls, output names, and `PULLS`. `scripts/build.py` exclusively owns deterministic derivations and the ordered `TRANSFORMS` list. The template owns dataset slots, field lineage, and consumers; it never owns a network call. Only flat `data/*.csv` files are loaded as datasets; JSON artifacts and metadata sidecars are ignored.
 
@@ -157,12 +157,11 @@ There is no root-replacement script API. The safe edit is evidence-based byte mu
 5. Compile the new source before writing.
 6. Persist the owning script.
 7. Run only the affected pull first; require successful current-cycle output and verify a non-empty CSV with the expected contract.
-8. Run `build_dashboard(..., expected_current_version_id=state["versioning"]["current_version_id"])`.
+8. Run `build_dashboard`.
 9. Run the clean subprocess refresh.
 10. Inspect again.
 
 ```python
-state = inspect_dashboard(FOLDER)
 path = f"{FOLDER}/scripts/pull_data.py"
 old = s3_manager.get(path).decode("utf-8")
 if old.count(OLD_BLOCK) != 1:
@@ -255,12 +254,10 @@ Each provenance value is a dictionary. Native-source fields use `system` plus th
 Changing source cadence may require a dashboard cadence change. After data/script verification:
 
 ```python
-state = inspect_dashboard(FOLDER)
 synchronize_refresh_frequency(
     FOLDER,
     "1h",
-    expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
+    expected_sha256=inspect_dashboard(FOLDER)["manifest_template_sha256"],
 )
 ```
 

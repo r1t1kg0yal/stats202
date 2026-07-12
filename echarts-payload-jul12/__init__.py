@@ -21,8 +21,6 @@ Public surface PRISM imports:
         run_pull,                  # run ONE pull from PULLS (in-process)
         build_dashboard,           # template + CSVs + transforms -> compile
         refresh_dashboard,         # all PULLS + build_dashboard
-        list_dashboard_versions,   # timestamped definition summaries
-        restore_dashboard_version, # older definition + current data
     )
 
     # Compile primitives (used by build_dashboard internally; PRISM rarely
@@ -94,6 +92,8 @@ dependencies.
 
 from __future__ import annotations
 
+__version__ = "0.4.0"
+
 from dashboards.echart_dashboard import (  # noqa: E402,F401
     run_pull,
     build_dashboard,
@@ -109,14 +109,9 @@ from dashboards.echart_dashboard import (  # noqa: E402,F401
     audit_dashboard_layout,
     apply_manifest_operations,
     inspect_dashboard,
-    list_dashboard_versions,
-    restore_dashboard_version,
     synchronize_refresh_frequency,
     sync_refresh_frequency,
     _AUDIT_REQUIRED_PATHS,
-    ENGINE_VERSION,
     Manifest,
     DashboardResult,
 )
-
-__version__ = ENGINE_VERSION

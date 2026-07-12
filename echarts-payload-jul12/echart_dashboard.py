@@ -118,11 +118,6 @@ from config import MAX_DASHBOARD_DECIMALS, clamp_decimals
 # =============================================================================
 
 SCHEMA_VERSION = 1
-ENGINE_VERSION = "0.5.0"
-_DASHBOARD_VERSION_SCHEMA = 1
-_DASHBOARD_VERSION_ID_RE = re.compile(
-    r"^\d{8}T\d{6}\.\d{6}Z__[0-9a-f]{12}$"
-)
 # ``VALID_WIDGETS``, ``FILTER_TARGETABLE_WIDGETS`` and
 # ``DATA_BOUND_WIDGETS`` are derived from the ``WIDGETS`` registry below;
 # see the ``WIDGET REGISTRY`` section. Adding a widget kind = one entry
@@ -10526,9 +10521,8 @@ def audit_dashboard_layout(
         raise ValueError(
             f"audit_dashboard_layout: {canonical} missing required path(s): "
             f"{missing} | fix: restore each named canonical file before "
-            "mutating the template; use a version returned by "
-            "list_dashboard_versions where available, then rerun "
-            "audit_dashboard_layout."
+            "mutating the template; use history/archive bytes where "
+            "available, then rerun audit_dashboard_layout."
         )
     return True
 
@@ -10623,462 +10617,6 @@ def _raise_transaction_failure(
         "fix: inspect the named failure, repair S3 access or manifest "
         "content, verify canonical bytes, then retry the whole transaction."
     ) from exc
-
-
-def _dashboard_version_state_path(folder: str) -> str:
-    return f"{folder.rstrip('/')}/history/state.json"
-
-
-def _dashboard_versions_prefix(folder: str) -> str:
-    return f"{folder.rstrip('/')}/history/versions"
-
-
-def _dashboard_version_path(folder: str, version_id: str) -> str:
-    if not isinstance(version_id, str) \
-            or not _DASHBOARD_VERSION_ID_RE.fullmatch(version_id):
-        raise ValueError(
-            "version_id must have form "
-            "YYYYMMDDTHHMMSS.ffffffZ__<12-hex> | fix: use an exact "
-            "version_id returned by list_dashboard_versions."
-        )
-    return f"{_dashboard_versions_prefix(folder)}/{version_id}.json"
-
-
-def _read_dashboard_script_bytes(
-    s3_manager,
-    folder: str,
-    script_name: str,
-) -> bytes:
-    path = f"{folder.rstrip('/')}/scripts/{script_name}.py"
-    raw = s3_manager.get(path)
-    if not isinstance(raw, (bytes, bytearray)):
-        raise ValueError(
-            f"{path} did not return bytes | fix: repair the S3 manager "
-            "contract or restore the canonical script bytes."
-        )
-    raw_bytes = bytes(raw)
-    try:
-        raw_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError(
-            f"{path} is not valid UTF-8 Python source: {exc} | fix: "
-            "restore valid source bytes before compiling the dashboard."
-        ) from exc
-    return raw_bytes
-
-
-def _load_dashboard_recipe(
-    folder: str,
-    s3_manager,
-) -> Dict[str, Any]:
-    canonical = folder.rstrip("/")
-    template_path = f"{canonical}/manifest_template.json"
-    template_raw = _manifest_template_bytes(s3_manager, canonical)
-    template = _decode_json_object(template_raw, template_path)
-    pull_raw = _read_dashboard_script_bytes(
-        s3_manager, canonical, "pull_data",
-    )
-    build_raw = _read_dashboard_script_bytes(
-        s3_manager, canonical, "build",
-    )
-    return {
-        "manifest_template": template,
-        "pull_data_py": pull_raw.decode("utf-8"),
-        "build_py": build_raw.decode("utf-8"),
-    }
-
-
-def _recipe_fingerprint(recipe: Dict[str, Any]) -> str:
-    template = recipe.get("manifest_template")
-    pull_source = recipe.get("pull_data_py")
-    build_source = recipe.get("build_py")
-    if not isinstance(template, dict):
-        raise ValueError(
-            "recipe.manifest_template must be an object | fix: restore a "
-            "version created by the dashboard engine."
-        )
-    if not isinstance(pull_source, str) or not isinstance(build_source, str):
-        raise ValueError(
-            "recipe scripts must be UTF-8 strings | fix: restore a version "
-            "created by the dashboard engine."
-        )
-    parts = (
-        (
-            "manifest_template.json",
-            json.dumps(
-                template,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode("utf-8"),
-        ),
-        ("scripts/pull_data.py", pull_source.encode("utf-8")),
-        ("scripts/build.py", build_source.encode("utf-8")),
-    )
-    import hashlib
-
-    digest = hashlib.sha256()
-    for name, raw in parts:
-        name_raw = name.encode("utf-8")
-        digest.update(len(name_raw).to_bytes(4, "big"))
-        digest.update(name_raw)
-        digest.update(len(raw).to_bytes(8, "big"))
-        digest.update(raw)
-    return digest.hexdigest()
-
-
-def _dashboard_recipe_summary(
-    recipe: Dict[str, Any],
-    previous_recipe: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    template = recipe["manifest_template"]
-    layout = template.get("layout") \
-        if isinstance(template.get("layout"), dict) else {}
-    tabs = layout.get("tabs") \
-        if layout.get("kind", "grid") == "tabs" else []
-    tab_names = [
-        str(tab.get("label") or tab.get("id"))
-        for tab in (tabs or [])
-        if isinstance(tab, dict) and (tab.get("label") or tab.get("id"))
-    ]
-    filters = template.get("filters")
-    previous_pull = (
-        previous_recipe.get("pull_data_py")
-        if isinstance(previous_recipe, dict) else None
-    )
-    previous_build = (
-        previous_recipe.get("build_py")
-        if isinstance(previous_recipe, dict) else None
-    )
-    return {
-        "title": str(template.get("title") or template.get("id") or ""),
-        "tab_names": tab_names,
-        "widget_count": len(_widget_locations(template)),
-        "filter_count": len(filters) if isinstance(filters, list) else 0,
-        "pull_script_changed": (
-            previous_recipe is None
-            or recipe["pull_data_py"] != previous_pull
-        ),
-        "build_script_changed": (
-            previous_recipe is None
-            or recipe["build_py"] != previous_build
-        ),
-    }
-
-
-def _load_dashboard_version_state(
-    s3_manager,
-    folder: str,
-    *,
-    required: bool = False,
-) -> Optional[Dict[str, Any]]:
-    path = _dashboard_version_state_path(folder)
-    if not s3_manager.exists(path):
-        if required:
-            raise ValueError(
-                f"{path} is missing | fix: successfully build the dashboard "
-                "once to establish its baseline version."
-            )
-        return None
-    state = _decode_json_object(bytes(s3_manager.get(path)), path)
-    required_fields = {
-        "current_version_id": str,
-        "current_recipe_sha256": str,
-        "updated_at_utc": str,
-    }
-    for field_name, expected_type in required_fields.items():
-        if not isinstance(state.get(field_name), expected_type):
-            raise ValueError(
-                f"{path}.{field_name} must be "
-                f"{expected_type.__name__} | fix: restore a valid engine-"
-                "written version state object."
-            )
-    _dashboard_version_path(folder, state["current_version_id"])
-    previous = state.get("previous_version_id")
-    if previous is not None:
-        _dashboard_version_path(folder, previous)
-    recipe_sha = state["current_recipe_sha256"]
-    if not re.fullmatch(r"[0-9a-f]{64}", recipe_sha):
-        raise ValueError(
-            f"{path}.current_recipe_sha256 is invalid | fix: restore a "
-            "valid engine-written version state object."
-        )
-    return state
-
-
-def _require_expected_current_version(
-    s3_manager,
-    folder: str,
-    expected_current_version_id: Optional[str],
-) -> Optional[str]:
-    state = _load_dashboard_version_state(s3_manager, folder)
-    if state is None:
-        if expected_current_version_id is not None:
-            raise ValueError(
-                "dashboard has no baseline version but an expected current "
-                f"version was supplied: {expected_current_version_id!r} | "
-                "fix: inspect the dashboard and retry without a version guard "
-                "for its first successful build."
-            )
-        return None
-    current_version_id = state["current_version_id"]
-    if expected_current_version_id is None:
-        raise ValueError(
-            "expected_current_version_id is required for a recipe-changing "
-            "transaction | fix: inspect_dashboard, copy "
-            "versioning.current_version_id, and retry."
-        )
-    if expected_current_version_id != current_version_id:
-        raise ValueError(
-            "dashboard current version changed: expected "
-            f"{expected_current_version_id!r}, found "
-            f"{current_version_id!r} | fix: inspect the dashboard again, "
-            "rebase the intended change, and retry."
-        )
-    return current_version_id
-
-
-def _load_dashboard_version(
-    s3_manager,
-    folder: str,
-    version_id: str,
-) -> Dict[str, Any]:
-    path = _dashboard_version_path(folder, version_id)
-    version = _decode_json_object(bytes(s3_manager.get(path)), path)
-    if version.get("version_schema") != _DASHBOARD_VERSION_SCHEMA:
-        raise ValueError(
-            f"{path}.version_schema must be "
-            f"{_DASHBOARD_VERSION_SCHEMA} | fix: use a version written by "
-            "this dashboard engine."
-        )
-    if version.get("version_id") != version_id:
-        raise ValueError(
-            f"{path}.version_id does not match its key | fix: restore the "
-            "canonical immutable version object."
-        )
-    if not isinstance(version.get("created_at_utc"), str):
-        raise ValueError(
-            f"{path}.created_at_utc must be a string | fix: restore the "
-            "canonical immutable version object."
-        )
-    recipe = version.get("recipe")
-    if not isinstance(recipe, dict):
-        raise ValueError(
-            f"{path}.recipe must be an object | fix: restore the canonical "
-            "immutable version object."
-        )
-    fingerprint = _recipe_fingerprint(recipe)
-    if version.get("recipe_sha256") != fingerprint:
-        raise ValueError(
-            f"{path}.recipe_sha256 does not match its recipe bytes | fix: "
-            "do not restore this corrupted version."
-        )
-    if not version_id.endswith(f"__{fingerprint[:12]}"):
-        raise ValueError(
-            f"{path} hash suffix does not match its recipe | fix: restore "
-            "the canonical immutable version object."
-        )
-    return version
-
-
-def _prepare_dashboard_version(
-    s3_manager,
-    folder: str,
-    recipe: Dict[str, Any],
-    *,
-    expected_current_version_id: Optional[str],
-) -> Tuple[
-    Optional[Dict[str, Any]],
-    Optional[Dict[str, Any]],
-    Optional[str],
-]:
-    from dashboards_time import utcnow, format_iso
-
-    fingerprint = _recipe_fingerprint(recipe)
-    state = _load_dashboard_version_state(s3_manager, folder)
-    if state is not None \
-            and state["current_recipe_sha256"] == fingerprint:
-        return None, None, None
-    _require_expected_current_version(
-        s3_manager, folder, expected_current_version_id,
-    )
-
-    previous_recipe: Optional[Dict[str, Any]] = None
-    previous_version_id = (
-        state.get("current_version_id") if state is not None else None
-    )
-    if isinstance(previous_version_id, str):
-        previous_recipe = _load_dashboard_version(
-            s3_manager, folder, previous_version_id,
-        )["recipe"]
-
-    now = utcnow()
-    created_at = format_iso(now)
-    version_id = (
-        f"{now.strftime('%Y%m%dT%H%M%S.%fZ')}__{fingerprint[:12]}"
-    )
-    version = {
-        "version_schema": _DASHBOARD_VERSION_SCHEMA,
-        "version_id": version_id,
-        "created_at_utc": created_at,
-        "recipe_sha256": fingerprint,
-        "compiler_version": ENGINE_VERSION,
-        "manifest_schema_version": recipe["manifest_template"].get(
-            "schema_version"
-        ),
-        "request_note": None,
-        "summary": _dashboard_recipe_summary(recipe, previous_recipe),
-        "recipe": recipe,
-    }
-    new_state = {
-        "current_version_id": version_id,
-        "previous_version_id": previous_version_id,
-        "current_recipe_sha256": fingerprint,
-        "updated_at_utc": created_at,
-    }
-    return version, new_state, _dashboard_version_path(folder, version_id)
-
-
-class DashboardVersionRestoreError(ValueError):
-    """A selected saved definition is incompatible with current inputs."""
-
-    def __init__(
-        self,
-        *,
-        version_id: str,
-        current_version_id: str,
-        cause: BaseException,
-    ) -> None:
-        self.code = "saved_definition_incompatible"
-        self.version_id = version_id
-        self.current_version_id = current_version_id
-        self.fix_hint = (
-            "Choose another saved version or repair this saved definition "
-            "for the current data and compiler contract."
-        )
-        self.cause_type = type(cause).__name__
-        super().__init__(
-            f"saved dashboard definition {version_id!r} cannot be restored "
-            f"with current persisted data and compiler rules: "
-            f"{type(cause).__name__}: {cause}; the live dashboard is "
-            f"unchanged | fix: {self.fix_hint}"
-        )
-
-
-def _version_display_fields(
-    created_at_utc: str,
-    timezone_name: str,
-) -> Dict[str, str]:
-    from dashboards_time import parse_iso
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-    try:
-        timezone_value = ZoneInfo(timezone_name)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError(
-            f"unknown IANA timezone {timezone_name!r} | fix: pass a timezone "
-            "such as 'America/New_York', 'Europe/London', or 'UTC'."
-        ) from exc
-    created_at = parse_iso(created_at_utc)
-    if created_at is None:
-        raise ValueError(
-            f"invalid version timestamp {created_at_utc!r} | fix: restore "
-            "the canonical immutable version object."
-        )
-    local_time = created_at.astimezone(timezone_value)
-    return {
-        "display_time": local_time.strftime(
-            "%A, %B %d, %Y at %I:%M %p %Z"
-        ),
-        "local_date": local_time.date().isoformat(),
-        "timezone": timezone_name,
-    }
-
-
-def list_dashboard_versions(
-    folder: str,
-    *,
-    s3_manager=None,
-    limit: int = 20,
-    timezone_name: str = "UTC",
-) -> Dict[str, Any]:
-    """List compact immutable dashboard-definition versions, newest first."""
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-        raise ValueError(
-            "limit must be a positive integer | fix: pass the number of "
-            "recent dashboard versions PRISM should inspect."
-        )
-    if not isinstance(timezone_name, str) or not timezone_name.strip():
-        raise ValueError(
-            "timezone_name must be a non-empty IANA timezone | fix: pass "
-            "'America/New_York', 'Europe/London', or 'UTC'."
-        )
-    timezone_name = timezone_name.strip()
-    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
-    try:
-        ZoneInfo(timezone_name)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        raise ValueError(
-            f"unknown IANA timezone {timezone_name!r} | fix: pass a timezone "
-            "such as 'America/New_York', 'Europe/London', or 'UTC'."
-        ) from exc
-    s3 = _resolve_s3_manager(s3_manager)
-    canonical, _kerberos, _dashboard_id = _canonical_dashboard_identity(
-        folder
-    )
-    state = _load_dashboard_version_state(s3, canonical)
-    prefix = f"{_dashboard_versions_prefix(canonical)}/"
-    version_ids = sorted({
-        str(entry.get("Key") if isinstance(entry, dict) else entry)
-        .rsplit("/", 1)[-1][:-5]
-        for entry in s3.list(prefix)
-        if str(entry.get("Key") if isinstance(entry, dict) else entry)
-        .startswith(prefix)
-        and str(entry.get("Key") if isinstance(entry, dict) else entry)
-        .endswith(".json")
-    })
-    versions = [
-        _load_dashboard_version(s3, canonical, version_id)
-        for version_id in version_ids
-    ]
-    versions.sort(
-        key=lambda item: (item["created_at_utc"], item["version_id"]),
-        reverse=True,
-    )
-    if state is not None and state["current_version_id"] not in {
-        item["version_id"] for item in versions
-    }:
-        raise ValueError(
-            f"{_dashboard_version_state_path(canonical)} points to missing "
-            f"version {state['current_version_id']!r} | fix: restore the "
-            "missing immutable version or repair state from a known version."
-        )
-    current_id = state.get("current_version_id") if state else None
-    previous_id = state.get("previous_version_id") if state else None
-    return {
-        "folder": canonical,
-        "initialized": state is not None,
-        "current_version_id": current_id,
-        "previous_version_id": previous_id,
-        "timezone": timezone_name,
-        "versions": [
-            {
-                "version_id": item["version_id"],
-                "created_at_utc": item["created_at_utc"],
-                **_version_display_fields(
-                    item["created_at_utc"], timezone_name,
-                ),
-                "recipe_sha256": item["recipe_sha256"],
-                "compiler_version": item["compiler_version"],
-                "summary": item["summary"],
-                "is_current": item["version_id"] == current_id,
-                "is_previous": item["version_id"] == previous_id,
-            }
-            for item in versions[:limit]
-        ],
-    }
 
 
 def _validate_persistent_template(template: Dict[str, Any]) -> None:
@@ -11198,7 +10736,6 @@ def synchronize_refresh_frequency(
     *,
     s3_manager=None,
     expected_sha256: Optional[str] = None,
-    expected_current_version_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Atomically align template metadata and the matching registry entry."""
     s3 = _resolve_s3_manager(s3_manager)
@@ -11229,16 +10766,13 @@ def synchronize_refresh_frequency(
 
     import copy
 
-    original_template = _decode_json_object(template_raw, template_path)
-    template = copy.deepcopy(original_template)
+    template = copy.deepcopy(
+        _decode_json_object(template_raw, template_path)
+    )
     _stamp_manifest_identity(template, kerberos, dashboard_id)
     metadata = template["metadata"]
     metadata["refresh_frequency"] = refresh_frequency
     _validate_persistent_template(template)
-    if template != original_template:
-        _require_expected_current_version(
-            s3, canonical, expected_current_version_id,
-        )
 
     registry_raw = snapshots[registry_path][1] or b""
     registry = copy.deepcopy(_decode_json_object(registry_raw, registry_path))
@@ -12214,7 +11748,6 @@ def apply_manifest_operations(
     s3_manager=None,
     recompile: bool = True,
     expected_sha256: Optional[str] = None,
-    expected_current_version_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Apply ordered, typed manifest edits as one rollback-safe transaction."""
     if isinstance(operations, (str, bytes, dict)) \
@@ -12277,10 +11810,6 @@ def apply_manifest_operations(
     _validate_persistent_template(working)
     template_bytes = _canonical_json_bytes(working)
     new_frequency = working["metadata"].get("refresh_frequency")
-    if working != original:
-        _require_expected_current_version(
-            s3, canonical, expected_current_version_id,
-        )
 
     built_manifest: Optional[Dict[str, Any]] = None
     try:
@@ -12291,14 +11820,9 @@ def apply_manifest_operations(
                 new_frequency,
                 s3_manager=s3,
                 expected_sha256=_sha256(template_bytes),
-                expected_current_version_id=expected_current_version_id,
             )
         if recompile:
-            built_manifest = build_dashboard(
-                canonical,
-                s3_manager=s3,
-                expected_current_version_id=expected_current_version_id,
-            )
+            built_manifest = build_dashboard(canonical, s3_manager=s3)
     except Exception as exc:  # noqa: BLE001
         rollback_errors = _restore_s3_snapshots(s3, snapshots)
         _raise_transaction_failure(
@@ -12783,76 +12307,6 @@ def inspect_dashboard(
             f"{canonical}/scripts/pull_data.py", pull_parse_error,
             "Fix the Python syntax error before the next refresh.",
         ))
-
-    versioning: Dict[str, Any] = {
-        "initialized": False,
-        "current_version_id": None,
-        "previous_version_id": None,
-        "working_recipe_sha256": None,
-        "current_recipe_sha256": None,
-        "clean": None,
-        "recent_versions": [],
-    }
-    if template is not None \
-            and present["scripts/pull_data.py"] \
-            and present["scripts/build.py"] \
-            and pull_source \
-            and build_source:
-        working_recipe = {
-            "manifest_template": template,
-            "pull_data_py": pull_source,
-            "build_py": build_source,
-        }
-        try:
-            working_sha = _recipe_fingerprint(working_recipe)
-            listed_versions = list_dashboard_versions(
-                canonical, s3_manager=s3, limit=5,
-            )
-            current_version_id = listed_versions["current_version_id"]
-            state = _load_dashboard_version_state(s3, canonical)
-            current_sha = (
-                state.get("current_recipe_sha256")
-                if state is not None else None
-            )
-            clean = (
-                working_sha == current_sha
-                if current_sha is not None else None
-            )
-            versioning = {
-                "initialized": listed_versions["initialized"],
-                "current_version_id": current_version_id,
-                "previous_version_id": listed_versions[
-                    "previous_version_id"
-                ],
-                "working_recipe_sha256": working_sha,
-                "current_recipe_sha256": current_sha,
-                "clean": clean,
-                "recent_versions": listed_versions["versions"],
-            }
-            if clean is False:
-                findings.append(_inspection_finding(
-                    "warning",
-                    "dashboard_recipe_dirty",
-                    template_path,
-                    "persisted dashboard recipe differs from the current "
-                    "successfully compiled version.",
-                    "Run build_dashboard after completing the intended edit, "
-                    "or restore a listed version to discard the dirty recipe.",
-                    context={
-                        "current_version_id": current_version_id,
-                        "working_recipe_sha256": working_sha,
-                        "current_recipe_sha256": current_sha,
-                    },
-                ))
-        except (FileNotFoundError, ValueError) as exc:
-            findings.append(_inspection_finding(
-                "error",
-                "dashboard_version_history_invalid",
-                _dashboard_version_state_path(canonical),
-                str(exc),
-                "Repair the engine-written history state or immutable version "
-                "object before restoring a dashboard version.",
-            ))
     transform_datasets = sorted(
         _infer_transform_keys_from_source(build_source)
     ) if build_source else []
@@ -13229,7 +12683,6 @@ def inspect_dashboard(
             "mode": "read_only_snapshot",
         },
         "compiled_manifest_sha256": compiled_manifest_sha,
-        "versioning": versioning,
         "metadata": metadata,
         "tabs": canonical_tabs,
         "datasets": {
@@ -13299,15 +12752,17 @@ def inspect_dashboard(
     }
 
 
-def _exec_dashboard_script_source(
-    folder: str,
-    stem: str,
-    src: str,
-    *,
-    s3_manager,
-) -> Dict[str, Any]:
-    """Execute supplied persisted-script source in the canonical namespace."""
+def _exec_dashboard_script(folder: str, stem: str, *, s3_manager) -> Dict[str, Any]:
+    """Fetch <folder>/scripts/<stem>.py from S3, exec it, return the namespace.
+
+    Injects the wider in-process PRISM data-layer namespace, including
+    pull_nyfed_data, pd, and np. Scripts may import these names explicitly;
+    the imports rebind to the same canonical objects. The clean refresh
+    discovery namespace is narrower, so persisted scripts must not rely on
+    this injection alone.
+    """
     path = f"{folder}/scripts/{stem}.py".replace("//", "/")
+    src = s3_manager.get(path).decode("utf-8")
 
     # In-process injection is wider than refresh_runner._build_exec_namespace.
     # Persisted scripts must import pd/np/pull_nyfed_data explicitly so clean
@@ -13336,16 +12791,6 @@ def _exec_dashboard_script_source(
     }
     exec(compile(src, path, "exec"), ns)
     return ns
-
-
-def _exec_dashboard_script(folder: str, stem: str, *, s3_manager) -> Dict[str, Any]:
-    """Fetch <folder>/scripts/<stem>.py from S3 and execute it."""
-    path = f"{folder}/scripts/{stem}.py".replace("//", "/")
-    src = s3_manager.get(path).decode("utf-8")
-    return _exec_dashboard_script_source(
-        folder, stem, src, s3_manager=s3_manager,
-    )
-
 
 # ---------------------------------------------------------------------------
 # Refresh-attachment audit: enforces the compile <-> refresh-attach
@@ -13615,8 +13060,6 @@ def _audit_refresh_attachment(
     *,
     s3_manager=None,
     strict: bool = True,
-    template_override: Optional[Dict[str, Any]] = None,
-    script_sources_override: Optional[Dict[str, str]] = None,
 ) -> None:
     """Verify that a compiling dashboard is structurally refresh-attachable.
 
@@ -13684,20 +13127,17 @@ def _audit_refresh_attachment(
 
     # ---- 1. manifest_template.json parseable + required metadata ----
     tpl_path = f"{folder}/manifest_template.json".replace("//", "/")
-    if template_override is not None:
-        template = template_override
-    else:
-        try:
-            template = json.loads(
-                s3.get(tpl_path).rstrip(b"\x00").decode("utf-8")
-            )
-        except Exception as e:
-            gaps.append(
-                f"manifest_template_unparseable: {tpl_path} -- {e} | fix: "
-                f"repair a deepcopy of the last valid template, or restore "
-                "a version returned by list_dashboard_versions"
-            )
-            raise RefreshAttachmentError(folder, gaps)
+    try:
+        template = json.loads(
+            s3.get(tpl_path).rstrip(b"\x00").decode("utf-8")
+        )
+    except Exception as e:
+        gaps.append(
+            f"manifest_template_unparseable: {tpl_path} -- {e} | fix: "
+            f"repair a deepcopy of the last valid template, or restore "
+            f"canonical bytes from history/<UTC> if available"
+        )
+        raise RefreshAttachmentError(folder, gaps)
 
     if not isinstance(template, dict):
         gaps.append(
@@ -13767,28 +13207,17 @@ def _audit_refresh_attachment(
     script_sources: Dict[str, Optional[str]] = {}
     for script_name in ("pull_data", "build"):
         script_path = f"{folder}/scripts/{script_name}.py".replace("//", "/")
-        if script_sources_override is not None:
-            src = script_sources_override.get(script_name)
-            if not isinstance(src, str):
-                gaps.append(
-                    f"{script_name}_missing: version recipe does not contain "
-                    f"UTF-8 {script_path} source | fix: select a valid "
-                    "dashboard version."
-                )
-                script_sources[script_name] = None
-                continue
-        else:
-            try:
-                src = s3.get(script_path).rstrip(b"\x00").decode("utf-8")
-            except Exception as e:
-                gaps.append(
-                    f"{script_name}_missing: {script_path} not found on S3 "
-                    f"-- {e} | fix: restore the canonical script from "
-                    "a version returned by list_dashboard_versions or author "
-                    "the required production-shaped script before retrying"
-                )
-                script_sources[script_name] = None
-                continue
+        try:
+            src = s3.get(script_path).rstrip(b"\x00").decode("utf-8")
+        except Exception as e:
+            gaps.append(
+                f"{script_name}_missing: {script_path} not found on S3 "
+                f"-- {e} | fix: restore the canonical script from "
+                f"history/<UTC> or author the required production-shaped "
+                f"script before retrying"
+            )
+            script_sources[script_name] = None
+            continue
         try:
             compile(src, script_path, "exec")
             script_sources[script_name] = src
@@ -14094,351 +13523,9 @@ def _max_pull_time(folder: str, s3_manager) -> Optional[str]:
     return format_iso(max_dt) if max_dt is not None else None
 
 
-def _compile_dashboard_recipe(
-    folder: str,
-    recipe: Dict[str, Any],
-    *,
-    s3_manager,
-    refresh_cycle_at: Optional[str] = None,
-    next_refresh_at: Optional[str] = None,
-) -> Tuple[DashboardResult, int, int]:
-    """Compile one recipe against current persisted CSV data, without writes."""
-    import copy
-    import io
-    import pandas as pd
-    from dashboards_time import utcnow, format_iso
-
-    template = copy.deepcopy(recipe["manifest_template"])
-    data_prefix = f"{folder}/data/".replace("//", "/")
-    datasets: Dict[str, Any] = {}
-    for entry in s3_manager.list(data_prefix):
-        key = entry.get("Key") if isinstance(entry, dict) else entry
-        if not key or not key.endswith(".csv"):
-            continue
-        stem = key.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-        datasets[stem] = pd.read_csv(io.BytesIO(s3_manager.get(key)))
-
-    bld_ns = _exec_dashboard_script_source(
-        folder,
-        "build",
-        recipe["build_py"],
-        s3_manager=s3_manager,
-    )
-    transforms = bld_ns.get("TRANSFORMS", [])
-    if transforms and not isinstance(transforms, list):
-        raise RuntimeError(
-            f"build_dashboard: {folder}/scripts/build.py TRANSFORMS must "
-            f"be a list (got {type(transforms).__name__})"
-        )
-    for fn in transforms:
-        result = fn(datasets)
-        if not isinstance(result, dict):
-            raise RuntimeError(
-                f"build_dashboard: transform {fn.__name__!r} must return "
-                f"the datasets dict (got {type(result).__name__})"
-            )
-        datasets = result
-
-    meta = template.setdefault("metadata", {})
-    if not isinstance(meta, dict):
-        raise RuntimeError(
-            f"build_dashboard: {folder}/manifest_template.json metadata "
-            f"block must be a dict (got {type(meta).__name__})"
-        )
-    time_block = meta.setdefault("time", {})
-    if not isinstance(time_block, dict):
-        raise RuntimeError(
-            f"build_dashboard: {folder}/manifest_template.json "
-            f"metadata.time must be a dict (got {type(time_block).__name__})"
-        )
-    domain_end = _derive_domain_end(datasets)
-    domain_freq = _derive_domain_freq(datasets)
-    if domain_end is not None:
-        time_block["data_domain_end"] = domain_end
-    time_block.setdefault("data_domain_freq", domain_freq)
-    pull_at = _max_pull_time(folder, s3_manager)
-    if pull_at is not None:
-        time_block["pull_completed_at"] = pull_at
-    time_block["build_completed_at"] = format_iso(utcnow())
-    if refresh_cycle_at is not None:
-        time_block["refresh_cycle_at"] = refresh_cycle_at
-    if next_refresh_at is not None:
-        time_block["next_refresh_at"] = next_refresh_at
-    if time_block.get("data_domain_end"):
-        meta["data_as_of"] = time_block["data_domain_end"]
-    meta["generated_at"] = time_block["build_completed_at"]
-
-    manifest = populate_template(template, datasets)
-    result = compile_dashboard(
-        manifest, write_html=False, write_json=False, strict=True,
-    )
-    if not result.success:
-        raise ValueError(
-            f"build_dashboard: compile failed: {result.error_message}"
-        )
-    return result, len(datasets), len(transforms)
-
-
-def _persist_dashboard_build(
-    folder: str,
-    recipe: Dict[str, Any],
-    result: DashboardResult,
-    *,
-    s3_manager,
-    expected_current_version_id: Optional[str],
-) -> Optional[str]:
-    """Publish compiled outputs and atomically advance definition history."""
-    manifest_path = f"{folder}/manifest.json".replace("//", "/")
-    html_path = f"{folder}/dashboard.html".replace("//", "/")
-    state_path = _dashboard_version_state_path(folder)
-    snapshots = {
-        path: _snapshot_s3_key(s3_manager, path)
-        for path in (manifest_path, html_path, state_path)
-    }
-    version, new_state, version_path = _prepare_dashboard_version(
-        s3_manager,
-        folder,
-        recipe,
-        expected_current_version_id=expected_current_version_id,
-    )
-    version_preexisted = (
-        bool(version_path and s3_manager.exists(version_path))
-    )
-    if version_preexisted:
-        raise RuntimeError(
-            f"dashboard version key collision at {version_path} | fix: "
-            "retry the build so it receives a new microsecond timestamp."
-        )
-
-    try:
-        if version is not None and version_path is not None:
-            s3_manager.put(
-                json.dumps(version, indent=2, ensure_ascii=False).encode(
-                    "utf-8"
-                ),
-                version_path,
-            )
-        s3_manager.put(
-            json.dumps(result.manifest, indent=2).encode("utf-8"),
-            manifest_path,
-        )
-        s3_manager.put(result.html.encode("utf-8"), html_path)
-        if new_state is not None:
-            s3_manager.put(
-                json.dumps(new_state, indent=2).encode("utf-8"),
-                state_path,
-            )
-            persisted_state = _load_dashboard_version_state(
-                s3_manager, folder, required=True,
-            )
-            if persisted_state is None or persisted_state.get(
-                "current_version_id"
-            ) != new_state["current_version_id"]:
-                raise RuntimeError(
-                    "version state verification failed after write"
-                )
-    except Exception as exc:  # noqa: BLE001
-        rollback_errors = _restore_s3_snapshots(s3_manager, snapshots)
-        if version_path is not None and not version_preexisted:
-            try:
-                s3_manager.delete(version_path)
-            except Exception as delete_exc:  # noqa: BLE001
-                rollback_errors.append(
-                    f"{version_path}: {type(delete_exc).__name__}: "
-                    f"{delete_exc}"
-                )
-        _raise_transaction_failure(
-            "build_dashboard persistence", exc, rollback_errors,
-        )
-    return (
-        new_state["current_version_id"]
-        if new_state is not None else None
-    )
-
-
-def _validate_recipe_identity(
-    recipe: Dict[str, Any],
-    *,
-    kerberos: str,
-    dashboard_id: str,
-    version_id: str,
-) -> None:
-    template = recipe["manifest_template"]
-    metadata = template.get("metadata")
-    if not isinstance(metadata, dict):
-        raise ValueError(
-            f"dashboard version {version_id} has no metadata object | fix: "
-            "select a valid version for this dashboard."
-        )
-    mismatches = []
-    if template.get("id") != dashboard_id:
-        mismatches.append(
-            f"id={template.get('id')!r}, expected {dashboard_id!r}"
-        )
-    if metadata.get("dashboard_id") != dashboard_id:
-        mismatches.append(
-            "metadata.dashboard_id="
-            f"{metadata.get('dashboard_id')!r}, expected {dashboard_id!r}"
-        )
-    if metadata.get("kerberos") != kerberos:
-        mismatches.append(
-            f"metadata.kerberos={metadata.get('kerberos')!r}, "
-            f"expected {kerberos!r}"
-        )
-    if mismatches:
-        raise ValueError(
-            f"dashboard version {version_id} belongs to a different "
-            f"dashboard: {'; '.join(mismatches)} | fix: select a version "
-            "returned for this exact dashboard folder."
-        )
-
-
-def restore_dashboard_version(
-    folder: str,
-    version_id: str,
-    *,
-    expected_current_version_id: str,
-    s3_manager=None,
-) -> Dict[str, Any]:
-    """Restore an exact recipe version and rebuild it with current data."""
-    s3 = _resolve_s3_manager(s3_manager)
-    canonical, kerberos, dashboard_id = _canonical_dashboard_identity(folder)
-    state = _load_dashboard_version_state(s3, canonical, required=True)
-    if state is None:
-        raise ValueError("dashboard version state is unavailable")
-    if not isinstance(expected_current_version_id, str):
-        raise ValueError(
-            "expected_current_version_id must be the exact current id from "
-            "list_dashboard_versions | fix: list versions, then retry."
-        )
-    if state["current_version_id"] != expected_current_version_id:
-        raise ValueError(
-            "dashboard current version changed: expected "
-            f"{expected_current_version_id!r}, found "
-            f"{state['current_version_id']!r} | fix: list versions again "
-            "and confirm the intended restore target."
-        )
-    target = _load_dashboard_version(s3, canonical, version_id)
-    recipe = target["recipe"]
-    _validate_recipe_identity(
-        recipe,
-        kerberos=kerberos,
-        dashboard_id=dashboard_id,
-        version_id=version_id,
-    )
-    if version_id == state["current_version_id"]:
-        return {
-            "folder": canonical,
-            "restored": False,
-            "current_version_id": version_id,
-            "previous_version_id": state.get("previous_version_id"),
-            "created_at_utc": target["created_at_utc"],
-            "summary": target["summary"],
-            "data_policy": "current_persisted_data",
-        }
-
-    try:
-        compiled, _dataset_count, _transform_count = (
-            _compile_dashboard_recipe(
-                canonical, recipe, s3_manager=s3,
-            )
-        )
-        _audit_refresh_attachment(
-            canonical,
-            s3_manager=s3,
-            strict=False,
-            template_override=recipe["manifest_template"],
-            script_sources_override={
-                "pull_data": recipe["pull_data_py"],
-                "build": recipe["build_py"],
-            },
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise DashboardVersionRestoreError(
-            version_id=version_id,
-            current_version_id=expected_current_version_id,
-            cause=exc,
-        ) from exc
-
-    current_state = _load_dashboard_version_state(
-        s3, canonical, required=True,
-    )
-    if current_state is None \
-            or current_state["current_version_id"] \
-            != expected_current_version_id:
-        found = (
-            current_state.get("current_version_id")
-            if current_state is not None else None
-        )
-        raise ValueError(
-            "dashboard current version changed during restore preparation: "
-            f"expected {expected_current_version_id!r}, found {found!r} | "
-            "fix: list versions again and retry."
-        )
-
-    template_path = f"{canonical}/manifest_template.json"
-    pull_path = f"{canonical}/scripts/pull_data.py"
-    build_path = f"{canonical}/scripts/build.py"
-    manifest_path = f"{canonical}/manifest.json"
-    html_path = f"{canonical}/dashboard.html"
-    state_path = _dashboard_version_state_path(canonical)
-    snapshots = {
-        path: _snapshot_s3_key(s3, path)
-        for path in (
-            template_path, pull_path, build_path,
-            manifest_path, html_path, state_path,
-        )
-    }
-    from dashboards_time import utcnow, format_iso
-
-    new_state = {
-        "current_version_id": version_id,
-        "previous_version_id": expected_current_version_id,
-        "current_recipe_sha256": target["recipe_sha256"],
-        "updated_at_utc": format_iso(utcnow()),
-    }
-    try:
-        s3.put(
-            _canonical_json_bytes(recipe["manifest_template"]),
-            template_path,
-        )
-        s3.put(recipe["pull_data_py"].encode("utf-8"), pull_path)
-        s3.put(recipe["build_py"].encode("utf-8"), build_path)
-        s3.put(
-            json.dumps(compiled.manifest, indent=2).encode("utf-8"),
-            manifest_path,
-        )
-        s3.put(compiled.html.encode("utf-8"), html_path)
-        s3.put(json.dumps(new_state, indent=2).encode("utf-8"), state_path)
-        persisted_state = _load_dashboard_version_state(
-            s3, canonical, required=True,
-        )
-        if persisted_state is None \
-                or persisted_state["current_version_id"] != version_id:
-            raise RuntimeError(
-                "version state verification failed after restore"
-            )
-    except Exception as exc:  # noqa: BLE001
-        rollback_errors = _restore_s3_snapshots(s3, snapshots)
-        _raise_transaction_failure(
-            "restore_dashboard_version", exc, rollback_errors,
-        )
-
-    return {
-        "folder": canonical,
-        "restored": True,
-        "current_version_id": version_id,
-        "previous_version_id": expected_current_version_id,
-        "created_at_utc": target["created_at_utc"],
-        "summary": target["summary"],
-        "data_policy": "current_persisted_data",
-    }
-
-
 def build_dashboard(folder: str, *, s3_manager=None,
                      refresh_cycle_at: Optional[str] = None,
-                     next_refresh_at: Optional[str] = None,
-                     expected_current_version_id: Optional[str] = None
+                     next_refresh_at: Optional[str] = None
                      ) -> Dict[str, Any]:
     """Recompile the dashboard at ``<folder>``.
 
@@ -14477,24 +13564,89 @@ def build_dashboard(folder: str, *, s3_manager=None,
         Computed by ``refresh_runner.py`` from the registry's
         ``refresh_frequency`` + ``freq_delta()``. Not used by the chrome
         today; available for future "next refresh in N minutes" UX.
-    expected_current_version_id
-        Required when the persisted recipe differs from the current
-        successful version. Copy ``inspect_dashboard()["versioning"]
-        ["current_version_id"]`` immediately before the edit. Unchanged
-        refresh builds and the first baseline build do not require it.
     """
+    import io
+    import pandas as pd
+    from dashboards_time import utcnow, format_iso
+
     s3 = _resolve_s3_manager(s3_manager)
-    canonical, _kerberos, _dashboard_id = _canonical_dashboard_identity(
-        folder
+
+    tpl_path = f"{folder}/manifest_template.json".replace("//", "/")
+    template = json.loads(s3.get(tpl_path).rstrip(b"\x00").decode("utf-8"))
+
+    data_prefix = f"{folder}/data/".replace("//", "/")
+    datasets: Dict[str, Any] = {}
+    for entry in s3.list(data_prefix):
+        key = entry.get("Key") if isinstance(entry, dict) else entry
+        if not key or not key.endswith(".csv"):
+            continue
+        stem = key.rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        datasets[stem] = pd.read_csv(io.BytesIO(s3.get(key)))
+
+    bld_ns = _exec_dashboard_script(folder, "build", s3_manager=s3)
+    transforms = bld_ns.get("TRANSFORMS", [])
+    if transforms and not isinstance(transforms, list):
+        raise RuntimeError(
+            f"build_dashboard: {folder}/scripts/build.py TRANSFORMS must "
+            f"be a list (got {type(transforms).__name__})"
+        )
+    for fn in transforms:
+        result = fn(datasets)
+        if not isinstance(result, dict):
+            raise RuntimeError(
+                f"build_dashboard: transform {fn.__name__!r} must return "
+                f"the datasets dict (got {type(result).__name__})"
+            )
+        datasets = result
+
+    # Stamp the four-times schema. Engine is the source of truth for
+    # metadata.time.* — PRISM does not author these by hand. Aliases keep
+    # old chrome (data_as_of / generated_at) working on legacy served
+    # HTMLs that haven't refreshed yet. format_pill bakes the user-facing
+    # string so JS does no date math (date math in the browser was the
+    # original bug — see scans/prism/2026-05-11_dashboard_live_refresh_and_time.md).
+    meta = template.setdefault("metadata", {})
+    if not isinstance(meta, dict):
+        raise RuntimeError(
+            f"build_dashboard: {folder}/manifest_template.json metadata "
+            f"block must be a dict (got {type(meta).__name__})"
+        )
+    time_block = meta.setdefault("time", {})
+    if not isinstance(time_block, dict):
+        raise RuntimeError(
+            f"build_dashboard: {folder}/manifest_template.json "
+            f"metadata.time must be a dict (got {type(time_block).__name__})"
+        )
+    domain_end = _derive_domain_end(datasets)
+    domain_freq = _derive_domain_freq(datasets)
+    # Preserve any author-supplied override of data_domain_freq (e.g.
+    # mixed-frequency datasets where auto-inference picks the wrong
+    # cadence). data_domain_end always reflects the data; freq honours
+    # an explicit author value when present.
+    if domain_end is not None:
+        time_block["data_domain_end"] = domain_end
+    time_block.setdefault("data_domain_freq", domain_freq)
+    pull_at = _max_pull_time(folder, s3)
+    if pull_at is not None:
+        time_block["pull_completed_at"] = pull_at
+    time_block["build_completed_at"] = format_iso(utcnow())
+    if refresh_cycle_at is not None:
+        time_block["refresh_cycle_at"] = refresh_cycle_at
+    if next_refresh_at is not None:
+        time_block["next_refresh_at"] = next_refresh_at
+
+    # Served HTMLs may read the ``data_as_of`` / ``generated_at`` aliases.
+    if time_block.get("data_domain_end"):
+        meta["data_as_of"] = time_block["data_domain_end"]
+    meta["generated_at"] = time_block["build_completed_at"]
+
+    manifest = populate_template(template, datasets)
+
+    r = compile_dashboard(
+        manifest, write_html=False, write_json=False, strict=True,
     )
-    recipe = _load_dashboard_recipe(canonical, s3)
-    r, dataset_count, transform_count = _compile_dashboard_recipe(
-        canonical,
-        recipe,
-        s3_manager=s3,
-        refresh_cycle_at=refresh_cycle_at,
-        next_refresh_at=next_refresh_at,
-    )
+    if not r.success:
+        raise ValueError(f"build_dashboard: compile failed: {r.error_message}")
 
     # Enforce the compile <-> refresh-attach invariant from
     # dashboards_hub.md#contract.
@@ -14503,18 +13655,19 @@ def build_dashboard(folder: str, *, s3_manager=None,
     # Recipe 1 (build_dashboard runs BEFORE Tool 3's registry write);
     # missing-registry-entry downgrades to a log line. All other gaps
     # still raise.
-    _audit_refresh_attachment(canonical, s3_manager=s3, strict=False)
-    created_version_id = _persist_dashboard_build(
-        canonical,
-        recipe,
-        r,
-        s3_manager=s3,
-        expected_current_version_id=expected_current_version_id,
+    _audit_refresh_attachment(folder, s3_manager=s3, strict=False)
+
+    s3.put(
+        json.dumps(r.manifest, indent=2).encode("utf-8"),
+        f"{folder}/manifest.json".replace("//", "/"),
+    )
+    s3.put(
+        r.html.encode("utf-8"),
+        f"{folder}/dashboard.html".replace("//", "/"),
     )
     print(
-        f"[build_dashboard] {canonical} :: compile OK "
-        f"({dataset_count} dataset(s), {transform_count} transform(s), "
-        f"version {'created ' + created_version_id if created_version_id else 'unchanged'})"
+        f"[build_dashboard] {folder} :: compile OK "
+        f"({len(datasets)} dataset(s), {len(transforms)} transform(s))"
     )
     return r.manifest
 
@@ -14577,12 +13730,11 @@ __all__ = [
     "run_pull", "build_dashboard", "refresh_dashboard",
     "audit_dashboard_layout",
     "apply_manifest_operations", "inspect_dashboard",
-    "list_dashboard_versions", "restore_dashboard_version",
     "synchronize_refresh_frequency", "sync_refresh_frequency",
     "_AUDIT_REQUIRED_PATHS",
     "RefreshAttachmentError",
     "resolve_chart_specs",
-    "SCHEMA_VERSION", "ENGINE_VERSION", "VALID_WIDGETS", "VALID_FILTERS",
+    "SCHEMA_VERSION", "VALID_WIDGETS", "VALID_FILTERS",
     "VALID_CHART_TYPES", "VALID_FILTER_OPS", "VALID_SYNC",
     "VALID_BRUSH_TYPES", "VALID_TABLE_FORMATS",
     "VALID_REFRESH_FREQUENCIES", "VALID_DATA_DOMAIN_FREQS",

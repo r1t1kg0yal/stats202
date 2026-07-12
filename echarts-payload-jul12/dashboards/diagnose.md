@@ -22,7 +22,6 @@ The deterministic result contains:
 |---|---|
 | `files` | Required presence/missing/extras plus optional `refresh_status.json`, `console_log.jsonl`, registry, and user-manifest entries with explicit `present` booleans |
 | `manifest_template_sha256` / `template_sha256` / `compiled_manifest_sha256` | Concurrency token, read-only equal pre/post snapshot, and compiled-manifest hash |
-| `versioning` | Current/previous definition version, working/current recipe hashes, clean/dirty state, and five recent product summaries |
 | `metadata` | Identity, cadence, methodology, sources, and authored state |
 | `tabs` | Canonical ordered `{id, label, index}` list |
 | `datasets` | Name-keyed records with persisted CSV path/presence, columns, dtypes, `[rows, columns]` shape, data origin, producer classification/pipelines/transform, and widget/filter consumers |
@@ -65,7 +64,6 @@ apply_manifest_operations(
       "selector": {"id": "bond_table"},
       "patch": {"row_click": popup}}],
     expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
 )
 ```
 
@@ -135,7 +133,7 @@ inspect
     and relevant browser evidence are clean
 ```
 
-Manifest heals use `apply_manifest_operations` with both `expected_sha256=state["manifest_template_sha256"]` and `expected_current_version_id=state["versioning"]["current_version_id"]`. Pipeline heals edit the persisted input script, run the affected pull, then call `build_dashboard` with the inspected current version id before executing the clean refresh path. Cadence heals use `synchronize_refresh_frequency` with both guards.
+Manifest heals use `apply_manifest_operations` with `expected_sha256=state["manifest_template_sha256"]`. Pipeline heals edit the persisted input script, run the affected pull, build, then execute the clean refresh path. Cadence heals use `synchronize_refresh_frequency`.
 
 For a typed manifest transaction, success proves the commit path when `result.pre_sha256` equals the inspected token, `result.post_sha256` equals the final inspection hash, and `result.rollback_sha256 == result.pre_sha256`. `inspect_dashboard` supplies template and compiled-manifest SHA values; it does not supply pull/build script SHA values. Hash retained script bytes directly before editing, for example `hashlib.sha256(old_pull_bytes).hexdigest()`. A failed transaction proves restoration only when the final template SHA and snapshotted template, registry, compiled manifest, and HTML bytes all equal their pre-transaction values, while restored scripts match the hashes computed from retained bytes.
 
@@ -171,38 +169,25 @@ The user sees the product choice, not the implementation mechanics.
 
 ## Revert
 
-A revert restores one engine-recorded dashboard definition and recompiles it with current persisted data. It does not restore historical CSV values.
+A revert restores a known prior product state; it is never a best-guess reconstruction.
 
-```python
-from dashboards import list_dashboard_versions, restore_dashboard_version
+Preferred sources:
 
-versions = list_dashboard_versions(
-    FOLDER,
-    limit=20,
-    timezone_name="America/New_York",  # user's IANA timezone
-)
-# Apply the resolution rules below, then copy one exact returned entry.
-target = SELECTED_VERSION_ENTRY
-result = restore_dashboard_version(
-    FOLDER,
-    version_id=target["version_id"],
-    expected_current_version_id=versions["current_version_id"],
-)
-```
+1. Exact prior bytes retained in the active conversation for the changed input.
+2. A known-good `history/<UTC>/` snapshot when `keep_history` is enabled.
+3. A user-supplied known-good artifact or precise prior-state description.
 
-The list result has top-level `current_version_id`, `previous_version_id`, and `timezone`. Each version entry contains exact `version_id`, `created_at_utc`, `display_time`, `local_date`, `timezone`, `summary`, `is_current`, and `is_previous`. Summary contains `title`, `tab_names`, `widget_count`, `filter_count`, `pull_script_changed`, and `build_script_changed`. The version id is an opaque engine token: copy it exactly from the selected entry and never show it to the user.
+Procedure:
 
-Resolve the target in product language:
+1. Inspect current state and capture its template SHA.
+2. Identify the exact rollback source and affected persisted inputs.
+3. For manifest-only rollback, express the prior state as typed operations against the current template. Use the captured SHA.
+4. For pull/build script rollback, restore exact known bytes; do not reconstruct from memory.
+5. Run the affected pulls, strict build, and clean refresh.
+6. Inspect again and require clean canonical files, attachment, registry, and refresh evidence.
+7. If the restored prior state violates a current contract, heal it while preserving the restored product intent.
 
-1. “Go back to what we had” or “undo that restore” selects `previous_version_id`.
-2. “Version from yesterday” passes the user’s IANA timezone and selects the sole entry whose `local_date` equals the user’s yesterday. If the timezone is unavailable, ask for it. If several versions match, show their `display_time`, titles, tab names, and widget counts and ask which one.
-3. “The old version” restores directly only when exactly one earlier version exists; otherwise show all materially different candidates up to the three most recent. Material difference means any change in title, tab names, widget count, or script-change markers.
-4. “The newer one again” selects `previous_version_id` only after confirming its timestamp is newer than current; otherwise show newer timestamped candidates.
-5. Pass only the exact selected `version_id`; never invent or partially reconstruct a version.
-
-Re-run `list_dashboard_versions` immediately before every restore, including a second restore in the same turn, so the expected-current guard is fresh. A stale expected-current error means re-list and re-resolve; never retry with a guessed id.
-
-If the selected definition fails current compilation or attachment validation, `DashboardVersionRestoreError` carries `code="saved_definition_incompatible"`, `version_id`, `current_version_id`, `cause_type`, and `fix_hint`; the live dashboard remains unchanged. Surface the product-level incompatibility, restate that restores use current data, and ask whether to choose another version or repair that saved definition. After success say: “Restored the dashboard definition from <local time>. It is using the latest available data.”
+If no known prior state exists, ask for the product state the user wants. Do not claim a revert.
 
 ## Completion evidence
 

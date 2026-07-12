@@ -199,7 +199,6 @@ audit_dashboard_layout(FOLDER)
 
 Template rules:
 
-- The first successful `build_dashboard` creates the baseline definition version; later successful builds create a version only when the template or either persisted script changed.
 - Default to tabs when the product has separable jobs or is likely to grow; stable ids make later edits surgical.
 - Template dataset entries are slots, not embedded live rows.
 - Every displayed dataset follows the lineage placement owned by [pipelines.md](pipelines.md#field-provenance).
@@ -251,6 +250,7 @@ entry = {
     "html_path": f"{FOLDER}/dashboard.html",
     "data_path": f"{FOLDER}/data",
     "tags": ["rates"],
+    "keep_history": False,
 }
 if matches:
     entries[matches[0]] = entry

@@ -332,7 +332,6 @@ apply_manifest_operations(
         "patch": {"tool_def": updated},
     }],
     expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
 )
 ```
 

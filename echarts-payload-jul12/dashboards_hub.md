@@ -34,13 +34,11 @@ users/{kerberos}/dashboards/{dashboard_id}/
     <dataset>_metadata.json
   refresh_status.json       optional runtime evidence
   console_log.jsonl         optional browser telemetry
-  history/
-    state.json              current + previous definition version
-    versions/<UTC>__<hash>.json
+  history/<UTC>/            optional retained snapshots
   archive/<UTC>/            optional quarantine
 ```
 
-The five required paths are `manifest_template.json`, `manifest.json`, `dashboard.html`, `scripts/pull_data.py`, and `scripts/build.py`. `audit_dashboard_layout(folder)` confirms presence and allows other legitimate files. Successful changed builds automatically version the template and both scripts under `history/`; CSVs and generated outputs are never versioned.
+The five required paths are `manifest_template.json`, `manifest.json`, `dashboard.html`, `scripts/pull_data.py`, and `scripts/build.py`. `audit_dashboard_layout(folder)` confirms presence and allows other legitimate files. Metadata sidecars and JSON artifacts may coexist under `data/`, but they are not dataset inputs.
 
 ## Manifest skeleton
 
@@ -102,8 +100,6 @@ from dashboards import (
     refresh_dashboard,
     audit_dashboard_layout,
     inspect_dashboard,
-    list_dashboard_versions,
-    restore_dashboard_version,
     apply_manifest_operations,
     synchronize_refresh_frequency,
     sync_refresh_frequency,
@@ -123,14 +119,12 @@ from dashboards import (
 | API | Contract |
 |---|---|
 | `run_pull(folder, pull_name)` | Execute one named `PULLS` entry and persist its side effects |
-| `build_dashboard(folder, expected_current_version_id=None)` | Load template and CSVs, run `TRANSFORMS`, strict-compile, write outputs, and record a changed recipe; pass the inspected current version id for a changed existing recipe, while unchanged refreshes and the first baseline need none |
+| `build_dashboard(folder)` | Load template and CSVs, run `TRANSFORMS`, populate, strict-compile, audit refresh attachment, and write `manifest.json` plus `dashboard.html` |
 | `refresh_dashboard(folder)` | Run all pulls, then `build_dashboard`; there is no universal per-pull refresh timeout |
 | `audit_dashboard_layout(folder)` | Require the five canonical paths; return `True` |
-| `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, definition-version, graph, refresh, registry, telemetry, and finding report |
-| `list_dashboard_versions(folder, limit=20, timezone_name="UTC")` | Return recent immutable definition versions with UTC/local timestamps, local calendar date, product summaries, and current/previous markers; pass the user’s IANA timezone for relative-date requests |
-| `restore_dashboard_version(folder, version_id, expected_current_version_id=...)` | Restore one exact listed definition, compile it with current persisted data, and preserve every other version |
-| `apply_manifest_operations(folder, operations, recompile=True, expected_sha256=None, expected_current_version_id=None)` | Ordered typed template transaction with template-hash and current-version guards, dependent-reference cleanup, optional compile/version, and rollback |
-| `synchronize_refresh_frequency(folder, value, expected_sha256=None, expected_current_version_id=None)` | Atomically align template metadata and the matching registry entry; existing versioned dashboards require the inspected current version id; `sync_refresh_frequency` is the alias |
+| `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, graph, refresh, registry, telemetry, and finding report |
+| `apply_manifest_operations(folder, operations, recompile=True, expected_sha256=None)` | Ordered typed template transaction with validation, concurrency guard, dependent-reference cleanup, optional compile, and rollback |
+| `synchronize_refresh_frequency(folder, value, expected_sha256=None)` | Atomically align template metadata and the matching registry entry; `sync_refresh_frequency` is the alias |
 | `validate_manifest(manifest)` | Structural validation only |
 | `compile_dashboard(manifest, strict=True, ...)` | Compile an in-memory manifest; always check `result.success` |
 | `manifest_template(manifest)` | Strip live data while retaining dataset slots |
@@ -204,6 +198,7 @@ The registry is `users/{kerberos}/dashboards/dashboards_registry.json`. The runn
         "html_path": "users/goyalri/dashboards/rates_monitor/dashboard.html",
         "data_path": "users/goyalri/dashboards/rates_monitor/data",
         "tags": ["rates"],
+        "keep_history": False,
     }],
     "last_updated": "<ISO timestamp>",
 }

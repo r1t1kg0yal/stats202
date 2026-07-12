@@ -17,12 +17,11 @@ result = apply_manifest_operations(
     FOLDER,
     operations=[...],
     expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
     recompile=True,
 )
 ```
 
-Operations execute in list order against one working copy, so later operations see earlier results. The engine stamps canonical `metadata.kerberos` and `metadata.dashboard_id`, validates persistence metadata, writes the template, synchronizes refresh cadence when changed, and optionally calls `build_dashboard`. A successful changed build automatically records the template plus both persisted scripts as one immutable definition version; `recompile=False` remains dirty until a later successful build.
+Operations execute in list order against one working copy, so later operations see earlier results. The engine stamps canonical `metadata.kerberos` and `metadata.dashboard_id`, validates persistence metadata, writes the template, synchronizes refresh cadence when changed, and optionally calls `build_dashboard`.
 
 ## Operation schemas
 
@@ -67,13 +66,12 @@ result = apply_manifest_operations(
         },
     }],
     expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
 )
 ```
 
 The approved keys are `title`, `description`, `theme`, and `palette`; values are strings, and title/theme/palette are non-empty. Unknown root keys are rejected. Dashboard summary is not a top-level field: patch `metadata.summary` with `patch_metadata`. Root title changes must use `patch_dashboard`, never `patch_metadata` or a root replacement.
 
-Safe title rename flow: inspect → capture `manifest_template_sha256`, `versioning.current_version_id`, and current title → apply one `patch_dashboard` operation with both expected guards and `recompile=True` → require the result hashes to agree with inspection → run clean refresh → inspect and confirm the new title while `id`, folder, tabs, widgets, filters, links, registry `created_at`, and cadence remain unchanged.
+Safe title rename flow: inspect → capture `manifest_template_sha256` and current title → apply one `patch_dashboard` operation with that expected SHA and `recompile=True` → require the result hashes to agree with inspection → run clean refresh → inspect and confirm the new title while `id`, folder, tabs, widgets, filters, links, registry `created_at`, and cadence remain unchanged.
 
 ## Selectors and destinations
 
@@ -236,7 +234,6 @@ apply_manifest_operations(
         },
     }],
     expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
 )
 ```
 
@@ -322,7 +319,6 @@ apply_manifest_operations(
         },
     ],
     expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
 )
 ```
 
@@ -341,7 +337,6 @@ apply_manifest_operations(
         "patch": {"id": "curve_current"},
     }],
     expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
 )
 ```
 
