@@ -13,7 +13,7 @@ This is the compact cross-cutting contract. It does not own first-build steps, m
 2. **Template contains no live data.** `manifest_template.json` keeps dataset slots; `manifest.json` is populated output.
 3. **Canonical order.** Pulls produce files, transforms derive datasets, the template is populated, strict compilation writes outputs, registry metadata is aligned, then a clean subprocess refresh verifies the persisted artifact.
 4. **Canonical folder.** Persistent dashboards live only at `users/{kerberos}/dashboards/{dashboard_id}`.
-5. **Flat data routing.** Every pull writes to `{folder}/data`; dataset key and CSV stem agree byte-for-byte.
+5. **Flat CSV routing.** Every pull writes to `{folder}/data`; only CSV files become datasets, and each dataset key matches the complete emitted stem byte-for-byte.
 6. **Portal handoff.** Surface only `http://reports.prism-ai.url.gs.com:8501/users/{kerberos}/dashboards/{dashboard_id}/`.
 7. **Atomic work.** Do not return between steps of a build or edit. Once a response is sent, no autonomous work continues.
 8. **Preserve inherited intent.** Inspect before mutation. Use typed operations for manifests and evidence-based edits for scripts. Root replacement is forbidden.
@@ -38,7 +38,7 @@ users/{kerberos}/dashboards/{dashboard_id}/
   archive/<UTC>/            optional quarantine
 ```
 
-The five required paths are `manifest_template.json`, `manifest.json`, `dashboard.html`, `scripts/pull_data.py`, and `scripts/build.py`. `audit_dashboard_layout(folder)` confirms presence and allows other legitimate files.
+The five required paths are `manifest_template.json`, `manifest.json`, `dashboard.html`, `scripts/pull_data.py`, and `scripts/build.py`. `audit_dashboard_layout(folder)` confirms presence and allows other legitimate files. Metadata sidecars and JSON artifacts may coexist under `data/`, but they are not dataset inputs.
 
 ## Manifest skeleton
 
@@ -83,7 +83,7 @@ manifest = {
 | `metadata.live_refresh_seconds` | Browser polling cadence; `0` disables, effective floor 15 |
 | `metadata.time.data_domain_freq` | `daily`, `weekly`, `monthly`, `quarterly`, or `annual`; set only to correct inference |
 | `datasets` | Named slots populated from CSVs/transforms |
-| `datasets.<name>.field_provenance` | Optional per-column lineage owned by [pipelines.md](dashboards/pipelines.md#field-provenance) |
+| `datasets.<name>.field_provenance` | Optional per-column lineage authored in the template and owned by [pipelines.md](dashboards/pipelines.md#field-provenance); never inferred from sidecars or `df.attrs` |
 | `filters` / `links` | See [filters.md](dashboards/filters.md#filter-catalog) |
 | `layout` | Grid or tabs; every row is a list of widgets |
 
@@ -108,6 +108,11 @@ from dashboards import (
     manifest_template,
     populate_template,
     df_to_source,
+    load_manifest,
+    save_manifest,
+    chart_data_diagnostics,
+    Manifest,
+    DashboardResult,
 )
 ```
 
@@ -115,7 +120,7 @@ from dashboards import (
 |---|---|
 | `run_pull(folder, pull_name)` | Execute one named `PULLS` entry and persist its side effects |
 | `build_dashboard(folder)` | Load template and CSVs, run `TRANSFORMS`, populate, strict-compile, audit refresh attachment, and write `manifest.json` plus `dashboard.html` |
-| `refresh_dashboard(folder)` | Run all pulls, then `build_dashboard` |
+| `refresh_dashboard(folder)` | Run all pulls, then `build_dashboard`; there is no universal per-pull refresh timeout |
 | `audit_dashboard_layout(folder)` | Require the five canonical paths; return `True` |
 | `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, graph, refresh, registry, telemetry, and finding report |
 | `apply_manifest_operations(folder, operations, recompile=True, expected_sha256=None)` | Ordered typed template transaction with validation, concurrency guard, dependent-reference cleanup, optional compile, and rollback |
@@ -124,8 +129,21 @@ from dashboards import (
 | `compile_dashboard(manifest, strict=True, ...)` | Compile an in-memory manifest; always check `result.success` |
 | `manifest_template(manifest)` | Strip live data while retaining dataset slots |
 | `populate_template(template, datasets)` | Bind current datasets into a template |
+| `load_manifest(path)` / `save_manifest(manifest, path)` | Read or persist a manifest through the canonical S3 manager |
+| `chart_data_diagnostics(manifest)` | Post-population lint for empty or unusable chart data |
 
 `build_dashboard` is the standard persistent compile path. `strict=False` is limited to in-session diagnostic discovery; always-blocking diagnostics still raise.
+`make_echart`, `EChartResult`, and `echart_studio` are internal lowering
+substrate, not public PRISM authoring APIs.
+
+### Persisted-script execution namespaces
+
+In-process `run_pull` / `build_dashboard` inject `s3_manager`, the supported
+pull helpers, `save_artifact`, `pull_nyfed_data`, `pd`, and `np`. Clean
+refresh discovery injects only `s3_manager`, the supported pull helpers, and
+`save_artifact`. Persisted `pull_data.py` and `build.py` must explicitly
+import every name they use; treat an in-process success that depends on
+injection as a defect until namespace parity is fixed.
 
 ## Layouts
 
@@ -208,7 +226,11 @@ Cadence examples: `"60s"`/`"5m"` for intraday, `"1h"` for frequently changing ag
 | Root-replacing an inherited template | Use `apply_manifest_operations` |
 | Editing `manifest.json`, CSV output, or HTML directly | Edit the owning persisted input |
 | Static KPI/stat values | Pull or derive a dataset-backed value |
-| Dataset key differs from CSV stem | Align pull `name=`, file stem, and slot |
+| Dataset key differs from CSV stem | Align pull `name=`, emitted file stem, and slot |
+| Treating JSON, a metadata sidecar, or `df.attrs` as a dataset/provenance source | Persist a CSV dataset and author `field_provenance` in its template entry |
+| Leaving NY Fed or client output in memory | Persist it with `save_artifact` or an explicit CSV write |
+| Relying on injected helpers, `pd`/`np`, or client modules | Import every used name explicitly in the persisted script |
+| Treating a retained CSV as current pull success | Require a successful current-cycle pull and verify the expected CSV is non-empty before build |
 | Template and registry cadence differ | Use `synchronize_refresh_frequency` |
 | Treating validation as delivery | Complete strict build and clean subprocess refresh |
 | Reporting engine mechanics to the user | Rewrite in product language |
@@ -216,6 +238,9 @@ Cadence examples: `"60s"`/`"5m"` for intraday, `"1h"` for frequently changing ag
 | Reusing a popup join without key overlap | Fix source/target binding before compile |
 
 ## Owner index
+
+This kernel is loaded on demand after the router; it is not a separate
+context-registry entry.
 
 | Authority | File |
 |---|---|

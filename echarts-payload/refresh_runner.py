@@ -116,10 +116,8 @@ def _build_exec_namespace() -> dict:
     injects pull_nyfed_data, pandas as pd, and numpy as np. Persisted scripts
     that use those names must import them explicitly until parity is fixed.
 
-    Without this, user pull_data.py scripts that omit explicit imports raise
-    NameError on the first refresh_runner tick (see ticket signature
-    refresh_runner:pull_data.py:NameError:pull_market_data, recurring across
-    9+ tickets as of 2026-05-16)."""
+    Without this, existing user pull_data.py scripts that omit explicit
+    imports can raise NameError on the first refresh_runner tick."""
     return {
         '__name__': '__main__',
         '__builtins__': __builtins__,

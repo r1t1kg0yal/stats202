@@ -9229,16 +9229,13 @@ def _check_dataset_shape(
             out.append(Diagnostic(
                 severity="error", code="dataset_passed_as_tuple",
                 widget_id=None, path=f"datasets.{name}",
-                message=(f"dataset '{name}' is a tuple (likely the "
-                         f"unpacked return of pull_market_data, which "
-                         f"yields (eod_df, intraday_df)). The compiler "
+                message=(f"dataset '{name}' is a tuple. The compiler "
                          f"requires a single DataFrame."),
                 context={"dataset": name,
                            "tuple_len": info.get("tuple_len"),
                            "fix_hint": (
                                f"Unpack first, then pick the relevant "
-                               f"DataFrame: eod_df, _ = "
-                               f"pull_market_data(...); "
+                               f"DataFrame: eod_df = dataset_value[0]; "
                                f"datasets={{'{name}': eod_df}}.")}))
             continue
         if kind != "dataframe":
@@ -10410,13 +10407,13 @@ def compile_dashboard(
 #
 # pull_data.py shape:
 #     from prism_mcp.utils.data_functions import (
-#         pull_market_data, pull_haver_data, save_artifact)
+#         pull_plottool_data, pull_haver_data, save_artifact)
 #     from core.s3_bucket_manager import s3_manager
 #     SESSION_PATH = "users/<k>/dashboards/<id>"
 #     def pull_rates():
-#         pull_market_data(coordinates=[...], name='rates', mode='eod',
-#                          output_path=f'{SESSION_PATH}/data',
-#                          s3_manager=s3_manager)
+#         pull_plottool_data(expressions=[...], labels=[...], name='rates',
+#                            output_path=f'{SESSION_PATH}/data',
+#                            s3_manager=s3_manager)
 #     def pull_cpi():
 #         pull_haver_data(codes=[...], name='cpi',
 #                         output_path=f'{SESSION_PATH}/data',
@@ -12758,17 +12755,18 @@ def inspect_dashboard(
 def _exec_dashboard_script(folder: str, stem: str, *, s3_manager) -> Dict[str, Any]:
     """Fetch <folder>/scripts/<stem>.py from S3, exec it, return the namespace.
 
-    Injects the standard PRISM data-layer namespace so pull_data.py / build.py
-    can reference s3_manager, pull_market_data, pull_haver_data, etc. without
-    explicit imports -- matching the sandbox contract. Scripts MAY still
-    import these names explicitly; the import will simply rebind to the same
-    canonical objects.
+    Injects the wider in-process PRISM data-layer namespace, including
+    pull_nyfed_data, pd, and np. Scripts may import these names explicitly;
+    the imports rebind to the same canonical objects. The clean refresh
+    discovery namespace is narrower, so persisted scripts must not rely on
+    this injection alone.
     """
     path = f"{folder}/scripts/{stem}.py".replace("//", "/")
     src = s3_manager.get(path).decode("utf-8")
 
-    # Canonical namespace injection -- mirrors the sandbox so PRISM-authored
-    # scripts work identically in-session and at refresh time.
+    # In-process injection is wider than refresh_runner._build_exec_namespace.
+    # Persisted scripts must import pd/np/pull_nyfed_data explicitly so clean
+    # refresh discovery cannot fail after an in-process success.
     from prism_mcp.utils.data_functions import (
         pull_market_data, pull_haver_data, pull_plottool_data,
         pull_fred_data, save_artifact,
@@ -12824,11 +12822,9 @@ class RefreshAttachmentError(ValueError):
         )
 
 
-# Pull primitives recognized by the static-parse stem inference. See
-# ``dashboards/pipelines.md#pull-contract`` for the stem rules:
-# pull_market_data appends
-# ``_eod`` / ``_intraday`` based on ``mode=``; the other four use
-# ``name=`` verbatim.
+# Pull primitives recognized by the static-parse stem inference. Current
+# authoring helpers use ``name=`` verbatim; the retained compatibility helper
+# appends mode-specific suffixes for existing persisted scripts.
 _PULL_PRIMITIVES: frozenset = frozenset({
     "pull_market_data", "pull_haver_data", "pull_plottool_data",
     "pull_fred_data", "save_artifact",
@@ -12909,11 +12905,9 @@ def _infer_pull_stems_from_source(src: str) -> set:
     Two detection paths cover the realistic write patterns:
 
     1. **Pull-primitive calls** (the canonical dashboard idiom per
-       ``dashboards/pipelines.md#pull-contract``). For each call to ``pull_market_data`` /
-       ``pull_haver_data`` / ``pull_plottool_data`` / ``pull_fred_data`` /
-       ``save_artifact``, reads the literal ``name=`` and (for
-       ``pull_market_data``) ``mode=`` kwargs to compute the on-disk CSV
-       stem.
+       ``dashboards/pipelines.md#pull-contract``). Reads each recognized
+       helper's literal ``name=`` and, for the retained compatibility helper,
+       its ``mode=`` kwarg to compute the on-disk CSV stem.
     2. **Direct ``.put()`` / ``.save()`` writes** under ``/data/<stem>.csv``
        (or ``.json``). Catches the rarer pattern where a pull function
        constructs the CSV bytes and persists them directly (e.g. test
@@ -12968,7 +12962,7 @@ def _infer_pull_stems_from_source(src: str) -> set:
 
         if fn_name in _PULL_PRIMITIVES:
             name: Optional[str] = None
-            mode: str = "eod"  # pull_market_data default; see pipelines.md
+            mode: str = "eod"  # retained compatibility-helper default
             for kw in node.keywords:
                 if kw.arg == "name" and isinstance(kw.value, ast.Constant) \
                         and isinstance(kw.value.value, str):
@@ -13386,9 +13380,9 @@ def _derive_domain_end(datasets: Dict[str, Any]) -> Optional[str]:
     ``metadata.time.data_domain_end`` by ``build_dashboard``.
 
     Cross-dataset tz normalisation: pulls do not promise a uniform
-    timezone convention -- ``pull_market_data(mode='iday')`` emits
-    tz-aware timestamps in US/Eastern, while ``pull_market_data(mode='eod')``
-    emits tz-naive dates. The cross-dataset ``max()`` would crash with
+    timezone convention -- intraday sources may emit tz-aware timestamps
+    while end-of-day sources emit tz-naive dates. The cross-dataset
+    ``max()`` would crash with
     ``TypeError: Cannot compare tz-naive and tz-aware timestamps``. The
     engine absorbs the friction here: every per-dataset max Timestamp
     is normalised to a tz-naive UTC wall-clock before the cross-dataset

@@ -1,8 +1,15 @@
 ---
 class: context-extraction
 topic: user-ontology-dashboards
-status: READY
+status: PARTIALLY_FOLDED
 created: 2026-07-11
+reply_received: 2026-07-11
+reply_source: cursor-chat screenshots (18 images, captured 2026-07-11 22:46-22:48 ET)
+folded_on: 2026-07-11
+unresolved:
+  - exact kerberos-passing get_context caller shapes for email, report-worker, orchestrator, Teams, and web
+  - exact equality of Community-discovery and scheduled-refresh identity sets
+  - dashboard-to-usage/activity telemetry writer edge
 sequence: 2/7
 depends_on:
   - staging/prompts/open/2026-07-11_dashboard_architecture_validation.md

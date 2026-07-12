@@ -1,8 +1,16 @@
 ---
 class: context-extraction
 topic: data-ecosystem-world-state
-status: READY
+status: PARTIALLY_FOLDED
 created: 2026-07-11
+reply_received: 2026-07-11
+reply_source: cursor-chat screenshots (20 images, captured 2026-07-11 23:06-23:08 ET)
+folded_on: 2026-07-11
+resolved_conflict: direct namespace source at script_exec_tools.py:2832 controls; SESSION_PATH is injected
+unresolved:
+  - D09 exact historical registry-key-to-client arithmetic equivalence
+  - D19 whether discovery-before-query is universally mandatory across every source guide
+  - D20 row-for-row equivalence between the current and historical routing ontologies
 sequence: 5/7
 depends_on:
   - staging/prompts/open/2026-07-11_dashboard_architecture_validation.md

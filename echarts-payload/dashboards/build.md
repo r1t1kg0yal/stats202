@@ -25,7 +25,7 @@ Use a first build for a new dashboard or an explicitly requested destructive reb
 
 ## Tool 1: pull and verify data
 
-`pull_data.py` is standalone persisted Python. It defines the exact dashboard folder, imports what it calls, writes every artifact under `data/`, and exposes a module-level `PULLS` dictionary.
+`pull_data.py` is standalone persisted Python. It defines the exact dashboard folder, explicitly imports every name it uses, writes every artifact under `data/`, and exposes a module-level `PULLS` dictionary. Never rely on authoring or in-process injections: import `pandas as pd`, `numpy as np`, `pull_nyfed_data` from `core.mcp.clients.newyorkfed_client`, `save_artifact` from `prism_mcp.utils.data_functions`, and each `core.mcp.clients` module when actually used.
 
 ```python
 KERBEROS = "goyalri"
@@ -68,11 +68,13 @@ Tool 1 rules:
 
 - Pull only verified identifiers. An exact expression/code/client call supplied by the user or test prompt is authoritative for that task; preserve it byte-for-byte. If no identifier is supplied or verified, stop at the data boundary and ask for it—never infer a vendor code from a label or naming pattern.
 - `labels=` is the preferred place to establish plain-English persisted columns.
-- `name=` is the output stem. Match it to the eventual template dataset key.
+- Match the eventual template dataset key to the complete emitted CSV stem.
 - Import each source client or helper used by the script.
-- Verify rows, columns, dtypes, latest dates, units, and economically plausible values. Existence alone is insufficient.
+- Verify that the current pull invocation succeeded, then verify non-empty rows, columns, dtypes, latest dates, units, and economically plausible values. A retained pre-existing CSV is not current-cycle success.
 - Pull functions are independent named units. Group calls only when they share source, cadence, and failure semantics.
 - Persist every renderer input. An in-memory rename or derived column not written or transformed in `build.py` disappears on refresh.
+- Only CSV files become build datasets. NY Fed and client returns must pass through `save_artifact` or an explicit CSV write. A dictionary or empty list saved as JSON is an artifact, not a dataset.
+- Metadata sidecars and `df.attrs` are not loaded and never populate `field_provenance`; author lineage in each template dataset entry.
 
 Pull primitives and stems:
 
@@ -81,9 +83,8 @@ Pull primitives and stems:
 | `pull_haver_data(..., name="cpi")` | `cpi` |
 | `pull_plottool_data(..., name="rates")` | `rates` |
 | `pull_fred_data(..., name="labor")` | `labor` |
-| `pull_market_data(..., name="px", mode="eod")` | `px_eod` |
-| `pull_market_data(..., name="px", mode="intraday")` | `px_intraday` |
-| `save_artifact(..., name="screen")` | `screen` |
+| `result = pull_nyfed_data(...)` then `save_artifact(result, name="nyfed", output_path=...)` | `nyfed` only when `result` is a DataFrame or non-empty tabular records |
+| `save_artifact(DataFrame or non-empty list[dict], name="screen")` | `screen` |
 
 ### Tool-only build
 
@@ -105,7 +106,7 @@ Its template uses `datasets = {}` and contains only data-independent widgets suc
 
 Compose the initial manifest from verified data, derive the data-free template with `manifest_template`, and author `build.py`.
 
-`build.py` contains only module-level `TRANSFORMS`. Each transform accepts the loaded dataset dictionary and returns a dictionary. CSV discovery, population, strict compilation, attachment audit, and output writes belong to `build_dashboard`.
+`build.py` contains only module-level `TRANSFORMS`. Each transform accepts the CSV-loaded dataset dictionary and returns a dictionary. JSON artifacts, metadata sidecars, and `df.attrs` are not inputs. CSV discovery, population, strict compilation, attachment audit, and output writes belong to `build_dashboard`.
 
 ```python
 rates = pd.read_csv(
@@ -280,9 +281,14 @@ Registration rules:
 ## Tool 4: fresh-process refresh
 
 Run the same refresh runner used by scheduled and browser-triggered refreshes. Stream output to a file, wait for completion, then require both a zero return code and persisted success.
+Launch the runner by its resolved file path, not with
+`python -m dashboards.refresh_runner`. Production spawners also set
+`start_new_session=True` and `cwd=REPO_ROOT`; the runner itself accepts
+`--folder` plus optional `--log-path`.
 
 ```python
 import dashboards.refresh_runner as refresh_runner_module
+from prism_meta import REPO_ROOT
 
 log_path = (
     f"/tmp/dashboard_refresh/"
@@ -301,6 +307,8 @@ with open(log_path, "wb") as log_file:
         stdout=log_file,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
+        cwd=REPO_ROOT,
+        start_new_session=True,
     )
     return_code = process.wait()
 
@@ -321,7 +329,7 @@ if inspection["files"]["missing"] or inspection["attachment_gaps"]:
     raise RuntimeError(inspection)
 ```
 
-Do not impose an arbitrary timeout on data pulls. The subprocess and status record provide the completion evidence.
+There is no universal per-pull refresh timeout. Do not impose an arbitrary authoring timeout; source-specific client timeouts still apply, and the subprocess plus status record provide terminal completion evidence. Require each expected CSV to have been produced successfully and verified non-empty in the current cycle so a stale retained file cannot qualify the build.
 
 ## Portal handoff
 
@@ -334,8 +342,10 @@ The user message contains the live URL and a concise product description. Do not
 ## First-build checklist
 
 - [ ] Product scope and destructive intent are unambiguous.
-- [ ] Every pull ran and persisted the expected non-empty shape.
+- [ ] Persisted scripts explicitly import every helper, `pd`/`np`, NY Fed function, and client module they use.
+- [ ] Every pull succeeded in the current cycle and persisted the expected non-empty CSV shape; no retained stale CSV was accepted.
 - [ ] Dataset keys, CSV stems, mappings, units, and provenance agree.
+- [ ] JSON artifacts, metadata sidecars, and `df.attrs` are not treated as datasets or provenance.
 - [ ] Template contains slots rather than live rows.
 - [ ] `TRANSFORMS` exists and each transform returns the dataset dictionary.
 - [ ] `build_dashboard` and `audit_dashboard_layout` pass.

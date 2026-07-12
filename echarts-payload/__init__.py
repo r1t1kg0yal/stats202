@@ -64,7 +64,7 @@ the standard "load template + CSVs + transforms -> compile + write to
 S3" recipe so PRISM doesn't reinvent it per dashboard.
 
 DataFrame contract: PRISM emits Python that builds DataFrames from real
-data functions (``pull_market_data``, ``pull_haver_data``, FRED, etc.)
+data functions (``pull_plottool_data``, ``pull_haver_data``, FRED, etc.)
 and stores them as dataset values. Literal numbers never appear in the
 JSON emitted by PRISM. Three accepted shapes for a dataset entry, all
 normalised to the same on-disk form by the compiler:
@@ -84,8 +84,10 @@ The emitted HTML inlines ECharts (~1MB) read from the
 local `web/backend_django/news/static/js/echarts.js` mirror. Code retains
 a legacy `mysite/news/static/js/echarts.js` candidate, but that asset is
 absent from the 2026-07-11 production checkout. The dashboard is portable:
-it renders identically when served by Django, opened from a file://
-path, or streamed from S3 via a presigned URL.
+core charts render identically when served by Django, opened from a file://
+path, or streamed from S3 via a presigned URL. Optional Excel and
+whole-dashboard PNG actions still require their jsDelivr XLSX/html2canvas
+dependencies.
 """
 
 from __future__ import annotations

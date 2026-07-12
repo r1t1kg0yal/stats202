@@ -81,6 +81,12 @@ Classification uses only persisted `kind`, `message`, `url`, and `source`:
 | `extension_or_viewer` | Browser extension, PDF/viewer, or injected client-surface event; do not mutate the dashboard without corroborating evidence |
 | `unknown` | Unclassified event; use refresh, graph, registry, and reproduction evidence |
 
+ECharts is inlined, so ordinary chart display does not depend on a CDN.
+Excel export and whole-dashboard PNG are optional exceptions: XLSX loads
+eagerly and html2canvas loads on first PNG action from jsDelivr. If charts
+render but one of those actions fails with a resource/CSP event, classify
+the incident as environment/network evidence before mutating the dashboard.
+
 ## Triage order
 
 1. **Identity and required files.** Confirm canonical folder identity and address every `files.missing` finding before mutation.
@@ -108,6 +114,7 @@ Classification uses only persisted `kind`, `message`, `url`, and `source`:
 | Registry/template cadence mismatch | Kernel public API | Call `synchronize_refresh_frequency` |
 | Telemetry absent | No conclusion | Use other evidence; absence is not proof of health |
 | Browser-extension/CSP noise isolated to one viewer | External environment | State the product-level limitation only after evidence rules out dashboard defects |
+| Charts render but XLSX or whole-dashboard PNG reports a jsDelivr resource/CSP failure | Optional CDN environment | Do not repair the manifest; verify browser reachability or policy |
 
 `registry.manifest_pointer` is read-only evidence with `state`, `registry_path_matches`, `update_required`, `owner`, and `fix_hint`. The pointer does not carry refresh cadence. When update is required, report or invoke the owning `core.user_manifest.UserManifestManager.update_dashboard_pointer` workflow if that owner is available; do not invent a dashboard-client mutation method. Template/registry cadence remains owned by `synchronize_refresh_frequency`.
 

@@ -1,12 +1,21 @@
 ---
 class: context-extraction
 topic: dashboard-architecture-validation
-status: PARTIALLY_ANSWERED
+status: PARTIALLY_FOLDED
 created: 2026-07-11
 reply: live PRISM read-only response received 2026-07-11
-unresolved:
-  - section 10.2 XLSX/html2canvas production CDN behavior
-  - prism-main recorded submodule commit versus checked-out prism-core commit
+reply_received: 2026-07-11
+folded_on: 2026-07-11
+resolved:
+  - section 10.2 XLSX/html2canvas behavior: optional jsDelivr actions; core ECharts display remains self-contained
+  - checkout identity: checked-out prism-core a6a507a is ahead of parent-recorded 60f5773 and the gitlink is dirty
+remaining_open:
+  - section 9 persistence and registry schema coverage is partial
+  - section 14 compatibility-boundary coverage is partial
+  - installed-byte parity is unproved because every section 1.1 baseline row differs from the running checkout
+  - clean refresh omits pull_nyfed_data, pd, and np from its discovery namespace
+  - production browser reachability for the optional XLSX and html2canvas CDNs is unknown
+archive_eligible: false
 reply_folded_into:
   - .cursor/rules/viz-platforms.mdc
   - .cursor/rules/prism.mdc
@@ -30,6 +39,11 @@ reply_folded_into:
   - prism/_prompting-guide.md
   - prism/_changelog.md
 ---
+
+> **Baseline notice:** Section 1.1 is the pre-reconciliation staging
+> snapshot used by the prompt. Every live comparison row differed from that
+> baseline; do not use it as evidence of installed-byte parity until the
+> checkout and canonical payload are reconciled and re-baselined.
 
 # Context-extraction prompt — dashboard subsystem architecture validation
 

@@ -1,8 +1,11 @@
 ---
 class: context-extraction
 topic: dashboard-data-pull-contracts
-status: READY
+status: FOLDED
 created: 2026-07-11
+reply_received: 2026-07-11
+reply_source: cursor-chat screenshots (4 images, captured 2026-07-11 23:09 ET)
+folded_on: 2026-07-11
 sequence: 1/7
 depends_on:
   - staging/prompts/open/2026-07-11_dashboard_architecture_validation.md

@@ -7,6 +7,10 @@
 
 ECharts is the only sanctioned path for persistent PRISM dashboards. PRISM authors Python plus a JSON manifest and calls the public `dashboards` APIs. Do not hand-roll HTML/CSS/JS, use another dashboard framework, or use Altair composites as dashboards.
 
+## L2 registration
+
+This router is the sole context-registry entry for dashboard construction (`pillar: tools`, `order: 1`). `dashboards_hub.md` and the nine `dashboards/*.md` spokes are not registry entries; fetch them only through the short-path `list_ai_repo(..., mode="full")` routes below. The registry footer explicitly forbids retrieving `chart_context.md` while building dashboards.
+
 ## User-message contract
 
 Dashboard construction is invisible plumbing. Unless the user explicitly asks for implementation detail:
@@ -28,10 +32,11 @@ Use `http`, port `8501`, the author's kerberos, the folder-leaf dashboard id, an
 Before authoring a first build:
 
 1. Use the canonical folder `users/{kerberos}/dashboards/{dashboard_id}`.
-2. Every persisted data script defines that literal as `SESSION_PATH` and imports every helper it calls.
-3. Every pull writes to `f"{SESSION_PATH}/data"`; `name=` becomes the CSV stem and must match the manifest dataset key byte-for-byte.
-4. Persist `scripts/pull_data.py`, define a module-level `PULLS` mapping, run each entry with `run_pull(folder, name)`, and verify the persisted CSV columns and rows.
+2. Every persisted script defines that literal as `SESSION_PATH` and explicitly imports every name it uses. Do not rely on injected names: import `pandas as pd`, `numpy as np`, `pull_nyfed_data` from `core.mcp.clients.newyorkfed_client`, `save_artifact` from `prism_mcp.utils.data_functions`, and each `core.mcp.clients` module only when the script actually uses it.
+3. Every pull writes to `f"{SESSION_PATH}/data"`; the complete emitted CSV stem must match the manifest dataset key byte-for-byte.
+4. Persist `scripts/pull_data.py`, define a module-level `PULLS` mapping, run each entry with `run_pull(folder, name)`, and require successful current-cycle production of a non-empty CSV with the expected columns. A retained pre-existing CSV is not pull success.
 5. Use real data. Never invent identifiers, visible numbers, or successful results.
+6. Only CSV files become datasets. Persist NY Fed and client returns through `save_artifact` or an explicit CSV write; metadata sidecars, `df.attrs`, and JSON artifacts do not populate datasets or `field_provenance`.
 
 Pull primitives:
 
@@ -40,8 +45,9 @@ Pull primitives:
 | `pull_haver_data(..., name="cpi")` | `data/cpi.csv` |
 | `pull_plottool_data(..., labels=[...], name="rates")` | `data/rates.csv` |
 | `pull_fred_data(..., name="labor")` | `data/labor.csv` |
-| `pull_market_data(..., name="rates", mode="eod")` | `data/rates_eod.csv` |
-| `save_artifact(..., name="screen")` | `data/screen.csv` or JSON according to payload type |
+| `result = pull_nyfed_data(...)` then `save_artifact(result, name="nyfed", output_path=...)` | `data/nyfed.csv` only when `result` is a DataFrame or non-empty tabular records |
+| `save_artifact(DataFrame or non-empty list[dict], name="screen")` | `data/screen.csv` |
+| `save_artifact(dict or empty list, name="screen")` | JSON artifact only; not a dataset |
 
 ## Route before fetching
 
@@ -65,6 +71,7 @@ Classify the request, then issue the smallest applicable `list_ai_repo(file_path
 | Chart-choice archetype without a pipeline operation | `dashboards/recipes.md` |
 
 Every tool build requires the widgets companion: it owns the stat, table, and stat_grid presentation contracts. Add charts only for the charted-tool row above.
+For a first build, fetch each primitive owner required by the requested user-visible widgets before Tool 2 manifest authoring: charts require `dashboards/charts.md`, non-tool widgets require `dashboards/widgets.md`, and filters/links require `dashboards/filters.md`.
 
 ### Adaptive phase rules
 
@@ -131,4 +138,5 @@ The router is the only fetch menu. The production context inventory is:
 - First build means all four tools in [build.md](dashboards/build.md#four-tool-transaction) complete in one turn.
 - An edit means inspection, the owner API, recompile, clean refresh verification, and portal handoff complete before responding.
 - A missing product decision may block. Mechanical uncertainty does not: follow structured engine fix hints.
-- Never report success from `validate_manifest` alone. The persisted dashboard must pass the final refresh path and report `refresh_status.status == "success"`.
+- Never report success from `validate_manifest` or retained file existence alone. The persisted dashboard must pass the final refresh path, report `refresh_status.status == "success"`, and prove each required CSV is non-empty output from the current cycle.
+- Refresh has no universal per-pull timeout. Do not add an arbitrary authoring timeout; respect source-specific client timeouts and wait for terminal refresh evidence.

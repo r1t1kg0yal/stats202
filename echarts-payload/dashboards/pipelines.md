@@ -14,7 +14,7 @@ scripts/pull_data.py
   PULLS[name]() → data/<stem>.csv
                          ↓
 scripts/build.py
-  TRANSFORMS: datasets → datasets
+  CSV datasets → TRANSFORMS: datasets → datasets
                          ↓
 manifest_template.json slots
                          ↓
@@ -23,7 +23,7 @@ build_dashboard → manifest.json + dashboard.html
 
 Only the three persisted inputs—pull script, build script, and template—survive refresh. Do not edit generated CSV, manifest, or HTML as the durable change.
 
-`scripts/pull_data.py` exclusively owns imports, source/client calls, output names, and `PULLS`. `scripts/build.py` exclusively owns deterministic derivations and the ordered `TRANSFORMS` list. The template owns dataset slots, field lineage, and consumers; it never owns a network call.
+`scripts/pull_data.py` exclusively owns imports, source/client calls, output names, and `PULLS`. `scripts/build.py` exclusively owns deterministic derivations and the ordered `TRANSFORMS` list. The template owns dataset slots, field lineage, and consumers; it never owns a network call. Only flat `data/*.csv` files are loaded as datasets; JSON artifacts and metadata sidecars are ignored.
 
 Start with:
 
@@ -60,13 +60,28 @@ Every persisted pull script:
 
 An exact expression, code, or client-call form supplied by the user/test is authoritative and must be copied without normalization. If the request supplies no verified identifier, do not translate a human label into a vendor code. Each pull also has an explicit expected output contract—stem, ordered column names, pandas dtypes, units, and frequency—stated by the request or verified from the response before manifest authoring. Assert required columns after the call and inspect actual dtypes; never guess returned field names.
 
+Explicit imports are mandatory for clean refresh. Import `pandas as pd` and
+`numpy as np` when used, import NY Fed with
+`from core.mcp.clients.newyorkfed_client import pull_nyfed_data`, and import
+every other used client module from `core.mcp.clients`. In-process
+`run_pull` injects `pd`, `np`, `pull_nyfed_data`, and the standard pulls,
+but clean refresh discovery does not. A script can therefore succeed
+in-session and fail during refresh with `NameError`; never rely on that
+in-process injection in persisted code.
+
+NY Fed and client calls return objects rather than dashboard artifacts.
+Persist their output through `save_artifact` or an explicit CSV write. A
+dictionary or empty list is saved as JSON and is not a dataset; require a
+DataFrame or non-empty tabular records for a CSV-backed dataset.
+Each `PULLS` entry must re-call its source during refresh; an object left in
+the authoring session namespace is not a refreshable producer.
+
 ```python
 from core.s3_bucket_manager import s3_manager
 from prism_mcp.utils.data_functions import (
     pull_haver_data,
     pull_plottool_data,
     pull_fred_data,
-    pull_market_data,
     save_artifact,
 )
 
@@ -87,19 +102,19 @@ PULLS = {"rates": pull_rates}
 
 Stem rules:
 
-| Producer | Stem |
+| Producer | Emitted artifact and dataset key |
 |---|---|
-| Haver / PlotTool / FRED / `save_artifact` | `name` verbatim |
-| Market data `mode="eod"` | `<name>_eod` |
-| Market data `mode="iday"` or `"intraday"` | `<name>_intraday` |
-| Market data `mode="both"` | both stems |
-| Direct S3 write | literal `data/<stem>.csv` or `.json` path |
+| Haver / PlotTool / FRED | `data/<name>.csv` → `<name>` |
+| `save_artifact` with a DataFrame or non-empty list of records | `data/<name>.csv` → `<name>` |
+| `save_artifact` with a dictionary or empty list | JSON artifact; no dataset key |
+| Direct S3 CSV write | literal `data/<stem>.csv` → `<stem>` |
+| Direct S3 JSON write | artifact only; no dataset key |
 
 When an external source is unavailable at predictable times, model that state explicitly. A dashboard may omit an intraday-only panel or show a product-level availability state, but it must not fabricate observations or silently substitute a semantically different series.
 
 ## Transform contract
 
-`build.py` contains module-level `TRANSFORMS`, even when empty. Each function receives loaded DataFrames keyed by CSV stem and returns a dataset dictionary.
+`build.py` contains module-level `TRANSFORMS`, even when empty. Each function receives CSV-loaded DataFrames keyed by the complete filename stem and returns a dataset dictionary. Metadata sidecars, JSON artifacts, and DataFrame `attrs` are not inputs.
 
 ```python
 import pandas as pd
@@ -141,7 +156,7 @@ There is no root-replacement script API. The safe edit is evidence-based byte mu
 4. Require the new bytes to differ and the anchor to match exactly once.
 5. Compile the new source before writing.
 6. Persist the owning script.
-7. Run only the affected pull first; verify its output.
+7. Run only the affected pull first; require successful current-cycle output and verify a non-empty CSV with the expected contract.
 8. Run `build_dashboard`.
 9. Run the clean subprocess refresh.
 10. Inspect again.
@@ -184,6 +199,7 @@ Before writing, use the inspection graph and persisted CSV schemas to prove:
 - every pull-produced CSV intended for display has a matching slot;
 - all mapping/source/filter fields exist in the refreshed data;
 - source cadence, units, as-of dates, and row cardinality remain plausible.
+- each required CSV was produced successfully and verified non-empty in the current cycle; pre-existing object existence is not success.
 
 Common breakages:
 
@@ -196,6 +212,7 @@ Common breakages:
 | Add slot before producer | Attachment audit reports unattached data |
 | Change dtype/unit silently | Dashboard can show wrong values without a schema error |
 | Remove a pull without graph review | Multiple downstream surfaces disappear |
+| Continue after a failed pull because its CSV exists | Build can consume the stale retained CSV |
 
 ## Field provenance
 
@@ -230,7 +247,7 @@ Every displayed field identifies its source. `field_provenance` is placed inside
 }
 ```
 
-Each provenance value is a dictionary. Native-source fields use `system` plus the exact supplied identifier (`symbol`, `haver_code`, `fred_series`, or another source-native key). Client-returned fields use the closed shape `{"system":"client","client":<exact imported client name>,"method":<exact called method>}` plus optional `identifier` only when the caller supplied that field/token; do not infer one from a display label. `display_name`, `units`, `frequency`, and `source_label` are optional source facts. A computed field uses `system: "computed"`, exact `recipe`, `computed_from`, and `units`. Never invent identifiers.
+Each provenance value is a dictionary. Native-source fields use `system` plus the exact supplied identifier (`symbol`, `haver_code`, `fred_series`, or another source-native key). Client-returned fields use the closed shape `{"system":"client","client":<exact imported client name>,"method":<exact called method>}` plus optional `identifier` only when the caller supplied that field/token; do not infer one from a display label. `display_name`, `units`, `frequency`, and `source_label` are optional source facts. A computed field uses `system: "computed"`, exact `recipe`, `computed_from`, and `units`. Never invent identifiers. Helper metadata sidecars and `df.attrs` never populate this structure; author it explicitly in the template.
 
 ## Refresh-frequency edits
 
@@ -262,8 +279,12 @@ Require:
 - graph edges connect producer → CSV/transform → dataset → consumer;
 - no attachment gaps;
 - strict build succeeds;
-- clean refresh status is success;
+- clean refresh status is success with no failed required pull and every expected CSV verified as non-empty current-cycle output;
 - pre-existing pipeline outputs and consumed columns remain;
 - no new relevant telemetry errors appear after the refreshed page is exercised.
+
+Refresh has no universal per-pull timeout. Do not impose an arbitrary
+authoring timeout; source-specific client timeouts still apply. If a pull
+fails, reject any retained CSV at its stable key and stop before build.
 
 If verification fails, follow the structured evidence, restore exact transaction bytes when needed, and retry before responding.

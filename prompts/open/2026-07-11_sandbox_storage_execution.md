@@ -1,8 +1,14 @@
 ---
 class: context-extraction
 topic: sandbox-storage-execution
-status: READY
+status: PARTIALLY_FOLDED
 created: 2026-07-11
+reply_received: 2026-07-11
+reply_source: cursor-chat screenshots (11 images, captured 2026-07-11 23:03-23:04 ET)
+folded_on: 2026-07-11
+unresolved:
+  - active external gateway rest.py/_handle_tools/iterative_mcp_execution source was absent
+  - current ast.literal_eval, letter-first/ASCII, replacement, and loop-cap behavior remains UNKNOWN
 sequence: 4/7
 depends_on:
   - staging/prompts/open/2026-07-11_context_system_tool_routing.md

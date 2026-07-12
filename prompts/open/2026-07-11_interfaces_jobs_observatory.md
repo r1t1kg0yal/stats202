@@ -1,8 +1,15 @@
 ---
 class: context-extraction
 topic: interfaces-jobs-observatory
-status: READY
+status: PARTIALLY_FOLDED
 created: 2026-07-11
+reply_received: 2026-07-11
+reply_source: cursor-chat screenshots (16 images, captured 2026-07-11 22:55-22:57 ET)
+folded_on: 2026-07-11
+unresolved:
+  - external procmon/scheduler activation configuration for long-running CLIs and cadence groups
+  - exact live vision model identifier, public signatures, request configuration, and installed QUALITY_CHECK_PROMPT body
+  - per-developer-loop mutation policies and production guards
 sequence: 6/7
 depends_on:
   - staging/prompts/open/2026-07-11_dashboard_architecture_validation.md

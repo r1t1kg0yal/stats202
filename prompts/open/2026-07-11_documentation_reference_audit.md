@@ -1,8 +1,18 @@
 ---
 class: context-extraction
 topic: documentation-reference-audit
-status: READY
+status: PARTIALLY_FOLDED
 created: 2026-07-11
+reply_received: 2026-07-11
+reply_source: cursor-chat screenshots (18 images, captured 2026-07-11 22:49-22:51 ET)
+folded_on: 2026-07-11
+unresolved:
+  - prompts 1-5 were absent from the PRISM session, so cross-prompt synthesis and conflict checks could not run
+  - local prism/.cursor/rules/staging/projects corpus was absent from the PRISM checkout, so local-reference and staleness-notice audit could not run
+  - production browser reachability and CSP/proxy policy for jsDelivr XLSX/html2canvas dependencies
+  - semantic classification of the dirty echart_studio.py +14/-8 working-tree delta
+  - exact path of the single committed file differing between recorded and checked-out prism-core histories
+  - full active stale-reference completeness and corpus-reactivation governance decision
 sequence: 7/7
 depends_on:
   - staging/prompts/open/2026-07-11_dashboard_data_pull_contracts.md
