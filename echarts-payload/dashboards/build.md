@@ -14,7 +14,7 @@ Tool 1  author pull_data.py → persist → run every PULLS entry → verify CSV
    ↓
 Tool 2  compose template + author build.py → persist → build_dashboard
    ↓
-Tool 3  register exactly once → align cadence → update user manifest
+Tool 3  register exactly once → align cadence → verify registry (pointer: scheduled orchestrator only)
    ↓
 Tool 4  run refresh_runner in a fresh subprocess → require green status
    ↓
@@ -262,7 +262,6 @@ s3_manager.put(
     REGISTRY_PATH,
 )
 synchronize_refresh_frequency(FOLDER, "1d")
-update_user_manifest(KERBEROS, artifact_type="dashboard")
 
 inspection = inspect_dashboard(FOLDER)
 if inspection["registry"]["match_count"] != 1:
@@ -276,6 +275,7 @@ Registration rules:
 - `folder`, `html_path`, and `data_path` use the canonical folder.
 - Pick cadence from source cadence and product need.
 - `synchronize_refresh_frequency` is the update path after registration because it commits template and registry together.
+- Stop after the registry write and verification. There is no authoring helper named `update_user_manifest`; the scheduled orchestrator owns `UserManifestManager.update_dashboard_pointer(kerberos)`, and an on-demand browser refresh does not update that pointer today.
 
 ## Tool 4: fresh-process refresh
 
@@ -341,7 +341,7 @@ The user message contains the live URL and a concise product description. Do not
 - [ ] `build_dashboard` and `audit_dashboard_layout` pass.
 - [ ] Registry contains exactly one canonical entry.
 - [ ] Template and registry cadence are synchronized.
-- [ ] User manifest pointer is updated.
+- [ ] Registry ownership is respected; no nonexistent manifest-pointer helper is called.
 - [ ] Subprocess exits zero and `refresh_status.status` is `success`.
 - [ ] Final inspection has no missing required files or attachment gaps.
 - [ ] The exact portal URL is handed off in product language.

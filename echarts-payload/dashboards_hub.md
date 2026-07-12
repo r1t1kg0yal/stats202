@@ -186,7 +186,7 @@ The registry is `users/{kerberos}/dashboards/dashboards_registry.json`. The runn
 }
 ```
 
-Exactly one entry matches the dashboard id. `refresh_frequency` must equal template metadata byte-for-byte; use `synchronize_refresh_frequency` for changes. Preserve `created_at`. After registration, call `update_user_manifest(kerberos, artifact_type="dashboard")`.
+Exactly one entry matches the dashboard id. `refresh_frequency` must equal template metadata byte-for-byte; use `synchronize_refresh_frequency` for changes. Preserve `created_at`. Registration owns the registry write only. There is no authoring helper named `update_user_manifest`: the scheduled orchestrator calls `UserManifestManager.update_dashboard_pointer(kerberos)` after a successful registry walk, while an on-demand browser refresh does not update that pointer today.
 
 Cadence examples: `"60s"`/`"5m"` for intraday, `"1h"` for frequently changing aggregates, `"1d"` for daily data, `"1w"` for slow data, `"manual"` for fixed exhibits. Pick cadence from the slowest load-bearing source and user need, not from convenience.
 

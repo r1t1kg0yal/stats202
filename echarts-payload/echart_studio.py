@@ -7,11 +7,13 @@ mapping inputs. Optionally wraps the option into a single-file interactive
 HTML editor (knob cards, spec sheets, raw-JSON escape hatch).
 
 Design rules:
-    * Zero Python runtime deps (stdlib + pandas for DataFrame input).
+    * This module uses stdlib + pandas for DataFrame input; the installed
+      ``dashboards`` package also requires numpy in compiler/runtime paths.
     * Emitted HTML inlines echarts.js (read once at render time from
-      `web/backend_django/news/static/js/echarts.js`, with a legacy fallback
-      to `mysite/news/static/js/echarts.js` during the parent repo's
-      dual-deployment window; see `dashboards/rendering.py::_get_echarts_js`)
+      `web/backend_django/news/static/js/echarts.js`; the retained legacy
+      `mysite/news/static/js/echarts.js` candidate is absent from the
+      2026-07-11 production checkout; see
+      `dashboards/rendering.py::_get_echarts_js`)
       so the dashboard is self-contained when downloaded,
       attached to email, or served from S3 via a presigned URL.
     * No fallbacks. Unknown theme/palette/preset/chart_type raises ValueError.

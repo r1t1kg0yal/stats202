@@ -1,19 +1,34 @@
 ---
 class: context-extraction
 topic: dashboard-architecture-validation
-status: OPEN
+status: PARTIALLY_ANSWERED
 created: 2026-07-11
-reply: null
+reply: live PRISM read-only response received 2026-07-11
+unresolved:
+  - section 10.2 XLSX/html2canvas production CDN behavior
+  - prism-main recorded submodule commit versus checked-out prism-core commit
 reply_folded_into:
   - .cursor/rules/viz-platforms.mdc
   - .cursor/rules/prism.mdc
   - projects/echarts/README.md
   - projects/echarts/dev/packages.md
+  - projects/echarts/dev/notes.md
+  - projects/echarts/echarts-payload/__init__.py
+  - projects/echarts/echarts-payload/echart_studio.py
+  - projects/echarts/echarts-payload/refresh_runner.py
+  - projects/echarts/echarts-payload/dashboards_hub.md
+  - projects/echarts/echarts-payload/dashboards/build.md
+  - projects/echarts/dev/goldens/context_post_rewrite.json
   - staging/README.md
+  - prism/README.md
+  - prism/codebase-tree.md
   - prism/code-sandbox.md
+  - prism/architecture.md
   - prism/dashboard-refresh.md
   - prism/dashboards-portal.md
   - prism/mcp-tools.md
+  - prism/_prompting-guide.md
+  - prism/_changelog.md
 ---
 
 # Context-extraction prompt — dashboard subsystem architecture validation

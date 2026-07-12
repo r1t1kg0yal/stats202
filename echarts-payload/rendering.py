@@ -2043,7 +2043,7 @@ header.app-header {
                     flex-wrap: wrap; justify-content: flex-end; }
 
 /* Download dropdown. Single icon-btn that opens a click-anchored
-   popover listing Panel / Charts / Excel. Replaces the three
+   popover listing Full Dashboard / Panel / Charts / Excel. Replaces the three
    stand-alone Download* buttons that used to live in the chrome.
    Click-to-open + click-outside / Esc-to-close (no hover dropdown);
    accessibility-friendly because every menu item is a real <button>. */
@@ -3851,6 +3851,13 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
               aria-label="Download options" hidden>
             <li role="none">
               <button type="button" role="menuitem"
+                      class="download-menu-item" id="export-full-dashboard"
+                      title="Download this interactive dashboard as one self-contained HTML file.">
+                Full Dashboard
+              </button>
+            </li>
+            <li role="none">
+              <button type="button" role="menuitem"
                       class="download-menu-item" id="export-dashboard"
                       title="Download the entire panel as one PNG (full page).">
                 Panel
@@ -3921,6 +3928,13 @@ DASHBOARD_APP_JS = r"""
   var MANIFEST = PAYLOAD.manifest;
   var SPECS    = PAYLOAD.specs;       // id -> ECharts option dict
   var DATASETS = PAYLOAD.datasets;    // name -> {source: [...rows]}
+
+  // Preserve the generated source before load-time rendering mutates the DOM.
+  // The shell already inlines ECharts, manifest data, styles, and runtime JS,
+  // so this exact snapshot is a complete offline dashboard without fetching
+  // the serving URL (which would fail for file:// dashboards).
+  var STATIC_DASHBOARD_HTML =
+    '<!doctype html>\n' + document.documentElement.outerHTML;
 
   // Global decimal-precision cap. Mirror of config.MAX_DASHBOARD_DECIMALS;
   // injected by render_dashboard_html so the two halves can never drift.
@@ -11245,6 +11259,31 @@ DASHBOARD_APP_JS = r"""
     });
   }
 
+  // ----- full-dashboard HTML -----
+  //
+  // Downloads the generated dashboard source captured before ECharts and the
+  // widget runtimes mutate their host elements. Reopening the file therefore
+  // follows the normal initialization path instead of serializing live canvas
+  // internals that cannot be rehydrated safely.
+  var exportFullDashboard = document.getElementById('export-full-dashboard');
+  if (exportFullDashboard){
+    exportFullDashboard.addEventListener('click', function(){
+      var stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      var fname = (MANIFEST.id || 'dashboard')
+        + '_full_dashboard_' + stamp + '.html';
+      var blob = new Blob(
+        [STATIC_DASHBOARD_HTML],
+        {type: 'text/html;charset=utf-8'}
+      );
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = fname;
+      a.click();
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 1500);
+    });
+  }
+
   var exportAll = document.getElementById('export-all');
   if (exportAll){
     exportAll.addEventListener('click', function(){
@@ -11781,13 +11820,13 @@ DASHBOARD_APP_JS = r"""
     }
   })();
 
-  // ----- Download dropdown (Panel / Charts / Excel) -----
+  // ----- Download dropdown (Full Dashboard / Panel / Charts / Excel) -----
   //
   // Single dropdown anchored to the [Download] button in the chrome.
   // Click the button to toggle; click outside or press Esc to close.
   // Each menu item delegates to the existing handler that the
-  // standalone export buttons used to wire (panel: html2canvas;
-  // charts: per-chart PNG; excel: SheetJS workbook). The Excel item
+  // standalone export buttons used to wire (full dashboard: static HTML;
+  // panel: html2canvas; charts: per-chart PNG; excel: SheetJS workbook). The Excel item
   // is shown/hidden by the block above based on whether the
   // dashboard contains any widget:table.
   (function(){

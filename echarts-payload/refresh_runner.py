@@ -60,6 +60,9 @@ import time
 import traceback
 from typing import Any, Optional
 
+# Temporary import-time subprocess diagnostics retained from production.
+# The pandas.io.formats probe below is duplicated; this is known cleanup
+# debt, not a requirement of the dashboard runtime.
 import sys, os
 print('=' * 80, flush=True)
 print(f'[REFRESH_RUNNER] PID={os.getpid()}', flush=True)
@@ -105,11 +108,13 @@ from prism_mcp.utils.data_functions import (
 
 
 def _build_exec_namespace() -> dict:
-    """Canonical exec namespace for user-authored pull_data.py and build.py
-    scripts. Mirrors what the in-session sandbox pre-injects (s3_manager,
-    pull_market_data, pull_haver_data, pull_plottool_data, pull_fred_data,
-    save_artifact) so scripts authored in the sandbox are portable to the
-    clean subprocess interpreter the refresh runner uses.
+    """Refresh-discovery namespace for user-authored pull_data.py.
+
+    This intentionally documents the current, narrower subprocess surface:
+    s3_manager, the four standard pull helpers, and save_artifact. It does
+    NOT yet mirror the in-process engine namespace, which additionally
+    injects pull_nyfed_data, pandas as pd, and numpy as np. Persisted scripts
+    that use those names must import them explicitly until parity is fixed.
 
     Without this, user pull_data.py scripts that omit explicit imports raise
     NameError on the first refresh_runner tick (see ticket signature

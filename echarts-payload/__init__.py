@@ -1,10 +1,10 @@
 """
-ai_development/dashboards -- ECharts dashboard compiler + folder operations.
+dashboards -- ECharts dashboard compiler + folder operations.
 
 Scope: dashboards only. ``compile_dashboard`` lowers a JSON manifest into
 an interactive HTML dashboard. ECharts is NOT the path PRISM uses for
 one-off charts in chat / email / report -- that surface lives in Altair
-(``ai_development/mcp/utils/chart_functions.py``). The two engines must
+(``prism_mcp.utils.chart_functions``). The two engines must
 not converge: do not surface ``make_echart`` or ``EChartResult`` from
 this package as part of the PRISM-injected runtime namespace; they are
 internal substrate for ``compile_dashboard``'s lowering pipeline only.
@@ -12,8 +12,7 @@ Multi-panel composition is a manifest concern (rows / cols / tabs in
 the dashboard layout), not a separate one-off composite-canvas API --
 those n-pack composite helpers belong to Altair's static-PNG surface.
 
-Public surface PRISM imports (real Python imports -- no namespace
-injection at exec time):
+Public surface PRISM imports:
 
     # Folder operations -- the three entry points for every dashboard op.
     # Operate on a dashboard folder (S3 path); call from PRISM ephemeral
@@ -74,11 +73,17 @@ normalised to the same on-disk form by the compiler:
     manifest["datasets"]["rates"] = {"source": df_rates}        # explicit
     manifest["datasets"]["rates"] = {"source": df_to_source(df_rates)}
 
-Zero runtime deps beyond Python stdlib + pandas for DataFrame
-conversion. The emitted HTML inlines ECharts (~1MB) read from the
-local `web/backend_django/news/static/js/echarts.js` mirror (with a
-legacy fallback to `mysite/news/static/js/echarts.js` during the
-parent repo's dual-deployment window) so the dashboard is portable:
+Python runtime dependencies are stdlib + pandas + numpy. Persisted
+dashboard scripts are executed through two namespaces that are not yet
+identical: the in-process engine injects ``pull_nyfed_data``, ``pd``, and
+``np`` in addition to the standard data functions, while
+``refresh_runner._build_exec_namespace`` does not. Author persisted scripts
+with explicit imports until that integration gap is closed.
+
+The emitted HTML inlines ECharts (~1MB) read from the
+local `web/backend_django/news/static/js/echarts.js` mirror. Code retains
+a legacy `mysite/news/static/js/echarts.js` candidate, but that asset is
+absent from the 2026-07-11 production checkout. The dashboard is portable:
 it renders identically when served by Django, opened from a file://
 path, or streamed from S3 via a presigned URL.
 """
