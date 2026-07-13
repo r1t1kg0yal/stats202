@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ECharts payload lineage and cleanup decision</title>
+  <style>
+    :root {
+      --ink: #152238;
+      --muted: #5d6878;
+      --paper: #f5f7fa;
+      --surface: #ffffff;
+      --line: #d8dee8;
+      --navy: #092c61;
+      --blue: #2563a8;
+      --blue-soft: #e9f1fb;
+      --green: #176b4d;
+      --green-soft: #e8f5ef;
+      --amber: #855600;
+      --amber-soft: #fff4d6;
+      --red: #9f2f36;
+      --red-soft: #fdecee;
+      --code: #111827;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      background: var(--navy);
+      color: white;
+      padding: 34px max(24px, calc((100vw - 1320px) / 2));
+    }
+    header h1 {
+      margin: 6px 0 10px;
+      font-size: clamp(27px, 3vw, 40px);
+      line-height: 1.12;
+      letter-spacing: -0.025em;
+    }
+    header p { margin: 0; max-width: 980px; color: #dbe8f6; }
+    .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      font-size: 12px;
+      font-weight: 700;
+      color: #a9c8e8;
+    }
+    .header-meta {
+      margin-top: 22px;
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .header-meta > div {
+      border-top: 1px solid rgba(255,255,255,.25);
+      padding-top: 9px;
+      color: #e6eef7;
+      overflow-wrap: anywhere;
+    }
+    .header-meta strong {
+      display: block;
+      color: white;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      margin-bottom: 4px;
+    }
+    main {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 28px 24px 70px;
+    }
+    section { margin: 0 0 34px; }
+    h2 {
+      margin: 0 0 12px;
+      font-size: 23px;
+      letter-spacing: -0.015em;
+    }
+    h3 { margin: 0 0 8px; font-size: 17px; }
+    p { margin: 0 0 10px; }
+    code {
+      font: .92em ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: #edf1f6;
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 17px;
+    }
+    .card .kicker {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .card .value {
+      font-size: 28px;
+      line-height: 1.15;
+      font-weight: 720;
+      margin: 4px 0 5px;
+    }
+    .card p { color: var(--muted); margin: 0; }
+    .callout {
+      border-left: 4px solid var(--blue);
+      background: var(--blue-soft);
+      padding: 14px 16px;
+      border-radius: 0 7px 7px 0;
+    }
+    .callout.warning {
+      border-left-color: #c17a00;
+      background: var(--amber-soft);
+    }
+    .callout.success {
+      border-left-color: var(--green);
+      background: var(--green-soft);
+    }
+    .callout strong { display: block; margin-bottom: 3px; }
+    .timeline-wrap { overflow-x: auto; padding-bottom: 8px; }
+    .timeline {
+      min-width: 1210px;
+      display: grid;
+      grid-template-columns:
+        minmax(170px,1fr) 28px minmax(170px,1fr) 28px
+        minmax(170px,1fr) 28px minmax(170px,1fr) 28px
+        minmax(180px,1fr) 28px minmax(200px,1.1fr);
+      gap: 8px;
+      align-items: stretch;
+    }
+    .stage {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 13px;
+    }
+    .stage.canonical {
+      background: var(--green-soft);
+      border-color: #9bceb9;
+    }
+    .stage .name {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .stage p { color: var(--muted); margin: 0; font-size: 13px; }
+    .version {
+      font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: #e9edf3;
+      border-radius: 99px;
+      padding: 2px 7px;
+      white-space: nowrap;
+    }
+    .arrow {
+      align-self: center;
+      text-align: center;
+      color: #8b95a4;
+      font-size: 19px;
+    }
+    .table-wrap {
+      overflow-x: auto;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 900px;
+    }
+    th, td {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      background: #edf1f6;
+      font-size: 12px;
+      letter-spacing: .035em;
+      text-transform: uppercase;
+      color: #475466;
+      position: sticky;
+      top: 0;
+    }
+    tr:last-child td { border-bottom: 0; }
+    tr:nth-child(even) td { background: #fafbfd; }
+    .number { text-align: right; white-space: nowrap; }
+    .yes { color: var(--green); font-weight: 700; }
+    .no { color: #8490a0; }
+    .keep { color: var(--green); font-weight: 700; }
+    .hold { color: var(--amber); font-weight: 700; }
+    .remove { color: var(--blue); font-weight: 700; }
+    details {
+      background: var(--surface);
+      border-top: 1px solid var(--line);
+      padding: 13px 2px;
+    }
+    details:last-child { border-bottom: 1px solid var(--line); }
+    summary {
+      cursor: pointer;
+      font-weight: 700;
+      color: var(--navy);
+    }
+    details .detail-body {
+      padding: 10px 20px 0;
+      color: #354155;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .before-after {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .code-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--surface);
+    }
+    .code-label {
+      padding: 7px 11px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      font-size: 11px;
+      font-weight: 700;
+      background: #edf1f6;
+      border-bottom: 1px solid var(--line);
+    }
+    pre {
+      margin: 0;
+      padding: 13px;
+      overflow: auto;
+      background: var(--code);
+      color: #e6edf7;
+      font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      counter-reset: step;
+    }
+    .step {
+      counter-increment: step;
+      border-top: 3px solid var(--blue);
+      background: var(--surface);
+      padding: 14px;
+    }
+    .step::before {
+      content: counter(step);
+      display: inline-grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--navy);
+      color: white;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    .step p { color: var(--muted); margin: 0; }
+    .prompt-toolbar {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    button {
+      border: 0;
+      border-radius: 5px;
+      background: var(--navy);
+      color: white;
+      padding: 9px 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { background: var(--blue); }
+    #copy-status { color: var(--green); font-size: 13px; min-height: 20px; }
+    textarea {
+      width: 100%;
+      min-height: 920px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 15px;
+      background: var(--code);
+      color: #e6edf7;
+      font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      tab-size: 4;
+    }
+    .fine { color: var(--muted); font-size: 13px; }
+    @media (max-width: 900px) {
+      .grid-3, .steps, details .detail-body, .before-after, .header-meta {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="eyebrow">ECharts payload audit · 2026-07-13 18:43 EDT</div>
+    <h1>Six payload states, one canonical source</h1>
+    <p>
+      The local folders form a coherent evolution from the legacy Jul 8
+      package to the reliability-qualified projects payload. The undated
+      staging copy is an intermediate build, not a safe promotion candidate.
+    </p>
+    <div class="header-meta">
+      <div>
+        <strong>Files touched</strong>
+        /Users/ritikgoyal/.cursor/projects/Users-ritikgoyal-Documents-Workspace-AI-data-paper2md/canvases/echarts-payload-lineage.canvas.tsx<br>
+        /Users/ritikgoyal/Documents/Workspace/AI/data/paper2md/staging/dev/output/2026-07-13_1843_echarts-payload-lineage/index.html
+      </div>
+      <div>
+        <strong>What to look for</strong>
+        Keep the projects payload; fingerprint PRISM before replacing the
+        undated staging copy; remove the four dated snapshots from active
+        staging after preserving the exact installed baseline.
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="grid-3">
+      <div class="card">
+        <div class="kicker">Canonical decision</div>
+        <div class="value">KEEP</div>
+        <p><code>projects/echarts/echarts-payload</code> is the only source of truth.</p>
+      </div>
+      <div class="card">
+        <div class="kicker">Undated staging drift</div>
+        <div class="value">15 / 19</div>
+        <p>Production-shipping files differ from canonical.</p>
+      </div>
+      <div class="card">
+        <div class="kicker">Recoverable history</div>
+        <div class="value">4 snapshots</div>
+        <p>All dated folders are clean and tracked in staging Git.</p>
+      </div>
+    </section>
+
+    <section class="callout warning">
+      <strong>Do not copy the undated staging folder into PRISM now.</strong>
+      Its inventory is complete, but it predates the canonical reliability
+      sweep. Package version <code>0.5.0</code> does not distinguish it from
+      canonical; the content-bundle hash below does.
+    </section>
+
+    <section>
+      <h2>Lineage</h2>
+      <div class="timeline-wrap">
+        <div class="timeline">
+          <div class="stage">
+            <div class="name">Jul 8 <span class="version">0.4.0</span></div>
+            <p>Legacy ai_development paths and private audit.</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="stage">
+            <div class="name">Jul 9 <span class="version">0.4.0</span></div>
+            <p>Split checkout plus targeted runtime ergonomics.</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="stage">
+            <div class="name">Jul 11 <span class="version">0.4.0</span></div>
+            <p>Operations layer and adaptive context rewrite.</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="stage">
+            <div class="name">Jul 12 <span class="version">0.4.0</span></div>
+            <p>Integration truth pass and full HTML export.</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="stage">
+            <div class="name">Undated staging <span class="version">0.5.0</span></div>
+            <p>Immutable definition history and restore.</p>
+          </div>
+          <div class="arrow">→</div>
+          <div class="stage canonical">
+            <div class="name">Canonical <span class="version">0.5.0</span></div>
+            <p>Reliability-qualified engine and context.</p>
+          </div>
+        </div>
+      </div>
+      <p class="fine">
+        The sequence is supported by pairwise source diffs and staging commits.
+        It does not claim formal merge ancestry across the separate
+        <code>staging</code> and <code>projects</code> trees.
+      </p>
+    </section>
+
+    <section>
+      <h2>Inventory and cleanup disposition</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>State</th>
+              <th>Package</th>
+              <th class="number">Source files</th>
+              <th class="number">Production paths</th>
+              <th class="number">Test prompts</th>
+              <th>Defining state</th>
+              <th>Disposition</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Jul 8</td><td>0.4.0</td><td class="number">23</td>
+              <td class="number">17 / 19</td><td class="number">6</td>
+              <td>Legacy paths; private package audit</td>
+              <td class="remove">Remove from active staging; Git c023613</td>
+            </tr>
+            <tr>
+              <td>Jul 9</td><td>0.4.0</td><td class="number">23</td>
+              <td class="number">17 / 19</td><td class="number">6</td>
+              <td>Split checkout; tool and asset fixes</td>
+              <td class="remove">Remove from active staging; Git d3f49a1</td>
+            </tr>
+            <tr>
+              <td>Jul 11</td><td>0.4.0</td><td class="number">27</td>
+              <td class="number">19 / 19</td><td class="number">8</td>
+              <td>Typed operations; nine-spoke context</td>
+              <td class="remove">Remove from active staging; Git 608f8cd</td>
+            </tr>
+            <tr>
+              <td>Jul 12</td><td>0.4.0</td><td class="number">27</td>
+              <td class="number">19 / 19</td><td class="number">8</td>
+              <td>Integration truth pass; full HTML export</td>
+              <td class="remove">Remove from active staging; Git 61e7374</td>
+            </tr>
+            <tr>
+              <td>Undated staging</td><td>0.5.0</td><td class="number">27</td>
+              <td class="number">19 / 19</td><td class="number">8</td>
+              <td>Definition versions and restore</td>
+              <td class="hold">Hold until PRISM fingerprint, then replace</td>
+            </tr>
+            <tr>
+              <td>Canonical projects</td><td>0.5.0</td><td class="number">27</td>
+              <td class="number">19 / 19</td><td class="number">8</td>
+              <td>Reliability-qualified current source</td>
+              <td class="keep">KEEP</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="fine">
+        Production counts exclude <code>test_prompts/</code> and
+        <code>__pycache__/</code>. Jul 8 and Jul 9 lack the later
+        <code>dashboards/build.md</code> and
+        <code>dashboards/diagnose.md</code> production context files.
+      </p>
+    </section>
+
+    <section>
+      <h2>Capability progression</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>State</th>
+              <th>Split checkout</th>
+              <th>Nine spokes</th>
+              <th>Typed operations</th>
+              <th>Full HTML export</th>
+              <th>Definition versions</th>
+              <th>Reliability sweep</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Jul 8</td><td class="no">NO</td><td class="no">NO</td><td class="no">NO</td><td class="no">NO</td><td class="no">NO</td><td class="no">NO</td></tr>
+            <tr><td>Jul 9</td><td class="yes">YES</td><td class="no">NO</td><td class="no">NO</td><td class="no">NO</td><td class="no">NO</td><td class="no">NO</td></tr>
+            <tr><td>Jul 11</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td><td class="no">NO</td><td class="no">NO</td><td class="no">NO</td></tr>
+            <tr><td>Jul 12</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td><td class="no">NO</td><td class="no">NO</td></tr>
+            <tr><td>Undated</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td><td class="no">NO</td></tr>
+            <tr><td>Canonical</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td><td class="yes">YES</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Pairwise source change volume</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Transition</th>
+              <th class="number">Changed files</th>
+              <th class="number">Added</th>
+              <th class="number">Removed</th>
+              <th>Center of change</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Jul 8 → Jul 9</td><td class="number">16</td><td class="number">432</td><td class="number">252</td><td>Split imports; S3 manifest loading; tool range/stat-grid; asset/share fixes</td></tr>
+            <tr><td>Jul 9 → Jul 11</td><td class="number">24</td><td class="number">6,285</td><td class="number">4,725</td><td>Operations layer; inspection/mutation; router/kernel/nine-spoke rewrite</td></tr>
+            <tr><td>Jul 11 → Jul 12</td><td class="number">10</td><td class="number">214</td><td class="number">103</td><td>Namespace/CSV truth pass; full-dashboard HTML export</td></tr>
+            <tr><td>Jul 12 → undated</td><td class="number">11</td><td class="number">1,033</td><td class="number">151</td><td>Engine 0.5; immutable definition history; guarded restore</td></tr>
+            <tr><td>Undated → canonical</td><td class="number">18</td><td class="number">5,561</td><td class="number">978</td><td>Namespace, refresh, script transaction, producer/data quality, geo/theme/grid</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="fine">
+        Source-only <code>git diff --no-index --numstat</code>; generated
+        bytecode excluded. The direct Jul 8 → canonical comparison changes all
+        27 current source files (+15,486 / −8,170).
+      </p>
+    </section>
+
+    <section>
+      <h2>Before and after excerpts</h2>
+      <div class="before-after">
+        <div class="code-panel">
+          <div class="code-label">Before · Jul 8 package topology</div>
+          <pre>from ai_development.dashboards import (
+    run_pull,
+    build_dashboard,
+    refresh_dashboard,
+)
+
+__version__ = "0.4.0"</pre>
+        </div>
+        <div class="code-panel">
+          <div class="code-label">After · canonical package surface</div>
+          <pre>from dashboards.echart_dashboard import (
+    launch_clean_refresh,
+    apply_manifest_operations,
+    apply_persisted_script_operations,
+    list_dashboard_versions,
+    restore_dashboard_version,
+    ENGINE_VERSION,
+)
+
+__version__ = ENGINE_VERSION</pre>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>What changed at each step</h2>
+      <details open>
+        <summary>Jul 8 → Jul 9 · package migration plus targeted runtime ergonomics</summary>
+        <div class="detail-body">
+          <p>
+            Imports moved from <code>ai_development.*</code> to
+            <code>dashboards</code>, <code>core</code>,
+            <code>prism_mcp</code>, and <code>prism_meta</code>. The ECharts
+            asset moved to the split checkout web path.
+          </p>
+          <p>
+            The engine accepted S3 manifest keys, normalized tool-output
+            aliases, added range inputs, completed stat-grid rendering, and
+            hardened sharing metadata and telemetry startup.
+          </p>
+        </div>
+      </details>
+      <details open>
+        <summary>Jul 9 → Jul 11 · operations layer and context architecture rewrite</summary>
+        <div class="detail-body">
+          <p>
+            The engine gained public layout audit, typed manifest
+            transactions, deterministic inspection, cadence synchronization,
+            stricter popup/interaction validation, and rollback-safe mutation.
+          </p>
+          <p>
+            The large preflight and 1,949-line hub became a compact router and
+            kernel. New build and diagnose owners expanded seven spokes to
+            nine, with matching prompt suites.
+          </p>
+        </div>
+      </details>
+      <details>
+        <summary>Jul 11 → Jul 12 · integration truth pass</summary>
+        <div class="detail-body">
+          <p>
+            Code and guidance stopped claiming persisted-script namespace
+            parity. Explicit imports became mandatory; only flat, non-empty CSV
+            output counted as current-cycle dataset success.
+          </p>
+          <p>
+            The renderer added a complete offline HTML download. The package
+            removed the private audit alias and aligned examples with PlotTool
+            and the observed split-checkout asset layout.
+          </p>
+        </div>
+      </details>
+      <details>
+        <summary>Jul 12 → undated staging · immutable definition versioning</summary>
+        <div class="detail-body">
+          <p>
+            Engine version 0.5 records the template and both persisted scripts
+            as one immutable definition recipe, with current/previous state and
+            recipe hashes.
+          </p>
+          <p>
+            Listing and restore APIs added product-language reversion.
+            Current-version guards joined the template SHA guard for
+            concurrent edits.
+          </p>
+        </div>
+      </details>
+      <details>
+        <summary>Undated staging → canonical · reliability qualification</summary>
+        <div class="detail-body">
+          <p>
+            Canonical unified persisted-script namespaces, removed noisy
+            runner probes, centralized clean refresh, and added transactional
+            script edits plus helper-aware producer analysis.
+          </p>
+          <p>
+            It also added structured data-quality evidence, geo maps,
+            accessible theme resolution, stronger filter/popup/layout
+            contracts, data-grid/export behavior, and compatibility-complete
+            package exports.
+          </p>
+        </div>
+      </details>
+    </section>
+
+    <section>
+      <h2>Safe cleanup sequence</h2>
+      <div class="steps">
+        <div class="step">
+          <h3>Fingerprint PRISM</h3>
+          <p>Hash the 19 logical production paths. Do not infer from dates, Git, or package version alone.</p>
+        </div>
+        <div class="step">
+          <h3>Preserve the installed baseline</h3>
+          <p>If a local state matches exactly, retain that state until the next promotion is verified.</p>
+        </div>
+        <div class="step">
+          <h3>Remove staging clutter</h3>
+          <p>Move the four dated folders out of active staging and remove all generated __pycache__ content.</p>
+        </div>
+        <div class="step">
+          <h3>Restage from canonical</h3>
+          <p>Recreate the undated staging copy from projects only when ready to promote.</p>
+        </div>
+      </div>
+      <div class="callout success" style="margin-top:14px">
+        <strong>Deletion confidence</strong>
+        The four dated folders are clean and recoverable at staging commits
+        <code>c023613</code>, <code>d3f49a1</code>,
+        <code>608f8cd</code>, and <code>61e7374</code>. Workspace policy
+        favors an archive move over permanent deletion. A historical dev
+        gallery cites the Jul 8 path, so moving that folder will break the
+        live path reference even though Git can restore its bytes. Generated
+        <code>__pycache__</code> content is disposable even though older
+        commits tracked it.
+      </div>
+    </section>
+
+    <section>
+      <div class="prompt-toolbar">
+        <div>
+          <h2 style="margin-bottom:3px">Paste-ready PRISM fingerprint prompt</h2>
+          <p class="fine">It supplies external content hashes; PRISM does not need to know local names or version control.</p>
+        </div>
+        <div>
+          <button type="button" id="copy-prompt">Copy entire prompt</button>
+          <div id="copy-status" role="status" aria-live="polite"></div>
+        </div>
+      </div>
+      <textarea id="prism-prompt" readonly spellcheck="false">This is a CONTEXT-EXTRACTION request. Determine the exact ECharts dashboard payload currently resolved by this PRISM runtime. Do not infer from documentation, Git history, folder timestamps, prior answers, or package version alone. The local labels below are external comparison labels supplied only as hash keys; you are not expected to know them.
+
+Use a fresh execute_analysis_script run. Do not modify files, install anything, restart services, or copy payloads. Run the Python below exactly. It fingerprints the 19 production logical paths across the prism-main / prism-core split, excludes staging-only test_prompts and generated __pycache__, compares the complete raw-byte bundle with six externally supplied candidates, and separately reports actual import resolution.
+
+```python
+from pathlib import Path
+import hashlib
+import importlib
+import importlib.util
+import inspect
+import json
+import sys
+
+from prism_meta import REPO_ROOT
+
+EXPECTED = [
+    "__init__.py",
+    "config.py",
+    "dashboards_time.py",
+    "echart_dashboard.py",
+    "echart_studio.py",
+    "refresh_runner.py",
+    "refresh_dashboards.py",
+    "rendering.py",
+    "dashboards.md",
+    "dashboards_hub.md",
+    "dashboards/build.md",
+    "dashboards/diagnose.md",
+    "dashboards/charts.md",
+    "dashboards/widgets.md",
+    "dashboards/widget_tool.md",
+    "dashboards/filters.md",
+    "dashboards/recipes.md",
+    "dashboards/pipelines.md",
+    "dashboards/template_crud.md",
+]
+
+# These are raw-byte bundle fingerprints computed outside PRISM from the six
+# local candidate folders using the exact algorithm below.
+CANDIDATE_BUNDLES = {
+    "jul8_snapshot": "8b0e9b5bb8cd9532173fedefbf031c71f6c0db1ec657cb58e7334285cfcace78",
+    "jul9_snapshot": "44402533a518b1971937c4d1d14c335f93cbff78e8958280aedcba5c606e7bb5",
+    "jul11_snapshot": "225cf29d6fc28347222888b32ca7143957b50f1d1324c5b89922d73398daae0b",
+    "jul12_snapshot": "629f30eec47ae37233d6e4fd299886c7226f9b1be52a319a7e72d3e32b42cc5d",
+    "undated_staging": "bd77a3bf109623a21b87514d6ac655b7a47aebeccc845c25b8b86bd0b0924625",
+    "canonical_projects": "10021e5da4b634dacfb3cbbdaade37ad798ba7f680e4fb7f1204e936534e6ab8",
+}
+
+repo_root = Path(REPO_ROOT).resolve()
+package_root = repo_root / "prism-core" / "dashboards"
+context_root = (
+    repo_root
+    / "prism-core"
+    / "context"
+    / "modules"
+    / "static"
+    / "tools"
+)
+
+paths = {}
+for rel in EXPECTED:
+    if rel == "refresh_dashboards.py":
+        paths[rel] = repo_root / "jobs" / "hourly" / rel
+    elif rel.endswith(".py"):
+        paths[rel] = package_root / rel
+    else:
+        paths[rel] = context_root / rel
+
+records = []
+bundle = hashlib.sha256()
+for rel in sorted(EXPECTED):
+    path = paths[rel].resolve()
+    bundle.update(rel.encode("utf-8"))
+    bundle.update(b"\0")
+    if path.is_file():
+        data = path.read_bytes()
+        bundle.update(b"FILE\0")
+        bundle.update(str(len(data)).encode("ascii"))
+        bundle.update(b"\0")
+        bundle.update(data)
+        records.append({
+            "logical_path": rel,
+            "resolved_path": str(path),
+            "present": True,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data),
+            "lines": len(data.splitlines()),
+        })
+    else:
+        bundle.update(b"MISSING")
+        records.append({
+            "logical_path": rel,
+            "resolved_path": str(path),
+            "present": False,
+            "sha256": None,
+            "bytes": None,
+            "lines": None,
+        })
+    bundle.update(b"\0")
+
+bundle_sha256 = bundle.hexdigest()
+matches = [
+    label
+    for label, expected_sha256 in CANDIDATE_BUNDLES.items()
+    if bundle_sha256 == expected_sha256
+]
+
+spec = importlib.util.find_spec("dashboards")
+resolution = {
+    "dashboards_spec_origin": (
+        str(Path(spec.origin).resolve())
+        if spec is not None and spec.origin
+        else None
+    ),
+    "dashboards_search_locations": (
+        [str(Path(p).resolve()) for p in spec.submodule_search_locations]
+        if spec is not None and spec.submodule_search_locations
+        else []
+    ),
+    "expected_init_path": str(paths["__init__.py"].resolve()),
+}
+resolution["spec_origin_matches_hashed_init"] = (
+    resolution["dashboards_spec_origin"] == resolution["expected_init_path"]
+)
+
+runtime = {
+    "import_ok": False,
+    "import_error": None,
+    "python_executable": sys.executable,
+    "package_version": None,
+    "engine_version": None,
+    "package_file": None,
+    "engine_file": None,
+    "package_all": None,
+    "feature_flags": {},
+    "signatures": {},
+}
+
+feature_names = [
+    "run_pull",
+    "build_dashboard",
+    "refresh_dashboard",
+    "launch_clean_refresh",
+    "audit_dashboard_layout",
+    "_audit_dashboard_layout",
+    "inspect_dashboard",
+    "apply_manifest_operations",
+    "apply_persisted_script_operations",
+    "synchronize_refresh_frequency",
+    "list_dashboard_versions",
+    "restore_dashboard_version",
+    "render_dashboard",
+    "prepare_manifest",
+    "match_targets",
+]
+
+try:
+    dashboards = importlib.import_module("dashboards")
+    engine = importlib.import_module("dashboards.echart_dashboard")
+    runtime["import_ok"] = True
+    runtime["package_version"] = getattr(dashboards, "__version__", None)
+    runtime["engine_version"] = getattr(engine, "ENGINE_VERSION", None)
+    runtime["package_file"] = str(Path(dashboards.__file__).resolve())
+    runtime["engine_file"] = str(Path(engine.__file__).resolve())
+    package_all = getattr(dashboards, "__all__", None)
+    runtime["package_all"] = (
+        list(package_all) if isinstance(package_all, (list, tuple)) else None
+    )
+    runtime["feature_flags"] = {
+        name: hasattr(dashboards, name) for name in feature_names
+    }
+    for name in feature_names:
+        obj = getattr(dashboards, name, None)
+        if callable(obj):
+            try:
+                runtime["signatures"][name] = str(inspect.signature(obj))
+            except (TypeError, ValueError) as exc:
+                runtime["signatures"][name] = f"UNAVAILABLE: {type(exc).__name__}: {exc}"
+except Exception as exc:
+    runtime["import_error"] = f"{type(exc).__name__}: {exc}"
+
+present = [item for item in records if item["present"]]
+missing = [item["logical_path"] for item in records if not item["present"]]
+result = {
+    "classification": {
+        "status": (
+            "EXACT_LOCAL_BUNDLE_MATCH"
+            if len(matches) == 1
+            else "NO_EXACT_LOCAL_BUNDLE_MATCH"
+        ),
+        "exact_match": matches[0] if len(matches) == 1 else None,
+        "all_matches": matches,
+        "bundle_sha256": bundle_sha256,
+        "rule": (
+            "Do not choose a nearest candidate. No exact match means the "
+            "installation is newer, older, incomplete, or mixed."
+        ),
+    },
+    "inventory": {
+        "expected_production_files": len(EXPECTED),
+        "present_production_files": len(present),
+        "missing_logical_paths": missing,
+        "total_present_bytes": sum(item["bytes"] for item in present),
+        "test_prompts_included": False,
+        "pycache_included": False,
+    },
+    "resolution": resolution,
+    "runtime": runtime,
+    "files": records,
+}
+
+print(json.dumps(result, indent=2, sort_keys=True))
+```
+
+Return the complete JSON stdout verbatim in one fenced JSON block. Then add one plain sentence:
+
+- If status is EXACT_LOCAL_BUNDLE_MATCH: “The installed ECharts production bundle exactly matches &lt;exact_match&gt;.”
+- If status is NO_EXACT_LOCAL_BUNDLE_MATCH: “The installed ECharts production bundle does not exactly match any supplied local candidate; do not assign it a version label.” Also call out missing files, an import failure, or an import-path mismatch if any.
+
+Do not summarize away any file hashes, paths, sizes, line counts, feature flags, or signatures. If part of this prompt cannot be answered, add a brief “## Could not resolve” section at the end.</textarea>
+    </section>
+  </main>
+
+  <script>
+    const button = document.getElementById("copy-prompt");
+    const prompt = document.getElementById("prism-prompt");
+    const status = document.getElementById("copy-status");
+    button.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(prompt.value);
+      status.textContent = "Prompt copied.";
+      setTimeout(() => { status.textContent = ""; }, 2200);
+    });
+  </script>
+</body>
+</html>
