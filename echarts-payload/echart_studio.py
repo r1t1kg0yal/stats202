@@ -63,7 +63,7 @@ if str(_here) not in sys.path:
 
 from config import (
     THEMES, PALETTES, DIMENSION_PRESETS, TYPOGRAPHY_OVERRIDES,
-    get_theme, list_themes,
+    get_theme, list_themes, resolve_theme,
     get_palette, list_palettes, palette_colors,
     get_dimension_preset, get_typography_override, list_dimensions,
     MAX_DASHBOARD_DECIMALS, clamp_decimals,
@@ -3823,6 +3823,80 @@ def build_heatmap(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str,
     return opt
 
 
+def build_geo_map(df, mapping: Dict[str, Any],
+                  ctx: BuilderContext) -> Dict[str, Any]:
+    """Build a choropleth against an explicitly registered GeoJSON asset."""
+    region = mapping.get("region")
+    value = mapping.get("value")
+    map_name = mapping.get("map")
+    if not region or not value or not map_name:
+        raise ValueError(
+            "geo_map: mapping requires 'region', 'value', and 'map'"
+        )
+    if df is None:
+        raise ValueError("geo_map: DataFrame is required")
+    _ensure_columns(df, [region, value], "geo_map")
+    aliases = mapping.get("_region_aliases")
+    aliases = aliases if isinstance(aliases, dict) else {}
+    data = []
+    values = []
+    for name, raw_value in zip(
+        _col_to_list(df, region), _col_to_list(df, value)
+    ):
+        if name is None or raw_value is None:
+            continue
+        resolved_name = aliases.get(str(name), str(name))
+        data.append({"name": resolved_name, "value": raw_value})
+        if _is_finite(raw_value):
+            values.append(float(raw_value))
+    value_min = mapping.get(
+        "value_min", min(values) if values else 0
+    )
+    value_max = mapping.get(
+        "value_max", max(values) if values else 1
+    )
+    if value_min == value_max:
+        value_max = value_min + 1
+    palette = (
+        list(ctx.palette_colors)
+        if ctx.palette_kind in ("sequential", "diverging")
+        else palette_colors_safe("gs_blues")
+    )
+    opt = _base_option(ctx)
+    opt.pop("xAxis", None)
+    opt.pop("yAxis", None)
+    opt.pop("grid", None)
+    opt["legend"]["show"] = False
+    opt["tooltip"] = {
+        "show": True,
+        "trigger": "item",
+        "formatter": "{b}: {c}",
+    }
+    opt["visualMap"] = {
+        "min": value_min,
+        "max": value_max,
+        "calculable": True,
+        "orient": mapping.get("visual_map_orient", "vertical"),
+        "left": mapping.get("visual_map_left", "left"),
+        "bottom": mapping.get("visual_map_bottom", 20),
+        "inRange": {"color": palette},
+    }
+    opt["series"] = [{
+        "type": "map",
+        "map": str(map_name),
+        "name": mapping.get("series_name", str(value)),
+        "data": data,
+        "roam": bool(mapping.get("roam", False)),
+        "selectedMode": mapping.get("selected_mode", False),
+        "emphasis": {"label": {"show": True}},
+        "itemStyle": {
+            "borderColor": resolve_theme(ctx.theme_name)["semantic"]["surface"],
+            "borderWidth": 0.6,
+        },
+    }]
+    return opt
+
+
 def _corr_window_days(window: str) -> Optional[int]:
     """Parse a window token like '63d' / 'all'. Returns the day count
     or None when the token is 'all' / unparseable."""
@@ -6553,6 +6627,7 @@ _BUILDER_DISPATCH = {
     "scatter_studio":     build_scatter_studio,
     "area":               build_area,
     "heatmap":            build_heatmap,
+    "geo_map":            build_geo_map,
     "correlation_matrix": build_correlation_matrix,
     "pie":                partial(build_pie, donut=False),
     "donut":              partial(build_pie, donut=True),

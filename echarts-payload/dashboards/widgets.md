@@ -9,13 +9,14 @@
 
 The closed widget enum is:
 
-`chart`, `kpi`, `table`, `pivot`, `stat_grid`, `tool`, `note`, `markdown`, `image`, `divider`
+`chart`, `kpi`, `table`, `data_grid`, `pivot`, `stat_grid`, `tool`, `note`, `markdown`, `image`, `divider`
 
 | Widget | Purpose |
 |---|---|
-| `chart` | ECharts visualization; see [charts.md](charts.md#chart-type-catalog-30) |
+| `chart` | ECharts visualization; see [charts.md](charts.md#chart-type-catalog-31) |
 | `kpi` | One current dataset-bound value, optional delta and sparkline |
 | `table` | Sortable/searchable records with formatting and row detail |
+| `data_grid` | Full-width, virtualized large-screen records surface |
 | `pivot` | Viewer-configurable multidimensional aggregation |
 | `stat_grid` | Compact grid of dataset-bound statistics |
 | `tool` | Interactive calculator; see [widget_tool.md](widget_tool.md#tool-definition) |
@@ -24,7 +25,7 @@ The closed widget enum is:
 | `image` | Image by `src` or `url` |
 | `divider` | Full-width visual separator |
 
-Every widget needs a stable unique `id` and integer width `w`. Non-chart widths may be 1–12; chart widths are 4 or 6. A row's widths must sum to at most 12.
+Every widget needs a stable unique `id` and integer width `w`. Non-chart widths may be 1–12; standard chart widths are 4 or 6, while `hero: true` permits one full-width chart. `data_grid` is always full-width. A row's widths must sum to at most 12.
 
 ## KPI
 
@@ -141,6 +142,27 @@ Column fields include:
 
 Table controls may define searchable/sortable columns, frozen first column, and visible-column defaults. Pre-aggregate or narrow tables above 1,000 rows; 5,000 rows is blocking.
 
+### Virtualized data grid
+
+Use `data_grid` when a full-width analytical screen needs hundreds or thousands of rows without placing every row in the DOM:
+
+```python
+{
+    "widget": "data_grid",
+    "id": "security_grid",
+    "w": 12,
+    "h_px": 620,
+    "title": "Security universe",
+    "dataset_ref": "securities",
+    "columns": security_columns,
+    "page_size": 100,
+    "max_rows": 5000,
+    "searchable": True,
+}
+```
+
+`data_grid` shares the table column, sorting, searching, filter, row-detail, CSV, and Excel contracts. Author `columns` as objects such as `{"field": "spread_bp", "label": "Spread", "format": "bps"}`; bare string columns are not accepted on an inline table or data grid. It is always virtualized: rows are sliced into `page_size` chunks and appended near the scroll boundary, while PDF/print expands the complete filtered/sorted result up to `max_rows`. `page_size` is 20–1,000, `h_px` is 240–1,200, and `max_rows` remains capped at 5,000. Do not raise data ceilings to compensate for an unbounded product query; slice or aggregate upstream first.
+
 ### Row details
 
 Simple popup:
@@ -165,17 +187,26 @@ Rich popup:
             "sections": [
                 {
                     "type": "chart",
+                    "id": "country_history_popup",
                     "dataset": "country_history",
                     "row_key": "country",
                     "filter_field": "country",
-                    "mapping": {"x": "date", "y": "yield_10y"},
+                    "chart_type": "line",
+                    "mapping": {
+                        "x": "date",
+                        "y": "yield_10y",
+                        "zoom": True,
+                    },
                 },
                 {
                     "type": "table",
                     "dataset": "country_events",
                     "row_key": "country",
                     "filter_field": "country",
-                    "columns": ["date", "event"],
+                    "columns": [
+                        {"field": "date", "label": "Date"},
+                        {"field": "event", "label": "Event"},
+                    ],
                 },
             ]
         },
@@ -189,22 +220,22 @@ The closed `detail.sections[].type` enum is:
 
 | Section type | Authoring contract |
 |---|---|
-| `stats` | `fields` list of strings or `{field, label?, format?, prefix?, suffix?, sub?}` |
+| `stats` | `fields` from the clicked source row, as strings or `{field, label?, format?, prefix?, suffix?, sub?}` |
 | `markdown` | `template` or `content`; `{column}` tokens expand from the clicked row |
-| `chart` | `dataset`, `row_key`, `filter_field`, `mapping`; optional `chart_type` (`line`, `bar`, or `area`) |
+| `chart` | `dataset`, `row_key`, `filter_field`, `mapping`; optional stable `id`; optional `chart_type` (`line` default, `bar`, or `area`); optional `series_colors`; optional `mapping.zoom`, `mapping.smooth`, `mapping.color`, and `mapping.stack` |
 | `table` | `dataset`, `row_key`, `filter_field`, optional column objects and `max_rows` |
 | `kv` / `kv_table` | `fields` list from the clicked row; optional `title` |
 
-`stat_grid` is not a popup section kind; express the same information with `type: "stats"`. If another rich shape is unsupported, preserve its analytical content as a supported `stats`/`markdown`/`chart`/`table`/`kv` section or as an inline dashboard widget. Popup charts have independent legend state: do not author popup legend synchronization. When shared legend visibility is required, place both charts inline and connect their ids with `links[].sync: ["legend"]`.
+`stat_grid` is not a popup section kind; express the same information with `type: "stats"`. If another rich shape is unsupported, preserve its analytical content as a supported `stats`/`markdown`/`chart`/`table`/`kv` section or as an inline dashboard widget. `row_click.title_field` is optional and defaults to the first displayed column; set it to another originating-dataset field when that field should identify the rich popup. Give a popup chart a stable `id` when a filter or manifest link targets it. Popup and inline charts use the same controller, including theme, legend, smoothing, zoom, click, brush, filtering, and `links[]` behavior.
 
 For every rich chart/table section:
 
 1. `dataset` names a declared detail dataset.
-2. `row_key` exists on the originating table dataset.
+2. `row_key` exists on the full originating table dataset; it may remain off-grid and need not appear in `columns`.
 3. `filter_field` exists on the detail dataset.
 4. Representative `row_key` and `filter_field` values overlap after type normalization.
 
-The join is clicked row `row_key` → detail `filter_field`. Missing datasets/columns, non-overlapping keys, and empty explicit popup objects are blocking diagnostics. Use `row_click: false` only for deliberate opt-out.
+The join is clicked row `row_key` → detail `filter_field`. Missing datasets/columns, non-overlapping keys, and empty explicit popup objects are blocking diagnostics. A successful strict compile therefore proves representative overlap; `inspect_dashboard(FOLDER)["findings"]` must contain no `popup_section_keys_no_overlap` finding before delivery. Use `row_click: false` only for deliberate opt-out.
 
 ## Pivot
 
@@ -224,7 +255,7 @@ The join is clicked row `row_key` → detail `filter_field`. Missing datasets/co
 }
 ```
 
-`dataset_ref`, `row_dim_columns`, `col_dim_columns`, and `value_columns` are required. Dimension/value lists must be non-empty. `color_scale` is `sequential`, `diverging`, `auto`, or `{min, max, palette}`. `show_totals` is boolean and controls the supported paired row-and-column totals. Independent `row_totals` or `column_totals` keys are invalid.
+`dataset_ref`, `row_dim_columns`, `col_dim_columns`, and `value_columns` are required. Dimension/value lists must be non-empty. `color_scale` is `sequential`, `diverging`, `auto`, or `{min?, max?, palette?, kind?}`; palette names are validated and must be sequential/diverging. The same resolved theme scale is used when the dictionary omits a palette. `show_totals` is boolean and controls the supported paired row-and-column totals. Independent `row_totals` or `column_totals` keys are invalid.
 
 Use a pivot when the viewer needs to choose dimensions/aggregation. Use a table when the product has one intended comparison.
 

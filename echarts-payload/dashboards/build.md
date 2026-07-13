@@ -66,15 +66,36 @@ for pull_name, csv_stem in {"rates": "rates"}.items():
 
 Tool 1 rules:
 
-- Pull only verified identifiers. An exact expression/code/client call supplied by the user or test prompt is authoritative for that task; preserve it byte-for-byte. If no identifier is supplied or verified, stop at the data boundary and ask for it—never infer a vendor code from a label or naming pattern.
+- Pull only verified identifiers. An exact expression/code/client call supplied by the user or test prompt is authoritative for that task; preserve it byte-for-byte. If no identifier is supplied or verified, stop at the external-data boundary and ask for it—never infer a vendor code from a label or naming pattern. An exact user-supplied deterministic fixture is itself the verified source and needs no vendor identifier.
 - `labels=` is the preferred place to establish plain-English persisted columns.
 - Match the eventual template dataset key to the complete emitted CSV stem.
 - Import each source client or helper used by the script.
 - Verify that the current pull invocation succeeded, then verify non-empty rows, columns, dtypes, latest dates, units, and economically plausible values. A retained pre-existing CSV is not current-cycle success.
-- Pull functions are independent named units. Group calls only when they share source, cadence, and failure semantics.
+- Pull functions are independent named units. Group calls when they share source, cadence, and failure semantics; one such function may emit several fixed terminal CSVs through a local writer helper. The attachment engine follows literal helper arguments and finite literal loops, so do not split a coherent pull merely to expose each file.
+- Every output stem must be statically resolvable because template dataset keys are fixed. If the engine reports `producer_output_unresolved`, expose the fixed literal at the standard call, local helper call, assignment/update, or finite literal loop; do not add dummy assignments.
 - Persist every renderer input. An in-memory rename or derived column not written or transformed in `build.py` disappears on refresh.
 - Only CSV files become build datasets. NY Fed and client returns must pass through `save_artifact` or an explicit CSV write. A dictionary or empty list saved as JSON is an artifact, not a dataset.
 - Metadata sidecars and `df.attrs` are not loaded and never populate `field_provenance`; author lineage in each template dataset entry.
+
+Canonical fixture pull:
+
+```python
+from core.s3_bucket_manager import s3_manager
+import pandas as pd
+from prism_mcp.utils.data_functions import save_artifact
+
+SESSION_PATH = "users/{kerberos}/dashboards/{dashboard_id}"
+
+def pull_fixture():
+    frame = pd.DataFrame(EXACT_USER_SUPPLIED_ROWS)
+    save_artifact(frame, name="fixture", output_path=f"{SESSION_PATH}/data",
+                  s3_manager=s3_manager)
+
+PULLS = {"fixture": pull_fixture}
+```
+
+Replace only `EXACT_USER_SUPPLIED_ROWS` and the stable stem; preserve supplied
+values and nulls without normalization.
 
 Pull primitives and stems:
 
@@ -204,10 +225,31 @@ Template rules:
 - Template dataset entries are slots, not embedded live rows.
 - Every displayed dataset follows the lineage placement owned by [pipelines.md](pipelines.md#field-provenance).
 - Set the same refresh-frequency token in metadata and the registry.
+- For a deterministic user fixture, use source
+  `User-supplied deterministic fixture`, state that construction in
+  `metadata.methodology`, and use `refresh_frequency: "manual"` unless the
+  user supplied a real refresh cadence. Do not invent an external source.
 - Tool `compute_js` lives in the template's `tool_def`; transforms do not author or interpolate it.
 - Use `TRANSFORMS = []` when no derivation is needed.
 - Transforms run in list order. Use them for joins, ratios, projections, resampling, and derived datasets from existing pulls.
 - A transform never performs a network pull or writes dashboard outputs.
+
+Layout composition remains a flat, collision-checked `rows` list. Add named visual hierarchy without nesting widgets by declaring non-overlapping row ranges beside those rows:
+
+```python
+"groups": [
+    {
+        "id": "macro_regime",
+        "title": "Macro regime",
+        "description": "Growth, inflation, and policy",
+        "start_row": 0,
+        "end_row": 2,
+        "collapsible": False,
+    },
+]
+```
+
+`groups` is valid on a grid layout or inside an individual tab. Group ids are globally unique; ranges are zero-based, inclusive, in bounds, and may not overlap. Use one `hero: true, w: 12` chart in its own row only when the chart is the page's decision-critical focal point. Standard charts remain 4/12 or 6/12. Use `data_grid` for a full-width virtualized records surface rather than overloading a chart row.
 
 At an adaptive manifest phase, every dataset referenced by the proposed operation must already be present in the current compiled/persisted data. If it is not, route to the persisted pipeline owner and provision the producer before applying the manifest operation; `recompile=False` does not make missing phase data legal.
 
@@ -327,9 +369,19 @@ if status.get("status") != "success":
 inspection = inspect_dashboard(FOLDER)
 if inspection["files"]["missing"] or inspection["attachment_gaps"]:
     raise RuntimeError(inspection)
+
+dashboard_html = s3_manager.get(f"{FOLDER}/dashboard.html").decode("utf-8")
+for required_id in ('id="export-chart-data"', 'id="export-print"'):
+    if required_id not in dashboard_html:
+        raise RuntimeError(f"missing export action: {required_id}")
 ```
 
 There is no universal per-pull refresh timeout. Do not impose an arbitrary authoring timeout; source-specific client timeouts still apply, and the subprocess plus status record provide terminal completion evidence. Require each expected CSV to have been produced successfully and verified non-empty in the current cycle so a stale retained file cannot qualify the build.
+
+The compile gate proves both export actions are present. In the browser gate,
+download chart-data CSV and trigger print once: print must use the light theme,
+mount every tab, open collapsed groups, and expand each `data_grid` to its
+complete filtered/sorted result up to `max_rows`.
 
 ## Portal handoff
 
@@ -354,4 +406,5 @@ The user message contains the live URL and a concise product description. Do not
 - [ ] Registry ownership is respected; no nonexistent manifest-pointer helper is called.
 - [ ] Subprocess exits zero and `refresh_status.status` is `success`.
 - [ ] Final inspection has no missing required files or attachment gaps.
+- [ ] Chart-data CSV and PDF/print actions are present; the browser export gate passes.
 - [ ] The exact portal URL is handed off in product language.

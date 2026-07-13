@@ -75,7 +75,7 @@ manifest = {
 |---|---|
 | `id` | Stable folder leaf and registry id |
 | `theme` | `gs_clean`; dark mode is viewer-controlled |
-| `palette` | `gs_primary`, `gs_blues`, or `gs_diverging` |
+| `palette` | `gs_primary`, `gs_colorblind`, `gs_blues`, `gs_diverging`, or `gs_diverging_accessible` |
 | `metadata.kerberos` | Folder owner; engine stamps it during typed mutation |
 | `metadata.dashboard_id` | Folder leaf; engine stamps it during typed mutation |
 | `metadata.methodology` | Required non-empty markdown |
@@ -85,6 +85,7 @@ manifest = {
 | `metadata.live_refresh_seconds` | Browser polling cadence; `0` disables, effective floor 15 |
 | `metadata.time.data_domain_freq` | `daily`, `weekly`, `monthly`, `quarterly`, or `annual`; set only to correct inference |
 | `datasets` | Named slots populated from CSVs/transforms |
+| `map_assets` | Self-contained, validated GeoJSON assets used by `geo_map`; never fetched remotely |
 | `datasets.<name>.field_provenance` | Optional per-column lineage authored in the template and owned by [pipelines.md](dashboards/pipelines.md#field-provenance); never inferred from sidecars or `df.attrs` |
 | `filters` / `links` | See [filters.md](dashboards/filters.md#filter-catalog) |
 | `layout` | Grid or tabs; every row is a list of widgets |
@@ -105,6 +106,8 @@ from dashboards import (
     list_dashboard_versions,
     restore_dashboard_version,
     apply_manifest_operations,
+    apply_persisted_script_operations,
+    launch_clean_refresh,
     synchronize_refresh_frequency,
     sync_refresh_frequency,
     compile_dashboard,
@@ -125,14 +128,16 @@ from dashboards import (
 | `run_pull(folder, pull_name)` | Execute one named `PULLS` entry and persist its side effects |
 | `build_dashboard(folder, expected_current_version_id=None)` | Load template and CSVs, run `TRANSFORMS`, strict-compile, write outputs, and record a changed recipe; pass the inspected current version id for a changed existing recipe, while unchanged refreshes and the first baseline need none |
 | `refresh_dashboard(folder)` | Run all pulls, then `build_dashboard`; there is no universal per-pull refresh timeout |
+| `launch_clean_refresh(folder)` | Launch the isolated canonical runner, own S3 logs/status/completion metadata, block to completion, and raise on failure |
 | `audit_dashboard_layout(folder)` | Require the five canonical paths; return `True` |
-| `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, definition-version, graph, refresh, registry, telemetry, and finding report |
+| `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, script hashes, definition-version, graph, refresh, registry, telemetry, and finding report |
 | `list_dashboard_versions(folder, limit=20, timezone_name="UTC")` | Return recent immutable definition versions with UTC/local timestamps, local calendar date, product summaries, and current/previous markers; pass the user’s IANA timezone for relative-date requests |
 | `restore_dashboard_version(folder, version_id, expected_current_version_id=...)` | Restore one exact listed definition, compile it with current persisted data, and preserve every other version |
-| `apply_manifest_operations(folder, operations, recompile=True, expected_sha256=None, expected_current_version_id=None)` | Ordered typed template transaction with template-hash and current-version guards, dependent-reference cleanup, optional compile/version, and rollback |
+| `apply_manifest_operations(folder_or_state, operations, recompile=True, ...)` | Ordered typed template transaction; an inspection state supplies both guards directly |
+| `apply_persisted_script_operations(folder_or_state, script, operations, ...)` | Typed fragment transaction for `pull_data`/`build`: hash gate, syntax/pipeline check, atomic write, strict compile, exact rollback |
 | `synchronize_refresh_frequency(folder, value, expected_sha256=None, expected_current_version_id=None)` | Atomically align template metadata and the matching registry entry; existing versioned dashboards require the inspected current version id; `sync_refresh_frequency` is the alias |
 | `validate_manifest(manifest)` | Structural validation only |
-| `compile_dashboard(manifest, strict=True, ...)` | Compile an in-memory manifest; always check `result.success` |
+| `compile_dashboard(manifest, strict=True, ...)` | Compile an in-memory manifest; strict mode raises when any error is present and includes all error/warning diagnostics in that exception; warnings alone succeed and remain on `DashboardResult.diagnostics` / `.quality_findings` |
 | `manifest_template(manifest)` | Strip live data while retaining dataset slots |
 | `populate_template(template, datasets)` | Bind current datasets into a template |
 | `load_manifest(path)` / `save_manifest(manifest, path)` | Read or persist a manifest through the canonical S3 manager |
@@ -144,30 +149,41 @@ substrate, not public PRISM authoring APIs.
 
 ### Persisted-script execution namespaces
 
-In-process `run_pull` / `build_dashboard` inject `s3_manager`, the supported
-pull helpers, `save_artifact`, `pull_nyfed_data`, `pd`, and `np`. Clean
-refresh discovery injects only `s3_manager`, the supported pull helpers, and
-`save_artifact`. Persisted `pull_data.py` and `build.py` must explicitly
-import every name they use; treat an in-process success that depends on
-injection as a defect until namespace parity is fixed.
+In-process `run_pull` / `build_dashboard` and clean refresh discovery use
+the same namespace: `s3_manager`, the supported pull helpers,
+`pull_nyfed_data`, `save_artifact`, `pd`, and `np`. Import other client
+modules explicitly.
+
+The refresh-attachment contract is registered-call-graph based. The engine
+starts only from literal module-level `PULLS` / `TRANSFORMS`, follows local
+helpers, and resolves fixed output names through assignments, helper
+parameters, f-strings, dictionary/list/tuple loops, and
+`datasets.update({...})`. One coherent pull may emit several terminal CSVs.
+Runtime-dependent output names block with `producer_output_unresolved`; expose
+the fixed key at a helper call or finite literal loop rather than splitting a
+same-source pipeline or adding dummy transform assignments.
 
 ## Layouts
 
 ```python
 # Grid
-{"kind": "grid", "cols": 12, "rows": [[widget, widget], [widget]]}
+{"kind": "grid", "cols": 12, "rows": [[widget, widget], [widget]],
+ "groups": [{"id": "regime", "title": "Regime",
+             "start_row": 0, "end_row": 1}]}
 
 # Tabs
 {"kind": "tabs", "cols": 12, "tabs": [
     {"id": "overview", "label": "Overview",
-     "description": "Headline view", "rows": [[widget, widget]]},
+     "description": "Headline view", "rows": [[widget, widget]],
+     "groups": []},
 ]}
 ```
 
 - Each row is a list of widget objects.
 - Row widths sum to at most `cols`.
-- Chart widgets are exactly two-up (`w=6`) or three-up (`w=4`) on a 12-column layout. Omitted chart width defaults to the legal two-up width.
+- Standard chart widgets are exactly two-up (`w=6`) or three-up (`w=4`) on a 12-column layout. Omitted chart width defaults to two-up. One decision-critical chart may set `hero: true, w: 12` and occupy its own row.
 - Non-chart widgets may span any legal width.
+- `data_grid` is full-width and virtualized. Named `groups` are non-overlapping inclusive row ranges with unique ids and required titles.
 - Use tabs when the information has distinct jobs; use a grid for one coherent scan path.
 - Stable tab and widget ids are selectors, state keys, and relationship targets. Do not rename them casually.
 
@@ -183,7 +199,15 @@ injection as a defect until namespace parity is fixed.
 | `id` | Optional unique DOM id |
 | `primary` / `icon` / `title` | Styling and tooltip |
 
-Reserved ids: `refresh-btn`, `share-btn`, `download-btn`, `download-menu`, `methodology-btn`, `theme-toggle`, `export-all`, `export-dashboard`, `export-excel`, `data-as-of`, `data-as-of-val`, `header-actions`.
+Reserved ids: `refresh-btn`, `share-btn`, `download-btn`, `download-menu`, `methodology-btn`, `theme-toggle`, `export-all`, `export-dashboard`, `export-chart-data`, `export-print`, `export-excel`, `data-as-of`, `data-as-of-val`, `header-actions`.
+
+Every successful strict compile emits `export-chart-data` and `export-print`;
+their presence is part of the compiler chrome contract, not a manifest option.
+Runtime verification belongs in the browser gate: chart-data CSV must download
+the bound source schema, and `beforeprint` must mount every tab and temporarily
+open collapsed groups under the light print theme. A printed `data_grid`
+contains its complete filtered/sorted result up to `max_rows`, not only the
+currently virtualized screen page.
 
 ## Registry shape
 
@@ -254,7 +278,7 @@ context-registry entry.
 | Manifest operations | [template_crud.md](dashboards/template_crud.md#manifest-operations) |
 | Pull/build script edits | [pipelines.md](dashboards/pipelines.md#pipeline-reuse-decision) |
 | Archetypes and transforms | [recipes.md](dashboards/recipes.md#data-archetypes) |
-| Chart primitives | [charts.md](dashboards/charts.md#chart-type-catalog-30) |
+| Chart primitives | [charts.md](dashboards/charts.md#chart-type-catalog-31) |
 | Non-tool widgets and popups | [widgets.md](dashboards/widgets.md#widget-kinds) |
 | Tool widgets | [widget_tool.md](dashboards/widget_tool.md#tool-definition) |
 | Filters and links | [filters.md](dashboards/filters.md#filter-catalog) |

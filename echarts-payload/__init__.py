@@ -14,29 +14,39 @@ those n-pack composite helpers belong to Altair's static-PNG surface.
 
 Public surface PRISM imports:
 
-    # Folder operations -- the three entry points for every dashboard op.
-    # Operate on a dashboard folder (S3 path); call from PRISM ephemeral
-    # code OR from refresh_runner.py.
+    # Folder, inspection, transaction, and version operations.
     from dashboards import (
         run_pull,                  # run ONE pull from PULLS (in-process)
         build_dashboard,           # template + CSVs + transforms -> compile
         refresh_dashboard,         # all PULLS + build_dashboard
+        launch_clean_refresh,      # isolated runner + S3 logs/status
+        inspect_dashboard,
+        apply_manifest_operations,
+        apply_persisted_script_operations,
+        synchronize_refresh_frequency,
         list_dashboard_versions,   # timestamped definition summaries
         restore_dashboard_version, # older definition + current data
     )
 
-    # Compile primitives (used by build_dashboard internally; PRISM rarely
-    # calls these directly under the new model).
+    # Compile primitives and retained builder compatibility surface.
     from dashboards import (
         compile_dashboard,         # JSON manifest -> dashboard HTML + JSON
+        render_dashboard,
         validate_manifest,         # dry-run structural validator
+        prepare_manifest,
         manifest_template,         # strip data -> reusable template
         populate_template,         # template + fresh DataFrames -> manifest
         df_to_source,              # DataFrame -> canonical list-of-lists
+        match_targets,
         load_manifest, save_manifest,
+        Dashboard, Tab, ChartRef, KPIRef, TableRef,
     )
-    # chart_data_diagnostics is exposed via the same module for post-
-    # compile linting (empty datasets, all-NaN columns, etc.).
+
+``chart_data_diagnostics``, the manifest/result/diagnostic types, and the
+canonical ISO/refresh-frequency helpers are exported from the same package.
+The builder classes and lower-level render/prepare helpers remain public for
+installed-call-site compatibility; new PRISM authoring should prefer the
+folder operations and high-level compile path above.
 
 Sibling scripts (also part of the payload):
 
@@ -76,11 +86,10 @@ normalised to the same on-disk form by the compiler:
     manifest["datasets"]["rates"] = {"source": df_to_source(df_rates)}
 
 Python runtime dependencies are stdlib + pandas + numpy. Persisted
-dashboard scripts are executed through two namespaces that are not yet
-identical: the in-process engine injects ``pull_nyfed_data``, ``pd``, and
-``np`` in addition to the standard data functions, while
-``refresh_runner._build_exec_namespace`` does not. Author persisted scripts
-with explicit imports until that integration gap is closed.
+dashboard scripts execute through one canonical namespace in both
+in-process folder operations and clean refresh discovery. It exposes
+``s3_manager``, the supported pull helpers, ``pull_nyfed_data``,
+``save_artifact``, ``pd``, and ``np``.
 
 The emitted HTML inlines ECharts (~1MB) read from the
 local `web/backend_django/news/static/js/echarts.js` mirror. Code retains
@@ -95,28 +104,124 @@ dependencies.
 from __future__ import annotations
 
 from dashboards.echart_dashboard import (  # noqa: E402,F401
+    # Folder operations.
     run_pull,
     build_dashboard,
     refresh_dashboard,
+    launch_clean_refresh,
+    # Compile primitives.
     compile_dashboard,
+    render_dashboard,
     validate_manifest,
+    prepare_manifest,
     manifest_template,
     populate_template,
     df_to_source,
+    match_targets,
     load_manifest,
     save_manifest,
     chart_data_diagnostics,
+    # Folder / registry / template transactions.
     audit_dashboard_layout,
     apply_manifest_operations,
+    apply_persisted_script_operations,
+    synchronize_refresh_frequency,
+    sync_refresh_frequency,
     inspect_dashboard,
     list_dashboard_versions,
     restore_dashboard_version,
-    synchronize_refresh_frequency,
-    sync_refresh_frequency,
-    _AUDIT_REQUIRED_PATHS,
-    ENGINE_VERSION,
+    # Python builder sugar retained for installed-call-site compatibility.
+    Dashboard,
+    Tab,
+    ChartRef,
+    KPIRef,
+    TableRef,
+    MarkdownRef,
+    NoteRef,
+    DividerRef,
+    GlobalFilter,
+    Link,
+    # Result / diagnostic / error types.
     Manifest,
     DashboardResult,
+    Diagnostic,
+    RefreshAttachmentError,
+    DashboardVersionRestoreError,
+    # Package metadata / private qualification contract.
+    _AUDIT_REQUIRED_PATHS,
+    ENGINE_VERSION,
+)
+from dashboards.dashboards_time import (  # noqa: E402,F401
+    utcnow,
+    parse_iso,
+    format_iso,
+    parse_freq,
+    freq_delta,
+    is_stale,
+    UTC,
+    ET,
+    REFRESH_FREQ_DELTAS,
 )
 
 __version__ = ENGINE_VERSION
+
+# Retained for the installed PRISM callers shown in the production snapshot.
+# New callers should use the public ``audit_dashboard_layout`` name.
+_audit_dashboard_layout = audit_dashboard_layout
+
+__all__ = [
+    "__version__",
+    # Folder operations.
+    "run_pull",
+    "build_dashboard",
+    "refresh_dashboard",
+    "launch_clean_refresh",
+    # Compile primitives.
+    "compile_dashboard",
+    "render_dashboard",
+    "validate_manifest",
+    "prepare_manifest",
+    "manifest_template",
+    "populate_template",
+    "df_to_source",
+    "match_targets",
+    "load_manifest",
+    "save_manifest",
+    "chart_data_diagnostics",
+    # Folder / registry / template transactions.
+    "audit_dashboard_layout",
+    "apply_manifest_operations",
+    "apply_persisted_script_operations",
+    "synchronize_refresh_frequency",
+    "sync_refresh_frequency",
+    "inspect_dashboard",
+    "list_dashboard_versions",
+    "restore_dashboard_version",
+    # Python builder sugar.
+    "Dashboard",
+    "Tab",
+    "ChartRef",
+    "KPIRef",
+    "TableRef",
+    "MarkdownRef",
+    "NoteRef",
+    "DividerRef",
+    "GlobalFilter",
+    "Link",
+    # Result / diagnostic / error types.
+    "Manifest",
+    "DashboardResult",
+    "Diagnostic",
+    "RefreshAttachmentError",
+    "DashboardVersionRestoreError",
+    # Time helpers.
+    "utcnow",
+    "parse_iso",
+    "format_iso",
+    "parse_freq",
+    "freq_delta",
+    "is_stale",
+    "UTC",
+    "ET",
+    "REFRESH_FREQ_DELTAS",
+]

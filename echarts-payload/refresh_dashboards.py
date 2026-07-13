@@ -77,8 +77,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
-import subprocess
 import sys
 import time
 import traceback
@@ -89,12 +87,8 @@ from typing import List, Optional
 from core.common import UserRegistry
 from core.s3_bucket_manager import s3_manager
 from core.user_manifest import UserManifestManager
-from dashboards import refresh_runner as _refresh_runner_module
 from dashboards.dashboards_time import (
     parse_freq, parse_iso, utcnow,
-)
-from prism_mcp.utils.s3_log_streamer import (
-    S3LogPathBuilder, S3LogStreamer,
 )
 
 
@@ -109,16 +103,6 @@ _COOLDOWN_FLOOR = timedelta(seconds=60)
 _COOLDOWN_CEIL = timedelta(hours=1)
 _COOLDOWN_BASE_MULTIPLIER = 5
 
-
-# Path on disk of the single-dashboard runner. Spawned per due
-# dashboard. Resolved once via the canonical Python import (no
-# repo-root walking, no fallback paths).
-_REFRESH_RUNNER_PATH = _refresh_runner_module.__file__
-
-# Subprocess-kind tag passed to S3LogPathBuilder; partitions the
-# subprocess_logs/ key namespace from non-dashboard subprocesses
-# (e.g. ad-hoc jobs scripts).
-_SPAWN_KIND = "dashboard_refresh"
 
 # ============================================================================
 # small print helpers (HIERARCHICAL output: banner per walk + indented
@@ -291,163 +275,29 @@ def _user_registry_entries(kerberos: str) -> list:
 # ============================================================================
 
 def _spawn_runner(folder: str) -> dict:
-    """Spawn ``refresh_runner.py --folder <folder> --log-path <s3_log_key>``
-    and BLOCK until it exits. Per-dashboard subprocess isolation: a
-    failure or hang in one dashboard's refresh cannot CORRUPT another
-    dashboard's state. The cron walks dashboards SEQUENTIALLY --
-    ``proc.wait()`` blocks on each spawn, so a slow Haver pull on
-    dashboard A delays dashboard B on the same cron tick but does not
-    crash it.
+    """Run the shared dashboard-owned clean-refresh launcher."""
+    from dashboards import launch_clean_refresh
 
-    Stdout/stderr drains to an S3 key via ``S3LogStreamer`` (one daemon
-    thread per spawn). The S3 log key is passed to ``refresh_runner.py``
-    via ``--log-path`` so the runner records it verbatim into
-    ``refresh_status.json``. The runner's ``register_completion_marker()``
-    call writes ``completion.json`` so a reader can distinguish
-    still-running / clean-exit / error-exit / parent-died. NO ``/tmp/``
-    fallback -- all subprocess logs live in S3 under
-    ``subprocess_logs/YYYY/MM/DD/...``.
-
-    Returns ``{folder, returncode, elapsed_seconds, log_path,
-    s3_log_key, s3_folder_key}`` on a successful spawn, or the same
-    shape with ``returncode: -1`` and an ``error`` field if the spawn
-    itself failed.
-    """
-    spawn_ts = utcnow()
-    slug = folder.replace("/", "_")
-    folder_key, log_key, metadata_key, _completion_key = S3LogPathBuilder.build(
-        kind=_SPAWN_KIND,
-        session_description=slug,
-        ts=spawn_ts,
-    )
-
-    # Option A - dual-write: the dashboard FOLDER itself is the auditable
-    # session-side destination. A user inspecting
-    # users/<kerb>/dashboards/<name>/ should see the refresh subprocess
-    # log right next to dashboard.html / refresh_status.json instead of
-    # having to chase a centralized subprocess_logs/ key.
-    (session_folder_key,
-     session_log_key,
-     session_metadata_key,
-     _session_completion_key) = S3LogPathBuilder.build_session_side(
-         session_path=folder,
-         kind=_SPAWN_KIND,
-         ts=spawn_ts,
-     )
-
-    env = os.environ.copy()
-    env["PRISM_SUBPROCESS_S3_FOLDER_KEY"] = folder_key
-    env["PRISM_SUBPROCESS_SESSION_FOLDER_KEY"] = session_folder_key
-
-    header = (
-        f"=== refresh_runner spawn ===\n"
-        f"folder: {folder}\n"
-        f"started: {spawn_ts.isoformat()}\n"
-        f"s3_log_key: {log_key}\n"
-        + "=" * 60 + "\n"
-    ).encode("utf-8")
-
-    pipe_r, pipe_w = os.pipe()
-    streamer: Optional[S3LogStreamer] = None
     try:
-        started = time.time()
-        proc = subprocess.Popen(
-            [sys.executable, _REFRESH_RUNNER_PATH,
-             "--folder", folder, "--log-path", log_key],
-            stdout=pipe_w, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            env=env,
-        )
-        # Parent closes its copy of the write end so the streamer's
-        # daemon thread sees EOF as soon as the subprocess exits and
-        # closes its (only remaining) copy.
-        os.close(pipe_w)
-        pipe_w = -1
-
-        # Dual-write: session-side key FIRST (canonical/auditable),
-        # centralized key SECOND (dev-team triage convenience). The
-        # streamer's _flush() PUTs the same bytes to every key in the
-        # list with per-key failure isolation.
-        streamer = S3LogStreamer(
-            fd=pipe_r,
-            s3_log_key=[session_log_key, log_key],
-            header=header,
-        )
-        streamer.start()
-        # streamer's daemon thread now owns pipe_r -- it closes the fd
-        # on EOF / error. We mark it as -1 so the finally block doesn't
-        # double-close.
-        pipe_r = -1
-
-        # Best-effort metadata sidecar. Dual-written to BOTH the
-        # centralized and session-side folders so a reader inspecting
-        # either copy can cross-reference the other. Per-key failures
-        # are isolated.
-        metadata_blob = {
-            "pid":            proc.pid,
-            "started_at":     spawn_ts.isoformat(),
-            "folder":         folder,
-            "s3_log_key":     log_key,
-            "s3_folder_key":  folder_key,
-            "session_s3_log_key":      session_log_key,
-            "session_s3_folder_key":   session_folder_key,
-            "session_s3_metadata_key": session_metadata_key,
-            "kind":           _SPAWN_KIND,
-        }
-        for _md_key in (metadata_key, session_metadata_key):
-            try:
-                s3_manager.put(metadata_blob, _md_key)
-            except Exception as meta_err:
-                print(
-                    f"WARN metadata sidecar write failed "
-                    f"{_md_key}: {meta_err}",
-                    file=sys.stderr, flush=True,
-                )
-
-        rc = proc.wait()
-        elapsed = round(time.time() - started, 2)
-        return {
-            "folder":          folder,
-            "returncode":      rc,
-            "elapsed_seconds": elapsed,
-            "log_path":        session_log_key,  # session-side is canonical
-            "s3_log_key":      log_key,
-            "s3_folder_key":   folder_key,
-            "session_s3_log_key":      session_log_key,
-            "session_s3_folder_key":   session_folder_key,
-            "pid":             proc.pid,
-        }
+        return launch_clean_refresh(folder)
     except BaseException as exc:
-        # Spawn-time failure (executable missing, OS pipe failure,
-        # permission denied, etc.). Record the failure and keep walking;
-        # one bad dashboard cannot crash the whole cron pass.
         print(
             f"SPAWN FAIL {folder}: {type(exc).__name__}: {exc}",
             file=sys.stderr, flush=True,
         )
         print(traceback.format_exc(), file=sys.stderr, flush=True)
         return {
-            "folder":          folder,
-            "returncode":      -1,  # sentinel for spawn-time failure
+            "folder": folder,
+            "returncode": -1,
             "elapsed_seconds": 0.0,
-            "log_path":        session_log_key,
-            "s3_log_key":      log_key,
-            "s3_folder_key":   folder_key,
-            "session_s3_log_key":      session_log_key,
-            "session_s3_folder_key":   session_folder_key,
-            "pid":             None,
-            "error":           f"{type(exc).__name__}: {exc}",
+            "log_path": None,
+            "s3_log_key": None,
+            "s3_folder_key": None,
+            "session_s3_log_key": None,
+            "session_s3_folder_key": None,
+            "pid": None,
+            "error": f"{type(exc).__name__}: {exc}",
         }
-    finally:
-        # Close any pipe ends we still own. After streamer.start() the
-        # daemon thread owns pipe_r (and we set it to -1 above so this
-        # block skips it).
-        for fd in (pipe_r, pipe_w):
-            if fd != -1:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
 
 
 def _update_user_manifests(successful_kerberos: set) -> List[tuple]:

@@ -3,7 +3,7 @@
 - **Context ID:** `echarts.recipes`
 - **Owns:** `recipe.archetype`, `recipe.reshape`, `recipe.transform`
 - **Fetch when:** Routed by `dashboards.md`.
-- **Depends on:** [charts.md](charts.md#chart-type-catalog-30) and [dashboards_hub.md](../dashboards_hub.md#cross-cutting-authoring-judgment).
+- **Depends on:** [charts.md](charts.md#chart-type-catalog-31) and [dashboards_hub.md](../dashboards_hub.md#cross-cutting-authoring-judgment).
 
 This file maps analytical intent and data shape to an authoring pattern. It does not own builds, manifest edits, diagnosis, or persisted script-edit mechanics.
 

@@ -2,9 +2,8 @@
 echarts.config -- single-source style configuration, locked to the
 Goldman Sachs brand identity.
 
-EDIT STYLES HERE. There is exactly one theme (``gs_clean``) and a
-minimal set of Goldman Sachs palettes: one categorical (``gs_primary``),
-one sequential (``gs_blues``), and one diverging (``gs_diverging``).
+EDIT STYLES HERE. ``gs_clean`` has light and dark resolved variants,
+with brand and colorblind-safe categorical/sequential/diverging palettes.
 
     PALETTES                GS palettes (3)
     THEMES                  GS theme (1)
@@ -34,7 +33,7 @@ design system:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 # =============================================================================
@@ -170,6 +169,21 @@ PALETTES: Dict[str, Dict[str, Any]] = {
         "label": "GS Diverging (burgundy-gold-navy)",
         "kind": "diverging",
         "colors": [GS_BURGUNDY, GS_AMBER, GS_PAPER, GS_SKY, GS_NAVY],
+    },
+    "gs_colorblind": {
+        "name": "gs_colorblind",
+        "label": "GS Colorblind Safe (categorical)",
+        "kind": "categorical",
+        "colors": [
+            "#0072B2", "#D55E00", "#009E73", "#CC79A7",
+            "#4C6B8A", "#E69F00", "#6E4B9E", "#157F7D",
+        ],
+    },
+    "gs_diverging_accessible": {
+        "name": "gs_diverging_accessible",
+        "label": "GS Accessible Blue-Orange (diverging)",
+        "kind": "diverging",
+        "colors": ["#B35806", "#F1A340", "#F7F7F7", "#998EC3", "#542788"],
     },
 }
 
@@ -489,6 +503,167 @@ def list_themes() -> List[Dict[str, Any]]:
     ]
 
 
+SEMANTIC_COLORS: Dict[str, Dict[str, str]] = {
+    "light": {
+        "background": GS_PAPER,
+        "surface": GS_PAPER,
+        "text": GS_INK,
+        "text_dim": GS_GREY_70,
+        "border": GS_GREY_10,
+        "accent": GS_NAVY,
+        "positive": "#007A5E",
+        "negative": "#C43C35",
+        "warning": "#9A6700",
+        "focus": "#0072B2",
+    },
+    "dark": {
+        "background": GS_DARK_SURFACE,
+        "surface": GS_DARK_SURFACE,
+        "text": GS_DARK_TEXT,
+        "text_dim": GS_DARK_TEXT_DIM,
+        "border": GS_DARK_BORDER,
+        "accent": GS_SKY,
+        "positive": "#5FD1A8",
+        "negative": "#FF8A80",
+        "warning": "#F5C451",
+        "focus": "#74C0E3",
+    },
+}
+
+
+def _hex_rgb(color: str) -> tuple:
+    if not isinstance(color, str):
+        raise ValueError(f"Color must be a hex string, got {type(color).__name__}")
+    value = color.strip()
+    if not value.startswith("#") or len(value) not in (4, 7):
+        raise ValueError(
+            f"Color '{color}' must use #RGB or #RRGGBB syntax"
+        )
+    digits = value[1:]
+    if len(digits) == 3:
+        digits = "".join(ch * 2 for ch in digits)
+    try:
+        return tuple(int(digits[i:i + 2], 16) for i in (0, 2, 4))
+    except ValueError as exc:
+        raise ValueError(f"Color '{color}' is not valid hexadecimal") from exc
+
+
+def contrast_ratio(foreground: str, background: str) -> float:
+    """Return the WCAG relative-luminance contrast ratio."""
+    def _luminance(color: str) -> float:
+        channels = []
+        for channel in _hex_rgb(color):
+            c = channel / 255.0
+            channels.append(c / 12.92 if c <= 0.04045
+                            else ((c + 0.055) / 1.055) ** 2.4)
+        return (
+            0.2126 * channels[0]
+            + 0.7152 * channels[1]
+            + 0.0722 * channels[2]
+        )
+
+    l1 = _luminance(foreground)
+    l2 = _luminance(background)
+    lighter, darker = max(l1, l2), min(l1, l2)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def validate_color_contrast(
+    color: str,
+    background: str,
+    *,
+    role: str = "data_mark",
+    minimum: Optional[float] = None,
+) -> float:
+    """Validate a role-aware free-form color against its background."""
+    thresholds = {
+        "text": 4.5,
+        "large_text": 3.0,
+        "data_mark": 3.0,
+        "decorative": 1.0,
+    }
+    if role not in thresholds:
+        raise ValueError(
+            f"Unknown color role '{role}'. Available: {sorted(thresholds)}"
+        )
+    required = thresholds[role] if minimum is None else float(minimum)
+    ratio = contrast_ratio(color, background)
+    if ratio < required:
+        raise ValueError(
+            f"Color '{color}' has contrast {ratio:.2f}:1 against "
+            f"'{background}', below {required:.2f}:1 for role '{role}'"
+        )
+    return ratio
+
+
+def resolve_theme(
+    name: str = "gs_clean",
+    *,
+    dark: Optional[bool] = None,
+    palette: Optional[str] = None,
+    export_mode: str = "screen",
+) -> Dict[str, Any]:
+    """Resolve every chart, runtime, table, export, and print color token."""
+    if export_mode not in ("screen", "print"):
+        raise ValueError("export_mode must be 'screen' or 'print'")
+    base = name[:-5] if name.endswith("_dark") else name
+    if base not in THEMES:
+        raise ValueError(
+            f"Unknown theme '{name}'. Available bases: "
+            f"{sorted(k for k in THEMES if not k.endswith('_dark'))}"
+        )
+    use_dark = name.endswith("_dark") if dark is None else bool(dark)
+    resolved_name = f"{base}_dark" if use_dark else base
+    theme = get_theme(resolved_name)
+    palette_name = palette or theme["palette"]
+    categorical = get_palette(palette_name)
+    if categorical["kind"] != "categorical":
+        raise ValueError(
+            f"Palette '{palette_name}' is {categorical['kind']}; "
+            "a resolved theme requires a categorical primary palette"
+        )
+    semantic = dict(SEMANTIC_COLORS["dark" if use_dark else "light"])
+    chart_colors = list(
+        categorical["colors"] if palette is not None
+        else theme["echarts"].get("color") or categorical["colors"]
+    )
+    export_background = (
+        GS_PAPER if export_mode == "print" else semantic["background"]
+    )
+    export_text = GS_INK if export_mode == "print" else semantic["text"]
+    return {
+        "name": resolved_name,
+        "base_name": base,
+        "mode": "dark" if use_dark else "light",
+        "palette": palette_name,
+        "categorical": chart_colors,
+        "sequential": list(
+            theme["echarts"].get("visualMap", {}).get("color")
+            or get_palette("gs_blues")["colors"]
+        ),
+        "diverging": list(
+            get_palette("gs_diverging_accessible")["colors"]
+        ),
+        "semantic": semantic,
+        "echarts": theme["echarts"],
+        "knob_values": dict(theme["knob_values"]),
+        "export": {
+            "mode": export_mode,
+            "background": export_background,
+            "text": export_text,
+        },
+        "print": {
+            "background": GS_PAPER,
+            "text": GS_INK,
+            "categorical": list(get_palette("gs_colorblind")["colors"]),
+        },
+        "contrast": {
+            color: contrast_ratio(color, semantic["background"])
+            for color in chart_colors
+        },
+    }
+
+
 # =============================================================================
 # SECTION 3 -- DIMENSIONS
 # =============================================================================
@@ -657,7 +832,8 @@ __all__ = [
     # public config API
     "PALETTES", "THEMES", "DIMENSION_PRESETS", "TYPOGRAPHY_OVERRIDES",
     "get_palette", "palette_colors", "list_palettes",
-    "get_theme", "list_themes",
+    "get_theme", "list_themes", "resolve_theme",
+    "SEMANTIC_COLORS", "contrast_ratio", "validate_color_contrast",
     "get_dimension_preset", "get_typography_override", "list_dimensions",
     # numeric formatting policy
     "MAX_DASHBOARD_DECIMALS", "clamp_decimals",

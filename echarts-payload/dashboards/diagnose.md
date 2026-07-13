@@ -22,6 +22,7 @@ The deterministic result contains:
 |---|---|
 | `files` | Required presence/missing/extras plus optional `refresh_status.json`, `console_log.jsonl`, registry, and user-manifest entries with explicit `present` booleans |
 | `manifest_template_sha256` / `template_sha256` / `compiled_manifest_sha256` | Concurrency token, read-only equal pre/post snapshot, and compiled-manifest hash |
+| `scripts.pull_data` / `scripts.build` | Canonical path, presence, byte count, SHA-256 guard, syntax status, registered function inventory, resolved producer outputs, and unresolved output sites |
 | `versioning` | Current/previous definition version, working/current recipe hashes, clean/dirty state, and five recent product summaries |
 | `metadata` | Identity, cadence, methodology, sources, and authored state |
 | `tabs` | Canonical ordered `{id, label, index}` list |
@@ -31,9 +32,10 @@ The deterministic result contains:
 | `links` | Ordered `{index, group, members, sync, brush}` records |
 | `persisted_path_index` | Canonical `by_relative_path` and `by_basename` maps for resource correlation |
 | `counts` | Tabs, rows, widgets by kind, filters, datasets, pipelines, CSVs, telemetry |
-| `graph.pipelines` | `PULLS` names, function names, and statically inferred CSV stems |
+| `graph.pipelines` | `PULLS` names, function names, helper-aware CSV stems, and per-pipeline unresolved output sites |
 | `graph.csvs` | Persisted CSV stems and producer links |
 | `graph.transforms` | Dataset keys materialized by `TRANSFORMS` |
+| `graph.producer_analysis` | Pull/transform output sites the registered call-graph analyzer cannot resolve |
 | `graph.datasets` | CSV/transform producers and consuming widgets/filters |
 | `graph.widgets` | Stable ids, kinds, datasets, tab, row, and index |
 | `graph.filters` | Filter ids, kinds, targets, and dataset reach |
@@ -50,9 +52,63 @@ Optional status or telemetry absence is not itself an error. Required-file absen
 
 Explicit `row_click` and `click_popup` failures appear in `findings` with stable codes:
 
-`popup_config_blank`, `popup_detail_invalid`, `popup_section_invalid`, `popup_section_kind_unsupported`, `popup_legend_sync_unsupported`, `popup_section_dataset_missing`, `popup_section_filter_field_missing`, `popup_section_row_key_missing`, `popup_section_keys_no_overlap`
+`popup_config_blank`, `popup_detail_invalid`, `popup_section_invalid`, `popup_section_kind_unsupported`, `popup_section_dataset_missing`, `popup_section_filter_field_missing`, `popup_section_row_key_missing`, `popup_section_keys_no_overlap`
 
-Every popup finding has a top-level `fix_hint`. Join-related `context` carries stable `detail_dataset`, `row_key`, `filter_field`, `available_columns`, and `overlap` fields when applicable, plus the same `fix_hint`. Repair only the named source/detail binding or use the supported alternative in the hint.
+Every popup finding has a top-level `fix_hint`. Join-related `context` carries stable `detail_dataset`, `row_key`, `filter_field`, `available_columns`, and `overlap` fields when applicable, plus the same `fix_hint`. Popup chart legend/link behavior is supported through a stable section `id` and manifest `links[]`. Repair only the named source/detail binding or use the supported alternative in the hint.
+
+### Interaction and geographic findings
+
+`filter_chart_rebuild_unsupported` identifies every targeted chart that cannot be faithfully rebuilt under browser filtering; retarget or reshape it rather than accepting a static chart. `geo_map_asset_missing`, `geo_map_region_unknown`, and `geo_map_region_duplicate` are always blocking. Their context names the map, region field, representative unknown/duplicate keys, available map keys, and exact alias/aggregation repair.
+
+### Producer-attachment findings
+
+`pull_producer_output_unresolved` and
+`transform_producer_output_unresolved` mean a registered producer reaches an
+output whose fixed key is hidden behind runtime computation.
+`dataset_<key>_producer_unresolved` means the engine therefore cannot prove
+whether that consumer is attached. This is distinct from
+`dataset_<key>_silent_stale`, which means the complete registered graph is
+resolvable and definitely contains no producer.
+
+For an unresolved site, inspect `scripts.*.unresolved_outputs`,
+`graph.pipelines[].unresolved_outputs`, and `graph.producer_analysis`. Preserve
+one coherent pull when outputs share source/cadence/failure semantics. Expose
+each fixed stem/key at the standard call, local writer/materializer-helper
+call, literal assignment/update, or finite literal loop. Do not split the pull,
+invent per-output network calls, or add no-op transform assignments. Only a
+definite silent-stale/unattached finding justifies adding a missing producer.
+
+### Data-quality findings
+
+`findings` also includes every `data_quality_*` and `timeseries_*`
+diagnostic, including warnings. Stable evidence fields are `dataset`,
+`series`, `field`, `observed`, `expected`, `examples`, `visual_effect`,
+and `fix_hint`. Errors block strict compilation. Warnings identify
+suspicious but potentially genuine missing runs, gaps, stale tails,
+scale-dominating observations, abrupt breaks, irregular cadence, or
+degenerate series.
+
+After strict build or clean refresh, enumerate the complete quality subset
+before handoff:
+
+```python
+state = inspect_dashboard(FOLDER)
+quality_findings = [
+    finding for finding in state["findings"]
+    if finding["code"].startswith(("data_quality_", "timeseries_"))
+]
+```
+
+Report every warning with its evidence and `visual_effect`; do not replace
+that exhaustive list with a generic “data quality warning” summary.
+
+Trace a quality finding backward through `graph.datasets` to its transform,
+CSV, and pull. Repair only a demonstrated producer, join, unit, or mapping
+defect. Never make a chart pass by silently sorting, filling, clipping,
+winsorizing, or deleting observations. If the evidence does not establish
+that the value is wrong, preserve it, explain the visual risk, and ask
+whether the product should keep the full scale or use an explicit
+alternative view.
 
 `update_widget.patch` is shallow. After inspection identifies the widget, read its complete current object from the decoded template, copy the whole popup subtree, change one leaf, and patch that subtree:
 
@@ -107,7 +163,10 @@ the incident as environment/network evidence before mutating the dashboard.
 | Missing canonical file | Build/pipeline intent | Restore from a known source; if intent is unknowable, escalate |
 | Invalid template or manifest diagnostic | `template_crud.md` plus affected primitive | Apply typed operations using the current SHA |
 | Popup detail dataset/field/key-overlap finding | `widgets.md` and `template_crud.md` | Correct the source/target binding named by the diagnostic |
+| Data-quality error | `pipelines.md` plus the consuming primitive | Repair the named producer/transform/contract defect; strict compilation remains blocked |
+| Data-quality warning with ambiguous observation | Product judgment | Preserve the data, surface the structured evidence, and ask before changing scale treatment or data |
 | CSV missing or stem not produced | `pipelines.md` | Repair the pull output path/name or transform |
+| Producer output unresolved through a helper/dynamic key | `pipelines.md` | Preserve the coherent producer; make its fixed output names statically visible at literal helper call sites or finite literal loops |
 | Dataset has no pull/transform producer | `pipelines.md` | Attach a real producer; do not preserve a silently aging CSV |
 | Refresh failed before browser errors | `pipelines.md` | Follow refresh error/log evidence, repair script/data, refresh |
 | Refresh succeeded plus ECharts/browser error | Primitive owner plus `template_crud.md` | Repair the authored spec |
@@ -135,9 +194,19 @@ inspect
     and relevant browser evidence are clean
 ```
 
-Manifest heals use `apply_manifest_operations` with both `expected_sha256=state["manifest_template_sha256"]` and `expected_current_version_id=state["versioning"]["current_version_id"]`. Pipeline heals edit the persisted input script, run the affected pull, then call `build_dashboard` with the inspected current version id before executing the clean refresh path. Cadence heals use `synchronize_refresh_frequency` with both guards.
+Manifest heals pass the complete inspection state to
+`apply_manifest_operations(state, operations)`. Pipeline heals use
+`apply_persisted_script_operations(state, "pull_data"|"build", operations)`,
+run any affected pull for current-cycle schema verification, then call
+`launch_clean_refresh(FOLDER)`. Cadence heals use
+`synchronize_refresh_frequency` with the inspected guards.
 
-For a typed manifest transaction, success proves the commit path when `result.pre_sha256` equals the inspected token, `result.post_sha256` equals the final inspection hash, and `result.rollback_sha256 == result.pre_sha256`. `inspect_dashboard` supplies template and compiled-manifest SHA values; it does not supply pull/build script SHA values. Hash retained script bytes directly before editing, for example `hashlib.sha256(old_pull_bytes).hexdigest()`. A failed transaction proves restoration only when the final template SHA and snapshotted template, registry, compiled manifest, and HTML bytes all equal their pre-transaction values, while restored scripts match the hashes computed from retained bytes.
+For either typed transaction, success proves the commit path when
+`result.pre_sha256` equals the matching inspected token,
+`result.post_sha256` equals the final inspection hash, and
+`result.rollback_sha256 == result.pre_sha256`. A failed transaction must
+leave the snapshotted canonical bytes equal to their pre-transaction
+values.
 
 Do not:
 
@@ -210,6 +279,8 @@ A diagnosis is complete when the cause and owner are identified. A repair is com
 
 - no required canonical file is missing;
 - error findings relevant to the incident are gone;
+- every remaining quality warning has been surfaced and not silently
+  transformed away;
 - `attachment_gaps` is empty;
 - registry match count is one and cadence is aligned;
 - a clean refresh reports success;

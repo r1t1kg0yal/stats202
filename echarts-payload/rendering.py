@@ -45,7 +45,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 _here = Path(__file__).resolve().parent
 if str(_here) not in sys.path:
@@ -53,6 +53,7 @@ if str(_here) not in sys.path:
 
 from config import (
     THEMES, PALETTES, DIMENSION_PRESETS, TYPOGRAPHY_OVERRIDES,
+    resolve_theme,
     GS_SKY, GS_NAVY, GS_NAVY_DEEP, GS_INK, GS_PAPER, GS_BG,
     GS_GREY_70, GS_GREY_40, GS_GREY_20, GS_GREY_10, GS_GREY_05,
     GS_POS, GS_NEG, GS_FONT_SANS, GS_FONT_SERIF,
@@ -2247,6 +2248,31 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
 }
 
 .grid { display: grid; grid-template-columns: repeat(__COLS__, 1fr); gap: 14px; }
+.layout-group {
+  display: block;
+  margin: 0 0 20px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface-2) 56%, transparent);
+}
+.layout-group-heading {
+  display: flex; align-items: baseline; gap: 12px;
+  margin: 0 0 12px; padding: 0 2px 9px;
+  border-bottom: 1px solid var(--border);
+}
+.layout-group-heading h2 {
+  margin: 0; color: var(--gs-ink); font-size: 14px;
+  font-family: var(--gs-font-sans); letter-spacing: 0.035em;
+}
+.layout-group-heading p {
+  margin: 0; color: var(--text-dim); font-size: 12px;
+  font-family: var(--gs-font-serif); font-style: italic;
+}
+.layout-group-collapsible > summary { cursor: pointer; list-style-position: outside; }
+.layout-group-collapsible > summary .layout-group-heading {
+  display: inline-flex; width: calc(100% - 22px); vertical-align: middle;
+}
 
 .tile {
   background: var(--surface);
@@ -2367,6 +2393,13 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
 /* chart tile */
 .chart-tile .tile-body { padding: 6px 8px 8px; }
 .chart-div { width: 100%; min-height: 320px; }
+.tile-hero {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  box-shadow: var(--shadow-md);
+}
+.tile-hero .tile-header { padding: 13px 18px; }
+.tile-hero .tile-title { font-size: 13px; letter-spacing: 0.055em; }
+.tile-hero .tile-body { padding: 8px 12px 12px; }
 
 /* chart controls drawer
    Lives between the tile header and the chart canvas. Closed by
@@ -2961,6 +2994,19 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
 
 /* table tile */
 .table-tile .tile-body { padding: 0; }
+.data-grid-tile { min-width: 0; }
+.data-grid-tile .tile-body { min-height: 240px; }
+.table-virtual-scroll {
+  overflow: auto; position: relative; overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.table-virtual-status {
+  position: sticky; bottom: 0; padding: 7px 12px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--text-faint); font-size: 10px; text-align: center;
+  font-family: var(--gs-font-sans);
+}
 .data-table {
   border-collapse: collapse; width: 100%; font-size: 12px;
   font-family: var(--gs-font-sans);
@@ -3462,6 +3508,27 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
   .filter-bar { padding: 10px 16px; }
   main.app-main { padding: 14px 16px; }
 }
+:root.dashboard-printing .tab-panel { display: block !important; }
+@media print {
+  @page { size: landscape; margin: 10mm; }
+  :root, :root[data-theme="dark"] {
+    --page-bg: #FFFFFF; --surface: #FFFFFF; --surface-2: #F7F9FB;
+    --text: #1A1A1A; --text-dim: #595959; --text-faint: #595959;
+    --border: #BFBFBF; --border-strong: #999999;
+  }
+  body { background: #FFFFFF !important; color: #1A1A1A !important; }
+  .theme-toggle, .download-menu, .tile-actions, .chart-controls,
+  .filter-bar, .tab-bar, footer.app-footer { display: none !important; }
+  .tab-panel { display: block !important; break-before: page; }
+  .tab-panel:first-of-type { break-before: auto; }
+  .tile, .layout-group { break-inside: avoid; box-shadow: none !important; }
+  .data-grid-tile { break-inside: auto; }
+  .table-virtual-scroll {
+    max-height: none !important; overflow: visible !important;
+  }
+  .table-virtual-status { display: none !important; }
+  main.app-main { padding: 0; }
+}
 
 /* tool widget */
 .tool-tile { padding: 0; }
@@ -3870,6 +3937,20 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
                 Charts
               </button>
             </li>
+            <li role="none">
+              <button type="button" role="menuitem"
+                      class="download-menu-item" id="export-chart-data"
+                      title="Download the currently filtered data behind each chart as CSV.">
+                Chart Data (CSV)
+              </button>
+            </li>
+            <li role="none">
+              <button type="button" role="menuitem"
+                      class="download-menu-item" id="export-print"
+                      title="Open the intentional light-mode print layout for PDF or paper.">
+                PDF / Print
+              </button>
+            </li>
             <li role="none" id="download-menu-excel-li" hidden>
               <button type="button" role="menuitem"
                       class="download-menu-item" id="export-excel"
@@ -4031,6 +4112,15 @@ DASHBOARD_APP_JS = r"""
       try { echarts.registerTheme(tn, PAYLOAD.themes[tn]); } catch(e){}
     });
   } catch(e){}
+  try {
+    Object.keys(PAYLOAD.maps || {}).forEach(function(mapName){
+      var asset = PAYLOAD.maps[mapName];
+      var geojson = asset && asset.geojson ? asset.geojson : asset;
+      echarts.registerMap(mapName, geojson);
+    });
+  } catch(e){
+    setTimeout(function(){ throw e; }, 0);
+  }
 
   // ----- dark mode toggle ------------------------------------------------
   // The button in the header (.theme-toggle) flips data-theme on <html>,
@@ -4069,12 +4159,14 @@ DASHBOARD_APP_JS = r"""
   // pressed-state and tooltip even before the load handler runs.
   _applyDarkAttr();
 
-  function setDarkMode(on){
+  function setDarkMode(on, persist){
     var next = !!on;
     if (next === DARK_MODE) return;
     DARK_MODE = next;
-    try { localStorage.setItem(THEME_STORAGE_KEY,
-                                  DARK_MODE ? 'dark' : 'light'); } catch(e){}
+    if (persist !== false){
+      try { localStorage.setItem(THEME_STORAGE_KEY,
+                                    DARK_MODE ? 'dark' : 'light'); } catch(e){}
+    }
     _applyDarkAttr();
     // Charts capture their theme at init time, so dispose every live
     // instance and let the lazy/active path re-create them with the
@@ -4100,6 +4192,81 @@ DASHBOARD_APP_JS = r"""
     if (typeof renderTables === 'function') renderTables();
   }
   window.setDarkMode = setDarkMode;
+  var _printRestoreDark = false;
+  var _printLiveIdsBefore = [];
+  var _printClosedGroups = [];
+  var _printGridStateBefore = {};
+  var DASHBOARD_PRINTING = false;
+  window.addEventListener('beforeprint', function(){
+    _printRestoreDark = DARK_MODE;
+    if (DARK_MODE) setDarkMode(false, false);
+    _printLiveIdsBefore = Object.keys(CHARTS);
+    _printClosedGroups = [];
+    _printGridStateBefore = {};
+    Object.keys(WIDGET_META).forEach(function(id){
+      var widget = WIDGET_META[id];
+      if (!widget || widget.widget !== 'data_grid') return;
+      var state = tableState(id);
+      _printGridStateBefore[id] = {
+        visibleRows: state.visibleRows,
+        scrollTop: state.scrollTop
+      };
+    });
+    DASHBOARD_PRINTING = true;
+    document.documentElement.classList.add('dashboard-printing');
+    document.querySelectorAll('details.layout-group-collapsible').forEach(
+      function(group){
+        if (!group.open){
+          _printClosedGroups.push(group);
+          group.open = true;
+        }
+      }
+    );
+    // A virtual grid normally mounts one page at a time. Print the complete
+    // filtered/sorted result up to the widget's validated max_rows cap.
+    renderTables();
+    // Print CSS exposes every tab, so every chart must have a real light-mode
+    // canvas before the browser snapshots the page. Hidden tabs otherwise
+    // print as empty tiles because their lazy charts were never mounted.
+    document.querySelectorAll('.tab-panel .chart-div').forEach(function(div){
+      var id = (div.id || '').replace(/^chart-/, '');
+      if (id) initChart(id);
+    });
+    Object.keys(CHARTS).forEach(function(cid){
+      try { CHARTS[cid].inst.resize(); } catch(e){}
+    });
+  });
+  window.addEventListener('afterprint', function(){
+    document.documentElement.classList.remove('dashboard-printing');
+    _printClosedGroups.forEach(function(group){ group.open = false; });
+    _printClosedGroups = [];
+    // Dispose charts that existed only to populate hidden print tabs. They
+    // will be initialized at the correct visible dimensions on first visit.
+    Object.keys(CHARTS).forEach(function(cid){
+      if (_printLiveIdsBefore.indexOf(cid) >= 0) return;
+      try { CHARTS[cid].inst.dispose(); } catch(e){}
+      delete CHARTS[cid];
+    });
+    _printLiveIdsBefore = [];
+    DASHBOARD_PRINTING = false;
+    Object.keys(_printGridStateBefore).forEach(function(id){
+      var state = tableState(id);
+      state.visibleRows = _printGridStateBefore[id].visibleRows;
+    });
+    renderTables();
+    Object.keys(_printGridStateBefore).forEach(function(id){
+      var state = tableState(id);
+      var scrollTop = _printGridStateBefore[id].scrollTop || 0;
+      state.scrollTop = scrollTop;
+      var scroller = document.querySelector(
+        '#table-' + id + ' .table-virtual-scroll'
+      );
+      if (scroller) scroller.scrollTop = scrollTop;
+    });
+    _printGridStateBefore = {};
+    if (_printRestoreDark) setDarkMode(true, false);
+    _printRestoreDark = false;
+  });
 
   // ----- filter state + event bus -----
   var filterState = {};
@@ -4302,7 +4469,7 @@ DASHBOARD_APP_JS = r"""
       var w = WIDGET_META[wid] || {};
       var init = w.initial_state;
       if (!init) return;
-      if (w.widget === 'table'){
+      if (_isTableWidget(w)){
         var ts = (typeof tableState === 'function')
           ? tableState(wid) : (TABLE_STATE[wid] = TABLE_STATE[wid] || {});
         if (init.search != null)         ts.search = init.search;
@@ -7782,7 +7949,7 @@ DASHBOARD_APP_JS = r"""
   }
 
   function _ccTableRows(cid){
-    var w = WIDGET_META[cid]; if (!w || w.widget !== 'table') return null;
+    var w = WIDGET_META[cid]; if (!_isTableWidget(w)) return null;
     var ds = w.dataset_ref ? currentDatasets[w.dataset_ref] : null;
     if (!ds || !ds.length) return null;
     return applyFilters(w.dataset_ref, ds, 'table', cid);
@@ -8339,7 +8506,7 @@ DASHBOARD_APP_JS = r"""
       return;
     }
     var url = rec.inst.getDataURL({pixelRatio: 2,
-                                      backgroundColor: '#ffffff',
+                                      backgroundColor: chartExportBackground(cid),
                                       type: 'png'});
     var a = document.createElement('a');
     a.href = url; a.download = _ccChartFilenameStem(cid) + '.png';
@@ -8403,14 +8570,113 @@ DASHBOARD_APP_JS = r"""
   }
 
   // ----- rewire a chart spec to use a shared dataset -----
-  //
-  // The widget was auto-wired by _augment_manifest ONLY when the chart
-  // type + mapping is in the known-safe rewire set (see
-  // _is_safe_for_rewire in echart_dashboard.py). That means we can
-  // assume a wide-form dataset whose columns include the x col and
-  // each series' y col (indexed by `s.name`). We match series to
-  // columns by name first, falling back to positional index, so extra
-  // trailing columns in the dataset don't shift the mapping.
+  function _filteredFieldIndex(header, name){
+    return (typeof name === 'string') ? header.indexOf(name) : -1;
+  }
+
+  function _rebuildFilteredChartOption(opt, chartType, mapping, source){
+    var header = source[0] || [];
+    var body = source.slice(1);
+    var template = (opt.series && opt.series[0])
+      ? JSON.parse(JSON.stringify(opt.series[0])) : {};
+    if (chartType === 'pie' || chartType === 'donut'){
+      var ci = _filteredFieldIndex(header, mapping.category);
+      var vi = _filteredFieldIndex(header, mapping.value);
+      template.type = 'pie';
+      template.data = body.filter(function(r){
+        return ci >= 0 && vi >= 0 && r[ci] != null && r[vi] != null;
+      }).map(function(r){ return {name: String(r[ci]), value: r[vi]}; });
+      opt.series = [template];
+      if (opt.legend) opt.legend.data = template.data.map(function(d){ return d.name; });
+      delete opt.dataset;
+      return true;
+    }
+    if (chartType === 'heatmap'){
+      var xi = _filteredFieldIndex(header, mapping.x);
+      var yi = _filteredFieldIndex(header, mapping.y);
+      var zi = _filteredFieldIndex(header, mapping.value);
+      var xs = [], ys = [];
+      body.forEach(function(r){
+        if (xi >= 0 && r[xi] != null && xs.indexOf(r[xi]) < 0) xs.push(r[xi]);
+        if (yi >= 0 && r[yi] != null && ys.indexOf(r[yi]) < 0) ys.push(r[yi]);
+      });
+      var cells = [], vals = [];
+      body.forEach(function(r){
+        if (xi < 0 || yi < 0 || zi < 0 || r[xi] == null || r[yi] == null) return;
+        cells.push([xs.indexOf(r[xi]), ys.indexOf(r[yi]), r[zi]]);
+        var n = Number(r[zi]); if (Number.isFinite(n)) vals.push(n);
+      });
+      opt.xAxis = Object.assign({}, opt.xAxis || {}, {type: 'category', data: xs});
+      opt.yAxis = Object.assign({}, opt.yAxis || {}, {type: 'category', data: ys});
+      template.type = 'heatmap'; template.data = cells;
+      opt.series = [template];
+      var vm = Array.isArray(opt.visualMap) ? opt.visualMap[0] : opt.visualMap;
+      if (vm && vals.length){
+        vm.min = Math.min.apply(null, vals); vm.max = Math.max.apply(null, vals);
+      }
+      delete opt.dataset;
+      return true;
+    }
+    if (chartType === 'geo_map'){
+      var ri = _filteredFieldIndex(header, mapping.region);
+      var gvi = _filteredFieldIndex(header, mapping.value);
+      var mapAsset = (PAYLOAD.maps || {})[mapping.map] || {};
+      var aliases = mapAsset.aliases || {};
+      var mapValues = [];
+      template.type = 'map';
+      template.map = mapping.map;
+      template.data = body.filter(function(r){
+        return ri >= 0 && gvi >= 0 && r[ri] != null && r[gvi] != null;
+      }).map(function(r){
+        var region = String(r[ri]);
+        var n = Number(r[gvi]);
+        if (Number.isFinite(n)) mapValues.push(n);
+        return {name: String(aliases[region] || region), value: r[gvi]};
+      });
+      opt.series = [template];
+      var gvm = Array.isArray(opt.visualMap) ? opt.visualMap[0] : opt.visualMap;
+      if (gvm && mapValues.length){
+        gvm.min = Math.min.apply(null, mapValues);
+        gvm.max = Math.max.apply(null, mapValues);
+      }
+      delete opt.dataset;
+      return true;
+    }
+    var groupField = mapping.color || mapping.colour;
+    if (groupField && ['line', 'multi_line', 'bar', 'area', 'scatter'].indexOf(chartType) >= 0){
+      var xg = _filteredFieldIndex(header, mapping.x);
+      var yg = _filteredFieldIndex(header, mapping.y);
+      var gg = _filteredFieldIndex(header, groupField);
+      var sg = chartType === 'scatter'
+        ? _filteredFieldIndex(header, mapping.size) : -1;
+      var groups = {};
+      body.forEach(function(r){
+        if (xg < 0 || yg < 0 || gg < 0 || r[gg] == null) return;
+        var key = String(r[gg]);
+        if (!groups[key]) groups[key] = [];
+        var point = [r[xg], r[yg]];
+        if (sg >= 0) point.push(r[sg]);
+        groups[key].push(point);
+      });
+      var oldByName = {};
+      (opt.series || []).forEach(function(s){ if (s.name != null) oldByName[String(s.name)] = s; });
+      opt.series = Object.keys(groups).map(function(name){
+        var s = JSON.parse(JSON.stringify(oldByName[name] || template));
+        s.name = name;
+        s.type = chartType === 'bar'
+          ? 'bar' : (chartType === 'scatter' ? 'scatter' : 'line');
+        s.data = groups[name]; delete s.encode;
+        if (chartType === 'area') s.areaStyle = s.areaStyle || {};
+        if (mapping.stack) s.stack = (typeof mapping.stack === 'string') ? mapping.stack : 'total';
+        return s;
+      });
+      if (opt.legend) opt.legend.data = Object.keys(groups);
+      delete opt.dataset;
+      return true;
+    }
+    return false;
+  }
+
   function materializeOption(cid){
     var w = WIDGET_META[cid]; var base = SPECS[cid];
     var opt = JSON.parse(JSON.stringify(base));
@@ -8430,20 +8696,34 @@ DASHBOARD_APP_JS = r"""
       // narrow the dataset normally.
       var filt = applyFilters(
         w.dataset_ref, currentDatasets[w.dataset_ref], 'chart', cid);
-      opt.dataset = {source: filt};
+      var mapping = ((w.spec || {}).mapping || {});
+      var rebuilt = _rebuildFilteredChartOption(opt, ctMat, mapping, filt);
+      if (!rebuilt) opt.dataset = {source: filt};
       var header = filt[0] || [];
-      (opt.series || []).forEach(function(s, i){
+      if (!rebuilt) (opt.series || []).forEach(function(s, i){
         var t = s.type;
         var isRewireable = (t === 'line' || t === 'bar'
                             || t === 'scatter' || t === 'area');
         if (!isRewireable) return;
         if (s.encode) return;                // already fully specified
+        // Resolve dataset columns from the declared mapping first. Popup
+        // detail datasets often retain row-key/filter columns before the
+        // plotted x field, so assuming column 0 is x silently empties a
+        // time axis after the shared filter controller rewires the option.
+        var mappedX = (typeof mapping.x === 'string'
+                       && header.indexOf(mapping.x) >= 0)
+          ? mapping.x : header[0];
+        var mappedY = Array.isArray(mapping.y)
+          ? mapping.y[i] : mapping.y;
         // Resolve the y dataset column. Priority:
-        //   1. `_column` hint set at build time (raw, pre-humanise col)
-        //   2. exact match of series name against header
-        //   3. positional index (x is col 0, series i -> col i+1)
+        //   1. the declared mapping.y field for this series
+        //   2. `_column` hint set at build time (raw, pre-humanise col)
+        //   3. exact match of series name against header
+        //   4. positional index
         var yIdx = -1;
-        if (s._column && header.indexOf(s._column) >= 0) {
+        if (typeof mappedY === 'string' && header.indexOf(mappedY) >= 0) {
+          yIdx = header.indexOf(mappedY);
+        } else if (s._column && header.indexOf(s._column) >= 0) {
           yIdx = header.indexOf(s._column);
         } else if (s.name && header.indexOf(s.name) >= 0) {
           yIdx = header.indexOf(s.name);
@@ -8451,7 +8731,7 @@ DASHBOARD_APP_JS = r"""
           yIdx = Math.min(1 + i, header.length - 1);
         }
         if (yIdx <= 0) yIdx = Math.min(1, header.length - 1);
-        s.encode = {x: header[0], y: header[yIdx]};
+        s.encode = {x: mappedX, y: header[yIdx]};
         s.name = s.name || header[yIdx];
         delete s.data;
       });
@@ -8489,6 +8769,9 @@ DASHBOARD_APP_JS = r"""
         type: [brushType, 'clear']
       };
     }
+    // Stable name-based color assignment runs after every rebuild so
+    // filtering and row-order changes never rotate series identities.
+    applyStableSeriesColors(cid, opt);
     // Apply runtime per-chart controls (transforms, smoothing,
     // y-scale, sort, stack, trendline, ...). No-op when the user
     // hasn't touched the drawer yet. Runs whether or not the chart
@@ -8504,31 +8787,203 @@ DASHBOARD_APP_JS = r"""
 
   // ----- chart init/render -----
   var CHARTS = {};
+  var SERIES_COLOR_SLOTS = Object.create(null);
 
-  function chartThemeName(){
+  function chartThemeName(cid){
     // Strip any explicit ``_dark`` suffix authors may have set on
     // the manifest theme; the toggle button owns the dark/light
     // axis. In dark mode, prefer the ``<base>_dark`` variant when
     // it has been registered (every theme shipped from config.py
     // has one), otherwise fall back to the base theme.
-    var t = MANIFEST.theme || 'gs_clean';
+    var w = cid ? (WIDGET_META[cid] || {}) : {};
+    var spec = w.spec || {};
+    var t = spec.theme || MANIFEST.theme || 'gs_clean';
     var base = (typeof t === 'string' && t.length > 5 &&
                   t.lastIndexOf('_dark') === t.length - 5)
                   ? t.slice(0, -5) : t;
-    if (DARK_MODE){
-      var dark = base + '_dark';
-      if (PAYLOAD.themes && (dark in PAYLOAD.themes)) return dark;
+    return DARK_MODE ? base + '_dark' : base;
+  }
+
+  function resolvedThemeForChart(cid){
+    var name = chartThemeName(cid);
+    var resolved = PAYLOAD.resolvedThemes && PAYLOAD.resolvedThemes[name];
+    if (!resolved){
+      throw new Error('Resolved theme contract missing for chart ' +
+        String(cid == null ? '<dashboard>' : cid) + ': ' + name);
     }
-    return base;
+    return resolved;
+  }
+
+  function semanticColor(role, cid){
+    var resolved = resolvedThemeForChart(cid);
+    if (!resolved.semantic || !(role in resolved.semantic)){
+      throw new Error("Resolved theme '" + resolved.name +
+        "' is missing semantic color role '" + role + "'");
+    }
+    return resolved.semantic[role];
+  }
+
+  function _seriesPalette(cid){
+    var w = WIDGET_META[cid] || {};
+    var spec = w.spec || {};
+    if (spec.colors && typeof spec.colors === 'object'){
+      var modeColors = DARK_MODE ? spec.colors.dark : spec.colors.light;
+      if (Array.isArray(modeColors) && modeColors.length) return modeColors;
+    }
+    var paletteName = spec.palette || MANIFEST.palette;
+    if (paletteName && paletteName !== 'gs_primary' &&
+        PAYLOAD.palettes && PAYLOAD.palettes[paletteName]){
+      return PAYLOAD.palettes[paletteName].colors || [];
+    }
+    return resolvedThemeForChart(cid).categorical;
+  }
+
+  function _namedSeriesColor(cid, keys){
+    var w = WIDGET_META[cid] || {};
+    var spec = w.spec || {};
+    var named = spec.series_colors;
+    if (!named || typeof named !== 'object') return null;
+    var mode = DARK_MODE ? 'dark' : 'light';
+    for (var i = 0; i < keys.length; i++){
+      if (keys[i] == null) continue;
+      var record = named[String(keys[i])];
+      if (record && typeof record[mode] === 'string'){
+        return record[mode];
+      }
+    }
+    return null;
+  }
+
+  function _stableColorIndex(name, size){
+    var text = String(name == null ? '' : name);
+    var hash = 2166136261;
+    for (var i = 0; i < text.length; i++){
+      hash ^= text.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return size ? (hash >>> 0) % size : 0;
+  }
+
+  function _optionColorKeys(opt){
+    var keys = [];
+    if (!opt || !Array.isArray(opt.series)) return keys;
+    opt.series.forEach(function(series, index){
+      if (!series || series.type === 'heatmap' || series.type === 'map') return;
+      if (series.type === 'pie' && Array.isArray(series.data)){
+        series.data.forEach(function(item, itemIndex){
+          if (!item || typeof item !== 'object') return;
+          keys.push(String(
+            item.name != null ? item.name : 'slice-' + itemIndex));
+        });
+        return;
+      }
+      keys.push(String(
+        series.name || series._column || ('series-' + index)));
+    });
+    return keys;
+  }
+
+  function _seriesColorSlots(cid, opt, size){
+    var record = SERIES_COLOR_SLOTS[cid];
+    if (!record || record.size !== size){
+      record = {size: size, slots: Object.create(null)};
+      SERIES_COLOR_SLOTS[cid] = record;
+    }
+    var used = Object.create(null);
+    Object.keys(record.slots).forEach(function(key){
+      used[record.slots[key]] = true;
+    });
+    var baseKeys = _optionColorKeys(SPECS[cid]);
+    var keys = baseKeys.concat(_optionColorKeys(opt)).filter(
+      function(key, index, all){ return all.indexOf(key) === index; }
+    ).sort();
+    keys.forEach(function(key){
+      if (Object.prototype.hasOwnProperty.call(record.slots, key)) return;
+      var slot = _stableColorIndex(key, size);
+      if (Object.keys(used).length < size){
+        while (used[slot]) slot = (slot + 1) % size;
+        used[slot] = true;
+      }
+      record.slots[key] = slot;
+    });
+    return record.slots;
+  }
+
+  function applyStableSeriesColors(cid, opt){
+    var palette = _seriesPalette(cid);
+    if (!palette.length || !opt || !Array.isArray(opt.series)) return;
+    opt.color = palette.slice();
+    var slots = _seriesColorSlots(cid, opt, palette.length);
+    opt.series.forEach(function(series, index){
+      if (!series || series.type === 'heatmap') return;
+      if (series.type === 'map'){
+        series.itemStyle = series.itemStyle || {};
+        series.itemStyle.borderColor = semanticColor('surface', cid);
+        return;
+      }
+      if (series.type === 'pie' && Array.isArray(series.data)){
+        series.data.forEach(function(item, itemIndex){
+          if (!item || typeof item !== 'object') return;
+          item.itemStyle = item.itemStyle || {};
+          var itemName = item.name != null ? item.name : 'slice-' + itemIndex;
+          var itemKey = String(itemName);
+          var itemExplicit = _namedSeriesColor(cid, [item.name, itemKey]);
+          if (itemExplicit){
+            item.itemStyle.color = itemExplicit;
+          } else if (!item.itemStyle.color){
+            var itemSlot = Object.prototype.hasOwnProperty.call(slots, itemKey)
+              ? slots[itemKey] : _stableColorIndex(itemKey, palette.length);
+            item.itemStyle.color = palette[itemSlot];
+          }
+        });
+        return;
+      }
+      var name = series.name || series._column || ('series-' + index);
+      var key = String(name);
+      var slot = Object.prototype.hasOwnProperty.call(slots, key)
+        ? slots[key] : _stableColorIndex(key, palette.length);
+      var explicit = _namedSeriesColor(
+        cid, [series.name, series._column, key]);
+      var color = explicit || palette[slot];
+      series.itemStyle = series.itemStyle || {};
+      series.lineStyle = series.lineStyle || {};
+      if (explicit){
+        series.itemStyle.color = color;
+        series.lineStyle.color = color;
+      } else {
+        if (!series.itemStyle.color) series.itemStyle.color = color;
+        if (!series.lineStyle.color) series.lineStyle.color = color;
+      }
+    });
+  }
+
+  function chartExportBackground(cid){
+    return resolvedThemeForChart(cid).export.background;
+  }
+
+  function _mountChartInstance(cid, el, option, detailDataset){
+    var theme = chartThemeName(cid);
+    if (!(theme in PAYLOAD.themes)){
+      throw new Error("ECharts theme '" + theme + "' is not registered");
+    }
+    var inst = echarts.init(el, theme);
+    CHARTS[cid] = {inst: inst, datasetRef: WIDGET_META[cid].dataset_ref};
+    inst.setOption(reviveFns(option), true);
+    subscribe(cid, filtersForChart(cid));
+    wireBrush(cid, inst);
+    wireChartClick(cid, inst);
+    wireChartClickPopup(cid, inst);
+    applyConnects();
+    if (detailDataset){
+      _DETAIL_CHARTS.push({inst: inst, cid: cid, dataset: detailDataset});
+    }
+    return inst;
   }
 
   function initChart(cid){
     var el = document.getElementById('chart-' + cid); if (!el) return;
     if (CHARTS[cid]) return;
-    var theme = chartThemeName();
-    var inst = echarts.init(el, theme in PAYLOAD.themes ? theme : null);
-    CHARTS[cid] = {inst: inst, datasetRef: WIDGET_META[cid].dataset_ref};
-    inst.setOption(reviveFns(materializeOption(cid)), true);
+    var inst = _mountChartInstance(cid, el, materializeOption(cid), null);
     // Studio charts: populate the stats strip on first render too.
     var w = WIDGET_META[cid] || {};
     var ct = String(((w && w.spec) || {}).chart_type || '').toLowerCase();
@@ -8536,10 +8991,6 @@ DASHBOARD_APP_JS = r"""
       var st = chartControlState[cid];
       _ccRenderStatsStrip(cid, (st && st._lastStudioStats) || null);
     }
-    subscribe(cid, filtersForChart(cid));
-    wireBrush(cid, inst);
-    wireChartClick(cid, inst);
-    wireChartClickPopup(cid, inst);
   }
 
   // ----- chart click -> filter emit -----
@@ -9465,13 +9916,17 @@ DASHBOARD_APP_JS = r"""
   function colorForScale(v, scale){
     var n = Number(v);
     if (isNaN(n) || !scale) return null;
-    var pal = PAYLOAD.palettes[scale.palette];
-    if (!pal) return null;
+    var pal = scale.palette ? PAYLOAD.palettes[scale.palette] : null;
+    var resolved = resolvedThemeForChart(null);
+    var colors = pal && pal.colors;
+    if (!colors) colors = scale.kind === 'diverging'
+      ? resolved.diverging : resolved.sequential;
+    if (!colors || !colors.length) return null;
     var lo = scale.min != null ? scale.min : 0;
     var hi = scale.max != null ? scale.max : 1;
     var span = hi - lo || 1;
     var t = (n - lo) / span;
-    return interpolatePalette(pal.colors, t);
+    return interpolatePalette(colors, t);
   }
   function conditionalStyle(v, rules){
     if (!rules) return null;
@@ -9488,11 +9943,15 @@ DASHBOARD_APP_JS = r"""
   // adds: hidden{} (col-idx -> bool), density ('regular' | 'compact'),
   // freezeFirst (bool), decimals (null = use compile-time format).
   var TABLE_STATE = {};
+  function _isTableWidget(w){
+    return !!w && (w.widget === 'table' || w.widget === 'data_grid');
+  }
   function tableState(id){
     if (!TABLE_STATE[id]){
       TABLE_STATE[id] = {
         sortCol: null, sortDir: 1, search: '',
         hidden: {}, density: null, freezeFirst: false, decimals: null,
+        visibleRows: null, virtualKey: null, scrollTop: 0,
       };
     }
     return TABLE_STATE[id];
@@ -9552,34 +10011,28 @@ DASHBOARD_APP_JS = r"""
 
   function _pivotColorScale(value, min, max, scale){
     if (value == null || isNaN(value)) return null;
-    if (scale === 'sequential' || scale === 'auto' && (min >= 0 || max <= 0)){
-      // Single-direction blue ramp
-      var range = (max - min) || 1;
-      var t = (value - min) / range;
-      t = Math.max(0, Math.min(1, t));
-      var r = Math.round(255 - 175 * t);
-      var g = Math.round(255 - 200 * t);
-      var b = Math.round(255 -  90 * t);
-      return 'rgb(' + r + ',' + g + ',' + b + ')';
+    var cfg = (scale && typeof scale === 'object') ? scale : {};
+    var kind = (typeof scale === 'string' ? scale : cfg.kind || cfg.type || 'auto');
+    var lo = cfg.min != null ? Number(cfg.min) : Number(min);
+    var hi = cfg.max != null ? Number(cfg.max) : Number(max);
+    var resolved = resolvedThemeForChart(null);
+    var palette = null;
+    if (cfg.palette && PAYLOAD.palettes[cfg.palette]){
+      palette = PAYLOAD.palettes[cfg.palette].colors;
     }
-    if (scale === 'diverging' || scale === 'auto'){
-      // Diverging around 0: red below, blue above
-      var absMax = Math.max(Math.abs(min), Math.abs(max)) || 1;
-      var t2 = value / absMax;
-      if (t2 >= 0){
-        var r2 = Math.round(255 -  50 * t2);
-        var g2 = Math.round(255 - 130 * t2);
-        var b2 = Math.round(255 -  60 * t2);
-        return 'rgb(' + r2 + ',' + g2 + ',' + b2 + ')';
-      } else {
-        var u = -t2;
-        var r3 = Math.round(255 -  20 * u);
-        var g3 = Math.round(255 - 145 * u);
-        var b3 = Math.round(255 - 175 * u);
-        return 'rgb(' + r3 + ',' + g3 + ',' + b3 + ')';
-      }
+    var diverging = kind === 'diverging' ||
+      (kind === 'auto' && lo < 0 && hi > 0);
+    if (!palette) palette = diverging
+      ? resolved.diverging : resolved.sequential;
+    if (!palette || !palette.length) return null;
+    var t;
+    if (diverging){
+      var absMax = Math.max(Math.abs(lo), Math.abs(hi)) || 1;
+      t = (Number(value) + absMax) / (2 * absMax);
+    } else {
+      t = (Number(value) - lo) / ((hi - lo) || 1);
     }
-    return null;
+    return interpolatePalette(palette, Math.max(0, Math.min(1, t)));
   }
 
   function _renderPivot(id){
@@ -9829,7 +10282,7 @@ DASHBOARD_APP_JS = r"""
 
   function renderTables(){
     Object.keys(WIDGET_META).forEach(function(id){
-      var w = WIDGET_META[id]; if (w.widget !== 'table') return;
+      var w = WIDGET_META[id]; if (!_isTableWidget(w)) return;
       var el = document.getElementById('table-' + id); if (!el) return;
 
       // The whole table is rebuilt via innerHTML below, which destroys
@@ -9838,6 +10291,8 @@ DASHBOARD_APP_JS = r"""
       // user can keep typing without their cursor being kicked out.
       var caret = null;
       var prevSearch = el.querySelector('.table-search');
+      var prevScroller = el.querySelector('.table-virtual-scroll');
+      if (prevScroller) tableState(id).scrollTop = prevScroller.scrollTop;
       if (prevSearch && document.activeElement === prevSearch){
         caret = {
           start: prevSearch.selectionStart,
@@ -9894,9 +10349,24 @@ DASHBOARD_APP_JS = r"""
         }
       }
 
-      var maxRows = w.max_rows || 100;
-      var visible = allBody.slice(0, maxRows);
-      var allRowsShown = allBody.length <= maxRows;
+      var maxRows = w.max_rows || (w.widget === 'data_grid' ? 5000 : 100);
+      var virtualized = w.virtualized === true || w.widget === 'data_grid';
+      var pageSize = Math.max(20, Number(w.page_size || 100));
+      var virtualKey = JSON.stringify(filterState) + '|' + ts.search + '|' +
+        String(ts.sortCol) + '|' + String(ts.sortDir);
+      if (ts.virtualKey !== virtualKey){
+        ts.virtualKey = virtualKey;
+        ts.visibleRows = pageSize;
+        ts.scrollTop = 0;
+      }
+      var renderRows = virtualized
+        ? Math.min(
+            maxRows,
+            DASHBOARD_PRINTING ? maxRows : (ts.visibleRows || pageSize)
+          )
+        : maxRows;
+      var visible = allBody.slice(0, renderRows);
+      var allRowsShown = allBody.length <= renderRows;
 
       // Per-table density / decimals overrides (drawer). Density on the
       // widget falls through if the user hasn't picked one; "compact"
@@ -9917,7 +10387,7 @@ DASHBOARD_APP_JS = r"""
         }
         if (w.searchable){
           html += '<span class="table-count">' + allBody.length +
-            (allRowsShown ? '' : ' (showing ' + maxRows + ')') +
+            (allRowsShown ? '' : ' (showing ' + visible.length + ')') +
             ' rows</span>';
         }
         if (downloadable){
@@ -9935,6 +10405,10 @@ DASHBOARD_APP_JS = r"""
       var rcAuto = !rcExplicit && !rcOptOut
         && w.dataset_ref && _datasetHasProvenance(w.dataset_ref);
       var rowClickActive = !!(rcExplicit || rcAuto);
+      if (virtualized){
+        html += '<div class="table-virtual-scroll" data-virtual-table="' + id +
+          '" style="max-height:' + Number(w.h_px || 560) + 'px">';
+      }
       html += '<table class="data-table' +
               (density === 'compact' ? ' compact' : '') +
               (ts.freezeFirst ? ' freeze-first-col' : '') +
@@ -10167,6 +10641,14 @@ DASHBOARD_APP_JS = r"""
         html += '</tr>';
       });
       html += '</tbody></table>';
+      if (virtualized){
+        html += '<div class="table-virtual-status">' +
+          (allRowsShown
+            ? 'All ' + visible.length + ' rows loaded'
+            : 'Showing ' + visible.length + ' of ' +
+              Math.min(allBody.length, maxRows) + ' rows; scroll to load more') +
+          '</div></div>';
+      }
       el.innerHTML = html;
 
       // Wire search
@@ -10193,12 +10675,27 @@ DASHBOARD_APP_JS = r"""
           }
         });
       }
+      var virtualEl = el.querySelector('.table-virtual-scroll');
+      if (virtualEl){
+        virtualEl.scrollTop = ts.scrollTop || 0;
+        virtualEl.addEventListener('scroll', function(){
+          ts.scrollTop = virtualEl.scrollTop;
+          if (virtualEl.scrollTop + virtualEl.clientHeight >=
+              virtualEl.scrollHeight - 80 && !allRowsShown){
+            ts.visibleRows = Math.min(
+              maxRows, (ts.visibleRows || pageSize) + pageSize);
+            renderTables();
+          }
+        });
+      }
       // Wire header-click sort
       el.querySelectorAll('th.sortable').forEach(function(th){
         th.addEventListener('click', function(){
           var ci = Number(th.dataset.col);
           if (ts.sortCol === ci) ts.sortDir = -ts.sortDir;
           else { ts.sortCol = ci; ts.sortDir = 1; }
+          ts.visibleRows = pageSize;
+          ts.scrollTop = 0;
           renderTables();
         });
       });
@@ -10742,13 +11239,36 @@ DASHBOARD_APP_JS = r"""
     // the server) so detail popups render fast and don't need a full
     // Python round-trip on each row click.
     var series = [];
-    if (Array.isArray(yCol)){
+    var colorCol = m.color || m.colour;
+    if (colorCol && !Array.isArray(yCol)){
+      var yi = header.indexOf(yCol);
+      var gi = header.indexOf(colorCol);
+      var groups = {};
+      body.forEach(function(r){
+        if (gi < 0 || r[gi] == null) return;
+        var name = String(r[gi]);
+        if (!groups[name]) groups[name] = [];
+        groups[name].push([r[xIdx], r[yi]]);
+      });
+      Object.keys(groups).forEach(function(name){
+        series.push({
+          type: chartType === 'bar' ? 'bar' : 'line',
+          name: name, showSymbol: false,
+          smooth: !!m.smooth,
+          stack: m.stack ? (typeof m.stack === 'string' ? m.stack : 'total') : undefined,
+          areaStyle: chartType === 'area' ? {opacity: 0.25} : undefined,
+          data: groups[name],
+        });
+      });
+    } else if (Array.isArray(yCol)){
       // Wide-form: one line per y column.
       yCol.forEach(function(y){
         var yi = header.indexOf(y);
         series.push({
           type: chartType === 'bar' ? 'bar' : 'line',
-          name: y, showSymbol: false,
+          name: y, showSymbol: false, smooth: !!m.smooth,
+          stack: m.stack ? (typeof m.stack === 'string' ? m.stack : 'total') : undefined,
+          areaStyle: chartType === 'area' ? {opacity: 0.25} : undefined,
           data: body.map(function(r){ return [r[xIdx], r[yi]]; }),
         });
       });
@@ -10756,7 +11276,8 @@ DASHBOARD_APP_JS = r"""
       var yi = header.indexOf(yCol);
       series.push({
         type: chartType === 'bar' ? 'bar' : 'line',
-        name: yCol, showSymbol: false,
+        name: yCol, showSymbol: false, smooth: !!m.smooth,
+        stack: m.stack ? (typeof m.stack === 'string' ? m.stack : 'total') : undefined,
         areaStyle: chartType === 'area' ? {opacity: 0.25} : undefined,
         data: body.map(function(r){ return [r[xIdx], r[yi]]; }),
       });
@@ -10764,11 +11285,16 @@ DASHBOARD_APP_JS = r"""
     var opt = {
       grid: {top: 24, right: 24, bottom: 40, left: 56, containLabel: true},
       tooltip: {trigger: 'axis'},
+      legend: {show: series.length > 1, type: 'scroll', top: 0},
       xAxis: {type: _guessAxisTypeFromValues(body, xIdx)},
       yAxis: {type: 'value', scale: true,
                name: m.y_title || ''},
       series: series,
     };
+    if (m.zoom){
+      opt.dataZoom = [{type: 'inside'}, {type: 'slider', height: 16, bottom: 4}];
+      opt.grid.bottom = 56;
+    }
     // date formatting like the main charts
     if (opt.xAxis.type === 'time'){
       opt.xAxis.axisLabel = {formatter: function(v){
@@ -10779,18 +11305,36 @@ DASHBOARD_APP_JS = r"""
         return mo + ' ' + d.getDate();
       }};
     }
-    // Palette from GS theme
-    opt.color = PAYLOAD.palettes.gs_primary ? PAYLOAD.palettes.gs_primary.colors : null;
     if (sec.annotations){
       _applyDetailAnnotations(opt, sec.annotations);
     }
-    var theme = MANIFEST.theme || 'gs_clean';
-    var inst = echarts.init(el, theme in PAYLOAD.themes ? theme : null);
+    var cid = sec.id || elId;
+    var detailDataset = '__detail__' + cid;
+    var detailSource = [header].concat(body);
+    DATASETS[detailDataset] = {source: detailSource};
+    currentDatasets[detailDataset] = detailSource;
+    WIDGET_META[cid] = {
+      id: cid,
+      widget: 'chart',
+      title: sec.title || '',
+      dataset_ref: detailDataset,
+      click_emit_filter: sec.click_emit_filter,
+      click_popup: sec.click_popup,
+      spec: {
+        chart_type: chartType,
+        dataset: detailDataset,
+        mapping: m,
+        theme: sec.theme,
+        palette: sec.palette,
+        series_colors: sec.series_colors
+      }
+    };
+    SPECS[cid] = opt;
     __ensureTooltipDecimalCap(opt);
-    inst.setOption(opt, true);
-    // Track so we can dispose on modal close (prevents leak over many
-    // clicks).
-    _DETAIL_CHARTS.push(inst);
+    _mountChartInstance(cid, el, materializeOption(cid), detailDataset);
+    // materializeOption() applies the current shared filter state during the
+    // initial mount, so the popup's first frame matches inline charts,
+    // tables, and KPIs without a second controller pass.
   }
 
   function _guessAxisTypeFromValues(rows, idx){
@@ -10879,11 +11423,23 @@ DASHBOARD_APP_JS = r"""
   function hideModal(){
     var back = document.getElementById('ed-modal-backdrop');
     if (back) back.style.display = 'none';
-    // Dispose embedded detail charts so they don't leak memory
-    // across many row clicks.
+    // Dispose embedded detail charts and remove their temporary
+    // controller/dataset records so every popup starts cleanly.
     if (typeof _DETAIL_CHARTS !== 'undefined' && _DETAIL_CHARTS){
-      _DETAIL_CHARTS.forEach(function(inst){
+      _DETAIL_CHARTS.forEach(function(rec){
+        var inst = rec && rec.inst ? rec.inst : rec;
         try { inst.dispose(); } catch(e){}
+        if (rec && rec.cid){
+          delete CHARTS[rec.cid];
+          delete WIDGET_META[rec.cid];
+          delete SPECS[rec.cid];
+          delete chartControlState[rec.cid];
+          delete SERIES_COLOR_SLOTS[rec.cid];
+        }
+        if (rec && rec.dataset){
+          delete DATASETS[rec.dataset];
+          delete currentDatasets[rec.dataset];
+        }
       });
       _DETAIL_CHARTS.length = 0;
     }
@@ -11171,7 +11727,9 @@ DASHBOARD_APP_JS = r"""
     }
     return !!t.text;
   }
-  function _exportTitleBlock(w){
+  function _exportTitleBlock(w, cid){
+    var resolved = resolvedThemeForChart(cid);
+    var semantic = resolved.semantic;
     return {
       text: w && w.title ? String(w.title) : '',
       subtext: w && w.subtitle ? String(w.subtitle) : '',
@@ -11181,12 +11739,12 @@ DASHBOARD_APP_JS = r"""
         fontFamily: 'Goldman Sans, GS Sans, Helvetica Neue, Arial, sans-serif',
         fontSize: 14,
         fontWeight: 600,
-        color: '#1A1A1A'
+        color: semantic.text
       },
       subtextStyle: {
         fontFamily: 'Goldman Sans, GS Sans, Helvetica Neue, Arial, sans-serif',
         fontSize: 11,
-        color: '#595959',
+        color: semantic.text_dim,
         fontStyle: 'italic'
       }
     };
@@ -11211,7 +11769,7 @@ DASHBOARD_APP_JS = r"""
         // doesn't overlap the title text).
         var titlePx = 26 + (w.subtitle ? 18 : 0) + 10;
         inst.setOption({
-          title: [_exportTitleBlock(w)],
+          title: [_exportTitleBlock(w, id)],
           grid: {top: titlePx + 30}
         }, false);
       } catch(e){ canInject = false; }
@@ -11219,7 +11777,7 @@ DASHBOARD_APP_JS = r"""
 
     var url = inst.getDataURL({
       pixelRatio: scale,
-      backgroundColor: '#ffffff',
+      backgroundColor: chartExportBackground(id),
       type: 'png'
     });
 
@@ -11292,13 +11850,29 @@ DASHBOARD_APP_JS = r"""
       });
     });
   }
+  var exportChartData = document.getElementById('export-chart-data');
+  if (exportChartData){
+    exportChartData.addEventListener('click', function(){
+      var ids = Object.keys(WIDGET_META).filter(function(id){
+        return WIDGET_META[id] && WIDGET_META[id].widget === 'chart' &&
+          !!_ccChartFiltered(id);
+      });
+      ids.forEach(function(id, index){
+        setTimeout(function(){ _ccDownloadCsv(id); }, index * 180);
+      });
+    });
+  }
+  var exportPrint = document.getElementById('export-print');
+  if (exportPrint){
+    exportPrint.addEventListener('click', function(){ window.print(); });
+  }
 
   // ----- whole-dashboard PNG (html2canvas, lazy-loaded) -----
   //
   // Captures the entire .app subtree (header, tabs, filter bar, active
   // tab panel, footer) to a single PNG. Designed for the "drop into a
-  // vision model" workflow, so the export is intentionally generous:
-  // backgroundColor='#fff', scale=2, full scrollHeight. html2canvas is
+  // vision model" workflow. The background follows the resolved light/
+  // dark theme intentionally; scale=2 and full scrollHeight preserve detail.
   // fetched lazily on first click so dashboards that never click this
   // pay zero cost.
   function ensureHtml2Canvas(){
@@ -11355,7 +11929,7 @@ DASHBOARD_APP_JS = r"""
         // disappears entirely if the dashboard is served from http
         // (e.g. `python -m http.server` in the dashboard folder).
         return window.html2canvas(target, {
-          backgroundColor: '#ffffff',
+          backgroundColor: chartExportBackground(null),
           scale: 2,
           useCORS: true,
           logging: false,
@@ -11727,7 +12301,7 @@ DASHBOARD_APP_JS = r"""
     return name;
   }
   function _exportTableRowsForXlsx(id){
-    var w = WIDGET_META[id]; if (!w || w.widget !== 'table') return null;
+    var w = WIDGET_META[id]; if (!_isTableWidget(w)) return null;
     var ds = w.dataset_ref ? currentDatasets[w.dataset_ref] : null;
     if (!ds || !ds.length) return null;
     var header = ds[0];
@@ -11773,7 +12347,7 @@ DASHBOARD_APP_JS = r"""
     var used = {};
     var added = 0;
     Object.keys(WIDGET_META).forEach(function(id){
-      var w = WIDGET_META[id]; if (w.widget !== 'table') return;
+      var w = WIDGET_META[id]; if (!_isTableWidget(w)) return;
       var aoa = _exportTableRowsForXlsx(id);
       if (!aoa) return;
       var ws = XLSX.utils.aoa_to_sheet(aoa);
@@ -11795,7 +12369,7 @@ DASHBOARD_APP_JS = r"""
             'library. Please reload while online.');
       return;
     }
-    var w = WIDGET_META[id]; if (!w || w.widget !== 'table') return;
+    var w = WIDGET_META[id]; if (!_isTableWidget(w)) return;
     var aoa = _exportTableRowsForXlsx(id);
     if (!aoa){ alert('No rows to export.'); return; }
     var wb = XLSX.utils.book_new();
@@ -11809,7 +12383,7 @@ DASHBOARD_APP_JS = r"""
     var btn = document.getElementById('export-excel');
     if (!btn) return;
     var hasTable = Object.keys(WIDGET_META).some(function(k){
-      return WIDGET_META[k].widget === 'table';
+      return _isTableWidget(WIDGET_META[k]);
     });
     btn.addEventListener('click', downloadAllTablesXlsx);
     // The Excel menu item lives inside the Download dropdown -- show
@@ -14352,6 +14926,8 @@ def _tile_class(w: Dict[str, Any], base: str) -> str:
         cls += " tile-emphasis"
     if w.get("pinned"):
         cls += " tile-pinned"
+    if w.get("hero"):
+        cls += " tile-hero"
     return cls
 
 
@@ -14395,8 +14971,12 @@ def _render_chart_widget(w: Dict[str, Any], cols: int,
     # buckets in practice. The same w-default (cols//2) is used here
     # as in the validator -- an omitted w is legal and tile-sized
     # for 2-up. Authors can still override with explicit h_px.
-    wval = w.get("w", cols // 2)
-    default_h = 400 if isinstance(wval, int) and wval >= cols // 2 else 360
+    wval = w.get("w", cols if w.get("hero") else cols // 2)
+    default_h = (
+        500 if w.get("hero")
+        else 400 if isinstance(wval, int) and wval >= cols // 2
+        else 360
+    )
     height = int(w.get("h_px", default_h))
     cls = _tile_class(w, "tile chart-tile")
     # The controls drawer container is always emitted; the JS
@@ -14512,7 +15092,11 @@ def _render_kpi_widget(w: Dict[str, Any], cols: int,
 
 def _render_table_widget(w: Dict[str, Any], cols: int,
                           wid: str, style: str) -> str:
-    cls = _tile_class(w, "tile table-tile")
+    cls = _tile_class(
+        w,
+        "tile table-tile data-grid-tile"
+        if w.get("widget") == "data_grid" else "tile table-tile",
+    )
     # Tables get the same controls drawer pattern as charts. Off by
     # default for legacy parity; opt out per widget via
     # `table_controls: false` (matches `chart_controls: false`).
@@ -14756,6 +15340,7 @@ _RENDERERS: Dict[str, Any] = {
     "chart":     _render_chart_widget,
     "kpi":       _render_kpi_widget,
     "table":     _render_table_widget,
+    "data_grid": _render_table_widget,
     "pivot":     _render_pivot_widget,
     "markdown":  _render_markdown_widget,
     "note":      _render_note_widget,
@@ -14778,7 +15363,10 @@ def _render_widget(w: Dict[str, Any], cols: int) -> str:
     ``echart_dashboard.WIDGETS`` for validation).
     """
     wt = w.get("widget")
-    width = w.get("w", cols)
+    width = w.get(
+        "w",
+        cols if wt != "chart" or w.get("hero") else cols // 2,
+    )
     wid = w.get("id") or f"w_{id(w)}"
     style = _span_style(width, cols)
     renderer = _RENDERERS.get(wt)
@@ -15231,18 +15819,30 @@ def _get_echarts_js() -> str:
             os.path.join(_REPO_ROOT, "web", "backend_django", "news", "static", "js", "echarts.js"),
             os.path.join(_REPO_ROOT, "mysite", "news", "static", "js", "echarts.js"),
         ]
+        load_errors = []
         for js_path in candidate_paths:
             try:
                 with open(js_path, "r", encoding="utf-8") as f:
-                    _ECHARTS_JS_CACHE = f.read()
+                    source = f.read()
+                    if not source.strip():
+                        load_errors.append(f"{js_path}: file is empty")
+                        continue
+                    _ECHARTS_JS_CACHE = source
                     break
             except FileNotFoundError:
+                load_errors.append(f"{js_path}: not found")
                 continue
             except Exception as e:
-                print(f"Warning: Could not load echarts.js from {js_path}: {e}")
+                load_errors.append(
+                    f"{js_path}: {type(e).__name__}: {e}"
+                )
         if _ECHARTS_JS_CACHE is None:
-            print(f"Warning: echarts.js not found in any of: {candidate_paths}")
-            _ECHARTS_JS_CACHE = "/* echarts.js not found */"
+            attempts = "\n".join(f"  - {item}" for item in load_errors)
+            raise FileNotFoundError(
+                "ECharts runtime asset could not be loaded; refusing to "
+                "emit a syntactically valid but blank dashboard. Attempted:\n"
+                f"{attempts}"
+            )
     return _ECHARTS_JS_CACHE
 
 
@@ -15528,12 +16128,61 @@ def _render_md(src: str) -> str:
     return "\n".join(out)
 
 
-def _render_rows(rows: List[List[Dict[str, Any]]], cols: int) -> str:
-    out = ["<div class=\"grid\">"]
-    for row in rows:
-        for w in row:
-            out.append(_render_widget(w, cols))
-    out.append("</div>")
+def _render_rows(
+    rows: List[List[Dict[str, Any]]],
+    cols: int,
+    groups: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    def _grid(chunk: List[List[Dict[str, Any]]]) -> str:
+        out = ["<div class=\"grid\">"]
+        for row in chunk:
+            for w in row:
+                out.append(_render_widget(w, cols))
+        out.append("</div>")
+        return "\n".join(out)
+
+    normalized = sorted(
+        (
+            g for g in (groups or [])
+            if isinstance(g, dict)
+            and isinstance(g.get("start_row"), int)
+            and isinstance(g.get("end_row"), int)
+            and 0 <= g["start_row"] <= g["end_row"] < len(rows)
+        ),
+        key=lambda g: g["start_row"],
+    )
+    if not normalized:
+        return _grid(rows)
+
+    out: List[str] = []
+    cursor = 0
+    for group in normalized:
+        start, end = group["start_row"], group["end_row"]
+        if start > cursor:
+            out.append(_grid(rows[cursor:start]))
+        title = _html_escape(group.get("title", ""))
+        desc = _html_escape(group.get("description", ""))
+        gid = _html_escape(group.get("id", f"group-{start}"))
+        header = (
+            f'<div class="layout-group-heading"><h2>{title}</h2>'
+            + (f'<p>{desc}</p>' if desc else "")
+            + "</div>"
+        )
+        body = _grid(rows[start:end + 1])
+        if group.get("collapsible"):
+            out.append(
+                f'<details class="layout-group layout-group-collapsible" '
+                f'id="layout-group-{gid}" open>'
+                f'<summary>{header}</summary>{body}</details>'
+            )
+        else:
+            out.append(
+                f'<section class="layout-group" id="layout-group-{gid}">'
+                f"{header}{body}</section>"
+            )
+        cursor = end + 1
+    if cursor < len(rows):
+        out.append(_grid(rows[cursor:]))
     return "\n".join(out)
 
 
@@ -15614,7 +16263,9 @@ def render_dashboard_html(
                 per_tab_filters.get(tid, []), inline=True,
                 show_reset=bool(per_tab_filters.get(tid))
             )
-            rows = _render_rows(t.get("rows", []) or [], cols)
+            rows = _render_rows(
+                t.get("rows", []) or [], cols, t.get("groups") or []
+            )
             return (
                 f"<section class=\"tab-panel\" "
                 f"id=\"tab-panel-{_html_escape(tid)}\">"
@@ -15625,7 +16276,11 @@ def render_dashboard_html(
         tab_bar_html = ""
         panels_html = (
             "<section class=\"tab-panel active\" id=\"tab-panel-main\">"
-            + _render_rows(layout.get("rows", []) or [], cols)
+            + _render_rows(
+                layout.get("rows", []) or [],
+                cols,
+                layout.get("groups") or [],
+            )
             + "</section>"
         )
 
@@ -15667,7 +16322,10 @@ def render_dashboard_html(
     # save_manifest() still includes datasets in full.
     specs = _collect_specs(manifest, chart_specs)
     datasets = manifest.get("datasets", {}) or {}
-    manifest_for_payload = {k: v for k, v in manifest.items() if k != "datasets"}
+    manifest_for_payload = {
+        k: v for k, v in manifest.items()
+        if k not in ("datasets", "map_assets")
+    }
     manifest_for_payload["datasets"] = {}
 
     # Extract runtime show_when conditions: {widget_id: condition_dict}
@@ -15734,7 +16392,12 @@ def render_dashboard_html(
         "manifest": manifest_for_payload,
         "specs": specs,
         "datasets": datasets,
+        "maps": manifest.get("map_assets", {}) or {},
         "themes": {n: t["echarts"] for n, t in THEMES.items()},
+        "resolvedThemes": {
+            n: resolve_theme(n, export_mode="screen")
+            for n in THEMES
+        },
         "palettes": {n: {"colors": list(p["colors"]), "kind": p["kind"]}
                       for n, p in PALETTES.items()},
         "widgetShowWhen": widget_show_when,
@@ -15940,7 +16603,7 @@ def save_chart_png(
     height: int = 520,
     theme: str = "gs_clean",
     scale: int = 2,
-    background: str = "#ffffff",
+    background: Optional[str] = None,
     virtual_time_ms: int = 2500,
     timeout_s: float = 30.0,
     verbose: bool = False,
@@ -15961,8 +16624,9 @@ def save_chart_png(
         ``gs_clean``. The theme spec is embedded and registered inline.
     scale : int
         Device-pixel multiplier (2 = retina). 1, 2, 3 supported.
-    background : str
-        Page background color. Use this for transparent exports by
+    background : str, optional
+        Page background color. Defaults to the resolved theme background;
+        use this for transparent exports by
         passing ``'rgba(0,0,0,0)'`` plus `--default-background-color=00000000`.
     virtual_time_ms : int
         How long to advance Chrome's virtual clock before the screenshot.
@@ -15983,6 +16647,10 @@ def save_chart_png(
         raise TypeError(
             f"option must be a dict or JSON string, got {type(option).__name__}"
         )
+
+    resolved = resolve_theme(theme, export_mode="screen")
+    if background is None:
+        background = resolved["export"]["background"]
 
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -16069,8 +16737,115 @@ def _has_existing_chart_title(t: Any) -> bool:
     return False
 
 
+def _stable_color_index(name: Any, size: int) -> int:
+    value = 2166136261
+    encoded = str(name if name is not None else "").encode("utf-16-le")
+    for offset in range(0, len(encoded), 2):
+        code_unit = encoded[offset] | (encoded[offset + 1] << 8)
+        value ^= code_unit
+        value = (value * 16777619) & 0xFFFFFFFF
+    return value % size if size else 0
+
+
+def _stable_color_slots(keys: Iterable[Any], size: int) -> Dict[str, int]:
+    if size <= 0:
+        return {}
+    slots: Dict[str, int] = {}
+    used: set[int] = set()
+    for key in sorted({str(item) for item in keys}):
+        slot = _stable_color_index(key, size)
+        if len(used) < size:
+            while slot in used:
+                slot = (slot + 1) % size
+            used.add(slot)
+        slots[key] = slot
+    return slots
+
+
+def _apply_stable_series_colors(
+    opt: Dict[str, Any],
+    w: Dict[str, Any],
+    theme: str,
+) -> None:
+    spec = w.get("spec") if isinstance(w.get("spec"), dict) else {}
+    custom = spec.get("colors")
+    named = (
+        spec.get("series_colors")
+        if isinstance(spec.get("series_colors"), dict) else {}
+    )
+    mode = "dark" if theme.endswith("_dark") else "light"
+    if isinstance(custom, dict) and isinstance(custom.get(mode), list):
+        colors = list(custom[mode])
+    else:
+        palette_name = spec.get("palette")
+        if palette_name and palette_name != "gs_primary":
+            colors = list(PALETTES[palette_name]["colors"])
+        else:
+            colors = list(resolve_theme(theme)["categorical"])
+    if not colors:
+        return
+
+    def _named_color(*keys: Any) -> Optional[str]:
+        for key in keys:
+            if key is None:
+                continue
+            modes = named.get(str(key))
+            if isinstance(modes, dict) and isinstance(modes.get(mode), str):
+                return modes[mode]
+        return None
+
+    opt["color"] = colors
+    series = opt.get("series")
+    series_list = series if isinstance(series, list) else [series]
+    keys: List[str] = []
+    for index, item in enumerate(series_list):
+        if not isinstance(item, dict) or item.get("type") in ("heatmap", "map"):
+            continue
+        if item.get("type") == "pie" and isinstance(item.get("data"), list):
+            for item_index, datum in enumerate(item["data"]):
+                if isinstance(datum, dict):
+                    keys.append(str(datum.get("name", f"slice-{item_index}")))
+            continue
+        keys.append(str(
+            item.get("name") or item.get("_column") or f"series-{index}"
+        ))
+    slots = _stable_color_slots(keys, len(colors))
+    for index, item in enumerate(series_list):
+        if not isinstance(item, dict) or item.get("type") == "heatmap":
+            continue
+        if item.get("type") == "map":
+            item.setdefault("itemStyle", {})["borderColor"] = (
+                resolve_theme(theme)["semantic"]["surface"]
+            )
+            continue
+        if item.get("type") == "pie" and isinstance(item.get("data"), list):
+            for item_index, datum in enumerate(item["data"]):
+                if not isinstance(datum, dict):
+                    continue
+                style = datum.setdefault("itemStyle", {})
+                key = str(datum.get("name", f"slice-{item_index}"))
+                explicit = _named_color(datum.get("name"), key)
+                if explicit is not None:
+                    style["color"] = explicit
+                elif "color" not in style:
+                    style["color"] = colors[slots[key]]
+            continue
+        key = str(item.get("name") or item.get("_column") or f"series-{index}")
+        color = _named_color(item.get("name"), item.get("_column"), key)
+        if color is None:
+            color = colors[slots[key]]
+        item_style = item.setdefault("itemStyle", {})
+        line_style = item.setdefault("lineStyle", {})
+        if _named_color(item.get("name"), item.get("_column"), key) is not None:
+            item_style["color"] = color
+            line_style["color"] = color
+        else:
+            item_style.setdefault("color", color)
+            line_style.setdefault("color", color)
+
+
 def _inject_widget_title_into_option(
-    opt: Dict[str, Any], w: Dict[str, Any]
+    opt: Dict[str, Any], w: Dict[str, Any], theme: str = "gs_clean"
 ) -> Tuple[Dict[str, Any], int]:
     """Bake the widget's tile title (and subtitle) into the chart option
     so PNG exports show what the user sees on the dashboard tile.
@@ -16096,6 +16871,8 @@ def _inject_widget_title_into_option(
         return opt, 0
     if _has_existing_chart_title(opt.get("title")):
         return opt, 0
+    resolved = resolve_theme(theme, export_mode="screen")
+    semantic = resolved["semantic"]
     title_block = {
         "text": str(title),
         "subtext": str(subtitle),
@@ -16104,12 +16881,13 @@ def _inject_widget_title_into_option(
         "textStyle": {
             "fontFamily": ('Goldman Sans, GS Sans, '
                             'Helvetica Neue, Arial, sans-serif'),
-            "fontSize": 14, "fontWeight": 600, "color": "#1A1A1A",
+            "fontSize": 14, "fontWeight": 600, "color": semantic["text"],
         },
         "subtextStyle": {
             "fontFamily": ('Goldman Sans, GS Sans, '
                             'Helvetica Neue, Arial, sans-serif'),
-            "fontSize": 11, "color": "#595959", "fontStyle": "italic",
+            "fontSize": 11, "color": semantic["text_dim"],
+            "fontStyle": "italic",
         },
     }
     opt["title"] = [title_block]
@@ -16138,7 +16916,7 @@ def save_dashboard_pngs(
     container_px: int = 1400,
     gap_px: int = 14,
     min_width: int = 480,
-    background: str = "#ffffff",
+    background: Optional[str] = None,
     virtual_time_ms: int = 2500,
     verbose: bool = False,
 ) -> List[Path]:
@@ -16190,13 +16968,30 @@ def save_dashboard_pngs(
                 # no-op when there's no widget title or the chart
                 # already provides one (raw option / ref passthrough).
                 opt = json.loads(json.dumps(opt))
-                opt, title_px = _inject_widget_title_into_option(opt, w)
-                w_cols = int(w.get("w", cols))
+                chart_theme = (
+                    theme
+                    or (
+                        w.get("spec", {}).get("theme")
+                        if isinstance(w.get("spec"), dict) else None
+                    )
+                    or theme_name
+                )
+                _apply_stable_series_colors(opt, w, chart_theme)
+                opt, title_px = _inject_widget_title_into_option(
+                    opt, w, chart_theme
+                )
+                w_cols = int(w.get(
+                    "w", cols if w.get("hero") else cols // 2
+                ))
                 # Same layout-aware default as the HTML render path
                 # (_render_chart_widget): 400 for 2-up tiles, 360 for
                 # 3-up. Keeps the PNG export and the on-screen tile
                 # at the same aspect ratio.
-                _default_h = 400 if w_cols >= cols // 2 else 360
+                _default_h = (
+                    500 if w.get("hero")
+                    else 400 if w_cols >= cols // 2
+                    else 360
+                )
                 height = int(w.get("h_px", _default_h)) + title_px
                 width = max(
                     min_width,
@@ -16208,7 +17003,7 @@ def save_dashboard_pngs(
                           f"-> {out}")
                 save_chart_png(
                     opt, out, width=width, height=height,
-                    theme=theme_name, scale=scale,
+                    theme=chart_theme, scale=scale,
                     background=background,
                     virtual_time_ms=virtual_time_ms,
                 )

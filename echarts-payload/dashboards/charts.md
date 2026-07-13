@@ -34,13 +34,13 @@ Alternatives:
 - `ref`: relative path to a pre-emitted ECharts option;
 - `option`: inline raw ECharts option.
 
-Use these only when the high-level builder cannot represent the intended product. Widget `title` and `subtitle` belong beside `spec`, never inside it. Chart widths are 4 or 6 in a 12-column layout.
+Use these only when the high-level builder cannot represent the intended product. Widget `title` and `subtitle` belong beside `spec`, never inside it. Standard chart widths are 4 or 6 in a 12-column layout. A single decision-critical full-width chart may set `hero: true` and `w: 12`; it must occupy its own row.
 
-## Chart-type catalog (30)
+## Chart-type catalog (31)
 
 The closed chart-type enum is:
 
-`line`, `multi_line`, `bar`, `bar_horizontal`, `scatter`, `scatter_multi`, `scatter_studio`, `area`, `heatmap`, `correlation_matrix`, `pie`, `donut`, `boxplot`, `histogram`, `bullet`, `sankey`, `treemap`, `sunburst`, `graph`, `candlestick`, `radar`, `gauge`, `calendar_heatmap`, `funnel`, `parallel_coords`, `tree`, `waterfall`, `slope`, `fan_cone`, `marimekko`
+`line`, `multi_line`, `bar`, `bar_horizontal`, `scatter`, `scatter_multi`, `scatter_studio`, `area`, `heatmap`, `geo_map`, `correlation_matrix`, `pie`, `donut`, `boxplot`, `histogram`, `bullet`, `sankey`, `treemap`, `sunburst`, `graph`, `candlestick`, `radar`, `gauge`, `calendar_heatmap`, `funnel`, `parallel_coords`, `tree`, `waterfall`, `slope`, `fan_cone`, `marimekko`
 
 | `chart_type` | Required mapping |
 |---|---|
@@ -53,6 +53,7 @@ The closed chart-type enum is:
 | `scatter_studio` | no required mapping; author whitelists viewer choices |
 | `area` | `x`, `y`; optional `color` |
 | `heatmap` | categorical `x`, categorical `y`, numeric `value` |
+| `geo_map` | `region`, numeric `value`, and `map` asset name |
 | `correlation_matrix` | numeric `columns` list |
 | `pie` | `category`, `value` |
 | `donut` | `category`, `value` |
@@ -76,6 +77,113 @@ The closed chart-type enum is:
 | `marimekko` | categorical `x`, categorical `y`, numeric `value` |
 
 Unknown chart types, missing mapping keys/columns, and wrong numeric/categorical roles are diagnostics. Author from the actual persisted dataset schema.
+
+### Geographic maps
+
+`geo_map` never fetches remote map data. Embed the exact GeoJSON asset in the manifest so the compiled dashboard remains self-contained:
+
+```python
+"map_assets": {
+    "countries": {
+        "geojson": country_feature_collection,
+        "name_property": "name",
+        "aliases": {"United States of America": "United States"},
+    },
+},
+# chart mapping
+{"region": "country", "value": "growth_pct", "map": "countries"}
+```
+
+| Asset key | Contract |
+|---|---|
+| `geojson` | Required non-empty GeoJSON `FeatureCollection`; features are `Polygon`/`MultiPolygon` |
+| `name_property` | Optional feature-property key, default `"name"`; use `"$id"` for feature ids |
+| `aliases` | Optional exact `{dataset_value: canonical_geojson_value}` mapping |
+
+Aliases belong only at `map_assets.<map>.aliases`, never in chart `mapping`.
+GeoJSON feature keys must be unique. After aliases, every non-null dataset
+region must match a feature key and appear in exactly one dataset row; unknown
+keys or multiple rows resolving to one canonical region block compilation.
+Aggregate duplicates upstream with an explicitly chosen statistic. `roam` is
+an optional boolean mapping key (default `false`) that enables pan/zoom;
+`selected_mode` controls ECharts region selection and defaults to `false`.
+Optional `value_min`, `value_max`, `series_name`, and
+`visual_map_orient`/`visual_map_left`/`visual_map_bottom` configure the scale
+and legend. Fuzzy geographic matching and CDN fallbacks are intentionally
+absent.
+
+## Pre-render data integrity
+
+Every mapped time series is profiled after compute/transform
+materialization and again in the default filter state. Compilation blocks
+positive/negative infinity, invalid log domains, backward time ordering,
+conflicting duplicate timestamps, and empty effective x/y pairs. Null/NaN
+observations are missing values rather than infinities: isolated or bounded
+internal/edge runs remain warning evidence unless an explicit missingness
+expectation is breached. Warnings also surface irregular gaps/frequency,
+stale tails, scale-dominating observations, abrupt breaks, and constant
+series.
+
+Automatic time inference requires an explicit four-digit year in at least
+80% of non-null string labels. Bare month names and two-digit month/year
+labels remain categorical, so pandas-version differences cannot silently
+turn a category axis into a time axis. Normalize genuinely temporal labels
+upstream to unambiguous full-year values and declare `quality.time_field`.
+
+Persist optional expectations in `manifest_template.json` at
+`datasets.<name>.quality`; the example below is the value of
+`datasets.rates`:
+
+```python
+"rates": {
+    "source": rates,
+    "quality": {
+        "time_field": "date",
+        "expected_frequency": "B",
+        "max_internal_gap": "5D",
+        "max_staleness": "3D",
+        "duplicate_policy": "error",
+        "severity": "error",
+        "fields": {
+            "us_10y": {
+                "domain": "positive",
+                "min": 0,
+                "max": 25,
+                "max_missing_fraction": 0.02,
+                "max_internal_na_run": 1,
+                "outlier": {
+                    "method": "mad",
+                    "threshold": 8,
+                    "max_scale_expansion": 4,
+                },
+                "max_step_robust_z": 10,
+            },
+        },
+    },
+}
+```
+
+Durations accept pandas-style strings or positive seconds. A field
+expectation inherits `quality.severity`; a field-level `severity` overrides
+it, and the default is `error` when neither is supplied. The canonical
+outlier shape is exactly `{"method": "mad", "threshold": 8,
+"max_scale_expansion": 4}`; aliases such as `robust_z` are invalid. With no
+explicit outlier block, conservative automatic profiling uses those 8/4
+thresholds and reports scale-dominating points as warnings. Omitted
+`max_internal_gap` uses five times the observed median interval as a warning
+threshold; omitted `expected_frequency` and `max_staleness` make no explicit
+contract assertion. `duplicate_policy` defaults to `error` for conflicting
+values and still warns on exact duplicate timestamps.
+
+Set `severity: "warning"` only when a breach is known to remain renderable
+and analytically usable. Warning-only findings do not block
+`compile_dashboard(strict=True)`; they remain in
+`DashboardResult.quality_findings` and `inspect_dashboard(FOLDER)["findings"]`.
+Each structured record exposes `severity`, `code`, `path`, `widget_id`,
+`dataset`, `series`, `field`, `observed`, `expected`, `examples`,
+`visual_effect`, and `fix_hint`. Never clip, sort, impute, delete, or
+winsorize silently. Repair a demonstrated source/transform defect; when a
+flagged observation may be real, surface the evidence and ask.
 
 ## XY mappings
 
@@ -139,7 +247,7 @@ Common mapping/spec controls:
 | `y_format`, `x_format` | `percent`, `bp`, `usd`, `compact`, or JS formatter |
 | `grid_padding` | `{top, right, bottom, left}` |
 | `show_grid`, `show_axis_line`, `show_axis_ticks` | Axis chrome |
-| `series_colors` | Stable field-to-color mapping |
+| `spec.series_colors` | Exact series/raw-column name to validated `{light, dark}` colors |
 | `tooltip` | Trigger, precision, formatter, visibility |
 | `palette`, `theme` | Per-spec visual override |
 | `stat_strip` | Toggle eligible time-series stat strip |
@@ -148,6 +256,31 @@ Common mapping/spec controls:
 Numeric display precision is capped at five decimals. Use units in axis titles and provenance; do not rely on hover context alone.
 
 Time-axis charts inject both inside and slider data zoom when `spec.chart_zoom` is omitted or `true`. Set `spec.chart_zoom: {"inside": true, "slider": false}` for inside-only zoom or `false` to disable both. A link with `sync: ["dataZoom"]` synchronizes zoom windows that already exist; it does not enable zoom.
+
+The resolved theme owns chart, popup, pivot/table scale, PNG, and print colors.
+Series slots are assigned from stable series names, not row order;
+deterministic collision resolution keeps unique names on distinct colors until
+palette capacity is exhausted, including after filtering and theme toggles.
+Use `gs_colorblind` for categorical accessibility or
+`gs_diverging_accessible` for a diverging scale. A custom palette uses
+`spec.colors = {"light": [...], "dark": [...], "role": "data_mark"}`;
+equal-length arrays define corresponding light/dark slots. When exact names
+must own exact colors, bypass slot assignment:
+
+```python
+"series_colors": {
+    "Nominal": {"light": "#002F6C", "dark": "#74C0E3"},
+    "Real": {"light": "#8A1538", "dark": "#FF8A80"},
+}
+```
+
+Keys match emitted series names or raw wide-form columns. Every free-form mark
+must pass contrast for its mode. Dark-mode PNG exports retain the dark
+background; PDF/print intentionally switches to the light print contract,
+mounts charts from every tab, opens collapsed layout groups, and prints every
+filtered `data_grid` row up to `max_rows`.
+
+Filters faithfully rebuild wide and grouped line/bar/area/scatter, stacked bar/area, pie/donut, heatmap, `geo_map`, `scatter_studio`, and `correlation_matrix`. A `dateRange` in default `mode: "view"` may also target supported data-zoom time-series charts such as candlesticks without rebuilding their series. A filter targeting any other chart shape is an explicit `filter_chart_rebuild_unsupported` error; never ship a static chart beside changing KPIs or tables.
 
 Heatmap-style controls include:
 
@@ -338,7 +471,7 @@ Rich detail:
 }
 ```
 
-For every rich chart/table section, `row_key` is a column on the clicked chart's dataset, `filter_field` is a column on the detail dataset, and representative values must overlap. Missing datasets/columns, non-overlapping keys, and empty explicit popup objects are blocking diagnostics. Use `click_popup: false` for deliberate opt-out.
+For every rich chart/table section, `row_key` is a column on the clicked chart's dataset, `filter_field` is a column on the detail dataset, and representative values must overlap. Give a popup chart a stable `id` when filters or `links[].members` target it. Popup charts mount through the same controller as inline charts, so theme, legend, smoothing, zoom, click, brush, filter, and link behavior are shared. Missing datasets/columns, non-overlapping keys, and empty explicit popup objects are blocking diagnostics. Use `click_popup: false` for deliberate opt-out.
 
 ## Chart judgment
 

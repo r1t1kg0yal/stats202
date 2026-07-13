@@ -43,9 +43,9 @@ The closed operator enum is:
 }
 ```
 
-Default `mode: "view"` sets the initial chart data-zoom window while charts retain full history; targeted tables and KPIs still receive row filtering. Set `mode: "filter"` only when chart rows themselves must be discarded.
+Default `mode: "view"` sets the initial chart data-zoom window while charts retain full history; the same filter deliberately row-filters targeted tables, data grids, KPIs, pivots, and stat grids. Set `mode: "filter"` only when targeted chart rows themselves must also be discarded.
 
-The fixed visible preset surface is `1M`, `3M`, `6M`, `YTD`, `1Y`, `2Y`, `5Y`, `All`; it has no authored `options` key. Canonical defaults use those tokens with complete history authored as `MAX`; supplied aliases `All` and `all` normalize to `MAX`, while the control displays and selects `All`. Date fields across targets must parse as compatible dates.
+The fixed visible preset surface is `1M`, `3M`, `6M`, `YTD`, `1Y`, `2Y`, `5Y`, `All`; it has no authored `options` key. Canonical defaults use those tokens with complete history authored as `MAX`; supplied aliases `All` and `all` normalize to `MAX`, while the control displays and selects `All`. Under default `mode: "view"`, `MAX`/`All` includes every row on targeted tables, data grids, KPIs, pivots, and stat grids while chart targets retain full history with a full-range data-zoom window. Date fields across targets must parse as compatible dates.
 
 ## Select, multi-select, and radio
 
@@ -72,7 +72,19 @@ Options are primitives or `{value, label}` dictionaries. Defaults use option val
 - `radio` for a small set that benefits from simultaneous visibility;
 - `multiSelect` when comparison across selected categories is the point.
 
-An empty/default `all_value` can represent no categorical restriction.
+`select`/`radio` may use an empty `all_value` for no categorical
+restriction. `multiSelect` uses the same `field`, `options`, `label`, and
+`targets` schema, but its `default` is a list of option values:
+
+```python
+{"id": "region", "type": "multiSelect", "field": "region",
+ "options": ["US", "EU", "JP", "UK"],
+ "default": ["US", "EU", "JP", "UK"],
+ "targets": ["regional_performance", "regional_snapshot"]}
+```
+
+Selected values are OR-included; an empty selection returns zero rows. To
+open unfiltered, select every option rather than authoring `all_value`.
 
 ## Numeric and text controls
 
@@ -215,7 +227,19 @@ Before adding a filter:
 3. verify option/default values exist;
 4. narrow targets when datasets are incompatible.
 
-Filters can target `chart`, `kpi`, `table`, `pivot`, and `stat_grid`. Tools and narrative widgets are not filter-targetable.
+Independent filters that share a target compose with **AND**: a row must
+satisfy every active filter. Values selected within one `multiSelect` compose
+with OR as described above.
+
+Filters can target `chart`, popup chart ids, `kpi`, `table`, `data_grid`, `pivot`, and `stat_grid`. Tools and narrative widgets are not filter-targetable. Chart targets are valid only when the browser can faithfully rebuild their emitted shape: wide/grouped line/bar/area/scatter, stacked bar/area, pie/donut, heatmap, `geo_map`, `scatter_studio`, and `correlation_matrix`. A default `dateRange` `mode: "view"` may additionally target supported time-series charts such as candlesticks because it changes the chart's data-zoom window without rebuilding series. Unsupported chart/filter combinations fail with `filter_chart_rebuild_unsupported`; narrow the targets or reshape the persisted data rather than leaving a static visual beside changing widgets.
+
+For a long-form grouped chart, use the persisted grouping column as both the
+categorical filter `field` and the chart grouping mapping (`color`, or
+`category` for pie/donut). Wide-form series names are columns, not row values;
+reshape wide data to long form before offering a series-selection filter.
+Filtering a `data_grid` happens before virtualization. Any active user sort is
+preserved and recomputed on the filtered rows, then the grid resets to the
+first `page_size` rows of that filtered-then-sorted result.
 
 ## Linked charts
 

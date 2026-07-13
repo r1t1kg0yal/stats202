@@ -169,10 +169,6 @@ VALID_CLICK_EMIT_VALUE_SOURCES = {"name", "value", "seriesName"}
 VALID_POPUP_SECTION_TYPES = {
     "stats", "markdown", "chart", "table", "kv", "kv_table",
 }
-_UNSUPPORTED_POPUP_LEGEND_SYNC_KEYS = {
-    "legend_sync", "legendSync", "legend_group", "legendGroup",
-}
-
 # Valid values for ``metadata.time.data_domain_freq`` — describes the
 # CADENCE OF THE DATA (e.g. quarterly CPI prints), distinct from
 # ``metadata.refresh_frequency`` which describes how often the dashboard
@@ -238,7 +234,8 @@ class ChartTypeSpec:
             ``"reshape"`` -- wide-form dataset; the JS substitutes
                              the encode mapping after the row filter,
                              no builder call needed (line / bar /
-                             area / multi_line in vanilla shapes).
+                             area / multi_line / scatter in supported
+                             vanilla or grouped shapes).
                              Mapping-shape conditions in
                              ``_is_safe_for_rewire`` further gate
                              the actual auto-wire decision.
@@ -268,18 +265,24 @@ CHART_TYPES: Dict[str, ChartTypeSpec] = {
     "bar":                ChartTypeSpec("bar",
                             rewire_strategy="reshape"),
     "bar_horizontal":     ChartTypeSpec("bar_horizontal"),
-    "scatter":            ChartTypeSpec("scatter"),
+    "scatter":            ChartTypeSpec("scatter",
+                            rewire_strategy="reshape"),
     "scatter_multi":      ChartTypeSpec("scatter_multi"),
     "scatter_studio":     ChartTypeSpec("scatter_studio",
                             rewire_strategy="rebuild"),
     "area":               ChartTypeSpec("area",
                             rewire_strategy="reshape",
                             stat_strip_eligible=True),
-    "heatmap":            ChartTypeSpec("heatmap"),
+    "heatmap":            ChartTypeSpec("heatmap",
+                            rewire_strategy="rebuild"),
+    "geo_map":            ChartTypeSpec("geo_map",
+                            rewire_strategy="rebuild"),
     "correlation_matrix": ChartTypeSpec("correlation_matrix",
                             rewire_strategy="rebuild"),
-    "pie":                ChartTypeSpec("pie"),
-    "donut":              ChartTypeSpec("donut"),
+    "pie":                ChartTypeSpec("pie",
+                            rewire_strategy="rebuild"),
+    "donut":              ChartTypeSpec("donut",
+                            rewire_strategy="rebuild"),
     "boxplot":            ChartTypeSpec("boxplot"),
     "histogram":          ChartTypeSpec("histogram"),
     "bullet":             ChartTypeSpec("bullet"),
@@ -312,6 +315,42 @@ REBUILD_REWIREABLE_CHART_TYPES = frozenset(
 STAT_STRIP_ELIGIBLE_CHART_TYPES = frozenset(
     k for k, spec in CHART_TYPES.items() if spec.stat_strip_eligible
 )
+DATE_RANGE_VIEW_CHART_TYPES = frozenset(
+    {
+        "line",
+        "multi_line",
+        "bar",
+        "area",
+        "scatter",
+        "scatter_studio",
+        "candlestick",
+        "fan_cone",
+    }
+)
+
+
+def _chart_filter_rewire_supported(
+    chart_type: Optional[str],
+    mapping: Dict[str, Any],
+) -> bool:
+    """Whether browser filtering can faithfully rebuild this chart shape."""
+    if chart_type in REBUILD_REWIREABLE_CHART_TYPES:
+        return True
+    if chart_type not in RESHAPE_REWIREABLE_CHART_TYPES:
+        return False
+    if mapping.get("trendline") or mapping.get("trendlines"):
+        return False
+    has_group = bool(mapping.get("color") or mapping.get("colour"))
+    if has_group and not (
+        chart_type in {"line", "multi_line", "bar", "area", "scatter"}
+        and isinstance(mapping.get("y"), str)
+    ):
+        return False
+    if mapping.get("stack") and chart_type not in {"bar", "area"}:
+        return False
+    if mapping.get("dual_axis_series") or mapping.get("axes"):
+        return chart_type == "multi_line" and not has_group
+    return True
 
 # Aggregators recognised by the KPI / stat_grid runtime resolver.
 # MUST mirror the ``resolveAgg`` switch in rendering.py's dashboard JS;
@@ -816,6 +855,8 @@ _WIDGET_BOOL_FIELDS: frozenset = frozenset({
     "showSymbol",
     "stat_strip_off",
     "show_axis_labels",
+    "hero",
+    "virtualized",
 })
 
 
@@ -1267,6 +1308,55 @@ def _validate_filter_rule(rule: Any, base_path: str,
 # ``commentary`` widget whose copy varies by filter state).
 
 
+def _validate_dual_theme_series_colors(
+    value: Any,
+    path: str,
+    errs: List[str],
+) -> None:
+    """Validate explicit series-name colors for both viewer modes."""
+    from config import SEMANTIC_COLORS, validate_color_contrast
+
+    if not isinstance(value, dict) or not value:
+        errs.append(_err(
+            path,
+            "must be a non-empty {series_name: {light: hex, dark: hex}} dict",
+        ))
+        return
+    for series_name, modes in value.items():
+        series_path = f"{path}.{series_name}"
+        if not isinstance(series_name, str) or not series_name:
+            errs.append(_err(path, "series names must be non-empty strings"))
+            continue
+        if not isinstance(modes, dict):
+            errs.append(_err(
+                series_path, "must be {light: hex, dark: hex}"
+            ))
+            continue
+        unknown = sorted(
+            (key for key in modes if key not in {"light", "dark"}),
+            key=str,
+        )
+        if unknown:
+            errs.append(_err(
+                series_path,
+                f"unknown keys {unknown}; valid: ['dark', 'light']",
+            ))
+        for mode in ("light", "dark"):
+            color = modes.get(mode)
+            color_path = f"{series_path}.{mode}"
+            if not isinstance(color, str):
+                errs.append(_err(color_path, "must be a hex color string"))
+                continue
+            try:
+                validate_color_contrast(
+                    color,
+                    SEMANTIC_COLORS[mode]["background"],
+                    role="data_mark",
+                )
+            except ValueError as exc:
+                errs.append(_err(color_path, str(exc)))
+
+
 def _validate_popup_config(
     popup: Any,
     popup_path: str,
@@ -1283,34 +1373,12 @@ def _validate_popup_config(
         # context used by inspect_dashboard.
         return
 
-    def _reject_legend_sync(value: Any, path: str) -> None:
-        if not isinstance(value, dict):
-            return
-        attempted = sorted(
-            key for key in value
-            if key in _UNSUPPORTED_POPUP_LEGEND_SYNC_KEYS
-            or (key == "sync" and value.get(key) in (
-                "legend", ["legend"], ("legend",),
-            ))
-        )
-        if attempted:
-            errs.append(_err(
-                path,
-                "popup_legend_sync_unsupported: popup-local or cross-popup "
-                f"legend synchronization is not supported ({attempted})",
-                "move the charts inline and connect them with a manifest "
-                "links entry using sync=['legend'], or keep each popup chart "
-                "independent; use popup_fields for simple row details.",
-            ))
-
-    _reject_legend_sync(popup, popup_path)
     detail = popup.get("detail")
     if detail is None:
         return
     if not isinstance(detail, dict):
         # Owned by `_check_popup_detail_sections` for structured diagnostics.
         return
-    _reject_legend_sync(detail, f"{popup_path}.detail")
     sections = detail.get("sections")
     if not isinstance(sections, list) or not sections:
         # Owned by `_check_popup_detail_sections`.
@@ -1329,7 +1397,21 @@ def _validate_popup_config(
                 f"use one of {sorted(VALID_POPUP_SECTION_TYPES)}; for a "
                 "simple detail list, remove detail and use popup_fields.",
             ))
-        _reject_legend_sync(section, section_path)
+        if section_type == "chart" and "id" in section:
+            sid = section.get("id")
+            if not isinstance(sid, str) or not sid:
+                errs.append(_err(
+                    f"{section_path}.id",
+                    "must be a non-empty string when supplied",
+                    "use a stable id when filters or manifest links need to "
+                    "target this popup chart.",
+                ))
+        if section_type == "chart" and "series_colors" in section:
+            _validate_dual_theme_series_colors(
+                section.get("series_colors"),
+                f"{section_path}.series_colors",
+                errs,
+            )
 
 
 def _validate_chart_widget(w: Dict[str, Any], wbase: str,
@@ -1410,6 +1492,64 @@ def _validate_chart_widget(w: Dict[str, Any], wbase: str,
                     f"unknown theme '{theme_override}'; "
                     f"valid: {sorted(THEMES.keys())}"
                 ))
+        custom_colors = spec.get("colors")
+        if custom_colors is not None:
+            from config import (
+                SEMANTIC_COLORS,
+                validate_color_contrast,
+            )
+            if not isinstance(custom_colors, dict):
+                errs.append(_err(
+                    f"{wbase}.spec.colors",
+                    "must be {light: [...], dark: [...], role: "
+                    "'data_mark'|'decorative'}; a single unscoped list "
+                    "cannot guarantee contrast across theme modes",
+                ))
+            else:
+                allowed = {"light", "dark", "role"}
+                unknown = sorted(set(custom_colors) - allowed)
+                if unknown:
+                    errs.append(_err(
+                        f"{wbase}.spec.colors",
+                        f"unknown keys {unknown}; valid: {sorted(allowed)}",
+                    ))
+                role = custom_colors.get("role", "data_mark")
+                if role not in ("data_mark", "decorative"):
+                    errs.append(_err(
+                        f"{wbase}.spec.colors.role",
+                        "must be data_mark or decorative",
+                    ))
+                light = custom_colors.get("light")
+                dark = custom_colors.get("dark")
+                for mode, colors in (("light", light), ("dark", dark)):
+                    cpath = f"{wbase}.spec.colors.{mode}"
+                    if not isinstance(colors, list) or not colors:
+                        errs.append(_err(
+                            cpath, "must be a non-empty list of hex colors"
+                        ))
+                        continue
+                    for ci, color in enumerate(colors):
+                        try:
+                            validate_color_contrast(
+                                color,
+                                SEMANTIC_COLORS[mode]["background"],
+                                role=role,
+                            )
+                        except ValueError as exc:
+                            errs.append(_err(f"{cpath}[{ci}]", str(exc)))
+                if isinstance(light, list) and isinstance(dark, list) \
+                        and len(light) != len(dark):
+                    errs.append(_err(
+                        f"{wbase}.spec.colors",
+                        "light and dark lists must have equal length so "
+                        "stable series slots survive theme toggles",
+                    ))
+        if "series_colors" in spec:
+            _validate_dual_theme_series_colors(
+                spec.get("series_colors"),
+                f"{wbase}.spec.series_colors",
+                errs,
+            )
         # Title / subtitle live at the widget level only. The tile header
         # chrome renders them; charts share the same uniform header
         # contract as KPIs / tables / markdown tiles. PNG export bakes
@@ -1651,6 +1791,31 @@ def _validate_table_widget(w: Dict[str, Any], wbase: str,
                                 f"{cbase}.row_key",
                                 "in_cell=sparkline requires 'row_key' "
                                 "(column on this row used to look up history)"))
+    if "virtualized" in w and not isinstance(w.get("virtualized"), bool):
+        errs.append(_err(f"{wbase}.virtualized", "must be a boolean"))
+    page_size = w.get("page_size")
+    if page_size is not None and (
+        not isinstance(page_size, int) or isinstance(page_size, bool)
+        or page_size < 20 or page_size > 1000
+    ):
+        errs.append(_err(
+            f"{wbase}.page_size", "must be an int between 20 and 1000"
+        ))
+    max_rows = w.get("max_rows")
+    if max_rows is not None and (
+        not isinstance(max_rows, int) or isinstance(max_rows, bool)
+        or max_rows < 1 or max_rows > TABLE_ROWS_ERROR
+    ):
+        errs.append(_err(
+            f"{wbase}.max_rows",
+            f"must be an int between 1 and {TABLE_ROWS_ERROR}",
+        ))
+    if isinstance(page_size, int) and isinstance(max_rows, int) \
+            and page_size > max_rows:
+        errs.append(_err(
+            f"{wbase}.page_size",
+            "must be <= max_rows so the first lazy slice respects the cap",
+        ))
     row_click = w.get("row_click")
     if row_click is not None and not isinstance(row_click, (dict, bool)):
         errs.append(_err(
@@ -1661,6 +1826,25 @@ def _validate_table_widget(w: Dict[str, Any], wbase: str,
         ))
     else:
         _validate_popup_config(row_click, f"{wbase}.row_click", errs)
+
+
+def _validate_data_grid_widget(w: Dict[str, Any], wbase: str,
+                               errs: List[str], dataset_names: Any) -> None:
+    """Validate the large-screen, always-virtualized table evolution."""
+    _validate_table_widget(w, wbase, errs, dataset_names)
+    if w.get("virtualized") is False:
+        errs.append(_err(
+            f"{wbase}.virtualized",
+            "data_grid is always virtualized; remove the key or set true",
+        ))
+    h_px = w.get("h_px")
+    if h_px is not None and (
+        not isinstance(h_px, int) or isinstance(h_px, bool)
+        or h_px < 240 or h_px > 1200
+    ):
+        errs.append(_err(
+            f"{wbase}.h_px", "must be an int between 240 and 1200"
+        ))
 
 
 def _validate_pivot_widget(w: Dict[str, Any], wbase: str,
@@ -1729,6 +1913,49 @@ def _validate_pivot_widget(w: Dict[str, Any], wbase: str,
                 f"{wbase}.color_scale",
                 "must be a string ('sequential' / 'diverging' "
                 "/ 'auto') or a dict {min, max, palette}"))
+        else:
+            allowed = {"min", "max", "palette", "kind", "type"}
+            unknown = sorted(set(cs) - allowed)
+            if unknown:
+                errs.append(_err(
+                    f"{wbase}.color_scale",
+                    f"unknown keys {unknown}; valid keys: {sorted(allowed)}",
+                ))
+            scale_kind = cs.get("kind", cs.get("type", "auto"))
+            if scale_kind not in ("sequential", "diverging", "auto"):
+                errs.append(_err(
+                    f"{wbase}.color_scale.kind",
+                    "must be sequential|diverging|auto",
+                ))
+            for bound in ("min", "max"):
+                if bound in cs and not isinstance(cs[bound], (int, float)):
+                    errs.append(_err(
+                        f"{wbase}.color_scale.{bound}", "must be numeric"
+                    ))
+            palette = cs.get("palette")
+            if palette is not None:
+                from config import PALETTES
+                if palette not in PALETTES:
+                    errs.append(_err(
+                        f"{wbase}.color_scale.palette",
+                        f"unknown palette '{palette}'; "
+                        f"valid: {sorted(PALETTES)}",
+                    ))
+                elif PALETTES[palette]["kind"] not in (
+                    "sequential", "diverging"
+                ):
+                    errs.append(_err(
+                        f"{wbase}.color_scale.palette",
+                        f"palette '{palette}' is categorical; pivot scales "
+                        "require sequential or diverging colors",
+                    ))
+            if isinstance(cs.get("min"), (int, float)) and isinstance(
+                cs.get("max"), (int, float)
+            ) and cs["min"] >= cs["max"]:
+                errs.append(_err(
+                    f"{wbase}.color_scale",
+                    "min must be less than max",
+                ))
 
 
 def _validate_stat_grid_widget(w: Dict[str, Any], wbase: str,
@@ -1854,6 +2081,8 @@ WIDGETS: Dict[str, WidgetSpec] = {
                               data_bound=True,  filter_targetable=True),
     "table":     WidgetSpec("table",     _validate_table_widget,
                               data_bound=True,  filter_targetable=True),
+    "data_grid": WidgetSpec("data_grid", _validate_data_grid_widget,
+                              data_bound=True,  filter_targetable=True),
     "pivot":     WidgetSpec("pivot",     _validate_pivot_widget,
                               data_bound=True,  filter_targetable=True),
     "stat_grid": WidgetSpec("stat_grid", _validate_stat_grid_widget,
@@ -1891,6 +2120,8 @@ RESERVED_HEADER_ACTION_IDS = frozenset({
     "download-menu",
     "export-all",
     "export-dashboard",
+    "export-chart-data",
+    "export-print",
     "export-excel",
     "theme-toggle",
     "now-pill",
@@ -2179,6 +2410,152 @@ def _validate_datasets(manifest: Dict[str, Any],
         if not isinstance(ds["source"], list):
             errs.append(_err(f"datasets.{name}.source", "must be a list"))
 
+        quality = ds.get("quality")
+        if quality is not None:
+            qbase = f"datasets.{name}.quality"
+            if not isinstance(quality, dict):
+                errs.append(_err(qbase, "must be a dict"))
+            else:
+                allowed_quality = {
+                    "time_field", "expected_frequency", "max_internal_gap",
+                    "max_staleness", "duplicate_policy", "severity", "fields",
+                }
+                unknown = sorted(set(quality) - allowed_quality)
+                if unknown:
+                    errs.append(_err(
+                        qbase,
+                        f"unknown key(s) {unknown}; valid keys are "
+                        f"{sorted(allowed_quality)}",
+                    ))
+                if ("time_field" in quality
+                        and not isinstance(quality.get("time_field"), str)):
+                    errs.append(_err(
+                        f"{qbase}.time_field", "must be a column-name string",
+                    ))
+                if ("expected_frequency" in quality
+                        and not isinstance(
+                            quality.get("expected_frequency"),
+                            (str, int, float),
+                        )):
+                    errs.append(_err(
+                        f"{qbase}.expected_frequency",
+                        "must be a duration/frequency string or positive "
+                        "number of seconds",
+                    ))
+                if quality.get("duplicate_policy", "error") not in {
+                    "error", "warning", "allow",
+                }:
+                    errs.append(_err(
+                        f"{qbase}.duplicate_policy",
+                        "must be 'error', 'warning', or 'allow'",
+                    ))
+                if quality.get("severity", "error") not in {
+                    "error", "warning",
+                }:
+                    errs.append(_err(
+                        f"{qbase}.severity",
+                        "must be 'error' or 'warning'",
+                    ))
+                for duration_key in ("max_internal_gap", "max_staleness"):
+                    value = quality.get(duration_key)
+                    if (value is not None
+                            and not isinstance(value, (str, int, float))):
+                        errs.append(_err(
+                            f"{qbase}.{duration_key}",
+                            "must be a duration string or positive number "
+                            "of seconds",
+                        ))
+                fields = quality.get("fields", {})
+                if not isinstance(fields, dict):
+                    errs.append(_err(
+                        f"{qbase}.fields",
+                        "must map column names to expectation dicts",
+                    ))
+                else:
+                    allowed_field = {
+                        "severity", "min", "max", "domain",
+                        "max_missing_fraction", "max_internal_na_run",
+                        "outlier", "max_step_robust_z",
+                    }
+                    for column, contract in fields.items():
+                        fbase = f"{qbase}.fields.{column}"
+                        if not isinstance(column, str) or not column:
+                            errs.append(_err(
+                                f"{qbase}.fields",
+                                "field keys must be non-empty column names",
+                            ))
+                            continue
+                        if not isinstance(contract, dict):
+                            errs.append(_err(fbase, "must be a dict"))
+                            continue
+                        field_unknown = sorted(
+                            set(contract) - allowed_field
+                        )
+                        if field_unknown:
+                            errs.append(_err(
+                                fbase,
+                                f"unknown key(s) {field_unknown}; valid keys "
+                                f"are {sorted(allowed_field)}",
+                            ))
+                        if contract.get(
+                            "severity", quality.get("severity", "error")
+                        ) not in {"error", "warning"}:
+                            errs.append(_err(
+                                f"{fbase}.severity",
+                                "must be 'error' or 'warning'",
+                            ))
+                        if contract.get("domain") not in {
+                            None, "positive", "nonnegative", "nonzero",
+                        }:
+                            errs.append(_err(
+                                f"{fbase}.domain",
+                                "must be 'positive', 'nonnegative', or "
+                                "'nonzero'",
+                            ))
+                        for numeric_key in (
+                            "min", "max", "max_missing_fraction",
+                            "max_internal_na_run", "max_step_robust_z",
+                        ):
+                            value = contract.get(numeric_key)
+                            if value is not None and not isinstance(
+                                value, (int, float)
+                            ):
+                                errs.append(_err(
+                                    f"{fbase}.{numeric_key}",
+                                    "must be numeric",
+                                ))
+                        missing_limit = contract.get(
+                            "max_missing_fraction"
+                        )
+                        if (isinstance(missing_limit, (int, float))
+                                and not 0 <= missing_limit <= 1):
+                            errs.append(_err(
+                                f"{fbase}.max_missing_fraction",
+                                "must be between 0 and 1",
+                            ))
+                        outlier = contract.get("outlier")
+                        if outlier is not None:
+                            if not isinstance(outlier, dict):
+                                errs.append(_err(
+                                    f"{fbase}.outlier", "must be a dict",
+                                ))
+                            else:
+                                outlier_unknown = sorted(
+                                    set(outlier)
+                                    - {"method", "threshold",
+                                       "max_scale_expansion"}
+                                )
+                                if outlier_unknown:
+                                    errs.append(_err(
+                                        f"{fbase}.outlier",
+                                        f"unknown key(s) {outlier_unknown}",
+                                    ))
+                                if outlier.get("method", "mad") != "mad":
+                                    errs.append(_err(
+                                        f"{fbase}.outlier.method",
+                                        "only 'mad' is supported",
+                                    ))
+
         # Optional per-column provenance: maps column name -> provenance dict
         # ({system, symbol, display_name, units, source_label, ...}). Light-
         # touch shape check only -- the inner keys are intentionally free-
@@ -2235,6 +2612,105 @@ def _validate_datasets(manifest: Dict[str, Any],
                                 "must be a dict"
                             ))
     ctx.dataset_names = set(datasets.keys())
+
+
+def _map_asset_parts(asset: Any) -> Tuple[Any, str, Dict[str, str]]:
+    if isinstance(asset, dict) and asset.get("type") == "FeatureCollection":
+        return asset, "name", {}
+    if not isinstance(asset, dict):
+        return None, "name", {}
+    aliases = asset.get("aliases")
+    return (
+        asset.get("geojson"),
+        asset.get("name_property", "name"),
+        aliases if isinstance(aliases, dict) else {},
+    )
+
+
+def _validate_map_assets(
+    manifest: Dict[str, Any],
+    errs: List[str],
+    ctx: "_ValidationCtx",
+) -> None:
+    assets = manifest.get("map_assets")
+    if assets is None:
+        return
+    if not isinstance(assets, dict):
+        errs.append(_err("map_assets", "must be a dict keyed by map name"))
+        return
+    for map_name, asset in assets.items():
+        base = f"map_assets.{map_name}"
+        if not isinstance(map_name, str) or not map_name:
+            errs.append(_err("map_assets", "map names must be non-empty strings"))
+            continue
+        geojson, name_property, aliases = _map_asset_parts(asset)
+        if not isinstance(geojson, dict) \
+                or geojson.get("type") != "FeatureCollection":
+            errs.append(_err(
+                base,
+                "must be a GeoJSON FeatureCollection or "
+                "{geojson: FeatureCollection, name_property?, aliases?}",
+            ))
+            continue
+        if not isinstance(name_property, str) or not name_property:
+            errs.append(_err(
+                f"{base}.name_property", "must be a non-empty string"
+            ))
+            name_property = "name"
+        features = geojson.get("features")
+        if not isinstance(features, list) or not features:
+            errs.append(_err(
+                f"{base}.geojson.features", "must be a non-empty list"
+            ))
+            continue
+        region_names: set = set()
+        for fi, feature in enumerate(features):
+            fbase = f"{base}.geojson.features[{fi}]"
+            if not isinstance(feature, dict) or feature.get("type") != "Feature":
+                errs.append(_err(fbase, "must be a GeoJSON Feature"))
+                continue
+            geometry = feature.get("geometry")
+            geometry_type = (
+                geometry.get("type") if isinstance(geometry, dict) else None
+            )
+            if geometry_type not in ("Polygon", "MultiPolygon"):
+                errs.append(_err(
+                    f"{fbase}.geometry.type",
+                    "must be Polygon or MultiPolygon for choropleth rendering",
+                ))
+            properties = feature.get("properties")
+            if name_property == "$id":
+                region_name = feature.get("id")
+            else:
+                region_name = (
+                    properties.get(name_property)
+                    if isinstance(properties, dict) else None
+                )
+            if region_name is None or str(region_name) == "":
+                errs.append(_err(
+                    fbase,
+                    f"missing region key '{name_property}'",
+                ))
+                continue
+            region_text = str(region_name)
+            if region_text in region_names:
+                errs.append(_err(
+                    fbase, f"duplicate region key '{region_text}'"
+                ))
+            region_names.add(region_text)
+        if isinstance(asset, dict) and asset.get("type") != "FeatureCollection":
+            if "aliases" in asset and not isinstance(asset.get("aliases"), dict):
+                errs.append(_err(f"{base}.aliases", "must be a dict"))
+            for alias, canonical in aliases.items():
+                if not isinstance(alias, str) or not alias:
+                    errs.append(_err(
+                        f"{base}.aliases", "alias keys must be non-empty strings"
+                    ))
+                if str(canonical) not in region_names:
+                    errs.append(_err(
+                        f"{base}.aliases.{alias}",
+                        f"target '{canonical}' is not a GeoJSON region key",
+                    ))
 
 
 def _validate_filters(manifest: Dict[str, Any],
@@ -2398,6 +2874,97 @@ def _validate_layout(manifest: Dict[str, Any],
         cols = 12
 
     seen_ids: set = set()
+    seen_group_ids: set = set()
+
+    def _validate_groups(
+        groups: Any, row_count: int, path_prefix: str
+    ) -> None:
+        if groups is None:
+            return
+        if not isinstance(groups, list):
+            errs.append(_err(path_prefix, "must be a list"))
+            return
+        occupied: set = set()
+        for gi, group in enumerate(groups):
+            gpath = f"{path_prefix}[{gi}]"
+            if not isinstance(group, dict):
+                errs.append(_err(gpath, "must be a dict"))
+                continue
+            gid = group.get("id")
+            if not isinstance(gid, str) or not gid:
+                errs.append(_err(f"{gpath}.id", "required non-empty string"))
+            elif gid in seen_group_ids:
+                errs.append(_err(
+                    f"{gpath}.id", f"duplicate layout group id '{gid}'"
+                ))
+            else:
+                seen_group_ids.add(gid)
+            if not isinstance(group.get("title"), str) or not group.get("title"):
+                errs.append(_err(
+                    f"{gpath}.title", "required non-empty string"
+                ))
+            start = group.get("start_row")
+            end = group.get("end_row")
+            if not isinstance(start, int) or isinstance(start, bool):
+                errs.append(_err(f"{gpath}.start_row", "must be an int"))
+                continue
+            if not isinstance(end, int) or isinstance(end, bool):
+                errs.append(_err(f"{gpath}.end_row", "must be an int"))
+                continue
+            if start < 0 or end < start or end >= row_count:
+                errs.append(_err(
+                    gpath,
+                    f"row range must satisfy 0 <= start_row <= end_row < "
+                    f"{row_count}; got {start}..{end}",
+                ))
+                continue
+            overlap = sorted(set(range(start, end + 1)) & occupied)
+            if overlap:
+                errs.append(_err(
+                    gpath,
+                    f"row range overlaps another group at rows {overlap}",
+                ))
+            occupied.update(range(start, end + 1))
+            if "description" in group and not isinstance(
+                group.get("description"), str
+            ):
+                errs.append(_err(
+                    f"{gpath}.description", "must be a string"
+                ))
+            if "collapsible" in group and not isinstance(
+                group.get("collapsible"), bool
+            ):
+                errs.append(_err(
+                    f"{gpath}.collapsible", "must be a boolean"
+                ))
+
+    def _register_popup_chart_ids(w: Dict[str, Any], wbase: str) -> None:
+        for popup_field in ("click_popup", "row_click"):
+            popup = w.get(popup_field)
+            if not isinstance(popup, dict):
+                continue
+            detail = popup.get("detail")
+            sections = detail.get("sections") if isinstance(detail, dict) else None
+            if not isinstance(sections, list):
+                continue
+            for si, section in enumerate(sections):
+                if not isinstance(section, dict) \
+                        or str(section.get("type", "")).lower() != "chart":
+                    continue
+                sid = section.get("id")
+                if not isinstance(sid, str) or not sid:
+                    continue
+                spath = (
+                    f"{wbase}.{popup_field}.detail.sections[{si}].id"
+                )
+                if sid in seen_ids:
+                    errs.append(_err(
+                        spath, f"duplicate widget or popup-chart id '{sid}'"
+                    ))
+                    continue
+                seen_ids.add(sid)
+                ctx.chart_ids.add(sid)
+                ctx.filter_target_ids.add(sid)
 
     def _validate_rows(rows, path_prefix):
         if not isinstance(rows, list):
@@ -2441,6 +3008,7 @@ def _validate_layout(manifest: Dict[str, Any],
                         ctx.chart_ids.add(wid)
                     if wt in FILTER_TARGETABLE_WIDGETS:
                         ctx.filter_target_ids.add(wid)
+                _register_popup_chart_ids(w, wbase)
                 # Chart widgets are constrained to 2-up or 3-up of
                 # cols (i.e. exactly 1/2 or 1/3 of the row). Full-
                 # width charts flatten slopes into ribbons of zero-
@@ -2457,29 +3025,59 @@ def _validate_layout(manifest: Dict[str, Any],
                 # The chart-width rule is always-blocking via _err in
                 # validate_manifest, so the compile fails before any
                 # HTML is rendered.
-                width_default = cols // 2 if wt == "chart" else cols
+                is_hero = w.get("hero") is True
+                if "hero" in w and not isinstance(w.get("hero"), bool):
+                    errs.append(_err(
+                        f"{wbase}.hero", "must be a boolean"
+                    ))
+                if is_hero and wt != "chart":
+                    errs.append(_err(
+                        f"{wbase}.hero",
+                        "is supported only on chart widgets",
+                    ))
+                width_default = (
+                    cols if wt == "chart" and is_hero
+                    else cols // 2 if wt == "chart"
+                    else cols
+                )
                 width = w.get("w", width_default)
                 if not isinstance(width, int) or width <= 0 or width > cols:
                     errs.append(_err(f"{wbase}.w",
                                        f"width must be 1..{cols}, got {width!r}"))
                 else:
                     total_w += width
+                    if wt == "data_grid" and width != cols:
+                        errs.append(_err(
+                            f"{wbase}.w",
+                            f"data_grid must span the full layout width "
+                            f"(w={cols}); got {width}",
+                        ))
                     if wt == "chart":
-                        legal_widths = (cols // 3, cols // 2)
+                        legal_widths = (
+                            (cols,) if is_hero
+                            else (cols // 3, cols // 2)
+                        )
                         if width not in legal_widths:
+                            if is_hero:
+                                width_message = (
+                                    f"hero chart width must equal cols={cols}; "
+                                    f"got {width}"
+                                )
+                            else:
+                                width_message = (
+                                    f"chart widget width must be "
+                                    f"{legal_widths[0]} (3-up) or "
+                                    f"{legal_widths[1]} (2-up) of cols="
+                                    f"{cols}; got {width}. Use hero=true for "
+                                    "a curated full-width chart."
+                                )
                             errs.append(_err(
                                 f"{wbase}.w",
-                                f"chart widget width must be "
-                                f"{legal_widths[0]} (3-up) or "
-                                f"{legal_widths[1]} (2-up) of cols="
-                                f"{cols}; got {width}. Charts may "
-                                f"never span the full row or other "
-                                f"widths. Pair the chart with a "
+                                f"{width_message}. Pair a standard chart with a "
                                 f"companion chart, KPI strip, table, "
                                 f"or note widget so each row is "
-                                f"either 2-up (two w={legal_widths[1]} "
-                                f"widgets) or 3-up (three w="
-                                f"{legal_widths[0]} widgets)."))
+                                "balanced, or reserve hero=true for one "
+                                "decision-critical chart in its own row."))
                 # Generic widget knobs (apply to every widget type)
                 show_when = w.get("show_when")
                 if show_when is not None:
@@ -2536,10 +3134,21 @@ def _validate_layout(manifest: Dict[str, Any],
                 tab_ids.add(tid)
             if not tab.get("label"):
                 errs.append(_err(f"{base}.label", "required"))
-            _validate_rows(tab.get("rows", []), f"{base}.rows")
+            rows = tab.get("rows", [])
+            _validate_rows(rows, f"{base}.rows")
+            _validate_groups(
+                tab.get("groups"),
+                len(rows) if isinstance(rows, list) else 0,
+                f"{base}.groups",
+            )
     else:
         rows = layout.get("rows", [])
         _validate_rows(rows, "layout.rows")
+        _validate_groups(
+            layout.get("groups"),
+            len(rows) if isinstance(rows, list) else 0,
+            "layout.groups",
+        )
 
 
 def _validate_filter_target_refs(manifest: Dict[str, Any],
@@ -3005,8 +3614,16 @@ def validate_manifest(
         # the always-blocking `tool_compute_python_literal_in_js` error.
         # See `_sanitize_compute_js` for the Tier A / Tier B split.
         _sanitize_manifest_compute_js(manifest)
-    except Exception:  # noqa: BLE001
-        pass  # let validation report the issue
+    except Exception as exc:  # noqa: BLE001
+        errs.append(_err(
+            "(prepare)",
+            "manifest_prepare_failed: canonical preparation raised "
+            f"{type(exc).__name__}: {exc}",
+            "Correct the dataset/compute/filter/layout value named by the "
+            "exception, then rerun validate_manifest. Preparation failures "
+            "are never suppressed because downstream section validation may "
+            "otherwise inspect a partially prepared manifest.",
+        ))
 
     # Orchestrate per-section validators. Order matters: sections that
     # POPULATE ctx state (datasets, filters, layout) must run before
@@ -3020,6 +3637,7 @@ def validate_manifest(
         _validate_metadata(manifest, errs, ctx)
         _validate_header_actions(manifest, errs, ctx)
         _validate_datasets(manifest, errs, ctx)
+        _validate_map_assets(manifest, errs, ctx)
         _validate_filters(manifest, errs, ctx)
         _validate_layout(manifest, errs, ctx)
         _validate_filter_target_refs(manifest, errs, ctx)
@@ -3506,6 +4124,14 @@ class DashboardResult:
     # is kept as flat strings for backwards compat). PRISM should read
     # these directly when iterating on a manifest.
     diagnostics: List["Diagnostic"] = field(default_factory=list)
+
+    @property
+    def quality_findings(self) -> List["Diagnostic"]:
+        """Structured pre-render data-quality findings for this build."""
+        return [
+            diagnostic for diagnostic in self.diagnostics
+            if diagnostic.code.startswith(("data_quality_", "timeseries_"))
+        ]
 
     def __post_init__(self) -> None:
         # Auto-wrap a plain-dict manifest in ``Manifest`` so PRISM's
@@ -4804,40 +5430,6 @@ def _augment_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 targeted_ids.add(t)
 
-    # Chart types where the runtime rewire-on-filter path (dataset swap
-    # + series encode substitution) can safely produce the right series
-    # shape *without* access to the original builder. We only auto-wire
-    # dataset_ref for widgets whose (chart_type, mapping) shape is in
-    # this set. Anything else (computed series data, long-form with
-    # color grouping, stacked bars, scatter with size/trendline, etc.)
-    # keeps its pre-baked series.data and will not visually reshape on
-    # filter change -- filter state still tracks and affects tables /
-    # KPIs referencing the same dataset_ref.
-    def _is_safe_for_rewire(chart_type: Optional[str],
-                              mapping: Dict[str, Any]) -> bool:
-        # rewire_strategy == "rebuild": the JS recomputes the entire
-        # option from filtered dataset rows (scatter_studio rebuilds
-        # series; correlation_matrix rebuilds the cell list from a
-        # stable column whitelist). Independent of mapping shape.
-        if chart_type in REBUILD_REWIREABLE_CHART_TYPES:
-            return True
-        # rewire_strategy == "reshape": wide-form dataset + encode
-        # substitution. Mapping-shape conditions below further gate
-        # which (chart_type, mapping) pairs are actually safe.
-        if chart_type not in RESHAPE_REWIREABLE_CHART_TYPES:
-            return False
-        if mapping.get("color") or mapping.get("colour"):
-            return False
-        if mapping.get("trendline") or mapping.get("trendlines"):
-            return False
-        if mapping.get("stack") is True:
-            return False
-        if mapping.get("dual_axis_series") or mapping.get("axes"):
-            # Dual-axis (legacy) and N-axis (canonical) multi_line still
-            # use wide-form data so client-side filter reshape is safe.
-            return chart_type == "multi_line"
-        return True
-
     for w in all_widgets:
         if w.get("widget") != "chart":
             continue
@@ -4853,8 +5445,9 @@ def _augment_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         is_targeted = wildcard or (wid in targeted_ids)
         if not is_targeted:
             continue
-        if not _is_safe_for_rewire(spec.get("chart_type"),
-                                       spec.get("mapping") or {}):
+        if not _chart_filter_rewire_supported(
+            spec.get("chart_type"), spec.get("mapping") or {}
+        ):
             continue
         w["dataset_ref"] = ds_name
 
@@ -5107,8 +5700,10 @@ def _source_to_dataframe(source: Any):
         [[header...], [row...], ...]     list-of-lists w/ header as row 0
         [{"col": val, ...}, ...]         list-of-dicts (column keys)
 
-    Attempts lightweight date parsing: any column whose non-null values all
-    parse as dates is converted to datetime.
+    Attempts conservative date parsing: a string column is converted only
+    when at least 80% of its non-null values contain an explicit four-digit
+    year and every non-null value parses as a date. Bare month/category labels
+    stay strings.
 
     The ``pd.to_datetime(..., errors="coerce")`` probe is wrapped in
     ``warnings.catch_warnings`` so the dateutil-fallback ``UserWarning``
@@ -5148,9 +5743,23 @@ def _source_to_dataframe(source: Any):
                 continue
             if not all(isinstance(v, str) for v in non_null):
                 continue
-            parsed = pd.to_datetime(non_null, errors="coerce")
+            has_explicit_year = non_null.astype(str).str.contains(
+                r"(?:19|20)\d{2}",
+                regex=True,
+            )
+            if float(has_explicit_year.mean()) < 0.8:
+                continue
+            parsed = pd.to_datetime(
+                non_null,
+                errors="coerce",
+                format="mixed",
+            )
             if parsed.notna().all():
-                df[col] = pd.to_datetime(ser, errors="coerce")
+                df[col] = pd.to_datetime(
+                    ser,
+                    errors="coerce",
+                    format="mixed",
+                )
     return df
 
 
@@ -5159,6 +5768,7 @@ def _spec_to_option(
     datasets: Dict[str, Dict[str, Any]],
     manifest_theme: str,
     manifest_palette: Optional[str],
+    map_assets: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Lower a high-level chart spec into an ECharts option dict.
 
@@ -5218,6 +5828,13 @@ def _spec_to_option(
     # but the builder takes a single ``mapping`` dict. Merge under
     # ``mapping["studio"]`` here so the builder sees both.
     mapping_for_builder = dict(mapping)
+    if chart_type == "geo_map":
+        map_asset = (
+            map_assets.get(mapping.get("map"))
+            if isinstance(map_assets, dict) else None
+        )
+        _geojson, _name_property, aliases = _map_asset_parts(map_asset)
+        mapping_for_builder["_region_aliases"] = aliases
     if chart_type == "scatter_studio":
         if isinstance(spec.get("studio"), dict):
             existing = (mapping.get("studio")
@@ -6114,6 +6731,7 @@ def _resolve_chart_specs(manifest: Dict[str, Any],
                         opt = _spec_to_option(
                             spec, datasets,
                             manifest_theme, manifest_palette,
+                            manifest.get("map_assets"),
                         )
                         specs[wid] = _suppress_chart_title_if_widget_has_one(
                             w, opt)
@@ -6262,6 +6880,9 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     "chart_mapping_column_all_nan",
     "chart_dataset_empty",
     "chart_build_failed",
+    "geo_map_asset_missing",
+    "geo_map_region_unknown",
+    "geo_map_region_duplicate",
     # Line-shaped chart with too many overlaid series: legend crowds,
     # color discrimination breaks, no series is traceable across the
     # canvas. See ``_LINE_SHAPED_CHART_TYPES`` / ``_MAX_LINE_SERIES``.
@@ -6318,7 +6939,6 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     "popup_detail_invalid",
     "popup_section_invalid",
     "popup_section_kind_unsupported",
-    "popup_legend_sync_unsupported",
     "popup_section_dataset_missing",
     "popup_section_filter_field_missing",
     "popup_section_row_key_missing",
@@ -6341,6 +6961,33 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     # the failure mode is invisible until inspection. Heuristic-based;
     # see `_check_compute_returns_all_outputs` for limits.
     "tool_compute_missing_output_key",
+    # Payload budgets are browser-safety boundaries, not aesthetic advice.
+    # Non-strict compilation may preserve warning-level headroom findings,
+    # but crossing an error threshold would emit an HTML payload known to be
+    # unstable or unusable.
+    "dataset_rows_error",
+    "dataset_bytes_error",
+    "manifest_bytes_error",
+    "table_rows_error",
+    # Pre-render time-series integrity failures. These states are either
+    # impossible for the selected axis or produce a known blank/misleading
+    # chart. Warning-severity suspicious observations remain non-blocking.
+    "data_quality_non_finite",
+    "data_quality_time_field_missing",
+    "data_quality_field_missing",
+    "data_quality_missing_fraction_breach",
+    "data_quality_internal_na_run_breach",
+    "data_quality_range_breach",
+    "timeseries_non_finite",
+    "timeseries_log_domain_invalid",
+    "timeseries_unsorted_time",
+    "timeseries_duplicate_timestamp_conflict",
+    "timeseries_no_effective_points",
+    "timeseries_frequency_mismatch",
+    "timeseries_irregular_gap",
+    "timeseries_stale_tail",
+    "timeseries_scale_dominating_outlier",
+    "timeseries_abrupt_level_break",
 })
 
 # -----------------------------------------------------------------------------
@@ -6370,6 +7017,7 @@ _COLUMN_REF_KEYS = {
     "low", "high", "open", "close", "date",
     "strokeDash", "id", "parent", "labels",
     "dims", "path", "series", "node",
+    "region",
     # bullet chart: x is current value, x_low/x_high are the range
     "x_low", "x_high", "color_by", "label",
     # scatter_studio + correlation_matrix mapping keys
@@ -6399,6 +7047,7 @@ _REQUIRED_MAPPING_KEYS: Dict[str, Tuple[str, ...]] = {
     "scatter_studio": (),  # all author keys are optional (defaults derived)
     "area": ("x", "y"),
     "heatmap": ("x", "y", "value"),
+    "geo_map": ("region", "value", "map"),
     "correlation_matrix": ("columns",),
     "pie": ("category", "value"),
     "donut": ("category", "value"),
@@ -6478,6 +7127,7 @@ _NUMERIC_KEYS_BY_CHART_TYPE: Dict[str, frozenset] = {
     # magnitude shown via color. Same goes for correlation_matrix
     # (which is a heatmap of NxN correlation coefficients).
     "heatmap": frozenset({"value", "size", "weight"}),
+    "geo_map": frozenset({"value", "size", "weight"}),
     "correlation_matrix": frozenset({"value", "size", "weight"}),
     # Calendar heatmap: date and value; category-style date isn't
     # numeric but we don't enforce date-ness here.
@@ -6557,11 +7207,20 @@ class Diagnostic:
     context: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "severity": self.severity, "code": self.code,
             "widget_id": self.widget_id, "path": self.path,
             "message": self.message, "context": dict(self.context),
         }
+        # Promote the stable data-quality evidence fields while retaining the
+        # complete backwards-compatible context object.
+        for key in (
+            "dataset", "series", "field", "observed", "expected",
+            "examples", "visual_effect", "fix_hint",
+        ):
+            if key in self.context:
+                payload[key] = self.context[key]
+        return payload
 
     def __str__(self) -> str:
         """Single-line, dense, action-first rendering.
@@ -7011,6 +7670,1091 @@ _SERIES_CHART_TYPES = {"line", "multi_line", "area", "bar",
                          "bar_horizontal", "scatter", "scatter_multi",
                          "waterfall", "slope", "fan_cone", "marimekko"}
 
+_TIME_SERIES_CHART_TYPES = {
+    "line", "multi_line", "area", "bar", "scatter", "scatter_multi",
+    "candlestick", "fan_cone", "calendar_heatmap", "slope",
+}
+
+
+def _duration_seconds(value: Any) -> Optional[float]:
+    """Parse a quality-contract duration into positive seconds."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if float(value) > 0 else None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    calendar = {
+        "B": 86400.0,
+        "D": 86400.0,
+        "W": 7 * 86400.0,
+        "M": 30.4375 * 86400.0,
+        "Q": 91.3125 * 86400.0,
+        "Y": 365.25 * 86400.0,
+        "H": 3600.0,
+        "T": 60.0,
+    }
+    if text.upper() in calendar:
+        return calendar[text.upper()]
+    try:
+        import pandas as pd
+        seconds = float(pd.to_timedelta(text).total_seconds())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
+def _longest_true_run(mask: Any) -> int:
+    longest = 0
+    current = 0
+    for raw in list(mask):
+        if bool(raw):
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return longest
+
+
+def _quality_diagnostic(
+    *,
+    severity: str,
+    code: str,
+    widget_id: Optional[str],
+    path: str,
+    message: str,
+    dataset: str,
+    field_name: Optional[str] = None,
+    series: Optional[str] = None,
+    observed: Any = None,
+    expected: Any = None,
+    examples: Optional[List[Any]] = None,
+    visual_effect: str,
+    fix_hint: str,
+    **extra: Any,
+) -> Diagnostic:
+    context: Dict[str, Any] = {
+        "dataset": dataset,
+        "visual_effect": visual_effect,
+        "fix_hint": fix_hint,
+    }
+    if field_name is not None:
+        context["field"] = field_name
+    if series is not None:
+        context["series"] = series
+    if observed is not None:
+        context["observed"] = observed
+    if expected is not None:
+        context["expected"] = expected
+    if examples:
+        context["examples"] = examples
+    context.update(extra)
+    return Diagnostic(
+        severity=severity,
+        code=code,
+        widget_id=widget_id,
+        path=path,
+        message=message,
+        context=context,
+    )
+
+
+def _dataset_quality_contract(
+    manifest: Dict[str, Any], dataset: str,
+) -> Dict[str, Any]:
+    entry = (manifest.get("datasets") or {}).get(dataset)
+    if not isinstance(entry, dict):
+        return {}
+    quality = entry.get("quality")
+    return quality if isinstance(quality, dict) else {}
+
+
+def _apply_default_filters_for_widget(
+    manifest: Dict[str, Any],
+    widget_id: Optional[str],
+    df: Any,
+) -> Any:
+    """Apply only deterministic default-state row filters for profiling.
+
+    Unsupported compound/rule semantics are deliberately left untouched;
+    this pass never guesses. The full unfiltered profile still runs.
+    """
+    import fnmatch
+    import pandas as pd
+
+    if df is None or len(df) == 0 or not widget_id:
+        return df
+    out = df
+    for filter_spec in manifest.get("filters") or []:
+        if not isinstance(filter_spec, dict):
+            continue
+        targets = filter_spec.get("targets") or []
+        if not any(
+            target == "*" or (
+                isinstance(target, str)
+                and fnmatch.fnmatch(widget_id, target)
+            )
+            for target in targets
+        ):
+            continue
+        field_name = filter_spec.get("field")
+        if not isinstance(field_name, str) or field_name not in out.columns:
+            continue
+        kind = filter_spec.get("type")
+        default = filter_spec.get("default")
+        if default is None or default == "":
+            continue
+        series = out[field_name]
+        mask = None
+        if kind in {"select", "radio"}:
+            if default == filter_spec.get("all_value", object()):
+                continue
+            mask = series == default
+        elif kind == "multiSelect":
+            if not isinstance(default, list) or not default:
+                continue
+            mask = series.isin(default)
+        elif kind == "numberRange":
+            if not isinstance(default, (list, tuple)) or len(default) != 2:
+                continue
+            numeric = pd.to_numeric(series, errors="coerce")
+            mask = numeric.between(default[0], default[1], inclusive="both")
+        elif kind in {"slider", "number"}:
+            numeric = pd.to_numeric(series, errors="coerce")
+            op = filter_spec.get("op", ">=")
+            if op == ">=":
+                mask = numeric >= default
+            elif op == ">":
+                mask = numeric > default
+            elif op == "<=":
+                mask = numeric <= default
+            elif op == "<":
+                mask = numeric < default
+            elif op == "==":
+                mask = numeric == default
+            elif op == "!=":
+                mask = numeric != default
+        elif kind == "text":
+            text = series.astype(str)
+            needle = str(default)
+            op = filter_spec.get("op", "contains")
+            if op == "contains":
+                mask = text.str.contains(needle, case=False, na=False)
+            elif op == "startsWith":
+                mask = text.str.startswith(needle, na=False)
+            elif op == "endsWith":
+                mask = text.str.endswith(needle, na=False)
+        elif kind == "dateRange" and filter_spec.get("mode", "view") == "filter":
+            parsed = pd.to_datetime(series, errors="coerce", utc=True)
+            if parsed.notna().any():
+                token_days = {
+                    "1M": 31, "3M": 92, "6M": 183, "YTD": None,
+                    "1Y": 366, "2Y": 731, "5Y": 1827,
+                }
+                token = str(default)
+                if token in {"All", "all", "MAX"}:
+                    continue
+                latest = parsed.max()
+                if token == "YTD":
+                    start = pd.Timestamp(
+                        year=latest.year, month=1, day=1, tz="UTC",
+                    )
+                elif token in token_days:
+                    start = latest - pd.Timedelta(days=token_days[token])
+                else:
+                    continue
+                mask = parsed >= start
+        if mask is not None:
+            out = out.loc[mask.fillna(False)]
+    return out
+
+
+def _series_groups(
+    df: Any,
+    mapping: Dict[str, Any],
+    quality: Dict[str, Any],
+) -> Tuple[Optional[str], List[Tuple[str, str, Any]]]:
+    """Return ``(time_field, [(series_name, value_field, frame), ...])``."""
+    import pandas as pd
+
+    declared_time_field = quality.get("time_field")
+    time_field = declared_time_field
+    if not isinstance(time_field, str) or time_field not in df.columns:
+        time_field = None
+    if time_field is None and declared_time_field is None:
+        candidate = mapping.get("x")
+        if isinstance(candidate, str) and candidate in df.columns:
+            values = df[candidate]
+            if pd.api.types.is_datetime64_any_dtype(values):
+                time_field = candidate
+            elif not pd.api.types.is_numeric_dtype(values):
+                non_null = values[values.notna()]
+                if len(non_null):
+                    string_values = non_null.astype(str)
+                    has_explicit_year = string_values.str.contains(
+                        r"(?:19|20)\d{2}",
+                        regex=True,
+                    )
+                    parsed = pd.to_datetime(
+                        non_null,
+                        errors="coerce",
+                        utc=True,
+                        format="mixed",
+                    )
+                    # Automatic profiling must not reinterpret a categorical
+                    # line/bar x-axis (including bare month names) as time.
+                    # Explicit quality.time_field can override this
+                    # conservative parseability/year threshold.
+                    if (
+                        float(parsed.notna().mean()) >= 0.8
+                        and float(has_explicit_year.mean()) >= 0.8
+                    ):
+                        time_field = candidate
+
+    y_value = mapping.get("y")
+    value_fields: List[str] = []
+    if isinstance(y_value, str):
+        value_fields.append(y_value)
+    elif isinstance(y_value, (list, tuple)):
+        value_fields.extend(v for v in y_value if isinstance(v, str))
+    if not value_fields:
+        for key in ("value", "open", "high", "low", "close"):
+            value = mapping.get(key)
+            if isinstance(value, str):
+                value_fields.append(value)
+    value_fields = list(dict.fromkeys(
+        field_name for field_name in value_fields
+        if field_name in df.columns
+    ))
+
+    group_fields = [
+        field_name for field_name in (
+            mapping.get("color"),
+            mapping.get("colour"),
+            mapping.get("strokeDash"),
+        )
+        if isinstance(field_name, str) and field_name in df.columns
+    ]
+    groups: List[Tuple[str, str, Any]] = []
+    if group_fields:
+        grouper: Any = group_fields[0] if len(group_fields) == 1 else group_fields
+        for group_key, group_df in df.groupby(
+            grouper, dropna=False, sort=False,
+        ):
+            keys = group_key if isinstance(group_key, tuple) else (group_key,)
+            group_name = " — ".join(str(item) for item in keys)
+            for value_field in value_fields:
+                groups.append((group_name, value_field, group_df))
+    else:
+        for value_field in value_fields:
+            groups.append((value_field, value_field, df))
+    return time_field, groups
+
+
+def _check_explicit_dataset_quality(
+    manifest: Dict[str, Any],
+    dfs: Dict[str, Any],
+) -> List[Diagnostic]:
+    """Evaluate explicit field contracts even when a field is not charted."""
+    import numpy as np
+    import pandas as pd
+
+    out: List[Diagnostic] = []
+    for dataset, entry in (manifest.get("datasets") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        quality = entry.get("quality")
+        if not isinstance(quality, dict) or not quality:
+            continue
+        df = dfs.get(dataset)
+        if df is None:
+            continue
+        dataset_severity = quality.get("severity", "error")
+        time_field = quality.get("time_field")
+        if isinstance(time_field, str) and time_field not in df.columns:
+            out.append(_quality_diagnostic(
+                severity="error",
+                code="data_quality_time_field_missing",
+                widget_id=None,
+                path=f"datasets.{dataset}.quality.time_field",
+                message=(
+                    f"quality.time_field='{time_field}' is absent from "
+                    f"dataset '{dataset}'."
+                ),
+                dataset=dataset,
+                field_name=time_field,
+                observed=list(df.columns),
+                expected=time_field,
+                visual_effect=(
+                    "time ordering, gap, frequency, and freshness checks "
+                    "cannot run"
+                ),
+                fix_hint=(
+                    "Correct quality.time_field or restore that timestamp "
+                    "column in the producer."
+                ),
+            ))
+        fields = quality.get("fields") or {}
+        for field_name, contract in fields.items():
+            if not isinstance(contract, dict):
+                continue
+            path = f"datasets.{dataset}.quality.fields.{field_name}"
+            severity = contract.get("severity", dataset_severity)
+            if field_name not in df.columns:
+                out.append(_quality_diagnostic(
+                    severity="error",
+                    code="data_quality_field_missing",
+                    widget_id=None,
+                    path=path,
+                    message=(
+                        f"quality contract references missing field "
+                        f"'{field_name}'."
+                    ),
+                    dataset=dataset,
+                    field_name=field_name,
+                    observed=list(df.columns),
+                    expected=field_name,
+                    visual_effect="the declared quality guarantee is not evaluated",
+                    fix_hint=(
+                        "Restore the field upstream or remove the obsolete "
+                        "quality contract."
+                    ),
+                ))
+                continue
+            raw = df[field_name]
+            missing_fraction = float(raw.isna().mean()) if len(raw) else 1.0
+            missing_limit = contract.get("max_missing_fraction")
+            if (isinstance(missing_limit, (int, float))
+                    and missing_fraction > float(missing_limit)):
+                out.append(_quality_diagnostic(
+                    severity=severity,
+                    code="data_quality_missing_fraction_breach",
+                    widget_id=None,
+                    path=path,
+                    message=(
+                        f"field '{field_name}' is "
+                        f"{missing_fraction:.1%} missing; contract allows "
+                        f"at most {float(missing_limit):.1%}."
+                    ),
+                    dataset=dataset,
+                    field_name=field_name,
+                    observed={"missing_fraction": round(missing_fraction, 6)},
+                    expected={"max_missing_fraction": float(missing_limit)},
+                    visual_effect="the displayed series may be sparse or discontinuous",
+                    fix_hint=(
+                        "Repair the pull/join or explicitly revise the "
+                        "field expectation after confirming the missingness "
+                        "is analytically intended."
+                    ),
+                ))
+            max_run = contract.get("max_internal_na_run")
+            if isinstance(max_run, (int, float)) and len(raw):
+                valid = raw.notna().to_numpy()
+                true_positions = np.flatnonzero(valid)
+                if len(true_positions) >= 2:
+                    internal = ~valid[
+                        true_positions[0]: true_positions[-1] + 1
+                    ]
+                    observed_run = _longest_true_run(internal)
+                    if observed_run > int(max_run):
+                        out.append(_quality_diagnostic(
+                            severity=severity,
+                            code="data_quality_internal_na_run_breach",
+                            widget_id=None,
+                            path=path,
+                            message=(
+                                f"field '{field_name}' has an internal NA "
+                                f"run of {observed_run}; contract allows "
+                                f"{int(max_run)}."
+                            ),
+                            dataset=dataset,
+                            field_name=field_name,
+                            observed={"max_internal_na_run": observed_run},
+                            expected={"max_internal_na_run": int(max_run)},
+                            visual_effect="the line will contain a material gap",
+                            fix_hint=(
+                                "Inspect the affected source dates and repair "
+                                "the producer; do not impute without explicit "
+                                "analytical approval."
+                            ),
+                        ))
+            numeric = pd.to_numeric(raw, errors="coerce")
+            finite_values = numeric[numeric.notna()]
+            nonfinite = finite_values[~np.isfinite(finite_values)]
+            if len(nonfinite):
+                out.append(_quality_diagnostic(
+                    severity="error",
+                    code="data_quality_non_finite",
+                    widget_id=None,
+                    path=path,
+                    message=(
+                        f"field '{field_name}' contains {len(nonfinite)} "
+                        "infinite value(s)."
+                    ),
+                    dataset=dataset,
+                    field_name=field_name,
+                    observed={"non_finite_count": int(len(nonfinite))},
+                    examples=[_sample_repr(v) for v in nonfinite.head(3)],
+                    visual_effect="ECharts can produce an invalid or collapsed scale",
+                    fix_hint=(
+                        "Replace source sentinels/infinities with valid "
+                        "observations or nulls upstream, then investigate "
+                        "the calculation that overflowed."
+                    ),
+                ))
+            if not len(finite_values):
+                continue
+            violations = pd.Series(False, index=numeric.index)
+            domain = contract.get("domain")
+            if domain == "positive":
+                violations |= numeric <= 0
+            elif domain == "nonnegative":
+                violations |= numeric < 0
+            elif domain == "nonzero":
+                violations |= numeric == 0
+            if isinstance(contract.get("min"), (int, float)):
+                violations |= numeric < float(contract["min"])
+            if isinstance(contract.get("max"), (int, float)):
+                violations |= numeric > float(contract["max"])
+            violations &= numeric.notna()
+            if violations.any():
+                bad = numeric[violations]
+                out.append(_quality_diagnostic(
+                    severity=severity,
+                    code="data_quality_range_breach",
+                    widget_id=None,
+                    path=path,
+                    message=(
+                        f"field '{field_name}' has {int(violations.sum())} "
+                        "value(s) outside its declared domain/range."
+                    ),
+                    dataset=dataset,
+                    field_name=field_name,
+                    observed={
+                        "violation_count": int(violations.sum()),
+                        "min": float(finite_values.min()),
+                        "max": float(finite_values.max()),
+                    },
+                    expected={
+                        key: contract[key]
+                        for key in ("domain", "min", "max")
+                        if key in contract
+                    },
+                    examples=[
+                        {"row": str(index), "value": float(value)}
+                        for index, value in bad.head(5).items()
+                    ],
+                    visual_effect=(
+                        "the axis may use an impossible range or the data "
+                        "may be in inconsistent units"
+                    ),
+                    fix_hint=(
+                        "Verify units and source transformations. Change "
+                        "the contract only if the observed domain is valid."
+                    ),
+                ))
+    return out
+
+
+def _check_time_series_integrity(
+    *,
+    manifest: Dict[str, Any],
+    widget: Dict[str, Any],
+    path: str,
+    df: Any,
+    dataset: str,
+    chart_type: Optional[str],
+    mapping: Dict[str, Any],
+) -> List[Diagnostic]:
+    """Profile mapped series for render-breaking and scale-distorting data."""
+    import numpy as np
+    import pandas as pd
+
+    if chart_type not in _TIME_SERIES_CHART_TYPES or df is None or len(df) == 0:
+        return []
+    out: List[Diagnostic] = []
+    wid = widget.get("id")
+    quality = _dataset_quality_contract(manifest, dataset)
+    filtered_df = _apply_default_filters_for_widget(manifest, wid, df)
+    profiles = [("full", df)]
+    if filtered_df is not df and len(filtered_df) != len(df):
+        profiles.append(("default_filter", filtered_df))
+
+    for profile_name, profile_df in profiles:
+        time_field, groups = _series_groups(profile_df, mapping, quality)
+        for series_name, value_field, group_df in groups:
+            field_contract = (
+                (quality.get("fields") or {}).get(value_field) or {}
+            )
+            contract_severity = field_contract.get(
+                "severity", quality.get("severity", "error")
+            )
+            base_context = {
+                "profile": profile_name,
+                "row_count": int(len(group_df)),
+            }
+            raw_values = group_df[value_field]
+            numeric = pd.to_numeric(raw_values, errors="coerce")
+            non_null_numeric = numeric[numeric.notna()]
+            nonfinite_mask = numeric.notna() & ~np.isfinite(numeric)
+            if nonfinite_mask.any():
+                examples = [
+                    {"row": str(index), "value": _sample_repr(raw_values.loc[index])}
+                    for index in raw_values[nonfinite_mask].index[:5]
+                ]
+                out.append(_quality_diagnostic(
+                    severity="error",
+                    code="timeseries_non_finite",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping",
+                    message=(
+                        f"series '{series_name}' contains "
+                        f"{int(nonfinite_mask.sum())} infinite value(s)."
+                    ),
+                    dataset=dataset,
+                    field_name=value_field,
+                    series=series_name,
+                    observed={"non_finite_count": int(nonfinite_mask.sum())},
+                    examples=examples,
+                    visual_effect="the chart scale can collapse or fail to render",
+                    fix_hint=(
+                        "Repair the upstream calculation or sentinel "
+                        "conversion; never pass +/-Infinity to ECharts."
+                    ),
+                    **base_context,
+                ))
+
+            if time_field is not None:
+                parsed_time = pd.to_datetime(
+                    group_df[time_field],
+                    errors="coerce",
+                    utc=True,
+                    format="mixed",
+                )
+                effective = parsed_time.notna() & numeric.notna() & np.isfinite(
+                    numeric.fillna(0)
+                )
+            else:
+                parsed_time = None
+                effective = numeric.notna() & np.isfinite(numeric.fillna(0))
+            if int(effective.sum()) == 0:
+                out.append(_quality_diagnostic(
+                    severity="error",
+                    code="timeseries_no_effective_points",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping",
+                    message=(
+                        f"series '{series_name}' has no row where its "
+                        "time/category and value are both renderable."
+                    ),
+                    dataset=dataset,
+                    field_name=value_field,
+                    series=series_name,
+                    observed={"effective_points": 0},
+                    expected={"minimum_effective_points": 1},
+                    visual_effect="the chart renders blank",
+                    fix_hint=(
+                        "Repair alignment between x and y columns or the "
+                        "default filter state; inspect joins before imputing."
+                    ),
+                    **base_context,
+                ))
+                continue
+
+            missing_mask = numeric.isna().to_numpy()
+            valid_positions = np.flatnonzero(~missing_mask)
+            if len(valid_positions):
+                leading = int(valid_positions[0])
+                trailing = int(len(missing_mask) - valid_positions[-1] - 1)
+                internal_mask = missing_mask[
+                    valid_positions[0]: valid_positions[-1] + 1
+                ]
+                internal_count = int(internal_mask.sum())
+                internal_run = _longest_true_run(internal_mask)
+                if internal_count:
+                    out.append(_quality_diagnostic(
+                        severity="warning",
+                        code="timeseries_internal_missing",
+                        widget_id=wid,
+                        path=f"{path}.spec.mapping.{value_field}",
+                        message=(
+                            f"series '{series_name}' has {internal_count} "
+                            f"interspersed missing value(s); longest internal "
+                            f"run is {internal_run}."
+                        ),
+                        dataset=dataset,
+                        field_name=value_field,
+                        series=series_name,
+                        observed={
+                            "internal_missing_count": internal_count,
+                            "max_internal_na_run": internal_run,
+                            "missing_fraction": round(
+                                float(numeric.isna().mean()), 6
+                            ),
+                        },
+                        visual_effect="the rendered line contains unexplained gaps",
+                        fix_hint=(
+                            "Inspect source dates and joins. Preserve genuine "
+                            "missing observations; repair only demonstrated "
+                            "pipeline defects."
+                        ),
+                        **base_context,
+                    ))
+                if leading or trailing:
+                    out.append(_quality_diagnostic(
+                        severity="warning",
+                        code="timeseries_edge_missing",
+                        widget_id=wid,
+                        path=f"{path}.spec.mapping.{value_field}",
+                        message=(
+                            f"series '{series_name}' has {leading} leading "
+                            f"and {trailing} trailing missing value(s)."
+                        ),
+                        dataset=dataset,
+                        field_name=value_field,
+                        series=series_name,
+                        observed={
+                            "leading_missing": leading,
+                            "trailing_missing": trailing,
+                        },
+                        visual_effect=(
+                            "the series starts late or appears stale relative "
+                            "to the dashboard's time domain"
+                        ),
+                        fix_hint=(
+                            "Check source coverage and latest pull timestamps; "
+                            "do not forward-fill without user-approved meaning."
+                        ),
+                        **base_context,
+                    ))
+
+            finite = numeric[np.isfinite(numeric.fillna(np.nan))].dropna()
+            if mapping.get("y_log") and (finite <= 0).any():
+                bad = finite[finite <= 0]
+                out.append(_quality_diagnostic(
+                    severity="error",
+                    code="timeseries_log_domain_invalid",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.y_log",
+                    message=(
+                        f"log-scaled series '{series_name}' contains "
+                        f"{len(bad)} non-positive value(s)."
+                    ),
+                    dataset=dataset,
+                    field_name=value_field,
+                    series=series_name,
+                    observed={"non_positive_count": int(len(bad))},
+                    expected={"domain": "positive"},
+                    examples=[float(value) for value in bad.head(5)],
+                    visual_effect="a logarithmic axis cannot represent these values",
+                    fix_hint=(
+                        "Use a non-log scale or repair/transform the data with "
+                        "an analytically valid positive-domain method."
+                    ),
+                    **base_context,
+                ))
+
+            if parsed_time is not None and parsed_time.notna().sum() >= 2:
+                valid_time = parsed_time[parsed_time.notna()]
+                if not valid_time.is_monotonic_increasing:
+                    inversions = int(
+                        (valid_time.diff().dropna() < pd.Timedelta(0)).sum()
+                    )
+                    out.append(_quality_diagnostic(
+                        severity="error",
+                        code="timeseries_unsorted_time",
+                        widget_id=wid,
+                        path=f"{path}.spec.mapping.{time_field}",
+                        message=(
+                            f"series '{series_name}' has {inversions} "
+                            "backward timestamp transition(s)."
+                        ),
+                        dataset=dataset,
+                        field_name=time_field,
+                        series=series_name,
+                        observed={"backward_transitions": inversions},
+                        expected={"monotonic_increasing": True},
+                        visual_effect="the line doubles back across the x-axis",
+                        fix_hint=(
+                            f"Sort the producer by '{time_field}' within each "
+                            "emitted series before building the manifest."
+                        ),
+                        **base_context,
+                    ))
+
+                pair_frame = pd.DataFrame({
+                    "time": parsed_time,
+                    "value": numeric,
+                }).dropna(subset=["time"])
+                duplicate_mask = pair_frame.duplicated("time", keep=False)
+                if duplicate_mask.any():
+                    duplicate_rows = pair_frame[duplicate_mask]
+                    conflicts = int(
+                        (duplicate_rows.groupby("time")["value"].nunique(
+                            dropna=False
+                        ) > 1).sum()
+                    )
+                    policy = quality.get("duplicate_policy", "error")
+                    if policy != "allow":
+                        severity = (
+                            "error" if conflicts and policy == "error"
+                            else "warning"
+                        )
+                        code = (
+                            "timeseries_duplicate_timestamp_conflict"
+                            if conflicts
+                            else "timeseries_duplicate_timestamp"
+                        )
+                        out.append(_quality_diagnostic(
+                            severity=severity,
+                            code=code,
+                            widget_id=wid,
+                            path=f"{path}.spec.mapping.{time_field}",
+                            message=(
+                                f"series '{series_name}' has "
+                                f"{duplicate_rows['time'].nunique()} duplicate "
+                                f"timestamp(s); {conflicts} carry conflicting "
+                                "values."
+                            ),
+                            dataset=dataset,
+                            field_name=time_field,
+                            series=series_name,
+                            observed={
+                                "duplicate_timestamps": int(
+                                    duplicate_rows["time"].nunique()
+                                ),
+                                "conflicting_timestamps": conflicts,
+                            },
+                            expected={"duplicate_policy": policy},
+                            examples=[
+                                {
+                                    "time": str(row.time),
+                                    "value": (
+                                        None if pd.isna(row.value)
+                                        else float(row.value)
+                                    ),
+                                }
+                                for row in duplicate_rows.head(5).itertuples()
+                            ],
+                            visual_effect=(
+                                "the same x position maps to multiple y values"
+                            ),
+                            fix_hint=(
+                                "Deduplicate with an explicit source-level "
+                                "aggregation/key rule; do not keep an arbitrary "
+                                "row."
+                            ),
+                            **base_context,
+                        ))
+
+                unique_time = pd.Series(
+                    sorted(valid_time.drop_duplicates().tolist())
+                )
+                if len(unique_time) >= 3:
+                    deltas = unique_time.diff().dropna().dt.total_seconds()
+                    positive = deltas[deltas > 0]
+                    if len(positive):
+                        median_seconds = float(positive.median())
+                        max_seconds = float(positive.max())
+                        max_ratio = (
+                            max_seconds / median_seconds
+                            if median_seconds > 0 else 0
+                        )
+                        expected_seconds = _duration_seconds(
+                            quality.get("expected_frequency")
+                        )
+                        max_gap_seconds = _duration_seconds(
+                            quality.get("max_internal_gap")
+                        )
+                        gap_limit = (
+                            max_gap_seconds
+                            if max_gap_seconds is not None
+                            else median_seconds * 5
+                        )
+                        if max_seconds > gap_limit:
+                            severity = (
+                                quality.get("severity", "error")
+                                if max_gap_seconds is not None
+                                else "warning"
+                            )
+                            out.append(_quality_diagnostic(
+                                severity=severity,
+                                code="timeseries_irregular_gap",
+                                widget_id=wid,
+                                path=f"{path}.spec.mapping.{time_field}",
+                                message=(
+                                    f"series '{series_name}' has a largest "
+                                    f"time gap of {max_seconds:.0f}s "
+                                    f"({max_ratio:.1f}x its median interval)."
+                                ),
+                                dataset=dataset,
+                                field_name=time_field,
+                                series=series_name,
+                                observed={
+                                    "median_interval_seconds": median_seconds,
+                                    "max_gap_seconds": max_seconds,
+                                    "max_gap_ratio": round(max_ratio, 3),
+                                },
+                                expected={
+                                    "max_internal_gap_seconds": gap_limit,
+                                },
+                                visual_effect=(
+                                    "the chart can imply continuity across a "
+                                    "material observation gap"
+                                ),
+                                fix_hint=(
+                                    "Inspect source coverage around the gap. "
+                                    "Repair missing pulls/joins or explicitly "
+                                    "document an intended market/data closure."
+                                ),
+                                **base_context,
+                            ))
+                        if expected_seconds is not None:
+                            frequency_ratio = median_seconds / expected_seconds
+                            if not 0.5 <= frequency_ratio <= 1.75:
+                                out.append(_quality_diagnostic(
+                                    severity=quality.get("severity", "error"),
+                                    code="timeseries_frequency_mismatch",
+                                    widget_id=wid,
+                                    path=(
+                                        f"datasets.{dataset}.quality."
+                                        "expected_frequency"
+                                    ),
+                                    message=(
+                                        f"series '{series_name}' median "
+                                        f"interval is {median_seconds:.0f}s, "
+                                        f"not the expected "
+                                        f"{expected_seconds:.0f}s."
+                                    ),
+                                    dataset=dataset,
+                                    field_name=time_field,
+                                    series=series_name,
+                                    observed={
+                                        "median_interval_seconds":
+                                            median_seconds,
+                                    },
+                                    expected={
+                                        "interval_seconds": expected_seconds,
+                                    },
+                                    visual_effect=(
+                                        "the chart cadence differs from its "
+                                        "declared analytical frequency"
+                                    ),
+                                    fix_hint=(
+                                        "Verify resampling and source cadence; "
+                                        "change expected_frequency only after "
+                                        "confirming the new cadence is intended."
+                                    ),
+                                    **base_context,
+                                ))
+
+                staleness_seconds = _duration_seconds(
+                    quality.get("max_staleness")
+                )
+                if staleness_seconds is not None and valid_time.notna().any():
+                    latest = valid_time.max()
+                    now = pd.Timestamp.now(tz="UTC")
+                    age_seconds = max(
+                        0.0, float((now - latest).total_seconds())
+                    )
+                    if age_seconds > staleness_seconds:
+                        out.append(_quality_diagnostic(
+                            severity=quality.get("severity", "error"),
+                            code="timeseries_stale_tail",
+                            widget_id=wid,
+                            path=(
+                                f"datasets.{dataset}.quality.max_staleness"
+                            ),
+                            message=(
+                                f"series '{series_name}' latest timestamp is "
+                                f"{age_seconds:.0f}s old; contract allows "
+                                f"{staleness_seconds:.0f}s."
+                            ),
+                            dataset=dataset,
+                            field_name=time_field,
+                            series=series_name,
+                            observed={
+                                "latest_timestamp": str(latest),
+                                "age_seconds": age_seconds,
+                            },
+                            expected={
+                                "max_staleness_seconds": staleness_seconds,
+                            },
+                            visual_effect=(
+                                "the chart can look current while ending on "
+                                "stale data"
+                            ),
+                            fix_hint=(
+                                "Verify the current refresh cycle and upstream "
+                                "source timestamp before delivery."
+                            ),
+                            **base_context,
+                        ))
+
+            finite = finite.astype(float)
+            if len(finite) >= 8:
+                median = float(finite.median())
+                abs_dev = (finite - median).abs()
+                mad = float(abs_dev.median())
+                q25 = float(finite.quantile(0.25))
+                q75 = float(finite.quantile(0.75))
+                robust_sigma = 1.4826 * mad
+                if robust_sigma <= 0:
+                    robust_sigma = (q75 - q25) / 1.349
+                outlier_cfg = field_contract.get("outlier") or {}
+                threshold = float(outlier_cfg.get("threshold", 8.0))
+                max_expansion = float(
+                    outlier_cfg.get("max_scale_expansion", 4.0)
+                )
+                outlier_positions: set = set()
+                if robust_sigma > 0:
+                    robust_z = abs_dev / robust_sigma
+                    candidate = robust_z > threshold
+                    robust_span = max(
+                        3 * (q75 - q25),
+                        6 * robust_sigma,
+                    )
+                    full_span = float(finite.max() - finite.min())
+                    expansion = (
+                        full_span / robust_span if robust_span > 0 else 0
+                    )
+                    if candidate.any() and expansion >= max_expansion:
+                        candidate_values = finite[candidate].sort_values(
+                            key=lambda values: (values - median).abs(),
+                            ascending=False,
+                        )
+                        outlier_positions = set(candidate_values.index)
+                        severity = (
+                            contract_severity
+                            if field_contract.get("outlier")
+                            else "warning"
+                        )
+                        out.append(_quality_diagnostic(
+                            severity=severity,
+                            code="timeseries_scale_dominating_outlier",
+                            widget_id=wid,
+                            path=f"{path}.spec.mapping.{value_field}",
+                            message=(
+                                f"series '{series_name}' has "
+                                f"{int(candidate.sum())} observation(s) that "
+                                f"expand the plotted range by "
+                                f"{expansion:.1f}x versus its robust range."
+                            ),
+                            dataset=dataset,
+                            field_name=value_field,
+                            series=series_name,
+                            observed={
+                                "candidate_count": int(candidate.sum()),
+                                "median": median,
+                                "robust_sigma": robust_sigma,
+                                "full_range": [
+                                    float(finite.min()), float(finite.max())
+                                ],
+                                "scale_expansion_ratio": round(expansion, 4),
+                            },
+                            expected={
+                                "robust_z_threshold": threshold,
+                                "max_scale_expansion": max_expansion,
+                            },
+                            examples=[
+                                {
+                                    "row": str(index),
+                                    "value": float(value),
+                                    "robust_z": round(
+                                        float(abs(value - median)
+                                              / robust_sigma), 3
+                                    ),
+                                }
+                                for index, value
+                                in candidate_values.head(5).items()
+                            ],
+                            visual_effect=(
+                                "ordinary observations compress into a flat "
+                                "band because one point controls the axis"
+                            ),
+                            fix_hint=(
+                                "Verify the flagged observations and units. "
+                                "If genuine, keep them and choose an explicit "
+                                "axis/alternate view; never silently clip or "
+                                "winsorize."
+                            ),
+                            **base_context,
+                        ))
+
+                diffs = finite.diff().dropna()
+                if len(diffs) >= 6:
+                    diff_median = float(diffs.median())
+                    diff_mad = float((diffs - diff_median).abs().median())
+                    diff_sigma = 1.4826 * diff_mad
+                    threshold_step = float(
+                        field_contract.get("max_step_robust_z", 10.0)
+                    )
+                    if diff_sigma > 0:
+                        step_z = (diffs - diff_median).abs() / diff_sigma
+                        flagged = step_z[step_z > threshold_step]
+                        non_outlier_steps = [
+                            index for index in flagged.index
+                            if index not in outlier_positions
+                        ]
+                        if non_outlier_steps:
+                            top = sorted(
+                                non_outlier_steps,
+                                key=lambda index: float(step_z.loc[index]),
+                                reverse=True,
+                            )[:5]
+                            severity = (
+                                contract_severity
+                                if "max_step_robust_z" in field_contract
+                                else "warning"
+                            )
+                            out.append(_quality_diagnostic(
+                                severity=severity,
+                                code="timeseries_abrupt_level_break",
+                                widget_id=wid,
+                                path=f"{path}.spec.mapping.{value_field}",
+                                message=(
+                                    f"series '{series_name}' has "
+                                    f"{len(non_outlier_steps)} abrupt step(s) "
+                                    f"above robust-z {threshold_step:g}."
+                                ),
+                                dataset=dataset,
+                                field_name=value_field,
+                                series=series_name,
+                                observed={
+                                    "break_count": len(non_outlier_steps),
+                                    "max_step_robust_z": round(
+                                        max(float(step_z.loc[index])
+                                            for index in non_outlier_steps),
+                                        3,
+                                    ),
+                                },
+                                expected={
+                                    "max_step_robust_z": threshold_step,
+                                },
+                                examples=[
+                                    {
+                                        "row": str(index),
+                                        "step": float(diffs.loc[index]),
+                                        "robust_z": round(
+                                            float(step_z.loc[index]), 3
+                                        ),
+                                    }
+                                    for index in top
+                                ],
+                                visual_effect=(
+                                    "the line contains a discontinuity that "
+                                    "may reflect a unit, join, or stitching "
+                                    "error"
+                                ),
+                                fix_hint=(
+                                    "Check source revisions, units, and join/"
+                                    "stitch boundaries. Preserve a genuine "
+                                    "regime shift and explain it rather than "
+                                    "smoothing it away."
+                                ),
+                                **base_context,
+                            ))
+    return out
+
 
 def _popup_key_sample(series, limit: int = 200) -> Tuple[set, List[Any]]:
     """Return comparable representative key tokens plus display samples.
@@ -7102,15 +8846,6 @@ def _check_popup_detail_sections(
             **extra,
         }
 
-    def _legend_sync_keys(value: Dict[str, Any]) -> List[str]:
-        return sorted(
-            key for key in value
-            if key in _UNSUPPORTED_POPUP_LEGEND_SYNC_KEYS
-            or (key == "sync" and value.get(key) in (
-                "legend", ["legend"], ("legend",),
-            ))
-        )
-
     if not popup:
         out.append(Diagnostic(
             severity="error",
@@ -7132,27 +8867,6 @@ def _check_popup_detail_sections(
         ))
         return out
 
-    popup_sync = _legend_sync_keys(popup)
-    if popup_sync:
-        out.append(Diagnostic(
-            severity="error",
-            code="popup_legend_sync_unsupported",
-            widget_id=wid,
-            path=popup_path,
-            message=(
-                "popup-local or cross-popup legend synchronization is "
-                f"unsupported ({popup_sync})."
-            ),
-            context=_context(
-                attempted_keys=popup_sync,
-                fix_hint=(
-                    "Move linked charts inline and connect them through "
-                    "manifest.links with sync=['legend'], or keep each popup "
-                    "chart independent; use popup_fields for simple details."
-                ),
-            ),
-        ))
-
     detail = popup.get("detail")
     if detail is None:
         return out
@@ -7171,26 +8885,6 @@ def _check_popup_detail_sections(
             ),
         ))
         return out
-
-    detail_sync = _legend_sync_keys(detail)
-    if detail_sync:
-        out.append(Diagnostic(
-            severity="error",
-            code="popup_legend_sync_unsupported",
-            widget_id=wid,
-            path=f"{popup_path}.detail",
-            message=(
-                "popup detail requests unsupported legend synchronization "
-                f"({detail_sync})."
-            ),
-            context=_context(
-                attempted_keys=detail_sync,
-                fix_hint=(
-                    "Move linked charts inline under manifest.links with "
-                    "sync=['legend'], or keep popup charts independent."
-                ),
-            ),
-        ))
 
     sections = detail.get("sections")
     if not isinstance(sections, list) or not sections:
@@ -7249,28 +8943,6 @@ def _check_popup_detail_sections(
             ))
             continue
 
-        section_sync = _legend_sync_keys(section)
-        if section_sync:
-            out.append(Diagnostic(
-                severity="error",
-                code="popup_legend_sync_unsupported",
-                widget_id=wid,
-                path=section_path,
-                message=(
-                    "popup section requests unsupported legend "
-                    f"synchronization ({section_sync})."
-                ),
-                context=_context(
-                    detail_dataset=section.get("dataset"),
-                    row_key=section.get("row_key"),
-                    filter_field=section.get("filter_field"),
-                    attempted_keys=section_sync,
-                    fix_hint=(
-                        "Move linked charts inline under manifest.links with "
-                        "sync=['legend'], or keep popup charts independent."
-                    ),
-                ),
-            ))
         if section_type not in ("chart", "table"):
             continue
 
@@ -7326,6 +8998,150 @@ def _check_popup_detail_sections(
 
         target_df = dfs[target_name]
         target_columns = list(target_df.columns)
+        if section_type == "chart":
+            chart_type = section.get("chart_type", "line")
+            if chart_type not in {"line", "bar", "area"}:
+                out.append(Diagnostic(
+                    severity="error",
+                    code="popup_section_invalid",
+                    widget_id=wid,
+                    path=f"{section_path}.chart_type",
+                    message=(
+                        f"popup chart_type {chart_type!r} is not supported."
+                    ),
+                    context=_context(
+                        detail_dataset=target_name,
+                        available_columns=target_columns,
+                        fix_hint=(
+                            "Use 'line', 'bar', or 'area'; omit chart_type "
+                            "when the intended default is 'line'."
+                        ),
+                    ),
+                ))
+            mapping = section.get("mapping")
+            mapping_errors: List[str] = []
+            if not isinstance(mapping, dict):
+                mapping_errors.append(
+                    "mapping must be an object with string x and y fields"
+                )
+            else:
+                x_field = mapping.get("x")
+                y_field = mapping.get("y")
+                if not isinstance(x_field, str) or not x_field:
+                    mapping_errors.append("mapping.x must be a non-empty string")
+                elif x_field not in target_columns:
+                    mapping_errors.append(
+                        f"mapping.x={x_field!r} is not in the detail dataset"
+                    )
+                y_fields = y_field if isinstance(y_field, list) else [y_field]
+                if (
+                    not y_fields
+                    or any(not isinstance(field, str) or not field
+                           for field in y_fields)
+                ):
+                    mapping_errors.append(
+                        "mapping.y must be a non-empty string or list of strings"
+                    )
+                else:
+                    missing_y = [
+                        field for field in y_fields
+                        if field not in target_columns
+                    ]
+                    if missing_y:
+                        mapping_errors.append(
+                            f"mapping.y field(s) {missing_y!r} are not in "
+                            "the detail dataset"
+                        )
+                color_field = mapping.get("color", mapping.get("colour"))
+                if (
+                    color_field is not None
+                    and (
+                        not isinstance(color_field, str)
+                        or color_field not in target_columns
+                    )
+                ):
+                    mapping_errors.append(
+                        "mapping.color must name a detail-dataset column"
+                    )
+                for boolean_key in ("zoom", "smooth"):
+                    if (
+                        boolean_key in mapping
+                        and not isinstance(mapping.get(boolean_key), bool)
+                    ):
+                        mapping_errors.append(
+                            f"mapping.{boolean_key} must be boolean"
+                        )
+                stack = mapping.get("stack")
+                if stack is not None and not isinstance(stack, (bool, str)):
+                    mapping_errors.append(
+                        "mapping.stack must be boolean or a stack-name string"
+                    )
+            if mapping_errors:
+                out.append(Diagnostic(
+                    severity="error",
+                    code="popup_section_invalid",
+                    widget_id=wid,
+                    path=f"{section_path}.mapping",
+                    message=(
+                        "popup chart mapping cannot be rendered: "
+                        + "; ".join(mapping_errors)
+                    ),
+                    context=_context(
+                        detail_dataset=target_name,
+                        available_columns=target_columns,
+                        mapping_errors=mapping_errors,
+                        fix_hint=(
+                            "Use declared detail-dataset fields for x/y/color "
+                            "and boolean zoom/smooth controls."
+                        ),
+                    ),
+                ))
+        elif section_type == "table":
+            columns = section.get("columns")
+            column_errors: List[str] = []
+            if columns is not None:
+                if not isinstance(columns, list):
+                    column_errors.append(
+                        "columns must be a list of column objects"
+                    )
+                else:
+                    for column_index, column in enumerate(columns):
+                        if not isinstance(column, dict):
+                            column_errors.append(
+                                f"columns[{column_index}] must be an object"
+                            )
+                            continue
+                        field_name = column.get("field")
+                        if not isinstance(field_name, str) or not field_name:
+                            column_errors.append(
+                                f"columns[{column_index}].field must be "
+                                "a non-empty string"
+                            )
+                        elif field_name not in target_columns:
+                            column_errors.append(
+                                f"columns[{column_index}].field={field_name!r} "
+                                "is not in the detail dataset"
+                            )
+            if column_errors:
+                out.append(Diagnostic(
+                    severity="error",
+                    code="popup_section_invalid",
+                    widget_id=wid,
+                    path=f"{section_path}.columns",
+                    message=(
+                        "popup table columns cannot be rendered: "
+                        + "; ".join(column_errors)
+                    ),
+                    context=_context(
+                        detail_dataset=target_name,
+                        available_columns=target_columns,
+                        column_errors=column_errors,
+                        fix_hint=(
+                            "Author each popup table column as "
+                            "{'field': '<declared column>', ...}."
+                        ),
+                    ),
+                ))
         filter_ok = isinstance(filter_field, str) and bool(filter_field)
         row_key_ok = isinstance(row_key, str) and bool(row_key)
 
@@ -7469,8 +9285,118 @@ def _check_popup_detail_sections(
     return out
 
 
-def _check_chart_widget(w: Dict[str, Any], path: str,
-                          dfs: Dict[str, Any]) -> List[Diagnostic]:
+def _check_geo_map_integrity(
+    *,
+    manifest: Dict[str, Any],
+    widget_id: Optional[str],
+    path: str,
+    df: Any,
+    mapping: Dict[str, Any],
+) -> List[Diagnostic]:
+    out: List[Diagnostic] = []
+    map_name = mapping.get("map")
+    assets = manifest.get("map_assets")
+    asset = assets.get(map_name) if isinstance(assets, dict) else None
+    if asset is None:
+        out.append(Diagnostic(
+            severity="error",
+            code="geo_map_asset_missing",
+            widget_id=widget_id,
+            path=f"{path}.spec.mapping.map",
+            message=(
+                f"geo_map references map asset '{map_name}' but no matching "
+                "manifest.map_assets entry exists."
+            ),
+            context={
+                "map": map_name,
+                "available_maps": sorted(assets) if isinstance(assets, dict) else [],
+                "fix_hint": (
+                    "Embed the exact GeoJSON FeatureCollection under "
+                    f"manifest.map_assets['{map_name}']; remote/CDN map "
+                    "fallbacks are not used."
+                ),
+            },
+        ))
+        return out
+    geojson, name_property, aliases = _map_asset_parts(asset)
+    if not isinstance(geojson, dict):
+        return out
+    feature_names: set = set()
+    for feature in geojson.get("features") or []:
+        if not isinstance(feature, dict):
+            continue
+        if name_property == "$id":
+            name = feature.get("id")
+        else:
+            props = feature.get("properties")
+            name = props.get(name_property) if isinstance(props, dict) else None
+        if name is not None:
+            feature_names.add(str(name))
+    region_col = mapping.get("region")
+    if not isinstance(region_col, str) or region_col not in df.columns:
+        return out
+    raw_regions = [
+        str(value) for value in df[region_col].dropna().tolist()
+    ]
+    canonical = [str(aliases.get(value, value)) for value in raw_regions]
+    unknown = sorted(set(canonical) - feature_names)
+    if unknown:
+        out.append(Diagnostic(
+            severity="error",
+            code="geo_map_region_unknown",
+            widget_id=widget_id,
+            path=f"{path}.spec.mapping.region",
+            message=(
+                f"geo_map region column '{region_col}' contains "
+                f"{len(unknown)} key(s) absent from map '{map_name}'."
+            ),
+            context={
+                "map": map_name,
+                "field": region_col,
+                "examples": unknown[:12],
+                "available_region_examples": sorted(feature_names)[:20],
+                "fix_hint": (
+                    "Correct the source keys or declare explicit aliases in "
+                    f"manifest.map_assets['{map_name}'].aliases. Do not use "
+                    "fuzzy matching for geographic joins."
+                ),
+            },
+        ))
+    seen: set = set()
+    duplicates: set = set()
+    for name in canonical:
+        if name in seen:
+            duplicates.add(name)
+        seen.add(name)
+    if duplicates:
+        out.append(Diagnostic(
+            severity="error",
+            code="geo_map_region_duplicate",
+            widget_id=widget_id,
+            path=f"{path}.spec.mapping.region",
+            message=(
+                "geo_map has multiple rows for the same canonical region; "
+                "ECharts map-series resolution would be ambiguous."
+            ),
+            context={
+                "map": map_name,
+                "field": region_col,
+                "examples": sorted(duplicates)[:12],
+                "fix_hint": (
+                    "Aggregate to exactly one value per canonical region "
+                    "upstream using an explicitly chosen statistic."
+                ),
+            },
+        ))
+    return out
+
+
+def _check_chart_widget(
+    w: Dict[str, Any],
+    path: str,
+    dfs: Dict[str, Any],
+    manifest: Dict[str, Any],
+) -> List[Diagnostic]:
     """All chart-widget data checks. Idempotent, no side effects."""
     out: List[Diagnostic] = []
     wid = w.get("id")
@@ -7749,6 +9675,25 @@ def _check_chart_widget(w: Dict[str, Any], path: str,
                        "fix_hint": (
                            "Add more rows to the dataset, or switch to a "
                            "single-value chart_type (kpi, gauge, bullet).")}))
+
+    if chart_type == "geo_map":
+        out.extend(_check_geo_map_integrity(
+            manifest=manifest,
+            widget_id=wid,
+            path=path,
+            df=df,
+            mapping=mapping,
+        ))
+
+    out.extend(_check_time_series_integrity(
+        manifest=manifest,
+        widget=w,
+        path=path,
+        df=df,
+        dataset=ds_name,
+        chart_type=chart_type,
+        mapping=mapping,
+    ))
 
     # Topology + degeneracy checks (run only when columns are present) -
     out.extend(_check_chart_degeneracy(wid, path, df, chart_type,
@@ -8921,11 +10866,30 @@ def _check_filter(f: Dict[str, Any], idx: int, manifest: Dict[str, Any],
     # filter targets that resolve to nothing.
     widget_ids: List[str] = []
 
+    def _popup_chart_sections(w: Dict[str, Any]) -> List[Dict[str, Any]]:
+        sections_out: List[Dict[str, Any]] = []
+        for popup_field in ("click_popup", "row_click"):
+            popup = w.get(popup_field)
+            detail = popup.get("detail") if isinstance(popup, dict) else None
+            sections = detail.get("sections") if isinstance(detail, dict) else None
+            if not isinstance(sections, list):
+                continue
+            sections_out.extend(
+                section for section in sections
+                if isinstance(section, dict)
+                and str(section.get("type", "")).lower() == "chart"
+            )
+        return sections_out
+
     def _gather_ids(rows):
         for row in rows or []:
             for w in row:
                 if isinstance(w, dict) and isinstance(w.get("id"), str):
                     widget_ids.append(w["id"])
+                    widget_ids.extend(
+                        section["id"] for section in _popup_chart_sections(w)
+                        if isinstance(section.get("id"), str)
+                    )
 
     if layout.get("kind") == "tabs":
         for tab in layout.get("tabs", []) or []:
@@ -9016,30 +10980,88 @@ def _check_filter(f: Dict[str, Any], idx: int, manifest: Dict[str, Any],
     if not fld or not targets:
         return out
 
-    # Resolve target widget ids -> their dataset_ref / spec.dataset
+    # Resolve target widget ids -> their dataset_ref / spec.dataset and
+    # reject chart shapes the browser cannot faithfully rebuild.
     target_datasets: set = set()
+    unsupported_charts: List[Dict[str, Any]] = []
 
     def _visit(rows):
         for row in rows or []:
             for w in row:
                 if not isinstance(w, dict):
                     continue
-                wid = w.get("id")
-                if not isinstance(wid, str):
-                    continue
-                if not any(_matches(wid, t) for t in targets):
-                    continue
-                ds = w.get("dataset_ref")
-                if not ds and isinstance(w.get("spec"), dict):
-                    ds = w["spec"].get("dataset")
-                if ds:
-                    target_datasets.add(ds)
+                candidates: List[Dict[str, Any]] = [w]
+                candidates.extend({
+                    "id": section.get("id"),
+                    "widget": "chart",
+                    "dataset_ref": section.get("dataset"),
+                    "spec": {
+                        "chart_type": section.get("chart_type", "line"),
+                        "mapping": section.get("mapping") or {},
+                        "dataset": section.get("dataset"),
+                    },
+                } for section in _popup_chart_sections(w))
+                for candidate in candidates:
+                    wid = candidate.get("id")
+                    if not isinstance(wid, str) or not any(
+                        _matches(wid, t) for t in targets
+                    ):
+                        continue
+                    if candidate.get("widget") == "chart":
+                        spec = candidate.get("spec")
+                        date_range_view = (
+                            isinstance(spec, dict)
+                            and ftype == "dateRange"
+                            and str(f.get("mode", "view")).lower() == "view"
+                            and spec.get("chart_type")
+                            in DATE_RANGE_VIEW_CHART_TYPES
+                        )
+                        if (
+                            isinstance(spec, dict)
+                            and not date_range_view
+                            and not _chart_filter_rewire_supported(
+                                spec.get("chart_type"),
+                                spec.get("mapping") or {},
+                            )
+                        ):
+                            unsupported_charts.append({
+                                "widget_id": wid,
+                                "chart_type": spec.get("chart_type"),
+                            })
+                    ds = candidate.get("dataset_ref")
+                    if not ds and isinstance(candidate.get("spec"), dict):
+                        ds = candidate["spec"].get("dataset")
+                    if ds:
+                        target_datasets.add(ds)
 
     if layout.get("kind") == "tabs":
         for tab in layout.get("tabs", []) or []:
             _visit(tab.get("rows", []))
     else:
         _visit(layout.get("rows", []))
+
+    if unsupported_charts:
+        out.append(Diagnostic(
+            severity="error",
+            code="filter_chart_rebuild_unsupported",
+            widget_id=fid,
+            path=f"filters[{idx}].targets",
+            message=(
+                f"filter '{fid}' targets chart widgets whose series shape "
+                "cannot be rebuilt faithfully in the browser; those charts "
+                "would remain static beside changing widgets."
+            ),
+            context={
+                "charts": unsupported_charts,
+                "fix_hint": (
+                    "Retarget the filter, use a supported chart shape, or "
+                    "materialize a filter-safe dataset/mapping. Supported "
+                    "families include wide and grouped line/bar/area/scatter, "
+                    "pie/donut, heatmap, scatter_studio, and "
+                    "correlation_matrix. dateRange mode='view' may also "
+                    "target supported data-zoom time-series charts."
+                ),
+            }))
 
     for ds in target_datasets:
         df = dfs.get(ds)
@@ -9184,7 +11206,7 @@ def _columns_referenced_by_widgets(
                         spec.get("mapping") or {}, chart_type
                     ):
                         refs.append(c)
-                elif wt == "table":
+                elif wt in ("table", "data_grid"):
                     if w.get("dataset_ref") != ds_name:
                         continue
                     for c in (w.get("columns") or []):
@@ -9715,7 +11737,7 @@ def _table_dataset_refs(manifest: Dict[str, Any]) -> set:
             for w in row:
                 if not isinstance(w, dict):
                     continue
-                if w.get("widget") != "table":
+                if w.get("widget") not in ("table", "data_grid"):
                     continue
                 ds = w.get("dataset_ref")
                 if isinstance(ds, str):
@@ -9737,8 +11759,9 @@ def chart_data_diagnostics(
     """Inspect every chart/table/kpi/filter binding in ``manifest`` and
     return a list of :class:`Diagnostic` entries for empty datasets,
     missing columns, all-NaN series, missing required mapping keys,
-    non-numeric value columns, filter-field/target mismatches, and
-    dataset / manifest size budget violations.
+    non-numeric value columns, filter-field/target mismatches, dataset /
+    manifest size budget violations, explicit dataset-quality contracts,
+    and grouped time-series integrity/visual-scale risks.
 
     Shape diagnostics (DatetimeIndex with no 'date' column, MultiIndex
     columns, opaque-code names, tuple-instead-of-DataFrame, attrs
@@ -9759,6 +11782,7 @@ def chart_data_diagnostics(
 
     dfs = _materialize_datasets(manifest)
     layout = manifest.get("layout") or {}
+    diags.extend(_check_explicit_dataset_quality(manifest, dfs))
 
     def _walk(rows, path_prefix: str) -> None:
         for ri, row in enumerate(rows or []):
@@ -9770,8 +11794,10 @@ def chart_data_diagnostics(
                 wpath = f"{path_prefix}[{ri}][{wi}]"
                 wt = w.get("widget")
                 if wt == "chart":
-                    diags.extend(_check_chart_widget(w, wpath, dfs))
-                elif wt == "table":
+                    diags.extend(_check_chart_widget(
+                        w, wpath, dfs, manifest,
+                    ))
+                elif wt in ("table", "data_grid"):
                     diags.extend(_check_table_widget(w, wpath, dfs))
                 elif wt == "pivot":
                     diags.extend(_check_pivot_widget(w, wpath, dfs))
@@ -10158,15 +12184,10 @@ def compile_dashboard(
         # round-trip to fix metadata and a second to fix chart mappings
         # that were visible at the first compile but silently dropped.
         #
-        # The return path is preserved (strict OR non-strict) because
-        # validate failures are the "malformed manifest" class that
-        # callers expect to observe via DashboardResult.success /
-        # .warnings / .diagnostics. CDD errors in the post-validate
-        # path (below) still raise under strict=True. End-state
-        # contract: on any call, PRISM's ONE-SHOT view of errors is
-        # (a) r.warnings + r.diagnostics if r was returned, or
-        # (b) the ValueError message if it was raised. Either way,
-        # every error is visible in a single call.
+        # Non-strict callers receive DashboardResult for iterative repair.
+        # Strict callers raise after the exhaustive validator + CDD pass, so
+        # strict=True has one meaning across structural, compute, and
+        # post-validation diagnostic failures.
         cdd_diags_pre: List[Diagnostic]
         try:
             cdd_diags_pre = list(chart_data_diagnostics(manifest_dict))
@@ -10218,13 +12239,29 @@ def compile_dashboard(
             body_parts.append("")
             body_parts.extend(f"  - {w}" for w in agg_warnings)
         verbose_error_message = "\n".join(body_parts)
-        return DashboardResult(
+        result = DashboardResult(
             manifest=manifest_dict, manifest_path=None,
             html_path=None, html=None, success=False,
             error_message=verbose_error_message,
             warnings=agg_warnings,
             diagnostics=agg_diags,
         )
+        blocking_pre = [
+            d for d in agg_diags
+            if d.severity == "error"
+            and d.code in ALWAYS_BLOCKING_ERROR_CODES
+        ]
+        if strict or blocking_pre:
+            reason = (
+                "strict=True"
+                if strict
+                else "always-blocking diagnostic(s)"
+            )
+            raise ValueError(
+                f"compile_dashboard({reason}):\n"
+                f"{verbose_error_message}"
+            )
+        return result
 
     manifest_path: Optional[Path] = None
     html_path: Optional[Path] = None
@@ -10277,26 +12314,30 @@ def compile_dashboard(
         if d.severity == "error"
         and d.code in ALWAYS_BLOCKING_ERROR_CODES
     ]
+    errors = [d for d in diags if d.severity == "error"]
+    non_info = [d for d in diags if d.severity != "info"]
+    if strict and errors:
+        # Strict callers get the complete non-info diagnostic surface in one
+        # exception, not an always-blocking subset that hides independent
+        # errors or warnings until the next compile.
+        warning_count = sum(1 for d in non_info if d.severity == "warning")
+        body = "\n".join(f"  - {d}" for d in non_info)
+        raise ValueError(
+            f"compile_dashboard(strict=True): "
+            f"{len(errors)} error-severity and {warning_count} "
+            f"warning-severity diagnostic(s):\n{body}"
+        )
     if always_blocking:
-        # No truncation: every always-blocking error goes into the
-        # message so PRISM can batch-fix them in one recompile.
-        body = "\n".join(f"  - {e}" for e in always_blocking)
+        # strict=False cannot suppress load-bearing failures, but its raise
+        # still carries every non-info diagnostic so iterative repair remains
+        # exhaustive.
+        body = "\n".join(f"  - {d}" for d in non_info)
         raise ValueError(
             f"compile_dashboard: {len(always_blocking)} always-blocking "
             f"error-severity diagnostic(s) (these fail regardless of the "
             f"`strict` flag because the rendered artifact would be "
-            f"broken):\n{body}"
+            f"broken); {len(non_info)} total non-info diagnostic(s):\n{body}"
         )
-
-    if strict:
-        errors = [d for d in diags if d.severity == "error"]
-        if errors:
-            body = "\n".join(f"  - {e}" for e in errors)
-            raise ValueError(
-                f"compile_dashboard(strict=True): "
-                f"{len(errors)} error-severity diagnostic(s):\n"
-                f"{body}"
-            )
     chart_specs = _resolve_chart_specs(
         manifest_dict, base_dir, diags=diags,
     )
@@ -10314,13 +12355,29 @@ def compile_dashboard(
         and d.code in ALWAYS_BLOCKING_ERROR_CODES
         and id(d) not in pre_block_ids
     ]
+    pre_error_ids = {id(d) for d in errors}
+    new_errors = [
+        d for d in diags
+        if d.severity == "error" and id(d) not in pre_error_ids
+    ]
+    if strict and new_errors:
+        non_info = [d for d in diags if d.severity != "info"]
+        warning_count = sum(1 for d in non_info if d.severity == "warning")
+        body = "\n".join(f"  - {d}" for d in non_info)
+        raise ValueError(
+            f"compile_dashboard(strict=True): {len(new_errors)} new "
+            f"error-severity diagnostic(s) emerged during spec resolution; "
+            f"{warning_count} warning-severity diagnostic(s):\n{body}"
+        )
     if new_blocking:
-        body = "\n".join(f"  - {e}" for e in new_blocking)
+        non_info = [d for d in diags if d.severity != "info"]
+        body = "\n".join(f"  - {d}" for d in non_info)
         raise ValueError(
             f"compile_dashboard: {len(new_blocking)} always-blocking "
             f"error-severity diagnostic(s) emerged during spec resolution "
             f"(builder exception(s); the rendered chart card would show "
-            f"the `(no data)` placeholder):\n{body}"
+            f"the `(no data)` placeholder); {len(non_info)} total non-info "
+            f"diagnostic(s):\n{body}"
         )
 
     html = render_dashboard_html(
@@ -12207,8 +14264,65 @@ def _apply_manifest_operation(
         return
 
 
+def _transaction_target_from_state(
+    folder_or_state: Union[str, Dict[str, Any]],
+    *,
+    expected_sha256: Optional[str],
+    expected_current_version_id: Optional[str],
+    script: Optional[str] = None,
+) -> Tuple[str, Optional[str], Optional[str]]:
+    """Resolve a canonical folder and concurrency guards from inspection."""
+    if isinstance(folder_or_state, str):
+        return (
+            folder_or_state,
+            expected_sha256,
+            expected_current_version_id,
+        )
+    if not isinstance(folder_or_state, dict):
+        raise ValueError(
+            "transaction target must be a canonical folder string or the "
+            "dict returned by inspect_dashboard"
+        )
+    folder = folder_or_state.get("folder")
+    if not isinstance(folder, str):
+        raise ValueError(
+            "inspection state is missing its canonical 'folder' field | "
+            "fix: pass the unmodified inspect_dashboard result."
+        )
+    inferred_sha = folder_or_state.get("manifest_template_sha256")
+    if script is not None:
+        inferred_sha = (
+            ((folder_or_state.get("scripts") or {}).get(script) or {})
+            .get("sha256")
+        )
+    versioning = folder_or_state.get("versioning") or {}
+    inferred_version = (
+        versioning.get("current_version_id")
+        if isinstance(versioning, dict) else None
+    )
+    if expected_sha256 is not None and inferred_sha is not None \
+            and expected_sha256 != inferred_sha:
+        raise ValueError(
+            "explicit SHA-256 guard conflicts with the supplied inspection "
+            "state | fix: inspect again and pass either the state directly "
+            "or its matching guard, not a stale mixture."
+        )
+    if expected_current_version_id is not None \
+            and inferred_version is not None \
+            and expected_current_version_id != inferred_version:
+        raise ValueError(
+            "explicit version guard conflicts with the supplied inspection "
+            "state | fix: inspect again and use one coherent state object."
+        )
+    return (
+        folder,
+        expected_sha256 or inferred_sha,
+        expected_current_version_id or inferred_version,
+    )
+
+
 def apply_manifest_operations(
-    folder: str,
+    folder: Union[str, Dict[str, Any]],
     operations: Sequence[Dict[str, Any]],
     *,
     s3_manager=None,
@@ -12216,7 +14330,12 @@ def apply_manifest_operations(
     expected_sha256: Optional[str] = None,
     expected_current_version_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Apply ordered, typed manifest edits as one rollback-safe transaction."""
+    """Apply ordered, typed manifest edits as one rollback-safe transaction.
+
+    ``folder`` may be the canonical path or the complete state returned by
+    :func:`inspect_dashboard`. Passing state consumes its template SHA and
+    current version guard directly.
+    """
     if isinstance(operations, (str, bytes, dict)) \
             or not isinstance(operations, Sequence):
         raise ValueError(
@@ -12238,6 +14357,13 @@ def apply_manifest_operations(
 
     import copy
 
+    folder, expected_sha256, expected_current_version_id = (
+        _transaction_target_from_state(
+            folder,
+            expected_sha256=expected_sha256,
+            expected_current_version_id=expected_current_version_id,
+        )
+    )
     s3 = _resolve_s3_manager(s3_manager)
     canonical, kerberos, dashboard_id = _canonical_dashboard_identity(folder)
     audit_dashboard_layout(canonical, s3_manager=s3)
@@ -12319,6 +14445,245 @@ def apply_manifest_operations(
         "manifest_sha256_after": post_sha,
         "manifest_template": copy.deepcopy(working),
         "compiled_manifest": built_manifest,
+    }
+
+
+_PERSISTED_SCRIPT_STEMS = frozenset({"pull_data", "build"})
+_PERSISTED_SCRIPT_OPERATION_TYPES = frozenset({
+    "replace", "insert_before", "insert_after", "append",
+})
+
+
+def _apply_persisted_script_operation(
+    source: str,
+    operation: Dict[str, Any],
+    index: int,
+) -> str:
+    if not isinstance(operation, dict):
+        raise ValueError(
+            f"script operation[{index}] must be an object"
+        )
+    op = operation.get("op")
+    if op not in _PERSISTED_SCRIPT_OPERATION_TYPES:
+        raise ValueError(
+            f"script operation[{index}].op={op!r} is unsupported; valid "
+            f"operations are {sorted(_PERSISTED_SCRIPT_OPERATION_TYPES)}"
+        )
+    if op == "append":
+        text = operation.get("text")
+        if not isinstance(text, str) or not text:
+            raise ValueError(
+                f"script operation[{index}].text must be a non-empty string"
+            )
+        separator = "" if not source or source.endswith("\n") else "\n"
+        suffix = text if text.endswith("\n") else text + "\n"
+        return source + separator + suffix
+
+    anchor_key = "old" if op == "replace" else "anchor"
+    anchor = operation.get(anchor_key)
+    if not isinstance(anchor, str) or not anchor:
+        raise ValueError(
+            f"script operation[{index}].{anchor_key} must be a non-empty "
+            "exact source fragment"
+        )
+    expected_count = operation.get("expected_count", 1)
+    if not isinstance(expected_count, int) or expected_count < 1:
+        raise ValueError(
+            f"script operation[{index}].expected_count must be a positive int"
+        )
+    observed_count = source.count(anchor)
+    if observed_count != expected_count:
+        raise ValueError(
+            f"script operation[{index}] anchor count mismatch: expected "
+            f"{expected_count}, found {observed_count} | fix: inspect the "
+            "current script and rebase the typed edit on a unique fragment."
+        )
+    if op == "replace":
+        replacement = operation.get("new")
+        if not isinstance(replacement, str):
+            raise ValueError(
+                f"script operation[{index}].new must be a string"
+            )
+        return source.replace(anchor, replacement, expected_count)
+    text = operation.get("text")
+    if not isinstance(text, str) or not text:
+        raise ValueError(
+            f"script operation[{index}].text must be a non-empty string"
+        )
+    replacement = (
+        text + anchor if op == "insert_before"
+        else anchor + text
+    )
+    return source.replace(anchor, replacement, expected_count)
+
+
+def _validate_persisted_script_source(
+    folder: str,
+    stem: str,
+    source: str,
+    *,
+    s3_manager,
+) -> Dict[str, Any]:
+    path = f"{folder}/scripts/{stem}.py"
+    compile(source, path, "exec")
+    namespace = _exec_dashboard_script_source(
+        folder, stem, source, s3_manager=s3_manager,
+    )
+    if stem == "pull_data":
+        pipelines = namespace.get("PULLS")
+        if not isinstance(pipelines, dict):
+            raise ValueError(
+                "pull_data.py must define module-level PULLS as a dict"
+            )
+        invalid = sorted(
+            str(name) for name, function in pipelines.items()
+            if not isinstance(name, str) or not callable(function)
+        )
+        if invalid:
+            raise ValueError(
+                "PULLS must map string names to callables; invalid entries: "
+                f"{invalid}"
+            )
+        analysis = _analyze_pull_producers_from_source(source)
+        return {
+            "kind": "pull_data",
+            "pipelines": sorted(pipelines),
+            "count": len(pipelines),
+            "producer_outputs": sorted(analysis["outputs"]),
+            "unresolved_outputs": analysis["unresolved"],
+        }
+    transforms = namespace.get("TRANSFORMS")
+    if not isinstance(transforms, (list, tuple)):
+        raise ValueError(
+            "build.py must define module-level TRANSFORMS as a list or tuple"
+        )
+    invalid_indexes = [
+        index for index, function in enumerate(transforms)
+        if not callable(function)
+    ]
+    if invalid_indexes:
+        raise ValueError(
+            "TRANSFORMS entries must be callable; invalid indexes: "
+            f"{invalid_indexes}"
+        )
+    analysis = _analyze_transform_producers_from_source(source)
+    return {
+        "kind": "build",
+        "transforms": [
+            getattr(function, "__name__", f"transform_{index}")
+            for index, function in enumerate(transforms)
+        ],
+        "count": len(transforms),
+        "producer_outputs": sorted(analysis["outputs"]),
+        "unresolved_outputs": analysis["unresolved"],
+    }
+
+
+def apply_persisted_script_operations(
+    folder: Union[str, Dict[str, Any]],
+    script: str,
+    operations: Sequence[Dict[str, Any]],
+    *,
+    s3_manager=None,
+    expected_sha256: Optional[str] = None,
+    expected_current_version_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Hash-gated, rollback-safe edit of ``pull_data.py`` or ``build.py``.
+
+    The transaction accepts only typed fragment operations, validates syntax
+    and the module-level pipeline contract, atomically replaces the script
+    object, strictly recompiles the dashboard, and restores exact pre-edit
+    bytes on any failure. The first argument may be an inspection state so
+    callers do not manually copy concurrency guards.
+    """
+    if script not in _PERSISTED_SCRIPT_STEMS:
+        raise ValueError(
+            f"script must be one of {sorted(_PERSISTED_SCRIPT_STEMS)}"
+        )
+    if isinstance(operations, (str, bytes, dict)) \
+            or not isinstance(operations, Sequence) or not operations:
+        raise ValueError(
+            "operations must be a non-empty ordered sequence of typed "
+            "script operation objects"
+        )
+    folder, expected_sha256, expected_current_version_id = (
+        _transaction_target_from_state(
+            folder,
+            expected_sha256=expected_sha256,
+            expected_current_version_id=expected_current_version_id,
+            script=script,
+        )
+    )
+    if expected_sha256 is None:
+        raise ValueError(
+            "expected_sha256 is required for persisted-script edits | fix: "
+            "pass inspect_dashboard state directly or copy "
+            f"state['scripts']['{script}']['sha256']."
+        )
+    s3 = _resolve_s3_manager(s3_manager)
+    canonical, _kerberos, _dashboard_id = _canonical_dashboard_identity(folder)
+    audit_dashboard_layout(canonical, s3_manager=s3)
+    script_path = f"{canonical}/scripts/{script}.py"
+    manifest_path = f"{canonical}/manifest.json"
+    html_path = f"{canonical}/dashboard.html"
+    snapshots = {
+        path: _snapshot_s3_key(s3, path)
+        for path in (script_path, manifest_path, html_path)
+    }
+    original_raw = snapshots[script_path][1] or b""
+    try:
+        original_source = original_raw.rstrip(b"\x00").decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"{script_path} is not valid UTF-8: {exc}"
+        ) from exc
+    before_sha = _sha256(original_raw)
+    if expected_sha256 != before_sha:
+        raise ValueError(
+            f"{script_path} SHA-256 mismatch: expected {expected_sha256}, "
+            f"found {before_sha} | fix: inspect again and rebase the typed "
+            "operations on the current script."
+        )
+    working = original_source
+    for index, operation in enumerate(operations):
+        working = _apply_persisted_script_operation(
+            working, operation, index,
+        )
+    if working == original_source:
+        raise ValueError(
+            "typed script operations produced no byte change"
+        )
+    pipeline_contract = _validate_persisted_script_source(
+        canonical, script, working, s3_manager=s3,
+    )
+    _require_expected_current_version(
+        s3, canonical, expected_current_version_id,
+    )
+    new_raw = working.encode("utf-8")
+    try:
+        s3.put(new_raw, script_path)
+        compiled_manifest = build_dashboard(
+            canonical,
+            s3_manager=s3,
+            expected_current_version_id=expected_current_version_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        rollback_errors = _restore_s3_snapshots(s3, snapshots)
+        _raise_transaction_failure(
+            "apply_persisted_script_operations",
+            exc,
+            rollback_errors,
+        )
+    return {
+        "folder": canonical,
+        "script": script,
+        "path": script_path,
+        "operations_applied": len(operations),
+        "pipeline_contract": pipeline_contract,
+        "pre_sha256": before_sha,
+        "post_sha256": _sha256(new_raw),
+        "rollback_sha256": before_sha,
+        "compiled_manifest": compiled_manifest,
     }
 
 
@@ -12420,106 +14785,30 @@ def _normalize_telemetry_event(
 
 
 def _inspect_pull_pipelines(source: str) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Statically map ``PULLS`` names to concrete CSV stems."""
-    import ast
-
-    try:
-        tree = ast.parse(source)
-    except SyntaxError as exc:
-        return [], f"line {exc.lineno}: {exc.msg}"
-    functions = {
-        node.name: node for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    pull_map: Dict[str, str] = {}
-    for node in tree.body:
-        targets: List[ast.AST] = []
-        value: Optional[ast.AST] = None
-        if isinstance(node, ast.Assign):
-            targets, value = list(node.targets), node.value
-        elif isinstance(node, ast.AnnAssign):
-            targets, value = [node.target], node.value
-        if not any(
-            isinstance(target, ast.Name) and target.id == "PULLS"
-            for target in targets
-        ) or not isinstance(value, ast.Dict):
-            continue
-        for key, fn in zip(value.keys, value.values):
-            if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                if isinstance(fn, ast.Name):
-                    pull_map[key.value] = fn.id
-                else:
-                    pull_map[key.value] = "<dynamic>"
-
-    path_pattern = re.compile(r"/data/([^/]+)\.(?:csv|json)$")
-
-    def _literal(node: ast.AST) -> Optional[str]:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            return node.value
-        if isinstance(node, ast.JoinedStr):
-            return "".join(
-                value.value if isinstance(value, ast.Constant)
-                and isinstance(value.value, str) else ""
-                for value in node.values
-            )
-        return None
-
-    def _stems(fn_name: str) -> List[str]:
-        fn = functions.get(fn_name)
-        if fn is None:
-            return []
-        stems: set = set()
-        for node in ast.walk(fn):
-            if not isinstance(node, ast.Call):
-                continue
-            call_name = (
-                node.func.id if isinstance(node.func, ast.Name)
-                else node.func.attr if isinstance(node.func, ast.Attribute)
-                else None
-            )
-            if call_name in _PULL_PRIMITIVES:
-                name = None
-                mode = "eod"
-                for kwarg in node.keywords:
-                    if kwarg.arg == "name":
-                        name = _literal(kwarg.value)
-                    elif kwarg.arg == "mode":
-                        mode = _literal(kwarg.value) or mode
-                if name:
-                    if call_name == "pull_market_data":
-                        if mode == "eod":
-                            stems.add(f"{name}_eod")
-                        elif mode in ("iday", "intraday"):
-                            stems.add(f"{name}_intraday")
-                        elif mode == "both":
-                            stems.update({
-                                f"{name}_eod", f"{name}_intraday",
-                            })
-                    else:
-                        stems.add(name)
-                continue
-            if isinstance(node.func, ast.Attribute) \
-                    and node.func.attr in ("put", "save"):
-                path_node = node.args[1] if len(node.args) >= 2 else None
-                for kwarg in node.keywords:
-                    if kwarg.arg in ("path", "key", "url"):
-                        path_node = kwarg.value
-                if path_node is not None:
-                    path_value = _literal(path_node)
-                    match = path_pattern.search(path_value or "")
-                    if match:
-                        stems.add(match.group(1))
-        return sorted(stems)
-
+    """Map registered ``PULLS`` through local helper call graphs."""
+    analysis = _analyze_pull_producers_from_source(source)
+    parse_issue = next(
+        (
+            item for item in analysis["unresolved"]
+            if item.get("root") == "<parse>"
+        ),
+        None,
+    )
+    if parse_issue is not None:
+        return (
+            [],
+            f"line {parse_issue.get('line')}: {parse_issue['reason']}",
+        )
     pipelines = [
         {
-            "name": name,
-            "function": fn_name,
-            "csv_stems": _stems(fn_name),
+            "name": item["name"],
+            "function": item["function"],
+            "csv_stems": item["outputs"],
+            "unresolved_outputs": item["unresolved"],
         }
-        for name, fn_name in sorted(pull_map.items())
+        for item in analysis["roots"]
     ]
-    return pipelines, None
+    return sorted(pipelines, key=lambda item: item["name"]), None
 
 
 def inspect_dashboard(
@@ -12754,11 +15043,14 @@ def inspect_dashboard(
     })
     pull_source = ""
     build_source = ""
+    pull_raw = b""
+    build_raw = b""
     if present["scripts/pull_data.py"]:
         try:
-            pull_source = s3.get(
+            pull_raw = bytes(s3.get(
                 f"{canonical}/scripts/pull_data.py"
-            ).rstrip(b"\x00").decode("utf-8")
+            ))
+            pull_source = pull_raw.rstrip(b"\x00").decode("utf-8")
         except (UnicodeDecodeError, AttributeError) as exc:
             findings.append(_inspection_finding(
                 "error", "pull_script_unreadable",
@@ -12767,9 +15059,10 @@ def inspect_dashboard(
             ))
     if present["scripts/build.py"]:
         try:
-            build_source = s3.get(
+            build_raw = bytes(s3.get(
                 f"{canonical}/scripts/build.py"
-            ).rstrip(b"\x00").decode("utf-8")
+            ))
+            build_source = build_raw.rstrip(b"\x00").decode("utf-8")
         except (UnicodeDecodeError, AttributeError) as exc:
             findings.append(_inspection_finding(
                 "error", "build_script_unreadable",
@@ -12783,6 +15076,21 @@ def inspect_dashboard(
             f"{canonical}/scripts/pull_data.py", pull_parse_error,
             "Fix the Python syntax error before the next refresh.",
         ))
+    build_parse_error: Optional[str] = None
+    if build_source:
+        try:
+            compile(
+                build_source,
+                f"{canonical}/scripts/build.py",
+                "exec",
+            )
+        except SyntaxError as exc:
+            build_parse_error = str(exc)
+            findings.append(_inspection_finding(
+                "error", "build_script_syntax_error",
+                f"{canonical}/scripts/build.py", build_parse_error,
+                "Fix the Python syntax error before the next build.",
+            ))
 
     versioning: Dict[str, Any] = {
         "initialized": False,
@@ -12853,9 +15161,19 @@ def inspect_dashboard(
                 "Repair the engine-written history state or immutable version "
                 "object before restoring a dashboard version.",
             ))
-    transform_datasets = sorted(
-        _infer_transform_keys_from_source(build_source)
-    ) if build_source else []
+    transform_analysis = (
+        _analyze_transform_producers_from_source(build_source)
+        if build_source else {
+            "roots": [], "outputs": set(), "unresolved": [],
+            "registry_present": False,
+        }
+    )
+    transform_datasets = sorted(transform_analysis["outputs"])
+    pull_unresolved = [
+        item
+        for pipeline in pipelines
+        for item in pipeline.get("unresolved_outputs", [])
+    ]
 
     datasets_block = (
         template.get("datasets") if isinstance(template, dict) else {}
@@ -13134,17 +15452,21 @@ def inspect_dashboard(
     diagnostic_manifest = compiled_manifest or template
     if isinstance(diagnostic_manifest, dict):
         try:
-            popup_diagnostics = [
+            surfaced_diagnostics = [
                 diagnostic
                 for diagnostic in chart_data_diagnostics(diagnostic_manifest)
-                if diagnostic.severity == "error"
-                and diagnostic.code.startswith("popup_")
+                if (
+                    diagnostic.severity == "error"
+                    and diagnostic.code.startswith("popup_")
+                ) or diagnostic.code.startswith(
+                    ("data_quality_", "timeseries_")
+                )
             ]
-            for diagnostic in popup_diagnostics:
+            for diagnostic in surfaced_diagnostics:
                 context = dict(diagnostic.context or {})
                 fix_hint = context.get("fix_hint") or (
-                    "Repair the explicit row_click/click_popup configuration "
-                    "using the structured diagnostic context, then rebuild."
+                    "Repair the named manifest/data contract using the "
+                    "structured evidence, then rebuild."
                 )
                 context["fix_hint"] = fix_hint
                 findings.append(_inspection_finding(
@@ -13158,12 +15480,13 @@ def inspect_dashboard(
         except Exception as exc:  # noqa: BLE001
             findings.append(_inspection_finding(
                 "warning",
-                "popup_diagnostics_failed",
+                "dashboard_diagnostics_failed",
                 manifest_path if compiled_manifest is not None
                 else template_path,
                 f"{type(exc).__name__}: {exc}",
                 "Repair the manifest dataset/layout shape, then rerun "
-                "inspection so popup diagnostics can materialize.",
+                "inspection so popup and data-quality diagnostics can "
+                "materialize.",
             ))
 
     attachment_gaps: List[str] = []
@@ -13229,6 +15552,35 @@ def inspect_dashboard(
             "mode": "read_only_snapshot",
         },
         "compiled_manifest_sha256": compiled_manifest_sha,
+        "scripts": {
+            "pull_data": {
+                "path": f"{canonical}/scripts/pull_data.py",
+                "present": present["scripts/pull_data.py"],
+                "sha256": _sha256(pull_raw) if pull_raw else None,
+                "bytes": len(pull_raw),
+                "syntax_error": pull_parse_error,
+                "pipelines": [
+                    pipeline.get("name") for pipeline in pipelines
+                ],
+                "producer_outputs": sorted({
+                    stem for pipeline in pipelines
+                    for stem in pipeline.get("csv_stems", [])
+                }),
+                "unresolved_outputs": pull_unresolved,
+            },
+            "build": {
+                "path": f"{canonical}/scripts/build.py",
+                "present": present["scripts/build.py"],
+                "sha256": _sha256(build_raw) if build_raw else None,
+                "bytes": len(build_raw),
+                "syntax_error": build_parse_error,
+                "transforms": transform_datasets,
+                "transform_functions": [
+                    item["function"] for item in transform_analysis["roots"]
+                ],
+                "unresolved_outputs": transform_analysis["unresolved"],
+            },
+        },
         "versioning": versioning,
         "metadata": metadata,
         "tabs": canonical_tabs,
@@ -13281,6 +15633,10 @@ def inspect_dashboard(
                 for stem in csv_stems
             ],
             "transforms": transform_datasets,
+            "producer_analysis": {
+                "pull_unresolved": pull_unresolved,
+                "transform_unresolved": transform_analysis["unresolved"],
+            },
             "datasets": dataset_nodes,
             "widgets": widget_nodes,
             "filters": filter_nodes,
@@ -13299,19 +15655,18 @@ def inspect_dashboard(
     }
 
 
-def _exec_dashboard_script_source(
-    folder: str,
-    stem: str,
-    src: str,
+def _build_dashboard_exec_namespace(
     *,
     s3_manager,
+    module_name: str,
+    file_path: str,
 ) -> Dict[str, Any]:
-    """Execute supplied persisted-script source in the canonical namespace."""
-    path = f"{folder}/scripts/{stem}.py".replace("//", "/")
+    """Return the one canonical namespace for persisted dashboard scripts.
 
-    # In-process injection is wider than refresh_runner._build_exec_namespace.
-    # Persisted scripts must import pd/np/pull_nyfed_data explicitly so clean
-    # refresh discovery cannot fail after an in-process success.
+    Both in-process folder operations and ``refresh_runner`` discovery call
+    this helper. A script that loads successfully in one path therefore sees
+    the same injected names in every other path.
+    """
     from prism_mcp.utils.data_functions import (
         pull_market_data, pull_haver_data, pull_plottool_data,
         pull_fred_data, save_artifact,
@@ -13320,9 +15675,9 @@ def _exec_dashboard_script_source(
     import pandas as pd
     import numpy as np
 
-    ns: Dict[str, Any] = {
-        "__name__": f"_dashboard_{stem}",
-        "__file__": path,
+    return {
+        "__name__": module_name,
+        "__file__": file_path,
         "__builtins__": __builtins__,
         "s3_manager": s3_manager,
         "pull_market_data": pull_market_data,
@@ -13334,6 +15689,22 @@ def _exec_dashboard_script_source(
         "pd": pd,
         "np": np,
     }
+
+
+def _exec_dashboard_script_source(
+    folder: str,
+    stem: str,
+    src: str,
+    *,
+    s3_manager,
+) -> Dict[str, Any]:
+    """Execute supplied persisted-script source in the canonical namespace."""
+    path = f"{folder}/scripts/{stem}.py".replace("//", "/")
+    ns = _build_dashboard_exec_namespace(
+        s3_manager=s3_manager,
+        module_name=f"_dashboard_{stem}",
+        file_path=path,
+    )
     exec(compile(src, path, "exec"), ns)
     return ns
 
@@ -13452,162 +15823,810 @@ def _collect_widget_dataset_refs(template: Dict[str, Any]) -> set:
     return refs
 
 
-def _infer_pull_stems_from_source(src: str) -> set:
-    """Statically infer the CSV stems each ``PULLS`` function produces,
-    from the persisted ``pull_data.py`` bytes. Pure static parse; never
-    execs the script.
+_STATIC_UNKNOWN = object()
+_STATIC_DATASETS = object()
+_STATIC_DYNAMIC_TOKEN = "<dynamic>"
 
-    Two detection paths cover the realistic write patterns:
 
-    1. **Pull-primitive calls** (the canonical dashboard idiom per
-       ``dashboards/pipelines.md#pull-contract``). Reads each recognized
-       helper's literal ``name=`` and, for the retained compatibility helper,
-       its ``mode=`` kwarg to compute the on-disk CSV stem.
-    2. **Direct ``.put()`` / ``.save()`` writes** under ``/data/<stem>.csv``
-       (or ``.json``). Catches the rarer pattern where a pull function
-       constructs the CSV bytes and persists them directly (e.g. test
-       fixtures, custom scrapers). The path argument can be a string
-       literal or an f-string; the static parse looks at the literal
-       suffix.
+class _StaticProducerAnalyzer:
+    """Registered-call-graph analysis for pull and transform outputs.
 
-    Dynamic ``name=`` (variables, runtime expressions) and dynamic path
-    strings cannot be inferred statically and are silently skipped —
-    those call sites opt out of the static attachment check by
-    construction.
+    Dashboard consumers use stable dataset keys, so their producers must be
+    statically provable without executing network code. The analyzer follows
+    only functions reachable from ``PULLS`` / ``TRANSFORMS`` (or every local
+    function when a small inference helper is tested without a registry),
+    propagates literal strings through assignments, helper parameters,
+    f-strings, and finite literal loops, and records unresolved output sites
+    instead of silently pretending that no producer exists.
     """
-    import ast
-    import re
 
-    stems: set = set()
-    try:
-        tree = ast.parse(src)
-    except SyntaxError:
-        return stems  # script parse errors surface via the dedicated check
+    def __init__(self, source: str, kind: str) -> None:
+        import ast
 
-    csv_path_pattern = re.compile(r"/data/([^/]+)\.(csv|json)$")
+        self.ast = ast
+        self.source = source
+        self.kind = kind
+        self.tree = ast.parse(source)
+        self.functions = {
+            node.name: node for node in self.tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        self.module_env: Dict[str, Any] = {}
+        self.outputs_by_root: Dict[str, set] = {}
+        self.function_by_root: Dict[str, str] = {}
+        self.unresolved: List[Dict[str, Any]] = []
+        self._unresolved_seen: set = set()
+        self._collect_module_constants()
+        self.roots, self.registry_present = self._registered_roots()
+        for root_name, function_name in self.roots:
+            self.outputs_by_root.setdefault(root_name, set())
+            self.function_by_root[root_name] = function_name
+            initial_args: List[Any] = []
+            if kind == "transform":
+                initial_args.append(_STATIC_DATASETS)
+            self._trace_function(
+                function_name,
+                root_name=root_name,
+                positional=initial_args,
+                keywords={},
+                stack=(),
+            )
 
-    def _string_literal_suffix(node: ast.AST) -> Optional[str]:
-        """Extract a concrete string from a Constant or the literal
-        parts of a JoinedStr (f-string). FormattedValue components
-        become opaque (treated as empty string); the literal suffix is
-        usually sufficient for path-tail matching.
-        """
+    def result(self) -> Dict[str, Any]:
+        roots = []
+        for root_name, function_name in self.roots:
+            roots.append({
+                "name": root_name,
+                "function": function_name,
+                "outputs": sorted(self.outputs_by_root.get(root_name, set())),
+                "unresolved": [
+                    item for item in self.unresolved
+                    if item["root"] == root_name
+                ],
+            })
+        return {
+            "kind": self.kind,
+            "registry_present": self.registry_present,
+            "roots": roots,
+            "outputs": set().union(
+                *(self.outputs_by_root.values() or [set()])
+            ),
+            "unresolved": list(self.unresolved),
+        }
+
+    def _collect_module_constants(self) -> None:
+        ast = self.ast
+        for node in self.tree.body:
+            if isinstance(node, ast.Assign):
+                value = self._eval(node.value, self.module_env)
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        self.module_env[target.id] = value
+            elif isinstance(node, ast.AnnAssign) \
+                    and isinstance(node.target, ast.Name):
+                self.module_env[node.target.id] = self._eval(
+                    node.value, self.module_env
+                )
+
+    def _registered_roots(self) -> Tuple[List[Tuple[str, str]], bool]:
+        ast = self.ast
+        registry_name = "PULLS" if self.kind == "pull" else "TRANSFORMS"
+        registry_node: Optional[ast.AST] = None
+        for node in self.tree.body:
+            targets: List[ast.AST] = []
+            value: Optional[ast.AST] = None
+            if isinstance(node, ast.Assign):
+                targets = list(node.targets)
+                value = node.value
+            elif isinstance(node, ast.AnnAssign):
+                targets = [node.target]
+                value = node.value
+            if any(
+                isinstance(target, ast.Name) and target.id == registry_name
+                for target in targets
+            ):
+                registry_node = value
+
+        if registry_node is None:
+            return [(name, name) for name in self.functions], False
+
+        roots: List[Tuple[str, str]] = []
+        if self.kind == "pull" and isinstance(registry_node, ast.Dict):
+            for key_node, value_node in zip(
+                registry_node.keys, registry_node.values
+            ):
+                key = self._eval(key_node, self.module_env)
+                if isinstance(key, str) and isinstance(value_node, ast.Name):
+                    if value_node.id in self.functions:
+                        roots.append((key, value_node.id))
+                    else:
+                        self._record_unresolved(
+                            "<registry>", "PULLS", value_node,
+                            f"PULLS[{key!r}] does not reference a local "
+                            "function",
+                        )
+                else:
+                    self._record_unresolved(
+                        "<registry>", "PULLS", value_node,
+                        "PULLS keys must be literal strings and values must "
+                        "be local function names",
+                    )
+            return roots, True
+
+        if self.kind == "transform" and isinstance(
+            registry_node, (ast.List, ast.Tuple)
+        ):
+            for value_node in registry_node.elts:
+                if isinstance(value_node, ast.Name) \
+                        and value_node.id in self.functions:
+                    roots.append((value_node.id, value_node.id))
+                else:
+                    self._record_unresolved(
+                        "<registry>", "TRANSFORMS", value_node,
+                        "TRANSFORMS entries must be local function names",
+                    )
+            return roots, True
+
+        self._record_unresolved(
+            "<registry>", registry_name, registry_node,
+            f"{registry_name} must be a literal "
+            f"{'dictionary' if self.kind == 'pull' else 'list or tuple'}",
+        )
+        return roots, True
+
+    def _eval(self, node: Optional[Any], env: Dict[str, Any]) -> Any:
+        ast = self.ast
+        if node is None:
+            return _STATIC_UNKNOWN
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            return env.get(
+                node.id, self.module_env.get(node.id, _STATIC_UNKNOWN)
+            )
+        if isinstance(node, ast.JoinedStr):
+            return self._string_value(node, env)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = self._eval(node.left, env)
+            right = self._eval(node.right, env)
+            if isinstance(left, str) and isinstance(right, str):
+                return left + right
+            if isinstance(left, list) and isinstance(right, list):
+                return left + right
+            if isinstance(left, tuple) and isinstance(right, tuple):
+                return left + right
+            return _STATIC_UNKNOWN
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mod):
+            template = self._eval(node.left, env)
+            values = self._eval(node.right, env)
+            if isinstance(template, str) and values is not _STATIC_UNKNOWN:
+                try:
+                    return template % values
+                except (TypeError, ValueError):
+                    return _STATIC_UNKNOWN
+        if isinstance(node, ast.Subscript):
+            owner = self._eval(node.value, env)
+            key_node = self._subscript_slice(node)
+            key = self._eval(key_node, env)
+            try:
+                if isinstance(owner, (dict, list, tuple)) \
+                        and key is not _STATIC_UNKNOWN:
+                    return owner[key]
+            except (KeyError, IndexError, TypeError):
+                return _STATIC_UNKNOWN
+            return _STATIC_UNKNOWN
+        if isinstance(node, ast.List):
+            return [self._eval(item, env) for item in node.elts]
+        if isinstance(node, ast.Tuple):
+            return tuple(self._eval(item, env) for item in node.elts)
+        if isinstance(node, ast.Set):
+            values = [self._eval(item, env) for item in node.elts]
+            if all(value is not _STATIC_UNKNOWN for value in values):
+                try:
+                    return set(values)
+                except TypeError:
+                    return _STATIC_UNKNOWN
+            return _STATIC_UNKNOWN
+        if isinstance(node, ast.Dict):
+            result: Dict[Any, Any] = {}
+            for key_node, value_node in zip(node.keys, node.values):
+                if key_node is None:
+                    continue
+                key = self._eval(key_node, env)
+                if key is _STATIC_UNKNOWN:
+                    continue
+                try:
+                    result[key] = self._eval(value_node, env)
+                except TypeError:
+                    continue
+            return result
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute):
+                owner = self._eval(node.func.value, env)
+                if isinstance(owner, dict):
+                    if node.func.attr == "items":
+                        return list(owner.items())
+                    if node.func.attr == "keys":
+                        return list(owner.keys())
+                    if node.func.attr == "values":
+                        return list(owner.values())
+            if isinstance(node.func, ast.Name):
+                if node.func.id == "enumerate" and node.args:
+                    value = self._eval(node.args[0], env)
+                    if isinstance(value, (list, tuple)):
+                        return list(enumerate(value))
+                if node.func.id == "zip" and node.args:
+                    values = [self._eval(arg, env) for arg in node.args]
+                    if all(isinstance(value, (list, tuple))
+                           for value in values):
+                        return list(zip(*values))
+                if node.func.id == "range":
+                    values = [self._eval(arg, env) for arg in node.args]
+                    if all(isinstance(value, int) for value in values):
+                        try:
+                            return list(range(*values))
+                        except (TypeError, ValueError):
+                            return _STATIC_UNKNOWN
+                if node.func.id == "str" and node.args:
+                    value = self._eval(node.args[0], env)
+                    if value is not _STATIC_UNKNOWN:
+                        return str(value)
+            if isinstance(node.func, ast.Attribute) \
+                    and node.func.attr == "format":
+                template = self._eval(node.func.value, env)
+                args = [self._eval(arg, env) for arg in node.args]
+                keywords = {
+                    keyword.arg: self._eval(keyword.value, env)
+                    for keyword in node.keywords
+                    if keyword.arg is not None
+                }
+                if isinstance(template, str) and all(
+                    value is not _STATIC_UNKNOWN
+                    for value in args + list(keywords.values())
+                ):
+                    try:
+                        return template.format(*args, **keywords)
+                    except (IndexError, KeyError, ValueError):
+                        return _STATIC_UNKNOWN
+        return _STATIC_UNKNOWN
+
+    def _string_value(self, node: Any, env: Dict[str, Any]) -> str:
+        ast = self.ast
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
+        if isinstance(node, ast.Name):
+            value = self._eval(node, env)
+            return value if isinstance(value, str) else _STATIC_DYNAMIC_TOKEN
         if isinstance(node, ast.JoinedStr):
             parts: List[str] = []
-            for v in node.values:
-                if isinstance(v, ast.Constant) and isinstance(v.value, str):
-                    parts.append(v.value)
+            for value_node in node.values:
+                if isinstance(value_node, ast.Constant) \
+                        and isinstance(value_node.value, str):
+                    parts.append(value_node.value)
+                elif isinstance(value_node, ast.FormattedValue):
+                    value = self._eval(value_node.value, env)
+                    parts.append(
+                        str(value) if isinstance(value, (str, int, float))
+                        else _STATIC_DYNAMIC_TOKEN
+                    )
                 else:
-                    parts.append("")  # opaque interpolation
+                    parts.append(_STATIC_DYNAMIC_TOKEN)
             return "".join(parts)
-        return None
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = self._string_value(node.left, env)
+            right = self._string_value(node.right, env)
+            return left + right
+        value = self._eval(node, env)
+        return value if isinstance(value, str) else _STATIC_DYNAMIC_TOKEN
 
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
+    def _assign(self, target: Any, value: Any, env: Dict[str, Any]) -> None:
+        ast = self.ast
+        if isinstance(target, ast.Name):
+            env[target.id] = value
+            return
+        if isinstance(target, (ast.Tuple, ast.List)) \
+                and isinstance(value, (tuple, list)) \
+                and len(target.elts) == len(value):
+            for child, child_value in zip(target.elts, value):
+                self._assign(child, child_value, env)
+            return
+        if isinstance(target, (ast.Tuple, ast.List)):
+            for child in target.elts:
+                self._assign(child, _STATIC_UNKNOWN, env)
 
-        # ---- Path 1: pull primitive call -------------------------------
-        fn_name: Optional[str] = None
-        if isinstance(node.func, ast.Name):
-            fn_name = node.func.id
-        elif isinstance(node.func, ast.Attribute):
-            fn_name = node.func.attr
+    def _value_signature(self, value: Any) -> str:
+        if value is _STATIC_UNKNOWN:
+            return "?"
+        if value is _STATIC_DATASETS:
+            return "<datasets>"
+        if isinstance(value, dict):
+            return repr(sorted(
+                (repr(key), self._value_signature(item))
+                for key, item in value.items()
+            ))
+        if isinstance(value, (list, tuple, set)):
+            return repr([self._value_signature(item) for item in value])
+        return repr(value)
 
-        if fn_name in _PULL_PRIMITIVES:
-            name: Optional[str] = None
-            mode: str = "eod"  # retained compatibility-helper default
-            for kw in node.keywords:
-                if kw.arg == "name" and isinstance(kw.value, ast.Constant) \
-                        and isinstance(kw.value.value, str):
-                    name = kw.value.value
-                elif kw.arg == "mode" and isinstance(kw.value, ast.Constant) \
-                        and isinstance(kw.value.value, str):
-                    mode = kw.value.value
+    def _trace_function(
+        self,
+        function_name: str,
+        *,
+        root_name: str,
+        positional: List[Any],
+        keywords: Dict[str, Any],
+        stack: Tuple[Tuple[str, str], ...],
+    ) -> None:
+        ast = self.ast
+        function = self.functions.get(function_name)
+        if function is None:
+            return
+        call_signature = (
+            function_name,
+            repr([
+                self._value_signature(value) for value in positional
+            ] + sorted(
+                (name, self._value_signature(value))
+                for name, value in keywords.items()
+            )),
+        )
+        if call_signature in stack or len(stack) >= 24:
+            return
 
-            if name is not None:
-                if fn_name == "pull_market_data":
+        env = dict(self.module_env)
+        params = list(
+            getattr(function.args, "posonlyargs", [])
+        ) + list(function.args.args)
+        defaults = list(function.args.defaults)
+        default_offset = len(params) - len(defaults)
+        for index, param in enumerate(params):
+            if index < len(positional):
+                env[param.arg] = positional[index]
+            elif param.arg in keywords:
+                env[param.arg] = keywords[param.arg]
+            elif index >= default_offset:
+                env[param.arg] = self._eval(
+                    defaults[index - default_offset], env
+                )
+            else:
+                env[param.arg] = _STATIC_UNKNOWN
+        if function.args.vararg is not None:
+            env[function.args.vararg.arg] = tuple(positional[len(params):])
+        for param, default in zip(
+            function.args.kwonlyargs, function.args.kw_defaults
+        ):
+            if param.arg in keywords:
+                env[param.arg] = keywords[param.arg]
+            elif default is not None:
+                env[param.arg] = self._eval(default, env)
+            else:
+                env[param.arg] = _STATIC_UNKNOWN
+        if function.args.kwarg is not None:
+            named_params = {param.arg for param in params}
+            named_params.update(
+                param.arg for param in function.args.kwonlyargs
+            )
+            env[function.args.kwarg.arg] = {
+                name: value for name, value in keywords.items()
+                if name not in named_params
+            }
+        self._trace_statements(
+            function.body,
+            env,
+            root_name=root_name,
+            function_name=function_name,
+            stack=stack + (call_signature,),
+        )
+
+    def _trace_statements(
+        self,
+        statements: Sequence[Any],
+        env: Dict[str, Any],
+        *,
+        root_name: str,
+        function_name: str,
+        stack: Tuple[Tuple[str, str], ...],
+    ) -> None:
+        ast = self.ast
+        for statement in statements:
+            if isinstance(statement, ast.Assign):
+                self._trace_expr(
+                    statement.value, env, root_name, function_name, stack
+                )
+                value = self._eval(statement.value, env)
+                for target in statement.targets:
+                    self._record_transform_target(
+                        target, env, root_name, function_name
+                    )
+                    self._assign(target, value, env)
+                continue
+            if isinstance(statement, ast.AnnAssign):
+                self._trace_expr(
+                    statement.value, env, root_name, function_name, stack
+                )
+                self._record_transform_target(
+                    statement.target, env, root_name, function_name
+                )
+                self._assign(
+                    statement.target, self._eval(statement.value, env), env
+                )
+                continue
+            if isinstance(statement, ast.AugAssign):
+                self._trace_expr(
+                    statement.value, env, root_name, function_name, stack
+                )
+                self._record_transform_target(
+                    statement.target, env, root_name, function_name
+                )
+                continue
+            if isinstance(statement, ast.Expr):
+                self._trace_expr(
+                    statement.value, env, root_name, function_name, stack
+                )
+                continue
+            if isinstance(statement, ast.Return):
+                self._trace_expr(
+                    statement.value, env, root_name, function_name, stack
+                )
+                self._record_transform_return(
+                    statement.value, env, root_name, function_name
+                )
+                continue
+            if isinstance(statement, (ast.For, ast.AsyncFor)):
+                self._trace_expr(
+                    statement.iter, env, root_name, function_name, stack
+                )
+                iterable = self._eval(statement.iter, env)
+                if not isinstance(iterable, (list, tuple, set)):
+                    iterable = [_STATIC_UNKNOWN]
+                for item in iterable:
+                    loop_env = dict(env)
+                    self._assign(statement.target, item, loop_env)
+                    self._trace_statements(
+                        statement.body, loop_env,
+                        root_name=root_name,
+                        function_name=function_name,
+                        stack=stack,
+                    )
+                self._trace_statements(
+                    statement.orelse, dict(env),
+                    root_name=root_name,
+                    function_name=function_name,
+                    stack=stack,
+                )
+                continue
+            if isinstance(statement, ast.If):
+                self._trace_expr(
+                    statement.test, env, root_name, function_name, stack
+                )
+                branch_envs: List[Dict[str, Any]] = []
+                for branch in (statement.body, statement.orelse):
+                    branch_env = dict(env)
+                    self._trace_statements(
+                        branch, branch_env,
+                        root_name=root_name,
+                        function_name=function_name,
+                        stack=stack,
+                    )
+                    branch_envs.append(branch_env)
+                for name in set(branch_envs[0]) & set(branch_envs[1]):
+                    left = branch_envs[0][name]
+                    right = branch_envs[1][name]
+                    if self._value_signature(left) == self._value_signature(
+                        right
+                    ):
+                        env[name] = left
+                continue
+            if isinstance(statement, ast.Try):
+                for branch in (
+                    statement.body,
+                    *(handler.body for handler in statement.handlers),
+                    statement.orelse,
+                    statement.finalbody,
+                ):
+                    self._trace_statements(
+                        branch, dict(env),
+                        root_name=root_name,
+                        function_name=function_name,
+                        stack=stack,
+                    )
+                continue
+            if isinstance(statement, (ast.With, ast.AsyncWith)):
+                for item in statement.items:
+                    self._trace_expr(
+                        item.context_expr, env,
+                        root_name, function_name, stack,
+                    )
+                    if item.optional_vars is not None:
+                        self._assign(
+                            item.optional_vars, _STATIC_UNKNOWN, env
+                        )
+                self._trace_statements(
+                    statement.body, env,
+                    root_name=root_name,
+                    function_name=function_name,
+                    stack=stack,
+                )
+                continue
+            if isinstance(statement, ast.While):
+                self._trace_expr(
+                    statement.test, env, root_name, function_name, stack
+                )
+                self._trace_statements(
+                    statement.body, dict(env),
+                    root_name=root_name,
+                    function_name=function_name,
+                    stack=stack,
+                )
+
+    def _trace_expr(
+        self,
+        expression: Optional[Any],
+        env: Dict[str, Any],
+        root_name: str,
+        function_name: str,
+        stack: Tuple[Tuple[str, str], ...],
+    ) -> None:
+        ast = self.ast
+        if expression is None:
+            return
+        if isinstance(expression, ast.Call):
+            for arg in expression.args:
+                self._trace_expr(
+                    arg, env, root_name, function_name, stack
+                )
+            for keyword in expression.keywords:
+                self._trace_expr(
+                    keyword.value, env, root_name, function_name, stack
+                )
+            self._trace_call(
+                expression, env, root_name, function_name, stack
+            )
+            return
+        for child in ast.iter_child_nodes(expression):
+            self._trace_expr(child, env, root_name, function_name, stack)
+
+    def _trace_call(
+        self,
+        call: Any,
+        env: Dict[str, Any],
+        root_name: str,
+        function_name: str,
+        stack: Tuple[Tuple[str, str], ...],
+    ) -> None:
+        ast = self.ast
+        call_name = (
+            call.func.id if isinstance(call.func, ast.Name)
+            else call.func.attr if isinstance(call.func, ast.Attribute)
+            else None
+        )
+        if self.kind == "pull" and call_name in _PULL_PRIMITIVES:
+            values = {
+                keyword.arg: self._eval(keyword.value, env)
+                for keyword in call.keywords if keyword.arg is not None
+            }
+            name = values.get("name", _STATIC_UNKNOWN)
+            mode = values.get("mode", "eod")
+            if isinstance(name, str) and _STATIC_DYNAMIC_TOKEN not in name:
+                if call_name == "pull_market_data":
                     if mode == "eod":
-                        stems.add(f"{name}_eod")
+                        self._add_output(root_name, f"{name}_eod")
                     elif mode in ("iday", "intraday"):
-                        stems.add(f"{name}_intraday")
+                        self._add_output(root_name, f"{name}_intraday")
                     elif mode == "both":
-                        stems.add(f"{name}_eod")
-                        stems.add(f"{name}_intraday")
+                        self._add_output(root_name, f"{name}_eod")
+                        self._add_output(root_name, f"{name}_intraday")
+                    else:
+                        self._record_unresolved(
+                            root_name, function_name, call,
+                            f"pull_market_data mode {mode!r} is not static "
+                            "or supported",
+                        )
                 else:
-                    stems.add(name)
-            # fall through — a pull-primitive call won't ALSO be a
-            # direct .put() / .save() write, but the AST walk is cheap
-            continue
+                    self._add_output(root_name, name)
+            else:
+                self._record_unresolved(
+                    root_name, function_name, call,
+                    f"{call_name} name= is runtime-dependent",
+                )
+            return
 
-        # ---- Path 2: direct .put() / .save() write ---------------------
-        if not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr not in ("put", "save"):
-            continue
+        if self.kind == "pull" and isinstance(call.func, ast.Attribute) \
+                and call.func.attr in ("put", "save"):
+            path_node = call.args[1] if len(call.args) >= 2 else None
+            for keyword in call.keywords:
+                if keyword.arg in ("path", "key", "url"):
+                    path_node = keyword.value
+                    break
+            if path_node is not None:
+                path = self._string_value(path_node, env)
+                import re
+                match = re.search(r"(?:^|/)data/([^/]+)\.csv$", path)
+                if match:
+                    stem = match.group(1)
+                    if _STATIC_DYNAMIC_TOKEN in stem:
+                        self._record_unresolved(
+                            root_name, function_name, call,
+                            "direct CSV output stem is runtime-dependent",
+                        )
+                    else:
+                        self._add_output(root_name, stem)
+            return
 
-        path_node: Optional[ast.AST] = None
-        # Second positional argument is the canonical path slot
-        if len(node.args) >= 2:
-            path_node = node.args[1]
-        for kw in node.keywords:
-            if kw.arg in ("path", "key", "url"):
-                path_node = kw.value
-                break
+        if self.kind == "transform" \
+                and isinstance(call.func, ast.Attribute) \
+                and call.func.attr == "update" \
+                and self._eval(call.func.value, env) is _STATIC_DATASETS:
+            mapping = self._eval(
+                call.args[0] if call.args else None, env
+            )
+            if isinstance(mapping, dict):
+                for key in mapping:
+                    if isinstance(key, str):
+                        self._add_output(root_name, key)
+                    else:
+                        self._record_unresolved(
+                            root_name, function_name, call,
+                            "datasets.update contains a non-string or "
+                            "runtime-dependent key",
+                        )
+            else:
+                self._record_unresolved(
+                    root_name, function_name, call,
+                    "datasets.update mapping is runtime-dependent",
+                )
+            return
 
-        if path_node is None:
-            continue
-        path_str = _string_literal_suffix(path_node)
-        if path_str is None:
-            continue
-        match = csv_path_pattern.search(path_str)
-        if match:
-            stems.add(match.group(1))
+        if isinstance(call.func, ast.Name) \
+                and call.func.id in self.functions:
+            positional: List[Any] = []
+            for arg in call.args:
+                if isinstance(arg, ast.Starred):
+                    value = self._eval(arg.value, env)
+                    if isinstance(value, (list, tuple)):
+                        positional.extend(value)
+                    else:
+                        positional.append(_STATIC_UNKNOWN)
+                else:
+                    positional.append(self._eval(arg, env))
+            keywords: Dict[str, Any] = {}
+            for keyword in call.keywords:
+                if keyword.arg is None:
+                    value = self._eval(keyword.value, env)
+                    if isinstance(value, dict):
+                        keywords.update(value)
+                else:
+                    keywords[keyword.arg] = self._eval(keyword.value, env)
+            self._trace_function(
+                call.func.id,
+                root_name=root_name,
+                positional=positional,
+                keywords=keywords,
+                stack=stack,
+            )
 
-    return stems
+    def _subscript_slice(self, target: Any) -> Any:
+        ast = self.ast
+        slice_node = target.slice
+        if hasattr(ast, "Index") and isinstance(slice_node, ast.Index):
+            slice_node = slice_node.value
+        return slice_node
+
+    def _record_transform_target(
+        self,
+        target: Any,
+        env: Dict[str, Any],
+        root_name: str,
+        function_name: str,
+    ) -> None:
+        ast = self.ast
+        if self.kind != "transform" or not isinstance(target, ast.Subscript):
+            return
+        if self._eval(target.value, env) is not _STATIC_DATASETS:
+            return
+        key_node = self._subscript_slice(target)
+        key = self._eval(key_node, env)
+        if isinstance(key, str) and _STATIC_DYNAMIC_TOKEN not in key:
+            self._add_output(root_name, key)
+        else:
+            self._record_unresolved(
+                root_name, function_name, target,
+                "dataset assignment key is runtime-dependent",
+            )
+
+    def _record_transform_return(
+        self,
+        value_node: Optional[Any],
+        env: Dict[str, Any],
+        root_name: str,
+        function_name: str,
+    ) -> None:
+        ast = self.ast
+        if self.kind != "transform" or not isinstance(value_node, ast.Dict):
+            return
+        for key_node in value_node.keys:
+            if key_node is None:
+                continue
+            key = self._eval(key_node, env)
+            if isinstance(key, str):
+                self._add_output(root_name, key)
+            elif key is not _STATIC_DATASETS:
+                self._record_unresolved(
+                    root_name, function_name, key_node,
+                    "returned dataset dictionary contains a "
+                    "runtime-dependent key",
+                )
+
+    def _add_output(self, root_name: str, output: str) -> None:
+        if output:
+            self.outputs_by_root.setdefault(root_name, set()).add(output)
+
+    def _record_unresolved(
+        self,
+        root_name: str,
+        function_name: str,
+        node: Any,
+        reason: str,
+    ) -> None:
+        line = getattr(node, "lineno", None)
+        token = (root_name, function_name, line, reason)
+        if token in self._unresolved_seen:
+            return
+        self._unresolved_seen.add(token)
+        self.unresolved.append({
+            "root": root_name,
+            "function": function_name,
+            "line": line,
+            "reason": reason,
+        })
+
+
+def _analyze_pull_producers_from_source(src: str) -> Dict[str, Any]:
+    """Return helper-aware outputs and unresolved sites for ``PULLS``."""
+    try:
+        return _StaticProducerAnalyzer(src, "pull").result()
+    except SyntaxError as exc:
+        return {
+            "kind": "pull",
+            "registry_present": False,
+            "roots": [],
+            "outputs": set(),
+            "unresolved": [{
+                "root": "<parse>",
+                "function": "<parse>",
+                "line": exc.lineno,
+                "reason": exc.msg,
+            }],
+        }
+
+
+def _analyze_transform_producers_from_source(src: str) -> Dict[str, Any]:
+    """Return helper-aware outputs and unresolved sites for ``TRANSFORMS``."""
+    try:
+        return _StaticProducerAnalyzer(src, "transform").result()
+    except SyntaxError as exc:
+        return {
+            "kind": "transform",
+            "registry_present": False,
+            "roots": [],
+            "outputs": set(),
+            "unresolved": [{
+                "root": "<parse>",
+                "function": "<parse>",
+                "line": exc.lineno,
+                "reason": exc.msg,
+            }],
+        }
+
+
+def _infer_pull_stems_from_source(src: str) -> set:
+    """Infer CSV stems through registered local helper call graphs."""
+    return set(_analyze_pull_producers_from_source(src)["outputs"])
 
 
 def _infer_transform_keys_from_source(src: str) -> set:
-    """Statically infer which dataset keys ``TRANSFORMS`` functions
-    materialize, from the persisted ``build.py`` bytes. Pure static
-    parse; never execs.
-
-    Walks every assignment in the AST looking for
-    ``datasets['<key>'] = ...`` or ``datasets["<key>"] = ...``.
-    Dynamic keys (variables, f-strings, computed) cannot be inferred
-    statically and are silently skipped.
-    """
-    import ast
-
-    keys: set = set()
-    try:
-        tree = ast.parse(src)
-    except SyntaxError:
-        return keys
-
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
-            continue
-        targets = (
-            node.targets if isinstance(node, ast.Assign) else [node.target]
-        )
-        for target in targets:
-            if not isinstance(target, ast.Subscript):
-                continue
-            value_node = target.value
-            if not isinstance(value_node, ast.Name) \
-                    or value_node.id != "datasets":
-                continue
-            slice_value = target.slice
-            # Python 3.8 wraps Subscript.slice in ast.Index; 3.9+ inlines.
-            if hasattr(ast, "Index") and isinstance(slice_value, ast.Index):
-                slice_value = slice_value.value  # type: ignore[attr-defined]
-            if isinstance(slice_value, ast.Constant) \
-                    and isinstance(slice_value.value, str):
-                keys.add(slice_value.value)
-
-    return keys
+    """Infer transform keys through registered local helper call graphs."""
+    return set(_analyze_transform_producers_from_source(src)["outputs"])
 
 
 def _audit_refresh_attachment(
@@ -13647,15 +16666,20 @@ def _audit_refresh_attachment(
     4. The registry entry's ``refresh_frequency`` matches the
        manifest's ``metadata.refresh_frequency``.
     5. Every dataset key referenced by a widget traces to one of:
-       a) a PULLS entry whose CSV stem (inferred from literal ``name=``
-          and ``mode=`` kwargs) matches the key,
-       b) a TRANSFORMS function that materializes the key via
-          ``datasets['<key>'] = ...``, OR
+       a) a registered PULLS function whose helper-aware call graph
+          materializes a matching CSV stem,
+       b) a registered TRANSFORMS function whose helper-aware call graph
+          materializes the key, OR
        c) (silent-stale guard) only a stale CSV on disk in
           ``data/<key>.csv`` -- compile passes today, but refresh runs
           pulls + transforms and the CSV never updates. The audit fires
           ``dataset_<key>_silent_stale`` so PRISM heals the script
           attachment rather than letting the CSV age forever.
+       Runtime-dependent output names are a separate
+       ``dataset_<key>_producer_unresolved`` contract failure. The fix is
+       to make the fixed dashboard key statically visible at a local helper
+       call site or finite literal loop, not to split a coherent pull or add
+       a dummy transform.
 
     Parameters
     ----------
@@ -13869,15 +16893,76 @@ def _audit_refresh_attachment(
     pulls_src = script_sources.get("pull_data")
     build_src = script_sources.get("build")
     if pulls_src is not None and build_src is not None:
-        produced_keys = (
-            _infer_pull_stems_from_source(pulls_src)
-            | _infer_transform_keys_from_source(build_src)
+        pull_analysis = _analyze_pull_producers_from_source(pulls_src)
+        transform_analysis = _analyze_transform_producers_from_source(
+            build_src
         )
+        produced_keys = (
+            set(pull_analysis["outputs"])
+            | set(transform_analysis["outputs"])
+        )
+        unresolved_sites = (
+            [("pull", item) for item in pull_analysis["unresolved"]]
+            + [
+                ("transform", item)
+                for item in transform_analysis["unresolved"]
+            ]
+        )
+        if not pull_analysis["registry_present"]:
+            gaps.append(
+                "pull_registry_missing: scripts/pull_data.py must define "
+                "module-level PULLS as a literal dict mapping stable string "
+                "names to local zero-argument functions | fix: preserve the "
+                "coherent pull functions and add the canonical PULLS dict"
+            )
+        if not transform_analysis["registry_present"]:
+            gaps.append(
+                "transform_registry_missing: scripts/build.py must define "
+                "module-level TRANSFORMS as a literal list or tuple of local "
+                "functions | fix: add TRANSFORMS = [] when no derivation is "
+                "required"
+            )
+        for producer_kind, item in unresolved_sites:
+            gaps.append(
+                f"{producer_kind}_producer_output_unresolved: registered "
+                f"{item['root']!r} reaches {item['function']!r} at line "
+                f"{item.get('line')}, where {item['reason']} | fix: keep the "
+                "coherent producer and expose each fixed dashboard output "
+                "as a literal at the standard call, local helper call, "
+                "datasets assignment/update, or finite literal loop"
+            )
         referenced = _collect_widget_dataset_refs(template)
         for ds_key in sorted(referenced):
             if ds_key in produced_keys:
                 continue
-            # Not produced by either PULLS or TRANSFORMS. Distinguish
+            # If a reachable output site is dynamic, the engine cannot prove
+            # whether this fixed dataset key is attached. Report that
+            # uncertainty directly; calling it silent-stale would send PRISM
+            # toward a destructive, unnecessary pipeline rewrite.
+            if unresolved_sites:
+                evidence = "; ".join(
+                    (
+                        f"{producer_kind}:{item['root']} -> "
+                        f"{item['function']}"
+                        f" line {item.get('line')}: {item['reason']}"
+                    )
+                    for producer_kind, item in unresolved_sites[:5]
+                )
+                gaps.append(
+                    f"dataset_{ds_key}_producer_unresolved: widget references "
+                    f"fixed dataset {ds_key!r}, but registered producer "
+                    f"analysis has runtime-dependent output site(s): "
+                    f"{evidence} | fix: expose {ds_key!r} as a literal at the "
+                    "standard pull call, local writer-helper call, "
+                    "datasets[...] assignment, datasets.update({...}), or "
+                    "finite literal loop. Keep one PULLS function when the "
+                    "outputs share source/cadence/failure semantics; do not "
+                    "add dummy assignments or split the pipeline for the "
+                    "auditor"
+                )
+                continue
+
+            # No producer and no unresolved output site. Distinguish
             # silent-stale (CSV on disk) from fully-unattached.
             csv_path = f"{folder}/data/{ds_key}.csv".replace("//", "/")
             csv_exists = False
@@ -14519,6 +17604,138 @@ def build_dashboard(folder: str, *, s3_manager=None,
     return r.manifest
 
 
+def launch_clean_refresh(folder: str) -> Dict[str, Any]:
+    """Run the canonical refresh subprocess and return its structured result.
+
+    This is the public authoring wrapper for clean-process verification.
+    Callers provide dashboard intent (the canonical folder); the engine owns
+    runner resolution, environment markers, S3 log streaming, metadata, wait,
+    status collection, and failure propagation.
+    """
+    import os
+    import subprocess
+    import sys
+    import time
+
+    from dashboards import refresh_runner as runner_module
+    from dashboards_time import utcnow
+    from prism_mcp.utils.s3_log_streamer import (
+        S3LogPathBuilder, S3LogStreamer,
+    )
+
+    canonical, _kerberos, _dashboard_id = _canonical_dashboard_identity(
+        folder
+    )
+    s3 = _resolve_s3_manager(None)
+    _audit_refresh_attachment(canonical, s3_manager=s3, strict=True)
+    spawn_ts = utcnow()
+    slug = canonical.replace("/", "_")
+    folder_key, log_key, metadata_key, _completion_key = (
+        S3LogPathBuilder.build(
+            kind="dashboard_refresh",
+            session_description=slug,
+            ts=spawn_ts,
+        )
+    )
+    (
+        session_folder_key,
+        session_log_key,
+        session_metadata_key,
+        _session_completion_key,
+    ) = S3LogPathBuilder.build_session_side(
+        session_path=canonical,
+        kind="dashboard_refresh",
+        ts=spawn_ts,
+    )
+    env = os.environ.copy()
+    env["PRISM_SUBPROCESS_S3_FOLDER_KEY"] = folder_key
+    env["PRISM_SUBPROCESS_SESSION_FOLDER_KEY"] = session_folder_key
+    header = (
+        "=== refresh_runner spawn ===\n"
+        f"folder: {canonical}\n"
+        f"started: {spawn_ts.isoformat()}\n"
+        f"s3_log_key: {log_key}\n"
+        + "=" * 60 + "\n"
+    ).encode("utf-8")
+    pipe_r, pipe_w = os.pipe()
+    streamer = None
+    process = None
+    try:
+        started = time.time()
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                runner_module.__file__,
+                "--folder", canonical,
+                "--log-path", log_key,
+            ],
+            stdout=pipe_w,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+        )
+        os.close(pipe_w)
+        pipe_w = -1
+        streamer = S3LogStreamer(
+            fd=pipe_r,
+            s3_log_key=[session_log_key, log_key],
+            header=header,
+        )
+        streamer.start()
+        pipe_r = -1
+        metadata_blob = {
+            "pid": process.pid,
+            "started_at": spawn_ts.isoformat(),
+            "folder": canonical,
+            "s3_log_key": log_key,
+            "s3_folder_key": folder_key,
+            "session_s3_log_key": session_log_key,
+            "session_s3_folder_key": session_folder_key,
+            "session_s3_metadata_key": session_metadata_key,
+            "kind": "dashboard_refresh",
+        }
+        s3.put(metadata_blob, metadata_key)
+        s3.put(metadata_blob, session_metadata_key)
+        returncode = process.wait()
+        elapsed = round(time.time() - started, 2)
+        status_path = f"{canonical}/refresh_status.json"
+        status = None
+        if s3.exists(status_path):
+            status = json.loads(
+                bytes(s3.get(status_path)).rstrip(b"\x00").decode("utf-8")
+            )
+        result = {
+            "folder": canonical,
+            "returncode": returncode,
+            "elapsed_seconds": elapsed,
+            "log_path": session_log_key,
+            "s3_log_key": log_key,
+            "s3_folder_key": folder_key,
+            "session_s3_log_key": session_log_key,
+            "session_s3_folder_key": session_folder_key,
+            "pid": process.pid,
+            "status": status,
+        }
+        if returncode != 0:
+            raise RuntimeError(
+                f"clean refresh failed with returncode {returncode}; "
+                f"log_path={session_log_key}; status={status!r}"
+            )
+        return result
+    except BaseException:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            process.wait()
+        raise
+    finally:
+        for fd in (pipe_r, pipe_w):
+            if fd != -1:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
 def refresh_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
     """Full refresh: every ``PULLS`` entry, then ``build_dashboard``.
 
@@ -14575,8 +17792,10 @@ __all__ = [
     "df_to_source", "manifest_template", "populate_template",
     "Diagnostic", "chart_data_diagnostics",
     "run_pull", "build_dashboard", "refresh_dashboard",
+    "launch_clean_refresh",
     "audit_dashboard_layout",
-    "apply_manifest_operations", "inspect_dashboard",
+    "apply_manifest_operations", "apply_persisted_script_operations",
+    "inspect_dashboard",
     "list_dashboard_versions", "restore_dashboard_version",
     "synchronize_refresh_frequency", "sync_refresh_frequency",
     "_AUDIT_REQUIRED_PATHS",
