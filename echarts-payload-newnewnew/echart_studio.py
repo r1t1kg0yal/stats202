@@ -48,7 +48,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import math
 import re
 import sys
 from dataclasses import dataclass, field, asdict
@@ -1089,10 +1088,7 @@ def _normalize_annotations(
 
 def _apply_annotations(opt: Dict[str, Any],
                         annotations: Optional[List[Dict[str, Any]]]) -> None:
-    """Attach annotations via markLine/markArea/markPoint.
-
-    Horizontal lines attach to a series on their selected y-axis; the
-    remaining annotation types attach to the primary series.
+    """Attach annotations to series[0] via markLine/markArea/markPoint.
 
     All annotations are dicts with a 'type' key:
         hline  -> horizontal rule at y (axis='left'|'right' for dual-axis)
@@ -1120,20 +1116,8 @@ def _apply_annotations(opt: Dict[str, Any],
     primary = series[0]
 
     ml_data: List[Any] = []
-    hline_data_by_axis: Dict[int, List[Any]] = {}
     ma_data: List[List[Dict[str, Any]]] = []
     mp_data: List[Dict[str, Any]] = []
-
-    def _hline_axis_index(annotation: Dict[str, Any]) -> int:
-        axis_selector = annotation.get("axis")
-        if (isinstance(axis_selector, int)
-                and not isinstance(axis_selector, bool)
-                and axis_selector > 0):
-            return int(axis_selector)
-        if (isinstance(axis_selector, str)
-                and axis_selector.lower() == "right"):
-            return 1
-        return 0
 
     # Pre-pass: count vlines so the per-vline branch below can stagger
     # / shrink / rotate labels when the count is high enough that
@@ -1165,9 +1149,13 @@ def _apply_annotations(opt: Dict[str, Any],
             #   "left"  -> yAxisIndex 0 (default)
             #   "right" -> yAxisIndex 1 (legacy 2-axis convenience)
             #   int     -> explicit axis index for N-axis charts
-            axis_index = _hline_axis_index(a)
-            if axis_index > 0:
-                d["yAxisIndex"] = axis_index
+            ax_sel = a.get("axis")
+            if isinstance(ax_sel, bool):
+                pass  # ignore -- bools coerce weirdly with int()
+            elif isinstance(ax_sel, int) and ax_sel > 0:
+                d["yAxisIndex"] = int(ax_sel)
+            elif isinstance(ax_sel, str) and ax_sel.lower() == "right":
+                d["yAxisIndex"] = 1
             if label is not None:
                 d["name"] = str(label)
             d["lineStyle"] = {"color": color, "width": stroke_width,
@@ -1176,7 +1164,7 @@ def _apply_annotations(opt: Dict[str, Any],
                              "color": label_color,
                              "position": a.get("label_position", "insideEndTop")}
                           if label is not None else {"show": False})
-            hline_data_by_axis.setdefault(axis_index, []).append(d)
+            ml_data.append(d)
 
         elif t == "vline":
             d = {"xAxis": a.get("x")}
@@ -1267,33 +1255,12 @@ def _apply_annotations(opt: Dict[str, Any],
                 d["label"] = {"show": False}
             mp_data.append(d)
 
-    def _attach_mark_lines(
-        target_series: Dict[str, Any],
-        data: List[Any],
-    ) -> None:
-        existing = target_series.setdefault("markLine", {})
+    if ml_data:
+        existing = primary.setdefault("markLine", {})
         existing.setdefault("symbol", ["none", "none"])
         existing.setdefault("silent", False)
         existing.setdefault("animation", False)
-        existing.setdefault("data", []).extend(data)
-
-    if ml_data:
-        _attach_mark_lines(primary, ml_data)
-    for axis_index, axis_hlines in hline_data_by_axis.items():
-        target_series = next(
-            (
-                item for item in series
-                if isinstance(item, dict)
-                and (
-                    item.get("yAxisIndex", 0)
-                    if not isinstance(item.get("yAxisIndex", 0), bool)
-                    else 0
-                ) == axis_index
-            ),
-            None,
-        )
-        if target_series is not None:
-            _attach_mark_lines(target_series, axis_hlines)
+        existing.setdefault("data", []).extend(ml_data)
     if ma_data:
         existing = primary.setdefault("markArea", {})
         existing.setdefault("silent", True)
@@ -1304,12 +1271,13 @@ def _apply_annotations(opt: Dict[str, Any],
         existing.setdefault("animation", False)
         existing.setdefault("data", []).extend(mp_data)
 
-    # Auto-extend axis range to include reference lines that fall outside
-    # the data span. Bounds must be compared with the plotted data before
-    # they are written: deriving both bounds from the annotation alone
-    # turns an in-range zero line into yAxis=[-1, 1] and clips an otherwise
-    # healthy series (for example, a -109..+90 bp curve).
-    h_y_values: Dict[int, List[float]] = {}
+    # Auto-extend axis range to include reference lines that fall
+    # outside the data span. Without this, an h_line at y=150 on a
+    # chart whose data ranges 100..108 silently renders "off-canvas"
+    # -- the line exists in the option but is never visible. Same
+    # for a v_line at a date outside the x range. Extend to include
+    # all hline / vline coordinates seen.
+    h_y_values: List[float] = []
     v_x_values: List[Any] = []
     for a in annotations or []:
         if not isinstance(a, dict):
@@ -1317,121 +1285,35 @@ def _apply_annotations(opt: Dict[str, Any],
         t = str(a.get("type", "")).lower()
         if t == "hline":
             try:
-                y_value = float(a.get("y"))
+                h_y_values.append(float(a.get("y")))
             except (TypeError, ValueError):
                 pass
-            else:
-                if not math.isfinite(y_value):
-                    continue
-                axis_index = _hline_axis_index(a)
-                h_y_values.setdefault(axis_index, []).append(y_value)
         elif t == "vline":
             x_val = a.get("x")
             if x_val is not None:
                 v_x_values.append(x_val)
 
     if h_y_values:
-        raw_y_axes = opt.get("yAxis")
-        y_axes = (
-            raw_y_axes if isinstance(raw_y_axes, list)
-            else ([raw_y_axes] if isinstance(raw_y_axes, dict) else [])
-        )
-        raw_x_axes = opt.get("xAxis")
-        x_axes = (
-            raw_x_axes if isinstance(raw_x_axes, list)
-            else ([raw_x_axes] if isinstance(raw_x_axes, dict) else [])
-        )
-        x_axis_type = (
-            x_axes[0].get("type")
-            if x_axes and isinstance(x_axes[0], dict) else None
-        )
-
-        def _finite_values_for_axis(axis_index: int) -> List[float]:
-            values: List[float] = []
-
-            def _append(value: Any) -> None:
-                if value is None or isinstance(value, bool):
-                    return
-                try:
-                    number = float(value)
-                except (TypeError, ValueError):
-                    return
-                if math.isfinite(number):
-                    values.append(number)
-
-            for item in series:
-                if not isinstance(item, dict):
-                    continue
-                item_axis = item.get("yAxisIndex", 0)
-                if isinstance(item_axis, bool):
-                    item_axis = 0
-                try:
-                    item_axis = int(item_axis)
-                except (TypeError, ValueError):
-                    item_axis = 0
-                if item_axis != axis_index:
-                    continue
-                series_type = str(item.get("type", "")).lower()
-                data = item.get("data")
-                if not isinstance(data, list):
-                    continue
-                for point in data:
-                    raw_value = (
-                        point.get("value")
-                        if isinstance(point, dict) else point
-                    )
-                    if not isinstance(raw_value, (list, tuple)):
-                        _append(raw_value)
-                        continue
-                    if series_type == "candlestick":
-                        candidates = (
-                            raw_value[1:]
-                            if x_axis_type == "time" else raw_value
-                        )
-                        for candidate in candidates:
-                            _append(candidate)
-                    elif series_type == "boxplot":
-                        for candidate in raw_value:
-                            _append(candidate)
-                    elif len(raw_value) >= 2:
-                        _append(raw_value[1])
-                    elif raw_value:
-                        _append(raw_value[0])
-            return values
-
-        for axis_index, annotation_values in h_y_values.items():
-            if axis_index >= len(y_axes):
-                continue
-            axis = y_axes[axis_index]
-            if not isinstance(axis, dict) or axis.get("type") == "category":
-                continue
-            data_values = _finite_values_for_axis(axis_index)
-            if not data_values:
-                continue
-
-            annotation_min = min(annotation_values)
-            annotation_max = max(annotation_values)
-            existing_min = axis.get("min")
-            existing_max = axis.get("max")
-            comparison_min = (
-                float(existing_min)
-                if isinstance(existing_min, (int, float))
-                and not isinstance(existing_min, bool)
-                else min(data_values)
-            )
-            comparison_max = (
-                float(existing_max)
-                if isinstance(existing_max, (int, float))
-                and not isinstance(existing_max, bool)
-                else max(data_values)
-            )
-
-            if annotation_min < comparison_min:
-                pad = abs(annotation_min) * 0.05 + 1.0
-                axis["min"] = float(annotation_min - pad)
-            if annotation_max > comparison_max:
-                pad = abs(annotation_max) * 0.05 + 1.0
-                axis["max"] = float(annotation_max + pad)
+        ya = opt.get("yAxis")
+        if isinstance(ya, list):
+            ya = ya[0] if ya else None
+        if isinstance(ya, dict) and ya.get("type") != "category":
+            new_min = min(h_y_values)
+            new_max = max(h_y_values)
+            existing_min = ya.get("min")
+            existing_max = ya.get("max")
+            # Only override when the reference line is more extreme
+            # than what the author / engine already specified.
+            if (existing_min is None
+                    or (isinstance(existing_min, (int, float))
+                        and new_min < existing_min)):
+                pad = abs(new_min) * 0.05 + 1.0
+                ya["min"] = float(new_min - pad)
+            if (existing_max is None
+                    or (isinstance(existing_max, (int, float))
+                        and new_max > existing_max)):
+                pad = abs(new_max) * 0.05 + 1.0
+                ya["max"] = float(new_max + pad)
 
 
 def _time_axis_if_needed(df, col: str) -> Dict[str, Any]:
