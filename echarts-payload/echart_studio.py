@@ -595,35 +595,52 @@ def _x_category_density_overflow(
     return total > max(inner_width_px, 1)
 
 
+_TEMPORAL_CATEGORY_LABEL_RE = re.compile(
+    r"^\d{4}(?:[-/]\d{2}(?:[-/]\d{2})?)?"
+    r"(?:[ T]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?"
+    r"(?:Z|[+-]\d{2}:?\d{2})?)?$"
+)
+
+
+def _looks_like_temporal_category_labels(data: Sequence[Any]) -> bool:
+    """Return True when at least 80% of category labels are ISO-like dates."""
+    labels = [
+        str(value).strip()
+        for value in data
+        if value is not None and str(value).strip()
+    ]
+    if len(labels) < 2:
+        return False
+    matches = sum(
+        bool(_TEMPORAL_CATEGORY_LABEL_RE.fullmatch(label))
+        for label in labels
+    )
+    return matches / len(labels) >= 0.8
+
+
 def _autorotate_x_category_labels(opt: Dict[str, Any],
                                     ctx: "BuilderContext",
                                     rotate_deg: int = 30,
                                     max_n: int = 30) -> None:
-    """When an x-axis category has long labels that don't fit
-    horizontally, rotate them and force ``interval: 0`` so ECharts
-    doesn't silently drop every other label.
+    """Keep a horizontal category axis readable at every rendered width.
 
-    Three regimes (round 2 hardening, 2026-05-11 evening -- the prior
-    behavior bailed past max_n=30 and let ECharts silently drop labels,
-    producing the A04.4 "2 of 40 labels visible" pathology):
+    ECharts' default ``axisLabel.interval = "auto"`` is responsive: it
+    recomputes the visible tick cadence whenever the chart resizes. Never
+    replace that behavior with ``interval = 0`` for a dense axis; forcing
+    every label turns date-heavy bars into an unreadable black band.
 
-      Regime A:  count <= max_n (30) AND labels long enough to not
-                 fit horizontally
-                 -> rotate `rotate_deg` (default 30 degrees)
-      Regime B:  30 < count <= 60
-                 -> rotate 60 degrees, smaller font, interval=0,
-                    truncate labels to 12 chars
-      Regime C:  60 < count
-                 -> rotate 90 degrees (vertical), font size 8,
-                    interval=0, truncate labels to 8 chars
-                    (still legible, every label visible)
+    When labels overflow:
 
-      Plus the always-applied: short-label charts (avg < 5 chars,
-      e.g. tenor codes "2y"/"5y"/"10y"/"30y") never rotate -- they
-      fit horizontally even at high counts.
+      * every axis keeps automatic thinning plus ``hideOverlap``;
+      * up to ``max_n`` categories may rotate mildly (30 degrees by
+        default) when labels are not short codes;
+      * larger category sets stay horizontal unless labels are genuinely
+        long, in which case they use the same mild rotation;
+      * very long labels are width-capped and truncated, so automatic
+        thinning can retain several useful samples instead of only one or
+        two full-width labels.
 
-    Idempotent: if the user has already set ``axisLabel.rotate``, we
-    leave their value alone.
+    Explicit author choices for ``rotate`` or ``interval`` are preserved.
     """
     ax = opt.get("xAxis")
     if isinstance(ax, list):
@@ -633,7 +650,8 @@ def _autorotate_x_category_labels(opt: Dict[str, Any],
     if ax.get("type") != "category":
         return
     al = ax.setdefault("axisLabel", {})
-    if "rotate" in al:
+    al.setdefault("hideOverlap", True)
+    if "rotate" in al or "interval" in al:
         return
     data = ax.get("data") or []
     if len(data) < 2:
@@ -643,49 +661,31 @@ def _autorotate_x_category_labels(opt: Dict[str, Any],
     chart_w = max(int(getattr(ctx, "width", 700) or 700), 200)
     inner_w = chart_w - int(grid.get("left", 76) or 0) - int(grid.get("right", 20) or 0)
 
-    # The short-label exception applies before the count regimes. Dense
-    # ticker/tenor/date-code axes are more readable with ECharts' automatic
-    # thinning than with 60/90-degree rotation of two- or three-character
-    # labels.
-    if avg_len < 5:
-        return
-
-    # Regime selector based on category count:
-    n = len(data)
-    if n > max_n:
-        # Regime B/C: too many categories for the default 30-deg
-        # rotation. Use steeper rotation + smaller font + tight
-        # truncation to display every label rather than silently
-        # dropping. Bottom margin is bumped via _bottom_label_lift_px.
-        if n <= 60:
-            al["rotate"] = 60
-            al["fontSize"] = 9
-            label_cap = 12
-        else:
-            al["rotate"] = 90
-            al["fontSize"] = 8
-            label_cap = 8
-        al["interval"] = 0
-        al["width"] = label_cap * 6
-        al["overflow"] = "truncate"
-        al["ellipsis"] = ""
-        # Increase bottom margin so the rotated/long labels don't
-        # collide with the dataZoom slider.
-        bottom = grid.get("bottom", 84)
-        if isinstance(bottom, (int, float)):
-            opt.setdefault("grid", {})["bottom"] = max(
-                int(bottom), 100 + (label_cap * 5)
-            )
-        return
-
-    # Regime A: small enough to keep at default rotation if labels
-    # are long enough to overflow.
     if not _x_category_density_overflow(opt, inner_w):
         return
+
+    # Make the responsive default explicit for inspection and regression
+    # tests. ECharts recalculates this cadence against the live plot width.
+    al["interval"] = "auto"
+    n = len(data)
+
+    # Dense ticker/tenor/category-code axes are clearest horizontally.
+    # At high counts, only genuinely long semantic labels rotate, and then
+    # only mildly; date-like labels remain horizontal.
+    if avg_len < 5 or n > max_n:
+        if (
+            avg_len >= 12
+            and not _looks_like_temporal_category_labels(data)
+        ):
+            al["rotate"] = rotate_deg
+            al.setdefault("width", 96)
+            al.setdefault("overflow", "truncate")
+            al.setdefault("ellipsis", "...")
+        return
+
+    # A manageable set of longer labels benefits from mild rotation.
     al["rotate"] = rotate_deg
-    al["interval"] = 0
-    cap = max(120, inner_w // 6)
-    al.setdefault("width", cap)
+    al.setdefault("width", 120)
     al.setdefault("overflow", "truncate")
     al.setdefault("ellipsis", "...")
 
