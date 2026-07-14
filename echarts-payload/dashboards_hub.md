@@ -11,7 +11,7 @@ This is the compact cross-cutting contract. It does not own first-build steps, m
 
 1. **Real, refreshable data.** Every visible number derives from a persisted pull or transform. KPI/stat literals and invented identifiers are forbidden.
 2. **Template contains no live data.** `manifest_template.json` keeps dataset slots; `manifest.json` is populated output.
-3. **Canonical order.** Pulls produce files, transforms derive datasets, the template is populated, strict compilation writes outputs, registry metadata is aligned, then a clean subprocess refresh verifies the persisted artifact.
+3. **Canonical order.** Pulls produce files, transforms derive datasets, the template is populated, the receipt and flagged panels are reviewed, the exact signature is acknowledged with rationale, the guarded build writes outputs, registry metadata is aligned, then a clean subprocess refresh verifies the persisted artifact.
 4. **Canonical folder.** Persistent dashboards live only at `users/{kerberos}/dashboards/{dashboard_id}`.
 5. **Flat CSV routing.** Every pull writes to `{folder}/data`; only CSV files become datasets, and each dataset key matches the complete emitted stem byte-for-byte.
 6. **Portal handoff.** Surface only `http://reports.prism-ai.url.gs.com:8501/users/{kerberos}/dashboards/{dashboard_id}/`.
@@ -101,6 +101,8 @@ from dashboards import (
     run_pull,
     build_dashboard,
     refresh_dashboard,
+    review_dashboard,
+    acknowledge_dashboard_review,
     audit_dashboard_layout,
     inspect_dashboard,
     list_dashboard_versions,
@@ -120,32 +122,90 @@ from dashboards import (
     chart_data_diagnostics,
     Manifest,
     DashboardResult,
+    DashboardReview,
+    DashboardReviewRequired,
 )
 ```
 
 | API | Contract |
 |---|---|
 | `run_pull(folder, pull_name)` | Execute one named `PULLS` entry and persist its side effects |
-| `build_dashboard(folder, expected_current_version_id=None)` | Load template and CSVs, run `TRANSFORMS`, strict-compile, write outputs, and record a changed recipe; pass the inspected current version id for a changed existing recipe, while unchanged refreshes and the first baseline need none |
+| `review_dashboard(folder, version_id=None)` | Compile current persisted data with the working recipe or one exact saved definition, without publishing, and return the gate's `DashboardReview` |
+| `acknowledge_dashboard_review(folder, expected_review_signature=..., rationale=..., version_id=None)` | Recompute and immutably acknowledge one exact non-`BLOCK` working or saved-definition review; the rationale must explain why the candidate is acceptable |
+| `build_dashboard(folder, expected_current_version_id=None)` | Recompute the review, require its exact acknowledgment, then write outputs and record a changed recipe; pass the inspected current version id for a changed existing recipe, while unchanged refreshes and the first baseline need none |
 | `refresh_dashboard(folder)` | Run all pulls, then `build_dashboard`; there is no universal per-pull refresh timeout |
-| `launch_clean_refresh(folder)` | Launch the isolated canonical runner, own S3 logs/status/completion metadata, block to completion, and raise on failure |
+| `launch_clean_refresh(folder)` | Launch the isolated canonical runner, own S3 logs/status/completion metadata, and return terminal `success` or `review_required`; raise on failure |
 | `audit_dashboard_layout(folder)` | Require the five canonical paths; return `True` |
-| `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, script hashes, definition-version, graph, refresh, registry, telemetry, and finding report |
+| `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, script hashes, definition-version, review/acknowledgment state, graph, refresh, registry, telemetry, and finding report |
 | `list_dashboard_versions(folder, limit=20, timezone_name="UTC")` | Return recent immutable definition versions with UTC/local timestamps, local calendar date, product summaries, and current/previous markers; pass the user’s IANA timezone for relative-date requests |
-| `restore_dashboard_version(folder, version_id, expected_current_version_id=...)` | Restore one exact listed definition, compile it with current persisted data, and preserve every other version |
+| `restore_dashboard_version(folder, version_id, expected_current_version_id=...)` | Restore one exact listed definition only after its current-data review is acknowledged; compile it with current persisted data and preserve every other version |
 | `apply_manifest_operations(folder_or_state, operations, recompile=True, ...)` | Ordered typed template transaction; an inspection state supplies both guards directly |
 | `apply_persisted_script_operations(folder_or_state, script, operations, ...)` | Typed fragment transaction for `pull_data`/`build`: hash gate, syntax/pipeline check, atomic write, strict compile, exact rollback |
 | `synchronize_refresh_frequency(folder, value, expected_sha256=None, expected_current_version_id=None)` | Atomically align template metadata and the matching registry entry; existing versioned dashboards require the inspected current version id; `sync_refresh_frequency` is the alias |
 | `validate_manifest(manifest)` | Structural validation only |
-| `compile_dashboard(manifest, strict=True, ...)` | Compile an in-memory manifest; strict mode raises when any error is present and includes all error/warning diagnostics in that exception; warnings alone succeed and remain on `DashboardResult.diagnostics` / `.quality_findings` |
+| `compile_dashboard(manifest, strict=True, ...)` | Return `DashboardResult` with `.review` as a `DashboardReview`; strict mode raises when any error is present, while warnings remain on `.diagnostics`, `.quality_findings`, and the review |
 | `manifest_template(manifest)` | Strip live data while retaining dataset slots |
 | `populate_template(template, datasets)` | Bind current datasets into a template |
 | `load_manifest(path)` / `save_manifest(manifest, path)` | Read or persist a manifest through the canonical S3 manager |
 | `chart_data_diagnostics(manifest)` | Post-population lint for empty or unusable chart data |
 
-`build_dashboard` is the standard persistent compile path. `strict=False` is limited to in-session diagnostic discovery; always-blocking diagnostics still raise.
+`build_dashboard` is the standard persistent compile path. `DashboardReviewRequired` is raised before live manifest/HTML writes when the exact working or saved-definition signature lacks acknowledgment. `strict=False` is limited to in-session diagnostic discovery; always-blocking diagnostics still raise.
 `make_echart`, `EChartResult`, and `echart_studio` are internal lowering
 substrate, not public PRISM authoring APIs.
+
+## Dashboard Garbage Gate
+
+`compile_dashboard` returns `DashboardResult.review`, a `DashboardReview` over the Python compiler's populated, default-filter-state semantics. Its status is:
+
+| Status | Publish decision |
+|---|---|
+| `BLOCK` | Deterministic defect; repair and review again. It cannot be acknowledged. |
+| `REVIEW_REQUIRED` | Advisory or browser-runtime boundary; inspect the evidence and acknowledge only with an explicit rationale. |
+| `CLEAR` | No flagged Python-visible panel semantics; the exact first-build or changed signature still requires acknowledgment. |
+
+The versioned quality signature hashes the detector version plus sorted panel
+status, data state, finding codes, and coarse materiality classes. Materiality
+classes bucket row/effective-point counts, missing fractions, anomaly counts,
+gap/scale/step ratios, time-span or claimed-window ratios, narrative lengths,
+and tool matrix shapes as applicable; a tool's `compute_sha256` is exact.
+Ordinary raw observations and extrema are excluded. Crossing one of those
+classes, changing a finding code, or changing a panel state changes the quality
+signature; moving values inside the same classes does not.
+
+`review.to_text()` always emits one index line per panel and, within its bounded output, full detail for flagged panels by default. Inspect any omitted or flagged panel with `review.panel(panel_id)`; do not infer detail from the index line. This is a compile/default-state semantic receipt, not a screenshot or proof of arbitrary browser interactions. In particular, browser-only tool `compute_js` is never executed in Python: its panel has `coverage="runtime_unverified"` and requires acknowledgment of that boundary before build, followed by browser verification before delivery.
+
+Persistent folder publication is always:
+
+```python
+review = review_dashboard(FOLDER)
+print(review.to_text())
+for panel in review.panels:
+    if panel.status != "CLEAR":
+        print(review.panel(panel.panel_id).to_text())
+
+if review.status == "BLOCK":
+    raise ValueError("repair the blocked panels, then review again")
+
+acknowledge_dashboard_review(
+    FOLDER,
+    expected_review_signature=review.review_signature,
+    rationale=(
+        "Reviewed <panel ids or the complete CLEAR panel index>; "
+        "accepted <finding or CLEAR baseline> because "
+        "<specific receipt evidence and analytical reason>."
+    ),
+)
+build_dashboard(
+    FOLDER,
+    expected_current_version_id=current_version_id,  # changed existing recipe
+)
+```
+
+Omit `expected_current_version_id` only for the first baseline or an unchanged recipe; copy it from a fresh inspection when an existing recipe changed. First builds and every definition- or quality-signature change require a new exact acknowledgment. Ordinary raw-value refreshes carry the existing acknowledgment only while the quality signature remains unchanged: do not call `acknowledge_dashboard_review` again when a fresh `inspect_dashboard(FOLDER)["review"]` reports `acknowledgment_match=True` and `publish_ready=True`.
+
+Saved-definition restores use the same gate: call `review_dashboard(FOLDER, version_id=target_id)`, inspect its flagged panels, then pass the same `version_id` to `acknowledge_dashboard_review` before `restore_dashboard_version`. The review uses current persisted data; an older or materially changed saved definition therefore cannot bypass the publish boundary.
+
+A refresh that reaches an unacknowledged review records lowercase `refresh_status.status="review_required"` while leaving the live `manifest.json` and `dashboard.html` bytes unchanged. This runner state is distinct from uppercase `DashboardReview.status="REVIEW_REQUIRED"`, the panel-quality decision that may cause the hold. The runner does not stamp registry refresh state or user-manifest pointers and does not treat the hold as a failure-cooldown outcome.
 
 ### Persisted-script execution namespaces
 

@@ -142,6 +142,10 @@ Column fields include:
 
 Table controls may define searchable/sortable columns, frozen first column, and visible-column defaults. Pre-aggregate or narrow tables above 1,000 rows; 5,000 rows is blocking.
 
+### Narrative-table review
+
+A table with at most three rows and a cell of 160+ characters or 28+ words is flagged `table_narrative_wrap_risk` and makes its panel `REVIEW_REQUIRED`. The receipt's width evidence is the widget's declared `w` share of the 12-column dashboard grid together with its visible column count; it is an advisory wrap-risk estimate, not a pixel measurement. Inspect the risk-ranked rows through `review.panel(id)`. Keep a table when the cells remain genuinely comparable; otherwise use a note/markdown panel or a short summary with drill-down rather than acknowledging likely clipping blindly.
+
 ### Virtualized data grid
 
 Use `data_grid` when a full-width analytical screen needs hundreds or thousands of rows without placing every row in the DOM:

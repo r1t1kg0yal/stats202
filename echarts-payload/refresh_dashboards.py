@@ -243,6 +243,14 @@ def _is_due(entry: dict, *, status: Optional[dict] = None) -> bool:
             elapsed = utcnow() - completed
             if elapsed < cooldown:
                 return False
+    # A review gate is neither success nor failure. It does not receive
+    # exponential failure cooldown, but its last completed attempt anchors
+    # the normal dashboard cadence so an overdue dashboard does not respawn
+    # on every cron walk while waiting for acknowledgment.
+    if status and status.get("status") == "review_required":
+        completed = parse_iso(status.get("completed_at"))
+        if completed is not None and (utcnow() - completed) < delta:
+            return False
 
     last = parse_iso(entry.get("last_refreshed"))
     if last is None:
@@ -351,6 +359,7 @@ def _walk_once(*, walk_id: int = 1) -> int:
     disabled_count = 0
     not_due_count = 0
     cooldown_count = 0
+    review_required_count = 0
 
     for kerberos in all_kerberos:
         entries = _user_registry_entries(kerberos)
@@ -411,7 +420,19 @@ def _walk_once(*, walk_id: int = 1) -> int:
             _sub(f"\u21aa {log_key}  {pid_str}")
             rc = r.get("returncode", -1)
             elapsed_s = r.get("elapsed_seconds", 0.0) or 0.0
-            if rc == 0:
+            runner_status = r.get("status")
+            if (
+                isinstance(runner_status, dict)
+                and runner_status.get("status") == "review_required"
+            ):
+                review = runner_status.get("review") or {}
+                _sub(
+                    "review required  "
+                    f"signature={review.get('review_signature', '?')}  "
+                    f"elapsed={elapsed_s:.2f}s"
+                )
+                review_required_count += 1
+            elif rc == 0:
                 _sub(
                     f"\u2713 ok  rc={rc}  "
                     f"elapsed={elapsed_s:.2f}s"
@@ -442,12 +463,20 @@ def _walk_once(*, walk_id: int = 1) -> int:
 
     elapsed = time.perf_counter() - started_perf
     successes = sum(1 for r in results if r["returncode"] == 0)
-    failures = sum(1 for r in results if r["returncode"] != 0)
+    failures = sum(
+        1 for r in results
+        if r["returncode"] != 0
+        and not (
+            isinstance(r.get("status"), dict)
+            and r["status"].get("status") == "review_required"
+        )
+    )
     skipped = disabled_count + not_due_count + cooldown_count
 
     _banner(
         f"walk #{walk_id} done -- elapsed={elapsed:.2f}s  "
-        f"refreshed={len(results)} (ok={successes} fail={failures})  "
+        f"refreshed={len(results)} (ok={successes} "
+        f"review={review_required_count} fail={failures})  "
         f"skipped={skipped} (disabled={disabled_count} "
         f"not_due={not_due_count} cooldown={cooldown_count})  "
         f"manifests={len(pointer_results)}"

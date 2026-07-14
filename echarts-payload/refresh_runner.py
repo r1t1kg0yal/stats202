@@ -19,7 +19,7 @@ renders all fields, including the per-error ``script`` +
 ``classification`` pills and the ``log_path`` PRISM-triage field)::
 
     {
-        "status":          "running" | "success" | "error",
+        "status":          "running" | "success" | "review_required" | "error",
         "started_at":      "2026-05-04T21:30:11.123456+00:00",
         "completed_at":    "2026-05-04T21:30:55.789012+00:00",  # final only
         "elapsed_seconds": 44.67,                                # final only
@@ -61,7 +61,11 @@ import traceback
 from typing import Any, Optional
 
 from core.s3_bucket_manager import s3_manager
-from dashboards import build_dashboard, run_pull
+from dashboards import (
+    DashboardReviewRequired,
+    build_dashboard,
+    run_pull,
+)
 from dashboards.echart_dashboard import _build_dashboard_exec_namespace
 from dashboards.dashboards_time import (
     format_iso, freq_delta, parse_iso, utcnow,
@@ -296,6 +300,7 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
 
     final_status = "error"
     errors: list = []
+    review_summary: Optional[dict] = None
     failing_phase = _PHASE_PULL_LOAD  # default attribution if module-level load blows up
 
     # Cycle anchor -- single utcnow() that flows into:
@@ -384,6 +389,44 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
             flush=True,
         )
         final_status = "success"
+    except DashboardReviewRequired as exc:
+        final_status = "review_required"
+        review = exc.review
+        review_summary = {
+            "status": review.status,
+            "review_signature": review.review_signature,
+            "quality_signature": review.quality_signature,
+            "definition_sha256": review.definition_sha256,
+            "pending_panels": [
+                {
+                    "panel_id": panel.panel_id,
+                    "status": panel.status,
+                    "codes": [
+                        finding.get("code") for finding in panel.findings
+                    ],
+                }
+                for panel in review.panels
+                if panel.status != "CLEAR"
+            ],
+            "global_findings": [
+                {
+                    "severity": finding.get("severity"),
+                    "code": finding.get("code"),
+                }
+                for finding in review.global_findings
+                if finding.get("severity") in {"error", "warning"}
+            ],
+        }
+        print(
+            "    [REVIEW REQUIRED @ scripts/build.py] "
+            f"signature={review.review_signature}",
+            flush=True,
+        )
+        print(
+            "    live manifest/dashboard bytes unchanged; acknowledge the "
+            "exact review signature before the next publish attempt",
+            flush=True,
+        )
     except BaseException as exc:
         tb = traceback.format_exc()
         klass = _classify_exception(exc)
@@ -419,6 +462,8 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
     # spamming the cron every tick.
     if final_status == "success":
         consecutive_failures = 0
+    elif final_status == "review_required":
+        consecutive_failures = prior_failure_count
     else:
         consecutive_failures = prior_failure_count + 1
 
@@ -433,13 +478,19 @@ def run(folder: str, log_path: Optional[str] = None) -> int:
     }
     if log_path:
         final_payload["log_path"] = log_path
+    if review_summary is not None:
+        final_payload["review"] = review_summary
     _put_status(folder, final_payload)
 
     _banner(
         f"runner done -- status={final_status}  "
         f"elapsed={elapsed:.2f}s  errors={len(errors)}"
     )
-    return 0 if final_status == "success" else 1
+    if final_status == "success":
+        return 0
+    if final_status == "review_required":
+        return 2
+    return 1
 
 
 def main(argv: Optional[list] = None) -> int:

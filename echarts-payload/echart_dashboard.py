@@ -118,8 +118,11 @@ from config import MAX_DASHBOARD_DECIMALS, clamp_decimals
 # =============================================================================
 
 SCHEMA_VERSION = 1
-ENGINE_VERSION = "0.5.0"
+ENGINE_VERSION = "0.6.0"
 _DASHBOARD_VERSION_SCHEMA = 1
+_DASHBOARD_REVIEW_SCHEMA = 1
+_DASHBOARD_REVIEW_DETECTOR_VERSION = "semantic-panel-review-v1"
+_DASHBOARD_REVIEW_TEXT_BUDGET = 48_000
 _DASHBOARD_VERSION_ID_RE = re.compile(
     r"^\d{8}T\d{6}\.\d{6}Z__[0-9a-f]{12}$"
 )
@@ -4042,10 +4045,13 @@ def _format_manifest_repr(manifest: Dict[str, Any], *,
     # still surfaces compile warnings / diagnostics when PRISM print()s it.
     warnings = getattr(manifest, "_warnings", None)
     diagnostics = getattr(manifest, "_diagnostics", None)
+    review = getattr(manifest, "_review", None)
     if warnings:
         parts.append(_format_warnings_inline(warnings))
     if diagnostics:
         parts.append(_format_diagnostics_inline(diagnostics))
+    if review is not None:
+        parts.append(f"review={review!r}")
 
     return "Manifest(" + ", ".join(parts) + ")"
 
@@ -4107,7 +4113,243 @@ def _format_dashboard_result_repr(r: "DashboardResult") -> str:
     ):
         if val:
             parts.append(f"{label}={val!r}")
+    if r.review is not None:
+        parts.append(f"review={r.review!r}")
     return "DashboardResult(" + ", ".join(parts) + ")"
+
+
+@dataclass
+class PanelReceipt:
+    """Bounded, Python-native description of one panel's default-state view."""
+
+    panel_id: str
+    kind: str
+    title: str
+    location: str
+    status: str
+    data_state: str
+    summary: str
+    findings: List[Dict[str, Any]] = field(default_factory=list)
+    evidence: Dict[str, Any] = field(default_factory=dict)
+    coverage: str = "compile_time_verified"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def to_text(self, *, detail: bool = True) -> str:
+        line = (
+            f"[{self.status}] {self.panel_id} ({self.kind}, {self.location}) "
+            f"title={self.title!r} {self.data_state}: {self.summary}"
+        )
+        if not detail:
+            return line
+        parts = [line, f"  coverage={self.coverage}"]
+        for finding in self.findings:
+            parts.append(
+                f"  - {finding.get('severity', '?').upper()} "
+                f"{finding.get('code', '?')}: {finding.get('message', '')}"
+            )
+        if self.evidence:
+            encoded = json.dumps(
+                self.evidence, sort_keys=True, ensure_ascii=False, default=str,
+            )
+            parts.append(f"  evidence={encoded}")
+        return "\n".join(parts)
+
+    def __repr__(self) -> str:
+        return (
+            "PanelReceipt("
+            f"panel_id={self.panel_id!r}, kind={self.kind!r}, "
+            f"status={self.status!r}, data_state={self.data_state!r}, "
+            f"findings={len(self.findings)})"
+        )
+
+
+@dataclass
+class DashboardReview:
+    """Token-bounded semantic receipt and publish decision for a dashboard."""
+
+    dashboard_id: str
+    status: str
+    panels: List[PanelReceipt]
+    definition_sha256: str
+    quality_signature: str
+    review_signature: str
+    detector_version: str = _DASHBOARD_REVIEW_DETECTOR_VERSION
+    schema_version: int = _DASHBOARD_REVIEW_SCHEMA
+    global_findings: List[Dict[str, Any]] = field(default_factory=list)
+    truncation_ledger: List[Dict[str, Any]] = field(default_factory=list)
+
+    def panel(self, panel_id: str) -> PanelReceipt:
+        """Return the full receipt for ``panel_id`` or raise with valid ids."""
+        for receipt in self.panels:
+            if receipt.panel_id == panel_id:
+                return receipt
+        raise KeyError(
+            f"unknown panel id {panel_id!r}; valid ids: "
+            f"{[panel.panel_id for panel in self.panels]}"
+        )
+
+    def to_dict(self, *, include_evidence: bool = True) -> Dict[str, Any]:
+        panels = []
+        for panel in self.panels:
+            payload = panel.to_dict()
+            if not include_evidence:
+                payload["evidence"] = {
+                    "available": bool(panel.evidence),
+                    "drill_down": f"review.panel({panel.panel_id!r})",
+                }
+            panels.append(payload)
+        return {
+            "schema_version": self.schema_version,
+            "detector_version": self.detector_version,
+            "dashboard_id": self.dashboard_id,
+            "status": self.status,
+            "definition_sha256": self.definition_sha256,
+            "quality_signature": self.quality_signature,
+            "review_signature": self.review_signature,
+            "panels": panels,
+            "global_findings": list(self.global_findings),
+            "truncation_ledger": list(self.truncation_ledger),
+        }
+
+    def to_text(self, *, max_chars: int = _DASHBOARD_REVIEW_TEXT_BUDGET) -> str:
+        """Emit every panel index line, then bounded flagged-panel details."""
+        max_chars = max(2_000, int(max_chars))
+        header = (
+            f"dashboard_review status={self.status} dashboard={self.dashboard_id!r} "
+            f"panels={len(self.panels)} review_signature="
+            f"{self.review_signature}\n"
+            f"definition_sha256={self.definition_sha256} "
+            f"quality_signature={self.quality_signature} "
+            f"detector={self.detector_version}"
+        )
+        index_lines = ["panel_index:"]
+        index_lines.extend(
+            f"  {panel.to_text(detail=False)}" for panel in self.panels
+        )
+        sections = [header, "\n".join(index_lines)]
+        if self.global_findings:
+            sections.append(
+                "global_findings:\n" + "\n".join(
+                    f"  - {item.get('severity', '?').upper()} "
+                    f"{item.get('code', '?')}: {item.get('message', '')}"
+                    for item in self.global_findings
+                )
+            )
+        base = "\n".join(sections)
+        detail_items = [
+            (panel, panel.to_text(detail=True))
+            for panel in self.panels
+            if panel.status != "CLEAR"
+        ]
+        included: List[Tuple[PanelReceipt, str]] = []
+        omitted: List[Dict[str, Any]] = []
+
+        def _omission(panel: PanelReceipt, text: str) -> Dict[str, Any]:
+            return {
+                "panel_id": panel.panel_id,
+                "omitted_chars": len(text),
+                "reason": "review_text_budget",
+                "drill_down": f"review.panel({panel.panel_id!r})",
+            }
+
+        def _render(
+            detail_rows: Sequence[Tuple[PanelReceipt, str]],
+            omitted_rows: Sequence[Dict[str, Any]],
+        ) -> str:
+            rendered = list(sections)
+            if detail_rows:
+                rendered.append(
+                    "flagged_panel_details:\n" + "\n\n".join(
+                        text for _panel, text in detail_rows
+                    )
+                )
+            if omitted_rows:
+                rendered.append(
+                    "truncation_ledger:\n" + "\n".join(
+                        f"  - {item['panel_id']}: omitted "
+                        f"{item['omitted_chars']} chars; "
+                        f"{item['drill_down']}"
+                        for item in omitted_rows
+                    )
+                )
+            return "\n".join(rendered)
+
+        if len(base) > max_chars:
+            omitted.append({
+                "panel_id": "(panel_index)",
+                "omitted_chars": 0,
+                "reason": "mandatory_panel_index_exceeds_review_text_budget",
+                "budget_excess_chars": len(base) - max_chars,
+                "drill_down": "all panel index lines retained",
+            })
+            omitted.extend(
+                _omission(panel, text) for panel, text in detail_items
+            )
+        else:
+            for index, (panel, text) in enumerate(detail_items):
+                future_omissions = [
+                    _omission(item_panel, item_text)
+                    for item_panel, item_text in detail_items[index + 1:]
+                ]
+                candidate = included + [(panel, text)]
+                if len(_render(
+                    candidate, omitted + future_omissions,
+                )) <= max_chars:
+                    included.append((panel, text))
+                else:
+                    omitted.append(_omission(panel, text))
+
+        self.truncation_ledger = omitted
+        output = _render(included, omitted)
+        if (
+            len(base) <= max_chars
+            and len(output) > max_chars
+            and included
+        ):
+            # Defensive final tightening for unusual Unicode / ledger-size
+            # combinations. Index lines and every omission entry remain.
+            while included and len(output) > max_chars:
+                panel, text = included.pop()
+                omitted.insert(0, _omission(panel, text))
+                output = _render(included, omitted)
+            self.truncation_ledger = omitted
+        return output
+
+    def __repr__(self) -> str:
+        flagged = sum(1 for panel in self.panels if panel.status != "CLEAR")
+        return (
+            "DashboardReview("
+            f"status={self.status!r}, panels={len(self.panels)}, "
+            f"flagged={flagged}, "
+            f"review_signature={self.review_signature[:12]!r})"
+        )
+
+
+class DashboardReviewRequired(RuntimeError):
+    """Raised before persistence when a candidate lacks acknowledgment."""
+
+    def __init__(
+        self,
+        review: DashboardReview,
+        *,
+        version_id: Optional[str] = None,
+    ):
+        self.review = review
+        self.version_id = version_id
+        version_argument = (
+            f", version_id={version_id!r}" if version_id is not None else ""
+        )
+        super().__init__(
+            "dashboard review acknowledgment required before persistence: "
+            f"status={review.status}, "
+            f"review_signature={review.review_signature}; "
+            "call acknowledge_dashboard_review(folder, "
+            "expected_review_signature=..., rationale=..."
+            f"{version_argument}) after reviewing "
+            "the flagged panels."
+        )
 
 
 @dataclass
@@ -4124,6 +4366,9 @@ class DashboardResult:
     # is kept as flat strings for backwards compat). PRISM should read
     # these directly when iterating on a manifest.
     diagnostics: List["Diagnostic"] = field(default_factory=list)
+    # Canonical Python compile/default-state semantic view. This is not a
+    # screenshot and never claims arbitrary browser-interaction parity.
+    review: Optional[DashboardReview] = None
 
     @property
     def quality_findings(self) -> List["Diagnostic"]:
@@ -4147,6 +4392,7 @@ class DashboardResult:
             self.manifest = Manifest(self.manifest)
         self.manifest._warnings = list(self.warnings or [])
         self.manifest._diagnostics = list(self.diagnostics or [])
+        self.manifest._review = self.review
 
     def __repr__(self) -> str:
         return _format_dashboard_result_repr(self)
@@ -6059,6 +6305,17 @@ def _apply_post_build_polish(opt: Dict[str, Any],
     # a live JS function so the tick label looks like "Apr 15" etc.
     x_fmt = mapping.get("x_date_format") or spec.get("x_date_format")
     if x_fmt:
+        if (
+            isinstance(x_fmt, str)
+            and x_fmt != "auto"
+            and re.match(r"^\s*function\s*\(", x_fmt) is None
+        ):
+            raise ValueError(
+                "x_date_format must be 'auto' or an explicit JavaScript "
+                "function string. Token strings such as 'MMM YY' are "
+                "constant ECharts formatters and repeat the literal text "
+                "at every tick."
+            )
         x_axis = opt.get("xAxis")
         axes: List[Dict[str, Any]]
         if isinstance(x_axis, list):
@@ -6988,6 +7245,13 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     "timeseries_stale_tail",
     "timeseries_scale_dominating_outlier",
     "timeseries_abrupt_level_break",
+    # Literal token strings such as "MMM YY" paint the exact same text at
+    # every tick. This is deterministic, not an aesthetic judgment.
+    "chart_temporal_formatter_constant",
+    # Non-finite/inverted bounds and out-of-range values render a
+    # semantically misleading gauge and are not acknowledgeable.
+    "chart_gauge_invalid_range",
+    "chart_gauge_value_out_of_range",
 })
 
 # -----------------------------------------------------------------------------
@@ -8260,6 +8524,53 @@ def _check_time_series_integrity(
                 ))
                 continue
 
+            effective_count = int(effective.sum())
+            if (
+                parsed_time is not None
+                and effective_count < 12
+                and parsed_time[effective].notna().sum() >= 2
+            ):
+                effective_time = parsed_time[effective]
+                span_days = float(
+                    (effective_time.max() - effective_time.min()).total_seconds()
+                    / 86400.0
+                )
+                if span_days >= 180:
+                    out.append(_quality_diagnostic(
+                        severity="warning",
+                        code="timeseries_sparse_long_span",
+                        widget_id=wid,
+                        path=f"{path}.spec.mapping",
+                        message=(
+                            f"series '{series_name}' spans {span_days:.0f} "
+                            f"days with only {effective_count} renderable "
+                            "observations."
+                        ),
+                        dataset=dataset,
+                        field_name=value_field,
+                        series=series_name,
+                        observed={
+                            "effective_points": effective_count,
+                            "span_days": round(span_days, 3),
+                            "first_timestamp": str(effective_time.min()),
+                            "last_timestamp": str(effective_time.max()),
+                        },
+                        expected={
+                            "minimum_points_for_long_span": 12,
+                            "long_span_days": 180,
+                        },
+                        visual_effect=(
+                            "a line can imply continuous history while being "
+                            "defined by a handful of isolated observations"
+                        ),
+                        fix_hint=(
+                            "Verify source cadence and joins. Preserve genuine "
+                            "sparse events, but require explicit review before "
+                            "presenting them as a continuous line."
+                        ),
+                        **base_context,
+                    ))
+
             missing_mask = numeric.isna().to_numpy()
             valid_positions = np.flatnonzero(~missing_mask)
             if len(valid_positions):
@@ -8471,6 +8782,16 @@ def _check_time_series_integrity(
                             else median_seconds * 5
                         )
                         if max_seconds > gap_limit:
+                            largest_gap_end_pos = int(positive.idxmax())
+                            largest_gap_start = (
+                                unique_time.iloc[largest_gap_end_pos - 1]
+                                if largest_gap_end_pos > 0 else None
+                            )
+                            largest_gap_end = (
+                                unique_time.iloc[largest_gap_end_pos]
+                                if largest_gap_end_pos < len(unique_time)
+                                else None
+                            )
                             severity = (
                                 quality.get("severity", "error")
                                 if max_gap_seconds is not None
@@ -8493,6 +8814,16 @@ def _check_time_series_integrity(
                                     "median_interval_seconds": median_seconds,
                                     "max_gap_seconds": max_seconds,
                                     "max_gap_ratio": round(max_ratio, 3),
+                                    "largest_gap_start": (
+                                        str(largest_gap_start)
+                                        if largest_gap_start is not None
+                                        else None
+                                    ),
+                                    "largest_gap_end": (
+                                        str(largest_gap_end)
+                                        if largest_gap_end is not None
+                                        else None
+                                    ),
                                 },
                                 expected={
                                     "max_internal_gap_seconds": gap_limit,
@@ -8753,6 +9084,168 @@ def _check_time_series_integrity(
                                 ),
                                 **base_context,
                             ))
+
+                # One extreme step immediately reversed with similar
+                # magnitude. This catches narrow spikes that can be visually
+                # destructive without necessarily dominating the full range.
+                raw_steps = np.diff(finite.to_numpy(dtype=float))
+                if len(raw_steps) >= 7:
+                    step_center = float(np.median(raw_steps))
+                    step_scale = float(
+                        np.median(np.abs(raw_steps - step_center))
+                    ) * 1.4826
+                    if step_scale > 0:
+                        step_z_values = (
+                            np.abs(raw_steps - step_center) / step_scale
+                        )
+                        reversals: List[Dict[str, Any]] = []
+                        for step_pos in range(len(raw_steps) - 1):
+                            entry_step = float(raw_steps[step_pos])
+                            exit_step = float(raw_steps[step_pos + 1])
+                            entry_z = float(step_z_values[step_pos])
+                            exit_z = float(step_z_values[step_pos + 1])
+                            ratio = (
+                                abs(entry_step / exit_step)
+                                if exit_step != 0 else float("inf")
+                            )
+                            if (
+                                entry_z >= 8.0
+                                and exit_z >= 8.0
+                                and entry_step * exit_step < 0
+                                and 0.5 <= ratio <= 2.0
+                            ):
+                                start_pos = max(0, step_pos)
+                                end_pos = min(len(finite), step_pos + 4)
+                                reversals.append({
+                                    "entry_row": str(
+                                        finite.index[step_pos + 1]
+                                    ),
+                                    "exit_row": str(
+                                        finite.index[step_pos + 2]
+                                    ),
+                                    "entry_step": entry_step,
+                                    "exit_step": exit_step,
+                                    "entry_robust_z": round(entry_z, 3),
+                                    "exit_robust_z": round(exit_z, 3),
+                                    "neighborhood": [
+                                        {
+                                            "row": str(index),
+                                            "value": float(value),
+                                        }
+                                        for index, value in finite.iloc[
+                                            start_pos:end_pos
+                                        ].items()
+                                    ],
+                                })
+                        if reversals:
+                            out.append(_quality_diagnostic(
+                                severity="warning",
+                                code="timeseries_isolated_spike_reversal",
+                                widget_id=wid,
+                                path=f"{path}.spec.mapping.{value_field}",
+                                message=(
+                                    f"series '{series_name}' has "
+                                    f"{len(reversals)} isolated extreme "
+                                    "step(s) immediately reversed on the "
+                                    "next observation."
+                                ),
+                                dataset=dataset,
+                                field_name=value_field,
+                                series=series_name,
+                                observed={
+                                    "reversal_count": len(reversals),
+                                    "robust_z_threshold": 8.0,
+                                },
+                                examples=reversals[:5],
+                                visual_effect=(
+                                    "the line forms a narrow spike/jagged "
+                                    "reversal that can overwhelm the panel"
+                                ),
+                                fix_hint=(
+                                    "Inspect the exact neighboring source "
+                                    "observations, units, and join keys. Keep "
+                                    "a genuine market move; never smooth or "
+                                    "winsorize it silently."
+                                ),
+                                **base_context,
+                            ))
+
+            if (
+                parsed_time is not None
+                and parsed_time[effective].notna().sum() >= 2
+            ):
+                spec = (
+                    widget.get("spec")
+                    if isinstance(widget.get("spec"), dict) else {}
+                )
+                claim_text = " ".join(
+                    str(value)
+                    for value in (
+                        widget.get("title"),
+                        widget.get("subtitle"),
+                        spec.get("title"),
+                        spec.get("subtitle"),
+                    )
+                    if value
+                )
+                claim = re.search(
+                    r"\b(?:trailing|last)\s+(\d+)\s*"
+                    r"(day|week|month|quarter|year)s?\b",
+                    claim_text,
+                    flags=re.IGNORECASE,
+                )
+                if claim:
+                    units_to_days = {
+                        "day": 1.0,
+                        "week": 7.0,
+                        "month": 30.4375,
+                        "quarter": 91.3125,
+                        "year": 365.25,
+                    }
+                    claimed_days = (
+                        int(claim.group(1))
+                        * units_to_days[claim.group(2).lower()]
+                    )
+                    effective_time = parsed_time[effective]
+                    actual_days = float(
+                        (
+                            effective_time.max() - effective_time.min()
+                        ).total_seconds() / 86400.0
+                    )
+                    if actual_days > max(
+                        claimed_days * 1.35, claimed_days + 7
+                    ):
+                        out.append(_quality_diagnostic(
+                            severity="warning",
+                            code="chart_trailing_window_claim_mismatch",
+                            widget_id=wid,
+                            path=f"{path}.title",
+                            message=(
+                                f"panel text claims '{claim.group(0)}' but "
+                                f"the default plotted span is "
+                                f"{actual_days:.0f} days."
+                            ),
+                            dataset=dataset,
+                            field_name=time_field,
+                            series=series_name,
+                            observed={
+                                "claimed_window_days": round(
+                                    claimed_days, 3
+                                ),
+                                "actual_span_days": round(actual_days, 3),
+                                "first_timestamp": str(effective_time.min()),
+                                "last_timestamp": str(effective_time.max()),
+                            },
+                            visual_effect=(
+                                "the chart's visible evidence contradicts "
+                                "its direct trailing-window claim"
+                            ),
+                            fix_hint=(
+                                "Align the default filter/data slice with "
+                                "the claim or rewrite the panel text."
+                            ),
+                            **base_context,
+                        ))
     return out
 
 
@@ -9440,6 +9933,217 @@ def _check_chart_widget(
     df = dfs[ds_name]
     available = list(df.columns)
 
+    x_fmt = mapping.get("x_date_format") or spec.get("x_date_format")
+    if (
+        isinstance(x_fmt, str)
+        and x_fmt
+        and x_fmt != "auto"
+        and re.match(r"^\s*function\s*\(", x_fmt) is None
+    ):
+        out.append(Diagnostic(
+            severity="error",
+            code="chart_temporal_formatter_constant",
+            widget_id=wid,
+            path=f"{path}.spec.mapping.x_date_format",
+            message=(
+                f"x_date_format={x_fmt!r} is a constant ECharts formatter; "
+                "every x-axis tick would display the same literal text."
+            ),
+            context={
+                "formatter": x_fmt,
+                "accepted": ["auto", "function(v){ ... }"],
+                "fix_hint": (
+                    "Use x_date_format='auto' or pass an explicit JavaScript "
+                    "function string. ECharts does not interpret date tokens "
+                    "inside axisLabel.formatter."
+                ),
+            },
+        ))
+
+    if chart_type == "gauge":
+        import math
+        import pandas as pd
+
+        raw_min = mapping.get("min", 0)
+        raw_max = mapping.get("max", 100)
+
+        def _resolve_gauge_bound(raw: Any) -> float:
+            if isinstance(raw, str) and raw in df.columns:
+                numeric = pd.to_numeric(df[raw], errors="coerce").dropna()
+                raw = numeric.iloc[-1] if len(numeric) else None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return float("nan")
+
+        gauge_min = _resolve_gauge_bound(raw_min)
+        gauge_max = _resolve_gauge_bound(raw_max)
+        if (
+            not math.isfinite(gauge_min)
+            or not math.isfinite(gauge_max)
+            or gauge_min >= gauge_max
+        ):
+            out.append(Diagnostic(
+                severity="error",
+                code="chart_gauge_invalid_range",
+                widget_id=wid,
+                path=f"{path}.spec.mapping",
+                message=(
+                    f"gauge range min={raw_min!r}, max={raw_max!r} is "
+                    "non-finite or not strictly increasing."
+                ),
+                context={
+                    "min": _receipt_compact_value(raw_min),
+                    "max": _receipt_compact_value(raw_max),
+                    "resolved_min": (
+                        gauge_min if math.isfinite(gauge_min) else None
+                    ),
+                    "resolved_max": (
+                        gauge_max if math.isfinite(gauge_max) else None
+                    ),
+                    "fix_hint": (
+                        "Set finite numeric mapping.min and mapping.max, or "
+                        "numeric bound columns, with min < max and units "
+                        "matching mapping.value."
+                    ),
+                },
+            ))
+        value_ref = mapping.get("value")
+        gauge_value: Optional[float] = None
+        if (
+            isinstance(value_ref, (int, float))
+            and not isinstance(value_ref, bool)
+        ):
+            gauge_value = float(value_ref)
+        elif isinstance(value_ref, str) and value_ref in df.columns:
+            numeric_value = pd.to_numeric(
+                df[value_ref], errors="coerce"
+            ).dropna()
+            if len(numeric_value):
+                gauge_value = float(numeric_value.iloc[-1])
+        if gauge_value is not None:
+            if not math.isfinite(gauge_value):
+                out.append(Diagnostic(
+                    severity="error",
+                    code="chart_gauge_invalid_range",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.value",
+                    message="gauge value is non-finite.",
+                    context={"value": gauge_value},
+                ))
+            elif (
+                math.isfinite(gauge_min)
+                and math.isfinite(gauge_max)
+                and gauge_min < gauge_max
+                and not gauge_min <= gauge_value <= gauge_max
+            ):
+                out.append(Diagnostic(
+                    severity="error",
+                    code="chart_gauge_value_out_of_range",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.value",
+                    message=(
+                        f"gauge value {gauge_value:g} lies outside "
+                        f"[{gauge_min:g}, {gauge_max:g}]."
+                    ),
+                    context={
+                        "value": gauge_value,
+                        "min": gauge_min,
+                        "max": gauge_max,
+                        "fix_hint": (
+                            "Correct the value units or set an intentional "
+                            "finite range that contains the value."
+                        ),
+                    },
+                ))
+            if "min" not in mapping or "max" not in mapping:
+                out.append(Diagnostic(
+                    severity="warning",
+                    code="chart_gauge_default_range_ambiguous",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping",
+                    message=(
+                        "gauge relies on at least one generic default bound; "
+                        "the full analytical range has not been declared."
+                    ),
+                    context={
+                        "value": gauge_value,
+                        "effective_range": [gauge_min, gauge_max],
+                        "defaulted_bounds": [
+                            key for key in ("min", "max")
+                            if key not in mapping
+                        ],
+                        "fix_hint": (
+                            "Declare both mapping.min and mapping.max unless "
+                            "the effective defaulted domain is intentional."
+                        ),
+                    },
+                ))
+            if "value_decimals" not in mapping:
+                out.append(Diagnostic(
+                    severity="warning",
+                    code="chart_gauge_precision_ambiguous",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.value_decimals",
+                    message=(
+                        "gauge value_decimals is undeclared; the renderer "
+                        "uses 2 decimals under the global maximum of "
+                        f"{MAX_DASHBOARD_DECIMALS}."
+                    ),
+                    context={
+                        "value": gauge_value,
+                        "default_decimals": 2,
+                        "maximum_decimals": MAX_DASHBOARD_DECIMALS,
+                        "fix_hint": (
+                            "Declare value_decimals when the metric has a "
+                            "known display precision."
+                        ),
+                    },
+                ))
+            if "thresholds" not in mapping:
+                out.append(Diagnostic(
+                    severity="warning",
+                    code="chart_gauge_thresholds_undeclared",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping",
+                    message=(
+                        "gauge has no declared semantic threshold bands; "
+                        "the dial position has range context but no explicit "
+                        "good/bad interpretation."
+                    ),
+                    context={
+                        "value": gauge_value,
+                        "range": [gauge_min, gauge_max],
+                        "fix_hint": (
+                            "Confirm the range is sufficient context. If "
+                            "threshold semantics are essential, use a chart "
+                            "type that explicitly renders target/risk bands."
+                        ),
+                    },
+                ))
+            else:
+                out.append(Diagnostic(
+                    severity="warning",
+                    code="chart_gauge_thresholds_unrendered",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.thresholds",
+                    message=(
+                        "gauge mapping.thresholds is declared but the current "
+                        "gauge builder does not render semantic threshold "
+                        "bands."
+                    ),
+                    context={
+                        "thresholds": _receipt_compact_value(
+                            mapping.get("thresholds")
+                        ),
+                        "fix_hint": (
+                            "Do not assume these thresholds are visible. Use "
+                            "a chart type with explicit target/risk bands or "
+                            "acknowledge the plain-dial limitation."
+                        ),
+                    },
+                ))
+
     # Required mapping keys for this chart_type ------------------------
     required = _REQUIRED_MAPPING_KEYS.get(chart_type or "", ())
     for rk in required:
@@ -9793,6 +10497,71 @@ def _check_chart_degeneracy(
                                 "Pick a y column with variance, or "
                                 "switch to a single-value chart_type "
                                 "(kpi, gauge).")}))
+                    if (
+                        float(coerced.iloc[0]) == 0.0
+                        and chart_type in {
+                            "bar", "bar_horizontal", "stacked_bar",
+                            "grouped_bar", "waterfall",
+                        }
+                    ):
+                        out.append(Diagnostic(
+                            severity="warning",
+                            code="chart_all_zero_no_visible_marks",
+                            widget_id=wid,
+                            path=f"{path}.spec.mapping.{ykey}",
+                            message=(
+                                f"mapping.{ykey} column '{ycol}' contains "
+                                f"only zeros across {len(coerced)} rows; "
+                                "bar marks have zero height."
+                            ),
+                            context={
+                                "chart_type": chart_type,
+                                "column": ycol,
+                                "dataset": ds_name,
+                                "row_count": int(len(coerced)),
+                                "data_state": "ALL_ZERO",
+                                "fix_hint": (
+                                    "Verify upstream values and units. If "
+                                    "zero is real, label it explicitly or use "
+                                    "a representation whose absent height is "
+                                    "unambiguous."
+                                ),
+                            },
+                        ))
+                missing_count = int(
+                    pd.to_numeric(ser, errors="coerce").isna().sum()
+                )
+                if (
+                    0 < missing_count < len(ser)
+                    and chart_type in {
+                        "bar", "bar_horizontal", "stacked_bar",
+                        "grouped_bar", "waterfall",
+                    }
+                ):
+                    out.append(Diagnostic(
+                        severity="warning",
+                        code="chart_partial_categorical_marks",
+                        widget_id=wid,
+                        path=f"{path}.spec.mapping.{ykey}",
+                        message=(
+                            f"mapping.{ykey} column '{ycol}' is missing "
+                            f"{missing_count}/{len(ser)} categorical mark "
+                            "value(s)."
+                        ),
+                        context={
+                            "chart_type": chart_type,
+                            "column": ycol,
+                            "dataset": ds_name,
+                            "missing_count": missing_count,
+                            "row_count": int(len(ser)),
+                            "data_state": "PARTIAL",
+                            "fix_hint": (
+                                "Verify whether absent categories are genuine "
+                                "missing observations or a join/pull failure; "
+                                "do not coerce missing to zero."
+                            ),
+                        },
+                    ))
 
     # 3. Sankey topology -- self-loops + disconnected ------------------
     if chart_type == "sankey":
@@ -10027,6 +10796,66 @@ def _check_table_widget(w: Dict[str, Any], path: str,
             message=(f"table '{wid}' columns[{ci}].field='{fld}' is "
                      f"not a column in dataset '{ds_name}'."),
             context=ctx))
+
+    present_fields = [fld for _, fld in field_cols if fld in df.columns]
+    try:
+        width_units = max(1, min(12, int(w.get("w", 6))))
+    except (TypeError, ValueError):
+        width_units = 6
+    declared_column_count = max(1, len(present_fields))
+    estimated_chars_per_line = max(
+        18,
+        int(14 * width_units / declared_column_count),
+    )
+    narrative_risks: List[Dict[str, Any]] = []
+    for fld in present_fields:
+        values = df[fld].dropna().astype(str)
+        if values.empty:
+            continue
+        lengths = values.str.len()
+        word_counts = values.str.split().str.len()
+        idx = lengths.idxmax()
+        max_chars = int(lengths.loc[idx])
+        max_words = int(word_counts.loc[idx])
+        if max_chars >= 160 or max_words >= 28:
+            narrative_risks.append({
+                "field": fld,
+                "row": str(idx),
+                "characters": max_chars,
+                "words": max_words,
+                "estimated_chars_per_line": estimated_chars_per_line,
+                "estimated_wrapped_lines": max(
+                    1,
+                    (max_chars + estimated_chars_per_line - 1)
+                    // estimated_chars_per_line,
+                ),
+                "sample": values.loc[idx][:240],
+            })
+    if narrative_risks and len(df) <= 3:
+        out.append(Diagnostic(
+            severity="warning",
+            code="table_narrative_wrap_risk",
+            widget_id=wid,
+            path=f"{path}.columns",
+            message=(
+                f"table '{wid}' has {len(df)} row(s) and long narrative "
+                "cells likely to dominate panel height or clip at the "
+                "declared width."
+            ),
+            context={
+                "dataset": ds_name,
+                "row_count": int(len(df)),
+                "column_count": len(present_fields),
+                "widget_width": width_units,
+                "estimated_chars_per_line": estimated_chars_per_line,
+                "long_cells": narrative_risks[:5],
+                "fix_hint": (
+                    "Review the exact text at the target width. Prefer a "
+                    "note/markdown panel or a short summary plus drill-down "
+                    "when a one-row table is carrying prose."
+                ),
+            },
+        ))
     return out
 
 
@@ -11753,6 +12582,109 @@ def _table_dataset_refs(manifest: Dict[str, Any]) -> set:
     return refs
 
 
+def _check_tool_widget_runtime_boundary(
+    widget: Dict[str, Any],
+    path: str,
+    dfs: Dict[str, Any],
+) -> List[Diagnostic]:
+    """Describe tool inputs/schema while explicitly not executing compute_js."""
+    import hashlib
+
+    try:
+        tool_def = load_tool_def(widget.get("tool_def"))
+    except Exception:
+        # Structural validation owns malformed/unresolvable definitions.
+        return []
+    compute = tool_def.get("compute") \
+        if isinstance(tool_def.get("compute"), dict) else {}
+    source = compute.get("source") if isinstance(compute, dict) else None
+    if not isinstance(source, str) or not source:
+        return []
+
+    inputs: List[Dict[str, Any]] = []
+    for item in tool_def.get("inputs", []) or []:
+        if not isinstance(item, dict):
+            continue
+        descriptor: Dict[str, Any] = {
+            "id": item.get("id"),
+            "kind": item.get("kind", "scalar"),
+            "type": item.get("type"),
+            "default": item.get("default"),
+        }
+        if item.get("kind") == "matrix":
+            rows_from = item.get("rows_from")
+            static_rows = item.get("rows")
+            static_cols = item.get("cols")
+            descriptor["rows"] = (
+                len(static_rows) if isinstance(static_rows, list) else None
+            )
+            descriptor["columns"] = (
+                len(static_cols) if isinstance(static_cols, list) else None
+            )
+            if isinstance(rows_from, dict):
+                dataset = rows_from.get("dataset")
+                key_col = rows_from.get("key_col")
+                descriptor["rows_from"] = {
+                    "dataset": dataset,
+                    "key_col": key_col,
+                }
+                dataframe = dfs.get(dataset)
+                if dataframe is not None and key_col in dataframe.columns:
+                    descriptor["materialized_rows"] = int(
+                        dataframe[key_col].nunique(dropna=True)
+                    )
+        inputs.append(descriptor)
+
+    outputs: List[Dict[str, Any]] = []
+    output_ids: List[str] = []
+    for item in tool_def.get("outputs", []) or []:
+        if not isinstance(item, dict):
+            continue
+        output_id = item.get("id")
+        if isinstance(output_id, str):
+            output_ids.append(output_id)
+        columns = item.get("columns")
+        outputs.append({
+            "id": output_id,
+            "kind": item.get("kind"),
+            "columns": [
+                (
+                    column.get("field")
+                    if isinstance(column, dict) else column
+                )
+                for column in columns
+            ] if isinstance(columns, list) else None,
+        })
+    missing_keys = _check_compute_returns_all_outputs(source, output_ids)
+    return [Diagnostic(
+        severity="warning",
+        code="tool_output_runtime_unverified",
+        widget_id=widget.get("id"),
+        path=f"{path}.tool_def.compute.source",
+        message=(
+            "tool output is produced by browser-only compute_js and was not "
+            "executed by the Python compiler; its rendered output requires "
+            "explicit review acknowledgment."
+        ),
+        context={
+            "coverage": "runtime_unverified",
+            "compute_sha256": hashlib.sha256(
+                source.encode("utf-8")
+            ).hexdigest(),
+            "compute_bytes": len(source.encode("utf-8")),
+            "inputs": inputs,
+            "outputs": outputs,
+            "declared_output_ids": output_ids,
+            "static_missing_output_keys": missing_keys,
+            "fix_hint": (
+                "Review the declared inputs/output schema and acknowledge "
+                "this explicit browser-runtime boundary. The engine does not "
+                "execute or translate arbitrary compute_js in Python."
+            ),
+        },
+    )]
+
+
 def chart_data_diagnostics(
     manifest: Dict[str, Any],
 ) -> List[Diagnostic]:
@@ -11805,6 +12737,10 @@ def chart_data_diagnostics(
                     diags.extend(_check_kpi_widget(w, wpath, dfs))
                 elif wt == "stat_grid":
                     diags.extend(_check_stat_grid_widget(w, wpath, dfs))
+                elif wt == "tool":
+                    diags.extend(_check_tool_widget_runtime_boundary(
+                        w, wpath, dfs,
+                    ))
 
     if layout.get("kind") == "tabs":
         for ti, tab in enumerate(layout.get("tabs", []) or []):
@@ -12014,6 +12950,878 @@ def _print_kpi_value_receipts(
               f"the value is confirmed correct.")
 
 
+def _receipt_compact_value(value: Any, *, depth: int = 0) -> Any:
+    """Bound arbitrary diagnostic/data evidence before exposing it to PRISM."""
+    if depth >= 7:
+        return _sample_repr(value, max_len=160)
+    if isinstance(value, dict):
+        items = sorted(value.items(), key=lambda item: str(item[0]))
+        out = {
+            str(key): _receipt_compact_value(item, depth=depth + 1)
+            for key, item in items[:24]
+        }
+        if len(items) > 24:
+            out["_truncated_keys"] = len(items) - 24
+        return out
+    if isinstance(value, (list, tuple)):
+        out = [
+            _receipt_compact_value(item, depth=depth + 1)
+            for item in list(value)[:12]
+        ]
+        if len(value) > 12:
+            out.append({"_truncated_items": len(value) - 12})
+        return out
+    if isinstance(value, str):
+        return value if len(value) <= 500 else value[:497] + "..."
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    try:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+    except Exception:
+        pass
+    return _sample_repr(value, max_len=300)
+
+
+def _diagnostic_receipt_finding(diagnostic: "Diagnostic") -> Dict[str, Any]:
+    return {
+        "severity": diagnostic.severity,
+        "code": diagnostic.code,
+        "message": diagnostic.message,
+        "path": diagnostic.path,
+        "context": _receipt_compact_value(diagnostic.context or {}),
+    }
+
+
+def _receipt_missing_runs(
+    values: Any,
+    x_values: Optional[Any],
+    *,
+    limit: int = 6,
+) -> List[Dict[str, Any]]:
+    """Return bounded missing-run boundaries, never a naive row sample."""
+    import pandas as pd
+
+    mask = pd.isna(values).tolist()
+    runs: List[Dict[str, Any]] = []
+    start: Optional[int] = None
+    for pos, missing in enumerate(mask + [False]):
+        if missing and start is None:
+            start = pos
+        elif not missing and start is not None:
+            end = pos - 1
+
+            def _x(at: int) -> Any:
+                if x_values is None or not 0 <= at < len(x_values):
+                    return at
+                return _receipt_compact_value(x_values.iloc[at])
+
+            runs.append({
+                "start_position": start,
+                "end_position": end,
+                "length": end - start + 1,
+                "start_x": _x(start),
+                "end_x": _x(end),
+                "preceding_x": _x(start - 1) if start > 0 else None,
+                "following_x": _x(end + 1) if end + 1 < len(mask) else None,
+            })
+            start = None
+    runs.sort(key=lambda item: (-item["length"], item["start_position"]))
+    return runs[:limit]
+
+
+def _receipt_row_count_bucket(value: Any) -> str:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if number <= 0:
+        return "0"
+    if number == 1:
+        return "1"
+    if number <= 5:
+        return "2-5"
+    if number <= 24:
+        return "6-24"
+    if number <= 99:
+        return "25-99"
+    if number <= 999:
+        return "100-999"
+    return "1000+"
+
+
+def _receipt_fraction_bucket(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if number <= 0:
+        return "0"
+    if number < 0.01:
+        return "<1%"
+    if number < 0.10:
+        return "1-10%"
+    if number < 0.50:
+        return "10-50%"
+    return "50%+"
+
+
+def _receipt_ratio_bucket(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if number < 2:
+        return "<2x"
+    if number < 5:
+        return "2-5x"
+    if number < 10:
+        return "5-10x"
+    return "10x+"
+
+
+def _finding_materiality(diagnostic: "Diagnostic") -> Dict[str, Any]:
+    """Bucket materiality so ordinary raw-value refreshes keep acknowledgments."""
+    context = diagnostic.context or {}
+    observed = context.get("observed") \
+        if isinstance(context.get("observed"), dict) else {}
+
+    def _first(*names: str) -> Any:
+        for name in names:
+            if name in observed:
+                return observed[name]
+            if name in context:
+                return context[name]
+        return None
+
+    materiality: Dict[str, Any] = {}
+    row_count = _first("row_count", "effective_points")
+    if row_count is not None:
+        materiality["rows"] = _receipt_row_count_bucket(row_count)
+    for key in (
+        "reversal_count", "outlier_count", "candidate_count", "break_count",
+    ):
+        count = _first(key)
+        if count is not None:
+            materiality[key] = _receipt_row_count_bucket(count)
+    missing = _first("missing_fraction", "nan_fraction")
+    if missing is None:
+        missing_count = _first(
+            "missing_count", "internal_missing_count",
+        )
+        total = _first("row_count")
+        try:
+            if missing_count is not None and total:
+                missing = float(missing_count) / float(total)
+        except (TypeError, ValueError, ZeroDivisionError):
+            missing = None
+    if missing is not None:
+        materiality["missing"] = _receipt_fraction_bucket(missing)
+    for key in (
+        "max_gap_ratio", "scale_expansion_ratio", "max_step_robust_z",
+    ):
+        ratio = _first(key)
+        if ratio is not None:
+            materiality[key] = _receipt_ratio_bucket(ratio)
+    characters = _first("characters")
+    if characters is not None:
+        materiality["characters"] = _receipt_row_count_bucket(characters)
+    span_days = _first("span_days", "actual_span_days")
+    if span_days is not None:
+        materiality["span_days"] = _receipt_row_count_bucket(span_days)
+    claimed_days = _first("claimed_window_days")
+    try:
+        if claimed_days is not None and float(claimed_days) > 0 \
+                and span_days is not None:
+            materiality["claim_span_ratio"] = _receipt_ratio_bucket(
+                float(span_days) / float(claimed_days)
+            )
+    except (TypeError, ValueError, ZeroDivisionError):
+        pass
+    long_cells = context.get("long_cells")
+    if isinstance(long_cells, list):
+        cell_dicts = [item for item in long_cells if isinstance(item, dict)]
+        if cell_dicts:
+            materiality["max_text_characters"] = _receipt_row_count_bucket(
+                max(item.get("characters", 0) for item in cell_dicts)
+            )
+            materiality["max_text_words"] = _receipt_row_count_bucket(
+                max(item.get("words", 0) for item in cell_dicts)
+            )
+    if diagnostic.code == "tool_output_runtime_unverified":
+        compute_sha = context.get("compute_sha256")
+        if isinstance(compute_sha, str):
+            materiality["compute_sha256"] = compute_sha
+        matrix_shapes = []
+        for item in context.get("inputs", []) or []:
+            if not isinstance(item, dict) or item.get("kind") != "matrix":
+                continue
+            matrix_shapes.append({
+                "id": item.get("id"),
+                "rows": _receipt_row_count_bucket(
+                    item.get("materialized_rows", item.get("rows"))
+                ),
+                "columns": _receipt_row_count_bucket(item.get("columns")),
+            })
+        if matrix_shapes:
+            materiality["matrix_shapes"] = matrix_shapes
+    return materiality
+
+
+def _manifest_review_definition_sha(manifest: Dict[str, Any]) -> str:
+    """Fingerprint panel/filter definition while excluding ordinary values."""
+    import hashlib
+
+    metadata = manifest.get("metadata") \
+        if isinstance(manifest.get("metadata"), dict) else {}
+    metadata_static = {
+        key: value
+        for key, value in metadata.items()
+        if key not in {"time", "generated_at", "data_as_of"}
+    }
+    datasets = manifest.get("datasets") \
+        if isinstance(manifest.get("datasets"), dict) else {}
+    dataset_contracts = {}
+    for name, entry in sorted(datasets.items()):
+        if isinstance(entry, dict):
+            dataset_contracts[name] = {
+                key: entry.get(key)
+                for key in ("quality", "description", "units")
+                if entry.get(key) is not None
+            }
+        else:
+            dataset_contracts[name] = {}
+    projection = {
+        "schema_version": manifest.get("schema_version"),
+        "id": manifest.get("id"),
+        "theme": manifest.get("theme"),
+        "palette": manifest.get("palette"),
+        "metadata": metadata_static,
+        "filters": manifest.get("filters"),
+        "links": manifest.get("links"),
+        "layout": manifest.get("layout"),
+        "dataset_contracts": dataset_contracts,
+    }
+    raw = json.dumps(
+        projection, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False, default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _review_signature(
+    definition_sha256: str,
+    quality_signature: str,
+) -> str:
+    import hashlib
+
+    raw = (
+        f"{_DASHBOARD_REVIEW_SCHEMA}\0"
+        f"{_DASHBOARD_REVIEW_DETECTOR_VERSION}\0"
+        f"{definition_sha256}\0{quality_signature}"
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _bind_review_definition(
+    review: DashboardReview,
+    definition_sha256: str,
+) -> DashboardReview:
+    review.definition_sha256 = definition_sha256
+    review.review_signature = _review_signature(
+        definition_sha256, review.quality_signature,
+    )
+    return review
+
+
+def _table_receipt_evidence(
+    widget: Dict[str, Any],
+    dataframe: Any,
+) -> Dict[str, Any]:
+    """Risk-rank table rows so long/missing outliers survive bounded output."""
+    import pandas as pd
+
+    if dataframe is None:
+        return {"row_count": 0, "column_count": 0, "risk_ranked_rows": []}
+    widget_id = widget.get("id")
+    dataframe = dataframe.copy()
+    columns = [
+        column.get("field")
+        for column in (widget.get("columns") or [])
+        if isinstance(column, dict)
+        and isinstance(column.get("field"), str)
+        and column.get("field") in dataframe.columns
+    ]
+    if not columns:
+        columns = list(dataframe.columns)
+
+    def _cell_is_missing(value: Any) -> bool:
+        try:
+            marker = pd.isna(value)
+            if marker is pd.NA:
+                return True
+            return bool(marker)
+        except (TypeError, ValueError):
+            return False
+
+    ranked: List[Tuple[float, int, Dict[str, Any]]] = []
+    for position, (index, row) in enumerate(dataframe.iterrows()):
+        selected = row[columns]
+        missing = int(selected.isna().sum())
+        text_lengths = [
+            len(str(value))
+            for value in selected.tolist()
+            if not _cell_is_missing(value)
+        ]
+        max_text = max(text_lengths, default=0)
+        total_text = sum(text_lengths)
+        risk = float(missing * 500 + max_text * 4 + total_text)
+        cells = {
+            str(column): (
+                None if _cell_is_missing(selected[column])
+                else _receipt_compact_value(selected[column])
+            )
+            for column in columns[:8]
+        }
+        ranked.append((
+            risk,
+            position,
+            {
+                "row": str(index),
+                "risk_score": round(risk, 2),
+                "missing_cells": missing,
+                "max_text_chars": max_text,
+                "cells": cells,
+            },
+        ))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return {
+        "widget_id": widget_id,
+        "row_count": int(len(dataframe)),
+        "column_count": len(columns),
+        "columns": columns[:16],
+        "risk_ranked_rows": [item[2] for item in ranked[:5]],
+        "omitted_rows": max(0, len(ranked) - 5),
+    }
+
+
+def _chart_receipt_evidence(
+    widget: Dict[str, Any],
+    dataframe: Any,
+    option: Optional[Dict[str, Any]],
+) -> Tuple[str, Dict[str, Any]]:
+    """Profile exactly the Python compiler's default-state chart dataset."""
+    import numpy as np
+    import pandas as pd
+
+    option = option if isinstance(option, dict) else {}
+    # ``ref`` files may use the retained raw-spec envelope
+    # ``{"chart_type": "raw", "option": {...}}``. The renderer consumes
+    # the nested option, so the semantic receipt must inspect that same
+    # payload rather than misclassifying a populated ref chart as NO_DATA.
+    if (
+        not isinstance(option.get("series"), (dict, list))
+        and isinstance(option.get("option"), dict)
+    ):
+        option = option["option"]
+    if dataframe is None or len(dataframe) == 0:
+        raw_series = option.get("series")
+        option_series = (
+            raw_series if isinstance(raw_series, list)
+            else ([raw_series] if isinstance(raw_series, dict) else [])
+        )
+        point_count = 0
+        option_evidence: List[Dict[str, Any]] = []
+        missing_points = 0
+        numeric_values: List[float] = []
+        for series in option_series[:8]:
+            if not isinstance(series, dict):
+                continue
+            data = series.get("data")
+            if isinstance(data, list):
+                point_count += len(data)
+                missing_points += sum(item is None for item in data)
+                series_numeric: List[Tuple[int, float]] = []
+                for position, item in enumerate(data):
+                    candidate = (
+                        item.get("value")
+                        if isinstance(item, dict) else item
+                    )
+                    if isinstance(candidate, (list, tuple)) and candidate:
+                        candidate = candidate[-1]
+                    try:
+                        number = float(candidate)
+                    except (TypeError, ValueError):
+                        continue
+                    if np.isfinite(number):
+                        series_numeric.append((position, number))
+                        numeric_values.append(number)
+                minimum = maximum = None
+                if series_numeric:
+                    min_item = min(series_numeric, key=lambda item: item[1])
+                    max_item = max(series_numeric, key=lambda item: item[1])
+                    minimum = {
+                        "position": min_item[0],
+                        "value": min_item[1],
+                    }
+                    maximum = {
+                        "position": max_item[0],
+                        "value": max_item[1],
+                    }
+                option_evidence.append({
+                    "name": series.get("name"),
+                    "type": series.get("type"),
+                    "point_count": len(data),
+                    "first": (
+                        _receipt_compact_value(data[0]) if data else None
+                    ),
+                    "last": (
+                        _receipt_compact_value(data[-1]) if data else None
+                    ),
+                    "minimum": minimum,
+                    "maximum": maximum,
+                })
+        if point_count == 0:
+            option_state = "NO_DATA"
+        elif missing_points:
+            option_state = "PARTIAL"
+        elif numeric_values and all(value == 0 for value in numeric_values):
+            option_state = "ALL_ZERO"
+        else:
+            option_state = "POPULATED"
+        return option_state, {
+            "row_count": 0,
+            "series": option_evidence,
+            "resolved_option": {
+                "series_count": len(option_series),
+                "series_types": [
+                    series.get("type")
+                    for series in option_series if isinstance(series, dict)
+                ],
+                "embedded_point_count": point_count,
+            },
+        }
+    spec = widget.get("spec") \
+        if isinstance(widget.get("spec"), dict) else {}
+    mapping = spec.get("mapping") \
+        if isinstance(spec.get("mapping"), dict) else {}
+    x_field = mapping.get("x") or mapping.get("date")
+    x_values = (
+        dataframe[x_field].reset_index(drop=True)
+        if isinstance(x_field, str) and x_field in dataframe.columns else None
+    )
+    candidates: List[str] = []
+    numeric_keys = _numeric_keys_for(spec.get("chart_type"))
+    for key in ("y", "value", "close", "high", "low", "open", "x"):
+        if key not in numeric_keys:
+            continue
+        value = mapping.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+        elif isinstance(value, (list, tuple)):
+            candidates.extend(
+                item for item in value if isinstance(item, str)
+            )
+    candidates = list(dict.fromkeys(
+        column for column in candidates if column in dataframe.columns
+    ))
+    series_evidence: List[Dict[str, Any]] = []
+    total_numeric = 0
+    total_missing = 0
+    all_zero = bool(candidates)
+    any_effective = False
+    for column in candidates[:8]:
+        raw = dataframe[column].reset_index(drop=True)
+        numeric = pd.to_numeric(raw, errors="coerce")
+        finite_mask = numeric.notna() & np.isfinite(numeric.fillna(0))
+        finite = numeric[finite_mask]
+        total_numeric += int(len(numeric))
+        total_missing += int((~finite_mask).sum())
+        if len(finite):
+            any_effective = True
+            if not bool((finite == 0).all()):
+                all_zero = False
+
+        def _point(position: int) -> Optional[Dict[str, Any]]:
+            if not 0 <= position < len(numeric) or pd.isna(numeric.iloc[position]):
+                return None
+            return {
+                "position": position,
+                "x": (
+                    _receipt_compact_value(x_values.iloc[position])
+                    if x_values is not None else position
+                ),
+                "value": float(numeric.iloc[position]),
+            }
+
+        finite_positions = np.flatnonzero(finite_mask.to_numpy())
+        minimum = maximum = None
+        if len(finite_positions):
+            finite_numeric = numeric.where(finite_mask)
+            minimum_pos = int(finite_numeric.idxmin())
+            maximum_pos = int(finite_numeric.idxmax())
+            minimum = _point(minimum_pos)
+            maximum = _point(maximum_pos)
+        series_evidence.append({
+            "name": column,
+            "effective_points": int(len(finite)),
+            "missing_points": int((~finite_mask).sum()),
+            "missing_fraction": round(
+                float((~finite_mask).mean()), 6,
+            ),
+            "first": (
+                _point(int(finite_positions[0]))
+                if len(finite_positions) else None
+            ),
+            "last": (
+                _point(int(finite_positions[-1]))
+                if len(finite_positions) else None
+            ),
+            "minimum": minimum,
+            "maximum": maximum,
+            "missing_runs": _receipt_missing_runs(
+                numeric, x_values,
+            ),
+        })
+    if candidates and not any_effective:
+        data_state = "NO_DATA"
+    elif total_missing > 0:
+        data_state = "PARTIAL"
+    elif all_zero and any_effective:
+        data_state = "ALL_ZERO"
+    else:
+        data_state = "POPULATED"
+    raw_series = option.get("series")
+    option_series = (
+        raw_series if isinstance(raw_series, list)
+        else ([raw_series] if isinstance(raw_series, dict) else [])
+    )
+    x_axis = option.get("xAxis")
+    x_axes = x_axis if isinstance(x_axis, list) else (
+        [x_axis] if isinstance(x_axis, dict) else []
+    )
+    return data_state, {
+        "row_count": int(len(dataframe)),
+        "mapped_columns": candidates,
+        "series": series_evidence,
+        "resolved_option": {
+            "series_count": len(option_series),
+            "series_types": [
+                series.get("type")
+                for series in option_series if isinstance(series, dict)
+            ],
+            "series_contracts": [
+                {
+                    "name": series.get("name"),
+                    "type": series.get("type"),
+                    "min": series.get("min"),
+                    "max": series.get("max"),
+                    "detail_formatter": (
+                        (series.get("detail") or {}).get("formatter")
+                        if isinstance(series.get("detail"), dict)
+                        else None
+                    ),
+                }
+                for series in option_series[:8]
+                if isinstance(series, dict)
+            ],
+            "x_axis_types": [
+                axis.get("type")
+                for axis in x_axes if isinstance(axis, dict)
+            ],
+            "has_data_zoom": bool(option.get("dataZoom")),
+            "has_visual_map": bool(option.get("visualMap")),
+        },
+    }
+
+
+def _build_dashboard_review(
+    manifest: Dict[str, Any],
+    chart_specs: Optional[Dict[str, Dict[str, Any]]],
+    diagnostics: Sequence["Diagnostic"],
+    *,
+    structural_errors: Optional[Sequence[str]] = None,
+    definition_sha256: Optional[str] = None,
+) -> DashboardReview:
+    """Build the canonical Python compile/default-state semantic receipt."""
+    import hashlib
+
+    dfs = _materialize_datasets(manifest)
+    chart_specs = chart_specs or {}
+    by_widget: Dict[str, List[Diagnostic]] = {}
+    global_diagnostics: List[Diagnostic] = []
+    for diagnostic in diagnostics:
+        if diagnostic.widget_id:
+            by_widget.setdefault(diagnostic.widget_id, []).append(diagnostic)
+        else:
+            global_diagnostics.append(diagnostic)
+    panels: List[PanelReceipt] = []
+    for ordinal, location in enumerate(_widget_locations(manifest)):
+        widget = location["widget"]
+        panel_id = str(widget.get("id") or f"panel_{ordinal + 1}")
+        kind = str(widget.get("widget") or "unknown")
+        tab = location.get("tab")
+        tab_id = (
+            str(tab.get("id") or location.get("tab_index"))
+            if isinstance(tab, dict) else "grid"
+        )
+        location_text = (
+            f"tab={tab_id}/row={location['row_index']}/"
+            f"column={location['widget_index']}"
+        )
+        panel_diagnostics = by_widget.get(panel_id, [])
+        findings = [
+            _diagnostic_receipt_finding(diagnostic)
+            for diagnostic in panel_diagnostics
+            if diagnostic.severity != "info"
+        ]
+        status = (
+            "BLOCK"
+            if any(item.severity == "error" for item in panel_diagnostics)
+            else (
+                "REVIEW_REQUIRED"
+                if any(item.severity == "warning" for item in panel_diagnostics)
+                else "CLEAR"
+            )
+        )
+        title = str(
+            widget.get("title")
+            or (
+                (widget.get("spec") or {}).get("title")
+                if isinstance(widget.get("spec"), dict) else None
+            )
+            or panel_id
+        )
+        coverage = "compile_time_verified"
+        data_state = "POPULATED"
+        evidence: Dict[str, Any] = {}
+        if kind == "chart":
+            spec = widget.get("spec") \
+                if isinstance(widget.get("spec"), dict) else {}
+            dataset = spec.get("dataset")
+            dataframe = dfs.get(dataset)
+            if dataframe is not None:
+                dataframe = _apply_default_filters_for_widget(
+                    manifest, panel_id, dataframe,
+                )
+            data_state, evidence = _chart_receipt_evidence(
+                widget, dataframe, chart_specs.get(panel_id),
+            )
+            evidence["dataset"] = dataset
+            evidence["chart_type"] = spec.get("chart_type")
+        elif kind in ("table", "data_grid"):
+            dataset = widget.get("dataset_ref")
+            dataframe = dfs.get(dataset)
+            if dataframe is not None:
+                dataframe = _apply_default_filters_for_widget(
+                    manifest, panel_id, dataframe,
+                )
+            evidence = _table_receipt_evidence(widget, dataframe)
+            evidence["dataset"] = dataset
+            if dataframe is None or len(dataframe) == 0:
+                data_state = "NO_DATA"
+            elif dataframe.isna().any().any():
+                data_state = "PARTIAL"
+        elif kind == "tool":
+            coverage = "runtime_unverified"
+            tool_finding = next(
+                (
+                    diagnostic.context
+                    for diagnostic in panel_diagnostics
+                    if diagnostic.code == "tool_output_runtime_unverified"
+                ),
+                {},
+            )
+            evidence = _receipt_compact_value(tool_finding)
+            data_state = "RUNTIME_UNVERIFIED"
+            if status == "CLEAR":
+                status = "REVIEW_REQUIRED"
+        elif kind in ("kpi", "stat_grid"):
+            receipts = [
+                _diagnostic_receipt_finding(diagnostic)
+                for diagnostic in panel_diagnostics
+                if diagnostic.code in {
+                    "kpi_value_receipt", "stat_grid_value_receipt",
+                }
+            ]
+            evidence = {"visible_values": receipts}
+            if not receipts:
+                data_state = "NO_DATA"
+        elif kind in ("markdown", "note"):
+            text = str(
+                widget.get("content")
+                or widget.get("body")
+                or widget.get("text")
+                or ""
+            )
+            evidence = {
+                "characters": len(text),
+                "words": len(text.split()),
+                "preview": text[:500],
+            }
+            data_state = "POPULATED" if text.strip() else "NO_DATA"
+        else:
+            dataset = widget.get("dataset_ref")
+            dataframe = dfs.get(dataset)
+            evidence = {
+                "dataset": dataset,
+                "row_count": (
+                    int(len(dataframe)) if dataframe is not None else None
+                ),
+            }
+            if dataset and (dataframe is None or len(dataframe) == 0):
+                data_state = "NO_DATA"
+        summary_bits = [data_state.lower().replace("_", " ")]
+        if "row_count" in evidence:
+            summary_bits.append(f"rows={evidence['row_count']}")
+        if findings:
+            summary_bits.append(
+                "findings=" + ",".join(
+                    finding["code"] for finding in findings[:6]
+                )
+            )
+        panels.append(PanelReceipt(
+            panel_id=panel_id,
+            kind=kind,
+            title=title,
+            location=location_text,
+            status=status,
+            data_state=data_state,
+            summary="; ".join(summary_bits),
+            findings=findings,
+            evidence=_receipt_compact_value(evidence),
+            coverage=coverage,
+        ))
+
+    global_findings = [
+        _diagnostic_receipt_finding(diagnostic)
+        for diagnostic in global_diagnostics
+        if diagnostic.severity != "info"
+    ]
+    for error in structural_errors or []:
+        global_findings.append({
+            "severity": "error",
+            "code": "manifest_validation_error",
+            "message": str(error),
+            "path": "(manifest)",
+            "context": {},
+        })
+    global_block = any(
+        finding.get("severity") == "error" for finding in global_findings
+    )
+    global_review = any(
+        finding.get("severity") == "warning" for finding in global_findings
+    )
+    if global_block or any(panel.status == "BLOCK" for panel in panels):
+        review_status = "BLOCK"
+    elif global_review or any(
+        panel.status == "REVIEW_REQUIRED" for panel in panels
+    ):
+        review_status = "REVIEW_REQUIRED"
+    else:
+        review_status = "CLEAR"
+
+    panel_quality = []
+    for panel in panels:
+        finding_quality = [
+            {
+                "code": diagnostic.code,
+                "severity": diagnostic.severity,
+                "materiality": _finding_materiality(diagnostic),
+            }
+            for diagnostic in by_widget.get(panel.panel_id, [])
+            if diagnostic.severity != "info"
+        ]
+        finding_quality.sort(
+            key=lambda item: json.dumps(
+                item,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        )
+        panel_materiality: Dict[str, Any] = {}
+        if isinstance(panel.evidence, dict):
+            if panel.evidence.get("row_count") is not None:
+                panel_materiality["rows"] = _receipt_row_count_bucket(
+                    panel.evidence.get("row_count")
+                )
+            series_items = panel.evidence.get("series")
+            if isinstance(series_items, list):
+                missing_values = [
+                    item.get("missing_fraction")
+                    for item in series_items
+                    if isinstance(item, dict)
+                    and item.get("missing_fraction") is not None
+                ]
+                if missing_values:
+                    panel_materiality["max_missing"] = (
+                        _receipt_fraction_bucket(max(missing_values))
+                    )
+        panel_quality.append({
+            "panel_id": panel.panel_id,
+            "kind": panel.kind,
+            "status": panel.status,
+            "data_state": panel.data_state,
+            "materiality": panel_materiality,
+            "findings": finding_quality,
+        })
+    panel_quality.sort(key=lambda item: str(item["panel_id"]))
+    global_quality = [
+        {
+            "code": diagnostic.code,
+            "severity": diagnostic.severity,
+            "materiality": _finding_materiality(diagnostic),
+        }
+        for diagnostic in global_diagnostics
+        if diagnostic.severity != "info"
+    ]
+    global_quality.extend(
+        {
+            "code": "manifest_validation_error",
+            "severity": "error",
+            "materiality": {},
+        }
+        for _error in structural_errors or []
+    )
+    global_quality.sort(
+        key=lambda item: json.dumps(
+            item,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+    )
+    quality_payload = {
+        "schema_version": _DASHBOARD_REVIEW_SCHEMA,
+        "detector_version": _DASHBOARD_REVIEW_DETECTOR_VERSION,
+        "panels": panel_quality,
+        "global_findings": global_quality,
+    }
+    quality_raw = json.dumps(
+        quality_payload, sort_keys=True, separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    quality_signature = hashlib.sha256(quality_raw).hexdigest()
+    definition_sha256 = (
+        definition_sha256 or _manifest_review_definition_sha(manifest)
+    )
+    return DashboardReview(
+        dashboard_id=str(manifest.get("id") or "dashboard"),
+        status=review_status,
+        panels=panels,
+        definition_sha256=definition_sha256,
+        quality_signature=quality_signature,
+        review_signature=_review_signature(
+            definition_sha256, quality_signature,
+        ),
+        global_findings=global_findings,
+    )
+
+
 def compile_dashboard(
     manifest: Union[Dict[str, Any], str, Path],
     session_path: Optional[Union[str, Path]] = None,
@@ -12026,6 +13834,7 @@ def compile_dashboard(
     strict: bool = True,
     require_persistence_metadata: bool = True,
     print_receipts: bool = True,
+    _return_blocked_review: bool = False,
 ) -> DashboardResult:
     """JSON-first entry point. Compile a manifest to a dashboard.
 
@@ -12239,19 +14048,28 @@ def compile_dashboard(
             body_parts.append("")
             body_parts.extend(f"  - {w}" for w in agg_warnings)
         verbose_error_message = "\n".join(body_parts)
+        review_pre = _build_dashboard_review(
+            manifest_dict,
+            {},
+            agg_diags,
+            structural_errors=list(errs) + list(compute_errors),
+        )
+        if print_receipts:
+            print(review_pre.to_text())
         result = DashboardResult(
             manifest=manifest_dict, manifest_path=None,
             html_path=None, html=None, success=False,
             error_message=verbose_error_message,
             warnings=agg_warnings,
             diagnostics=agg_diags,
+            review=review_pre,
         )
         blocking_pre = [
             d for d in agg_diags
             if d.severity == "error"
             and d.code in ALWAYS_BLOCKING_ERROR_CODES
         ]
-        if strict or blocking_pre:
+        if (strict or blocking_pre) and not _return_blocked_review:
             reason = (
                 "strict=True"
                 if strict
@@ -12316,6 +14134,25 @@ def compile_dashboard(
     ]
     errors = [d for d in diags if d.severity == "error"]
     non_info = [d for d in diags if d.severity != "info"]
+    if errors and _return_blocked_review:
+        review = _build_dashboard_review(manifest_dict, {}, diags)
+        if print_receipts:
+            print(review.to_text())
+        body = "\n".join(f"  - {d}" for d in non_info)
+        return DashboardResult(
+            manifest=manifest_dict,
+            manifest_path=None,
+            html_path=None,
+            html=None,
+            success=False,
+            error_message=(
+                f"compile blocked by {len(errors)} error-severity "
+                f"diagnostic(s):\n{body}"
+            ),
+            warnings=[str(d) for d in non_info],
+            diagnostics=diags,
+            review=review,
+        )
     if strict and errors:
         # Strict callers get the complete non-info diagnostic surface in one
         # exception, not an always-blocking subset that hides independent
@@ -12360,6 +14197,28 @@ def compile_dashboard(
         d for d in diags
         if d.severity == "error" and id(d) not in pre_error_ids
     ]
+    if new_errors and _return_blocked_review:
+        non_info = [d for d in diags if d.severity != "info"]
+        review = _build_dashboard_review(
+            manifest_dict, chart_specs, diags,
+        )
+        if print_receipts:
+            print(review.to_text())
+        body = "\n".join(f"  - {d}" for d in non_info)
+        return DashboardResult(
+            manifest=manifest_dict,
+            manifest_path=None,
+            html_path=None,
+            html=None,
+            success=False,
+            error_message=(
+                f"compile blocked by {len(new_errors)} builder "
+                f"diagnostic(s):\n{body}"
+            ),
+            warnings=[str(d) for d in non_info],
+            diagnostics=diags,
+            review=review,
+        )
     if strict and new_errors:
         non_info = [d for d in diags if d.severity != "info"]
         warning_count = sum(1 for d in non_info if d.severity == "warning")
@@ -12379,6 +14238,12 @@ def compile_dashboard(
             f"the `(no data)` placeholder); {len(non_info)} total non-info "
             f"diagnostic(s):\n{body}"
         )
+
+    review = _build_dashboard_review(
+        manifest_dict, chart_specs, diags,
+    )
+    if print_receipts:
+        print(review.to_text())
 
     html = render_dashboard_html(
         manifest_dict, chart_specs,
@@ -12435,6 +14300,7 @@ def compile_dashboard(
         html_path=str(html_path) if html_path else None,
         html=html, success=True, warnings=warnings,
         diagnostics=diags,
+        review=review,
     )
 
 
@@ -12688,6 +14554,24 @@ def _dashboard_version_state_path(folder: str) -> str:
 
 def _dashboard_versions_prefix(folder: str) -> str:
     return f"{folder.rstrip('/')}/history/versions"
+
+
+def _dashboard_review_ack_prefix(folder: str) -> str:
+    return f"{folder.rstrip('/')}/history/review_acknowledgments"
+
+
+def _dashboard_review_ack_path(folder: str, review_signature: str) -> str:
+    if not isinstance(review_signature, str) or re.fullmatch(
+        r"[0-9a-f]{64}", review_signature,
+    ) is None:
+        raise ValueError(
+            "review_signature must be a 64-character lowercase SHA-256 "
+            "hex digest returned by review_dashboard."
+        )
+    return (
+        f"{_dashboard_review_ack_prefix(folder)}/"
+        f"{review_signature}.json"
+    )
 
 
 def _dashboard_version_path(folder: str, version_id: str) -> str:
@@ -14425,6 +16309,13 @@ def apply_manifest_operations(
                 s3_manager=s3,
                 expected_current_version_id=expected_current_version_id,
             )
+    except DashboardReviewRequired:
+        # The typed definition edit is the candidate PRISM now needs to
+        # review. Keep that candidate in place while build_dashboard's gate
+        # guarantees manifest.json/dashboard.html remain byte-identical.
+        # Rolling the definition back here would make the emitted signature
+        # impossible to inspect or acknowledge.
+        raise
     except Exception as exc:  # noqa: BLE001
         rollback_errors = _restore_s3_snapshots(s3, snapshots)
         _raise_transaction_failure(
@@ -14667,6 +16558,11 @@ def apply_persisted_script_operations(
             s3_manager=s3,
             expected_current_version_id=expected_current_version_id,
         )
+    except DashboardReviewRequired:
+        # Preserve the validated candidate script so review_dashboard can
+        # reproduce and acknowledge the exact signature. Live output bytes
+        # remain protected by build_dashboard's pre-persistence gate.
+        raise
     except Exception as exc:  # noqa: BLE001
         rollback_errors = _restore_s3_snapshots(s3, snapshots)
         _raise_transaction_failure(
@@ -15450,11 +17346,24 @@ def inspect_dashboard(
             ))
 
     diagnostic_manifest = compiled_manifest or template
+    review_state: Dict[str, Any] = {
+        "available": False,
+        "source": None,
+        "status": None,
+        "definition_sha256": None,
+        "quality_signature": None,
+        "review_signature": None,
+        "acknowledgment_match": False,
+        "publish_ready": False,
+        "acknowledgment_path": None,
+        "pending_findings": [],
+    }
     if isinstance(diagnostic_manifest, dict):
         try:
+            all_diagnostics = chart_data_diagnostics(diagnostic_manifest)
             surfaced_diagnostics = [
                 diagnostic
-                for diagnostic in chart_data_diagnostics(diagnostic_manifest)
+                for diagnostic in all_diagnostics
                 if (
                     diagnostic.severity == "error"
                     and diagnostic.code.startswith("popup_")
@@ -15477,6 +17386,80 @@ def inspect_dashboard(
                     fix_hint,
                     context=context,
                 ))
+
+            candidate_recipe = _load_dashboard_recipe(canonical, s3)
+            candidate_result, _dataset_count, _transform_count = (
+                _compile_dashboard_recipe(
+                    canonical,
+                    candidate_recipe,
+                    s3_manager=s3,
+                    allow_blocked_review=True,
+                    print_receipts=False,
+                )
+            )
+            semantic_review = candidate_result.review
+            if semantic_review is None:
+                raise RuntimeError(
+                    "candidate compiler returned no semantic dashboard review"
+                )
+            acknowledgment = _load_dashboard_review_acknowledgment(
+                s3, canonical, semantic_review,
+            )
+            pending_findings = [
+                {
+                    "panel_id": panel.panel_id,
+                    "status": panel.status,
+                    "codes": [
+                        finding.get("code")
+                        for finding in panel.findings
+                    ],
+                    "drill_down": (
+                        f"review_dashboard({canonical!r}).panel("
+                        f"{panel.panel_id!r})"
+                    ),
+                }
+                for panel in semantic_review.panels
+                if panel.status != "CLEAR"
+            ] + [
+                {
+                    "panel_id": None,
+                    "status": (
+                        "BLOCK"
+                        if finding.get("severity") == "error"
+                        else "REVIEW_REQUIRED"
+                    ),
+                    "codes": [finding.get("code")],
+                    "drill_down": (
+                        f"review_dashboard({canonical!r}).global_findings"
+                    ),
+                }
+                for finding in semantic_review.global_findings
+                if finding.get("severity") in {"error", "warning"}
+            ]
+            if semantic_review.status != "BLOCK" and acknowledgment is None:
+                pending_findings.append({
+                    "panel_id": None,
+                    "status": "REVIEW_REQUIRED",
+                    "codes": ["review_acknowledgment_pending"],
+                    "drill_down": f"review_dashboard({canonical!r})",
+                })
+            review_state = {
+                "available": True,
+                "source": "candidate_recipe_with_current_data",
+                "status": semantic_review.status,
+                "definition_sha256": semantic_review.definition_sha256,
+                "quality_signature": semantic_review.quality_signature,
+                "review_signature": semantic_review.review_signature,
+                "acknowledgment_match": acknowledgment is not None,
+                "publish_ready": (
+                    semantic_review.status != "BLOCK"
+                    and acknowledgment is not None
+                ),
+                "acknowledgment_path": _dashboard_review_ack_path(
+                    canonical, semantic_review.review_signature,
+                ),
+                "pending_findings": pending_findings,
+            }
         except Exception as exc:  # noqa: BLE001
             findings.append(_inspection_finding(
                 "warning",
@@ -15582,6 +17565,7 @@ def inspect_dashboard(
             },
         },
         "versioning": versioning,
+        "review": review_state,
         "metadata": metadata,
         "tabs": canonical_tabs,
         "datasets": {
@@ -17186,6 +19170,8 @@ def _compile_dashboard_recipe(
     s3_manager,
     refresh_cycle_at: Optional[str] = None,
     next_refresh_at: Optional[str] = None,
+    allow_blocked_review: bool = False,
+    print_receipts: bool = True,
 ) -> Tuple[DashboardResult, int, int]:
     """Compile one recipe against current persisted CSV data, without writes."""
     import copy
@@ -17255,13 +19241,235 @@ def _compile_dashboard_recipe(
 
     manifest = populate_template(template, datasets)
     result = compile_dashboard(
-        manifest, write_html=False, write_json=False, strict=True,
+        manifest,
+        write_html=False,
+        write_json=False,
+        strict=not allow_blocked_review,
+        # The recipe fingerprint is the persistence identity. Printing inside
+        # compile_dashboard would expose its temporary manifest-derived
+        # signature before _bind_review_definition replaces it.
+        print_receipts=False,
+        _return_blocked_review=allow_blocked_review,
     )
-    if not result.success:
+    if result.review is None:
+        raise RuntimeError(
+            "build_dashboard: compiler returned no semantic dashboard review"
+        )
+    _bind_review_definition(
+        result.review, _recipe_fingerprint(recipe),
+    )
+    if print_receipts:
+        _print_kpi_value_receipts(
+            result.diagnostics,
+            result.manifest.get("id") if result.manifest else None,
+        )
+        print(result.review.to_text())
+    if not result.success and not allow_blocked_review:
         raise ValueError(
             f"build_dashboard: compile failed: {result.error_message}"
         )
+    if isinstance(result.manifest, Manifest):
+        result.manifest._review = result.review
     return result, len(datasets), len(transforms)
+
+
+def _load_dashboard_review_acknowledgment(
+    s3_manager,
+    folder: str,
+    review: DashboardReview,
+) -> Optional[Dict[str, Any]]:
+    path = _dashboard_review_ack_path(folder, review.review_signature)
+    if not s3_manager.exists(path):
+        return None
+    record = _decode_json_object(bytes(s3_manager.get(path)), path)
+    expected = {
+        "review_schema": review.schema_version,
+        "detector_version": review.detector_version,
+        "dashboard_id": review.dashboard_id,
+        "definition_sha256": review.definition_sha256,
+        "quality_signature": review.quality_signature,
+        "review_signature": review.review_signature,
+    }
+    mismatches = {
+        key: {"expected": value, "found": record.get(key)}
+        for key, value in expected.items()
+        if record.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(
+            f"{path} does not match the candidate review: {mismatches} | "
+            "fix: do not overwrite the immutable record; inspect/remove the "
+            "corrupt key through the owning storage workflow."
+        )
+    if not isinstance(record.get("rationale"), str) \
+            or not record["rationale"].strip():
+        raise ValueError(
+            f"{path}.rationale must be a non-empty string."
+        )
+    return record
+
+
+def review_dashboard(
+    folder: str,
+    *,
+    s3_manager=None,
+    version_id: Optional[str] = None,
+) -> DashboardReview:
+    """Compile current data with the working or one saved recipe, without writes."""
+    s3 = _resolve_s3_manager(s3_manager)
+    canonical, kerberos, dashboard_id = _canonical_dashboard_identity(folder)
+    if version_id is None:
+        recipe = _load_dashboard_recipe(canonical, s3)
+    else:
+        target = _load_dashboard_version(s3, canonical, version_id)
+        recipe = target["recipe"]
+        _validate_recipe_identity(
+            recipe,
+            kerberos=kerberos,
+            dashboard_id=dashboard_id,
+            version_id=version_id,
+        )
+    result, _dataset_count, _transform_count = _compile_dashboard_recipe(
+        canonical,
+        recipe,
+        s3_manager=s3,
+        allow_blocked_review=True,
+        print_receipts=False,
+    )
+    if result.review is None:
+        raise RuntimeError("review_dashboard: compiler returned no review")
+    acknowledgment = _load_dashboard_review_acknowledgment(
+        s3, canonical, result.review,
+    )
+    if result.review.status == "BLOCK":
+        result.review.global_findings.append({
+            "severity": "error",
+            "code": "review_blocked_unacknowledgeable",
+            "message": (
+                "deterministic BLOCK findings must be repaired; this "
+                "candidate cannot be acknowledged or persisted"
+            ),
+            "path": "(dashboard_review)",
+            "context": {"acknowledgment_match": False},
+        })
+    else:
+        result.review.global_findings.append({
+            "severity": "info" if acknowledgment is not None else "warning",
+            "code": (
+                "review_acknowledgment_match"
+                if acknowledgment is not None
+                else "review_acknowledgment_pending"
+            ),
+            "message": (
+                "matching immutable acknowledgment found"
+                if acknowledgment is not None
+                else "candidate must be acknowledged before persistence"
+            ),
+            "path": _dashboard_review_ack_path(
+                canonical, result.review.review_signature,
+            ),
+            "context": {
+                "acknowledgment_match": acknowledgment is not None,
+            },
+        })
+    return result.review
+
+
+def acknowledge_dashboard_review(
+    folder: str,
+    expected_review_signature: str,
+    rationale: str,
+    *,
+    s3_manager=None,
+    version_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Recompute and acknowledge the working or one saved recipe signature."""
+    if not isinstance(expected_review_signature, str) \
+            or re.fullmatch(r"[0-9a-f]{64}", expected_review_signature) is None:
+        raise ValueError(
+            "expected_review_signature must be the exact 64-character "
+            "signature returned by review_dashboard."
+        )
+    if not isinstance(rationale, str) or not rationale.strip():
+        raise ValueError(
+            "rationale must be a non-empty explanation of why the candidate "
+            "is acceptable to publish."
+        )
+    if len(rationale.strip()) > 4_000:
+        raise ValueError("rationale must be at most 4,000 characters")
+    s3 = _resolve_s3_manager(s3_manager)
+    canonical, kerberos, dashboard_id = _canonical_dashboard_identity(folder)
+    if version_id is None:
+        recipe = _load_dashboard_recipe(canonical, s3)
+    else:
+        target = _load_dashboard_version(s3, canonical, version_id)
+        recipe = target["recipe"]
+        _validate_recipe_identity(
+            recipe,
+            kerberos=kerberos,
+            dashboard_id=dashboard_id,
+            version_id=version_id,
+        )
+    result, _dataset_count, _transform_count = _compile_dashboard_recipe(
+        canonical,
+        recipe,
+        s3_manager=s3,
+        allow_blocked_review=True,
+        print_receipts=False,
+    )
+    review = result.review
+    if review is None:
+        raise RuntimeError(
+            "acknowledge_dashboard_review: compiler returned no review"
+        )
+    if review.status == "BLOCK":
+        raise ValueError(
+            "BLOCK dashboard reviews cannot be acknowledged; repair the "
+            "deterministic failure and review the new signature."
+        )
+    if review.review_signature != expected_review_signature:
+        raise ValueError(
+            "dashboard review changed before acknowledgment: expected "
+            f"{expected_review_signature}, found {review.review_signature} | "
+            "fix: inspect the new review and acknowledge its exact signature."
+        )
+    existing = _load_dashboard_review_acknowledgment(s3, canonical, review)
+    if existing is not None:
+        response = dict(existing)
+        response["already_acknowledged"] = True
+        return response
+    from dashboards_time import utcnow, format_iso
+
+    record = {
+        "review_schema": review.schema_version,
+        "detector_version": review.detector_version,
+        "dashboard_id": review.dashboard_id,
+        "definition_sha256": review.definition_sha256,
+        "quality_signature": review.quality_signature,
+        "review_signature": review.review_signature,
+        "review_status": review.status,
+        "rationale": rationale.strip(),
+        "acknowledged_at_utc": format_iso(utcnow()),
+    }
+    path = _dashboard_review_ack_path(canonical, review.review_signature)
+    # Signature-addressed keys are immutable. A concurrent writer that wins
+    # between the existence check and put must produce the same signature;
+    # writing once is therefore the only allowed mutation here.
+    s3.put(
+        json.dumps(record, indent=2, ensure_ascii=False).encode("utf-8"),
+        path,
+    )
+    persisted = _load_dashboard_review_acknowledgment(
+        s3, canonical, review,
+    )
+    if persisted is None:
+        raise RuntimeError(
+            "review acknowledgment verification failed after write"
+        )
+    response = dict(persisted)
+    response["path"] = path
+    response["already_acknowledged"] = False
+    return response
 
 
 def _persist_dashboard_build(
@@ -17444,6 +19652,19 @@ def restore_dashboard_version(
             current_version_id=expected_current_version_id,
             cause=exc,
         ) from exc
+    if compiled.review is None:
+        raise RuntimeError(
+            "restore_dashboard_version: compiler returned no semantic review"
+        )
+    acknowledgment = _load_dashboard_review_acknowledgment(
+        s3, canonical, compiled.review,
+    )
+    if acknowledgment is None:
+        # The target recipe has not reached a live write. Review and
+        # acknowledge it with version_id=version_id, then retry the restore.
+        raise DashboardReviewRequired(
+            compiled.review, version_id=version_id,
+        )
 
     current_state = _load_dashboard_version_state(
         s3, canonical, required=True,
@@ -17581,6 +19802,18 @@ def build_dashboard(folder: str, *, s3_manager=None,
         next_refresh_at=next_refresh_at,
     )
 
+    if r.review is None:
+        raise RuntimeError(
+            "build_dashboard: compiler returned no semantic review"
+        )
+    acknowledgment = _load_dashboard_review_acknowledgment(
+        s3, canonical, r.review,
+    )
+    if acknowledgment is None:
+        # No writes have occurred: compile ran in-memory and the refresh
+        # attachment audit/persistence transaction are deliberately below.
+        raise DashboardReviewRequired(r.review)
+
     # Enforce the compile <-> refresh-attach invariant from
     # dashboards_hub.md#contract.
     # Runs BEFORE S3 persistence so a failed audit does not produce a
@@ -17716,7 +19949,11 @@ def launch_clean_refresh(folder: str) -> Dict[str, Any]:
             "pid": process.pid,
             "status": status,
         }
-        if returncode != 0:
+        review_required = (
+            isinstance(status, dict)
+            and status.get("status") == "review_required"
+        )
+        if returncode != 0 and not review_required:
             raise RuntimeError(
                 f"clean refresh failed with returncode {returncode}; "
                 f"log_path={session_log_key}; status={status!r}"
@@ -17782,7 +20019,8 @@ def refresh_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
 
 
 __all__ = [
-    "Dashboard", "DashboardResult", "Manifest", "Tab",
+    "Dashboard", "DashboardResult", "DashboardReview", "PanelReceipt",
+    "Manifest", "Tab",
     "ChartRef", "KPIRef", "TableRef", "MarkdownRef", "NoteRef", "DividerRef",
     "GlobalFilter", "Link",
     "compile_dashboard", "render_dashboard",
@@ -17792,6 +20030,7 @@ __all__ = [
     "df_to_source", "manifest_template", "populate_template",
     "Diagnostic", "chart_data_diagnostics",
     "run_pull", "build_dashboard", "refresh_dashboard",
+    "review_dashboard", "acknowledge_dashboard_review",
     "launch_clean_refresh",
     "audit_dashboard_layout",
     "apply_manifest_operations", "apply_persisted_script_operations",
@@ -17800,6 +20039,7 @@ __all__ = [
     "synchronize_refresh_frequency", "sync_refresh_frequency",
     "_AUDIT_REQUIRED_PATHS",
     "RefreshAttachmentError",
+    "DashboardReviewRequired",
     "resolve_chart_specs",
     "SCHEMA_VERSION", "ENGINE_VERSION", "VALID_WIDGETS", "VALID_FILTERS",
     "VALID_CHART_TYPES", "VALID_FILTER_OPS", "VALID_SYNC",

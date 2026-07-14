@@ -17,6 +17,8 @@ Public surface PRISM imports:
     # Folder, inspection, transaction, and version operations.
     from dashboards import (
         run_pull,                  # run ONE pull from PULLS (in-process)
+        review_dashboard,          # compile bounded panel receipt, no publish
+        acknowledge_dashboard_review,  # bind rationale to exact signature
         build_dashboard,           # template + CSVs + transforms -> compile
         refresh_dashboard,         # all PULLS + build_dashboard
         launch_clean_refresh,      # isolated runner + S3 logs/status
@@ -108,6 +110,8 @@ from dashboards.echart_dashboard import (  # noqa: E402,F401
     run_pull,
     build_dashboard,
     refresh_dashboard,
+    review_dashboard,
+    acknowledge_dashboard_review,
     launch_clean_refresh,
     # Compile primitives.
     compile_dashboard,
@@ -144,8 +148,11 @@ from dashboards.echart_dashboard import (  # noqa: E402,F401
     # Result / diagnostic / error types.
     Manifest,
     DashboardResult,
+    DashboardReview,
+    PanelReceipt,
     Diagnostic,
     RefreshAttachmentError,
+    DashboardReviewRequired,
     DashboardVersionRestoreError,
     # Package metadata / private qualification contract.
     _AUDIT_REQUIRED_PATHS,
@@ -175,6 +182,8 @@ __all__ = [
     "run_pull",
     "build_dashboard",
     "refresh_dashboard",
+    "review_dashboard",
+    "acknowledge_dashboard_review",
     "launch_clean_refresh",
     # Compile primitives.
     "compile_dashboard",
@@ -211,8 +220,11 @@ __all__ = [
     # Result / diagnostic / error types.
     "Manifest",
     "DashboardResult",
+    "DashboardReview",
+    "PanelReceipt",
     "Diagnostic",
     "RefreshAttachmentError",
+    "DashboardReviewRequired",
     "DashboardVersionRestoreError",
     # Time helpers.
     "utcnow",

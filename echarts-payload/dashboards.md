@@ -57,7 +57,7 @@ Classify the request, then issue the smallest applicable `list_ai_repo(file_path
 
 | Intent at the current phase | First fetch for that phase |
 |---|---|
-| First build | `dashboards_hub.md`, `dashboards/build.md`, then only primitive spokes required by the requested artifact |
+| First build | `dashboards_hub.md`, `dashboards/build.md`, `dashboards/pipelines.md`, then only primitive spokes required by the requested artifact |
 | Manifest/layout/widget/filter edit | `dashboards_hub.md`, `dashboards/template_crud.md`, plus the affected primitive spoke |
 | Pure pull source/column/parameter edit with no derived dataset or `TRANSFORMS` change | `dashboards_hub.md`, `dashboards/pipelines.md` only |
 | Derived dataset or `TRANSFORMS` operation: rolling/window, lag, normalization, join/pivot/reshape, or any other derived shape | `dashboards_hub.md`, `dashboards/pipelines.md`, `dashboards/recipes.md` |
@@ -105,16 +105,16 @@ These are measured context bundles, not mandatory bulk loads:
 
 | Bundle | Exact fetch |
 |---|---|
-| Typical create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/charts.md", "dashboards/widgets.md"], mode="full")` |
-| Filtered create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/charts.md", "dashboards/widgets.md", "dashboards/filters.md"], mode="full")` |
-| Tool create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/widget_tool.md", "dashboards/widgets.md"], mode="full")` |
-| Charted tool create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/widget_tool.md", "dashboards/widgets.md", "dashboards/charts.md"], mode="full")` |
+| Typical create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/charts.md", "dashboards/widgets.md"], mode="full")` |
+| Filtered create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/charts.md", "dashboards/widgets.md", "dashboards/filters.md"], mode="full")` |
+| Tool create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/widget_tool.md", "dashboards/widgets.md"], mode="full")` |
+| Charted tool create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/widget_tool.md", "dashboards/widgets.md", "dashboards/charts.md"], mode="full")` |
 | Typical manifest edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/template_crud.md", "dashboards/charts.md"], mode="full")` |
 | Pure pull edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/pipelines.md"], mode="full")` |
 | Derived transform edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/pipelines.md", "dashboards/recipes.md"], mode="full")` |
 | Typical diagnosis | `list_ai_repo(file_paths=["dashboards/diagnose.md"], mode="full")` |
-| Explicit tool build then typed edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/template_crud.md", "dashboards/widget_tool.md", "dashboards/widgets.md"], mode="full")` |
-| Explicit charted tool build then typed edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/template_crud.md", "dashboards/widget_tool.md", "dashboards/widgets.md", "dashboards/charts.md"], mode="full")` |
+| Explicit tool build then typed edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/template_crud.md", "dashboards/widget_tool.md", "dashboards/widgets.md"], mode="full")` |
+| Explicit charted tool build then typed edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/template_crud.md", "dashboards/widget_tool.md", "dashboards/widgets.md", "dashboards/charts.md"], mode="full")` |
 
 ## File map
 
@@ -122,9 +122,9 @@ The router is the only fetch menu. The production context inventory is:
 
 | File | Authority |
 |---|---|
-| `dashboards_hub.md` | Cross-cutting manifest, public API, layout, registry, and anti-pattern kernel |
-| `dashboards/build.md` | First-build Tools 1-4 |
-| `dashboards/diagnose.md` | Inspect, triage, heal, and revert |
+| `dashboards_hub.md` | Cross-cutting manifest, public API, Dashboard Garbage Gate, layout, registry, and anti-pattern kernel |
+| `dashboards/build.md` | First-build Tools 1-4 and publish gate |
+| `dashboards/diagnose.md` | Inspect, review state, triage, heal, and revert |
 | `dashboards/template_crud.md` | Typed manifest operations |
 | `dashboards/pipelines.md` | Persisted pull/build script edits and data-flow integrity |
 | `dashboards/recipes.md` | Data archetypes and transform patterns |
@@ -137,6 +137,7 @@ The router is the only fetch menu. The production context inventory is:
 
 - First build means all four tools in [build.md](dashboards/build.md#four-tool-transaction) complete in one turn.
 - An edit means inspection, the owner API, recompile, clean refresh verification, and portal handoff complete before responding.
+- Every publish follows the hub-owned receipt sequence: review, drill into each flagged panel, acknowledge the exact signature with a rationale, then run the guarded build. Repair `BLOCK`; never acknowledge it.
 - A missing product decision may block. Mechanical uncertainty does not: follow structured engine fix hints.
 - Never report success from `validate_manifest` or retained file existence alone. The persisted dashboard must pass the final refresh path, report `refresh_status.status == "success"`, and prove each required CSV is non-empty output from the current cycle.
 - Refresh has no universal per-pull timeout. Do not add an arbitrary authoring timeout; respect source-specific client timeouts and wait for terminal refresh evidence.

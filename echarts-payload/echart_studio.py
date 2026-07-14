@@ -4852,9 +4852,30 @@ def build_radar(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str, A
 
 
 def build_gauge(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str, Any]:
+    import math
+
     val = mapping.get("value")
     name = mapping.get("name", "value")
-    mn = mapping.get("min", 0); mx = mapping.get("max", 100)
+
+    def _resolve_bound(key: str, default: float) -> float:
+        raw = mapping.get(key, default)
+        if df is not None and isinstance(raw, str) and raw in df.columns:
+            values = _col_to_list(df, raw)
+            raw = values[-1] if values else None
+        try:
+            return float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"gauge: {key} must be a finite number or numeric column"
+            ) from exc
+
+    mn = _resolve_bound("min", 0)
+    mx = _resolve_bound("max", 100)
+    if not math.isfinite(mn) or not math.isfinite(mx) or mn >= mx:
+        raise ValueError(
+            f"gauge: min/max must be finite with min < max "
+            f"(got min={mn!r}, max={mx!r})"
+        )
     opt = _base_option(ctx)
     opt["tooltip"] = {"show": True, "trigger": "item"}
     opt.pop("xAxis", None); opt.pop("yAxis", None); opt.pop("grid", None)
@@ -4868,6 +4889,24 @@ def build_gauge(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str, A
         value = float(series[-1]) if series else 0.0
     else:
         raise ValueError("gauge: mapping.value must be a number or column name")
+    if not math.isfinite(value):
+        raise ValueError(f"gauge: value must be finite (got {value!r})")
+    if not mn <= value <= mx:
+        raise ValueError(
+            f"gauge: value {value:g} lies outside [{mn:g}, {mx:g}]"
+        )
+
+    decimals = clamp_decimals(
+        mapping.get("value_decimals", 2)
+    )
+    detail_formatter = (
+        "function(v){"
+        " var n=Number(v);"
+        " if (!Number.isFinite(n)) return '--';"
+        f" var s=n.toFixed({decimals});"
+        " return s.replace(/\\.?0+$/, '');"
+        "}"
+    )
 
     opt["series"] = [{
         "type": "gauge", "name": str(name),
@@ -4876,7 +4915,7 @@ def build_gauge(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str, A
         "axisLine": {"lineStyle": {"width": 14}},
         "pointer": {"show": True, "length": "60%", "width": 6},
         "title": {"show": True, "fontSize": 14},
-        "detail": {"valueAnimation": True, "formatter": "{value}",
+        "detail": {"valueAnimation": True, "formatter": detail_formatter,
                     "fontSize": 28},
         "data": [{"value": value, "name": str(name)}],
     }]

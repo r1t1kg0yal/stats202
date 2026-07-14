@@ -184,6 +184,21 @@ Each structured record exposes `severity`, `code`, `path`, `widget_id`,
 `visual_effect`, and `fix_hint`. Never clip, sort, impute, delete, or
 winsorize silently. Repair a demonstrated source/transform defect; when a
 flagged observation may be real, surface the evidence and ask.
+For publication, `review.panel(id)` is the authoritative panel decision and
+evidence surface; inspection findings are the owner-localization/diagnostic
+index. Correlate shared codes, but do not report the same finding twice.
+
+### Garbage-gate chart states
+
+| Receipt state | Decision |
+|---|---|
+| Literal date formatter such as `x_date_format="MMM YY"` | `BLOCK`: ECharts repeats the literal at every tick. Use `"auto"` or an explicit JavaScript function string. |
+| Gauge with non-finite/inverted bounds or a value outside its declared range | `BLOCK`: correct the units/value or set finite `min < max`; these defects cannot be acknowledged. |
+| Sparse, gappy, stale, flat, spiky, or isolated spike/reversal line evidence | `REVIEW_REQUIRED`: inspect missing runs, gap/frequency evidence, scale-dominating points, reversal neighborhoods, and abrupt breaks in `review.panel(id)`; preserve ambiguous source values. |
+| Categorical bar/waterfall marks with only zeros | `REVIEW_REQUIRED` with `data_state="ALL_ZERO"`: verify upstream values/units and make genuine zero explicit. |
+| Categorical bar/waterfall marks with missing values | `REVIEW_REQUIRED` with `data_state="PARTIAL"`: distinguish genuine absence from pull/join failure; never coerce missing to zero. |
+
+These decisions describe the Python compiler's default-filter state. Browser interactions and tool calculations need their separate runtime checks.
 
 ## XY mappings
 
@@ -242,7 +257,7 @@ Common mapping/spec controls:
 |---|---|
 | `legend_position`, `legend_show` | Legend placement/visibility |
 | `series_labels`, `humanize` | Persisted-name display mapping |
-| `x_date_format` | Date label formatting |
+| `x_date_format` | `"auto"` or an explicit JavaScript function string; token literals such as `"MMM YY"` block |
 | `y_min`, `y_max`, `x_min`, `x_max` | Fixed ranges |
 | `y_format`, `x_format` | `percent`, `bp`, `usd`, `compact`, or JS formatter |
 | `grid_padding` | `{top, right, bottom, left}` |

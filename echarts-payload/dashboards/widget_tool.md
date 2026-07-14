@@ -39,6 +39,8 @@ When every output is computed only from viewer inputs, use the legal tool-only p
 
 `compute_js` is literal JavaScript. It receives current values in `inputs` and returns an object keyed by output ids.
 
+The Python compiler validates the declaration and static source contract but never executes or translates arbitrary `compute_js`. Every tool panel therefore has `coverage="runtime_unverified"`, `data_state="RUNTIME_UNVERIFIED"`, and at least `REVIEW_REQUIRED`. Inspect `review.panel(id)` and acknowledge that exact unverified-runtime boundary; this accepts the coverage limit, not the output's correctness. Then build, execute representative/default/edge inputs in the browser, and withhold delivery until those browser checks pass.
+
 ```js
 function compute(inputs) {
   var inflation = +inputs.inflation_pct / 100;
@@ -344,4 +346,4 @@ Do not rebuild the containing tab or widget from memory. A manifest root replace
 - Use a tool when viewer inputs drive a new calculation.
 - Use a chart drawer when the interaction is a supported transform/view choice on one chart.
 - Keep the model explainable in the methodology and output labels.
-- Verify all declared outputs with representative and edge-case inputs before delivery.
+- Verify all declared outputs with representative and edge-case inputs in the browser before delivery; Python review never claims runtime execution.

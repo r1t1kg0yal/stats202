@@ -24,6 +24,7 @@ The deterministic result contains:
 | `manifest_template_sha256` / `template_sha256` / `compiled_manifest_sha256` | Concurrency token, read-only equal pre/post snapshot, and compiled-manifest hash |
 | `scripts.pull_data` / `scripts.build` | Canonical path, presence, byte count, SHA-256 guard, syntax status, registered function inventory, resolved producer outputs, and unresolved output sites |
 | `versioning` | Current/previous definition version, working/current recipe hashes, clean/dirty state, and five recent product summaries |
+| `review` | Availability/source, `BLOCK`/`REVIEW_REQUIRED`/`CLEAR`, definition/quality/review signatures, acknowledgment match/path, and flagged panel drill-down pointers |
 | `metadata` | Identity, cadence, methodology, sources, and authored state |
 | `tabs` | Canonical ordered `{id, label, index}` list |
 | `datasets` | Name-keyed records with persisted CSV path/presence, columns, dtypes, `[rows, columns]` shape, data origin, producer classification/pipelines/transform, and widget/filter consumers |
@@ -110,6 +111,20 @@ that the value is wrong, preserve it, explain the visual risk, and ask
 whether the product should keep the full scale or use an explicit
 alternative view.
 
+### Dashboard review evidence
+
+Inspection summarizes the currently persisted candidate at `state["review"]`. When a publish is authorized, get the complete current receipt and inspect every flagged panel before mutation:
+
+```python
+review = review_dashboard(FOLDER)
+print(review.to_text())
+for panel in review.panels:
+    if panel.status != "CLEAR":
+        print(review.panel(panel.panel_id).to_text())
+```
+
+The receipt is Python compile/default-state semantics only. It always indexes every panel and includes flagged detail by default; `review.panel(id)` is the authoritative drill-down. `state["review"]["pending_findings"]` and top-level `state["findings"]` are read-only triage indexes, not a second publish loop: use them to locate owners, then enumerate each non-`CLEAR` panel exactly once from the fresh `DashboardReview`. `BLOCK` is deterministic and unacknowledgeable. For a first build or changed review signature, acknowledge the exact current `review_signature` with a rationale that names the reviewed panel ids (or complete `CLEAR` index), accepted finding/baseline, receipt evidence, and analytical reason; then call `build_dashboard`, passing the freshly inspected current version id when the existing-recipe guard requires it. For an unchanged raw-value refresh where `state["review"]["acknowledgment_match"]` and `publish_ready` are both true, skip redundant acknowledgment and continue the refresh. Browser-only tool `compute_js` remains `runtime_unverified` because Python never executes it.
+
 `update_widget.patch` is shallow. After inspection identifies the widget, read its complete current object from the decoded template, copy the whole popup subtree, change one leaf, and patch that subtree:
 
 ```python
@@ -150,7 +165,7 @@ the incident as environment/network evidence before mutating the dashboard.
 1. **Identity and required files.** Confirm canonical folder identity and address every `files.missing` finding before mutation.
 2. **Structured findings.** Work error findings before warnings. Use each `path` to localize and each `fix_hint` as the corrective contract.
 3. **Refresh attachment.** Resolve every `attachment_gaps` item; a compiling but unattached dashboard is not healthy.
-4. **Refresh evidence.** Read `refresh_status.status`, `errors`, and `log_path`. Do not restart-loop a failing dashboard.
+4. **Refresh evidence.** Read `refresh_status.status`, `errors`, and `log_path`. `review_required` retains live output bytes and is not a failure cooldown; inspect and acknowledge rather than restart-looping.
 5. **Browser evidence.** Classify recent telemetry by `kind`, timestamp, viewer, message, source, and URL.
 6. **Dependency graph.** Trace affected widget/filter backward through dataset and CSV to a pull or transform.
 7. **Registry.** Require exactly one matching entry and aligned cadence.
@@ -165,6 +180,9 @@ the incident as environment/network evidence before mutating the dashboard.
 | Popup detail dataset/field/key-overlap finding | `widgets.md` and `template_crud.md` | Correct the source/target binding named by the diagnostic |
 | Data-quality error | `pipelines.md` plus the consuming primitive | Repair the named producer/transform/contract defect; strict compilation remains blocked |
 | Data-quality warning with ambiguous observation | Product judgment | Preserve the data, surface the structured evidence, and ask before changing scale treatment or data |
+| Review status `BLOCK` | Owning primitive or pipeline | Repair the deterministic finding and obtain a new receipt; acknowledgment is forbidden |
+| Review status `REVIEW_REQUIRED` or unacknowledged `CLEAR` | Dashboard Garbage Gate | Drill into every flagged panel, acknowledge the exact signature with rationale, then run the guarded build |
+| Refresh status `review_required` | Dashboard Garbage Gate | Live manifest/dashboard and registry/user pointers remain unchanged; acknowledge the current review and retry without failure cooldown |
 | CSV missing or stem not produced | `pipelines.md` | Repair the pull output path/name or transform |
 | Producer output unresolved through a helper/dynamic key | `pipelines.md` | Preserve the coherent producer; make its fixed output names statically visible at literal helper call sites or finite literal loops |
 | Dataset has no pull/transform producer | `pipelines.md` | Attach a real producer; do not preserve a silently aging CSV |
@@ -188,7 +206,9 @@ inspect
   → classify every finding and attachment gap
   → fetch the evidence-identified owner
   → apply the smallest durable repair
-  → strict build or clean refresh
+  → review receipt and flagged panels
+  → acknowledge exact non-BLOCK signature with rationale
+  → guarded build or clean refresh
   → inspect again
   → stop only when required files, attachment, registry, refresh,
     and relevant browser evidence are clean
@@ -243,7 +263,12 @@ The user sees the product choice, not the implementation mechanics.
 A revert restores one engine-recorded dashboard definition and recompiles it with current persisted data. It does not restore historical CSV values.
 
 ```python
-from dashboards import list_dashboard_versions, restore_dashboard_version
+from dashboards import (
+    acknowledge_dashboard_review,
+    list_dashboard_versions,
+    restore_dashboard_version,
+    review_dashboard,
+)
 
 versions = list_dashboard_versions(
     FOLDER,
@@ -252,6 +277,22 @@ versions = list_dashboard_versions(
 )
 # Apply the resolution rules below, then copy one exact returned entry.
 target = SELECTED_VERSION_ENTRY
+review = review_dashboard(FOLDER, version_id=target["version_id"])
+print(review.to_text())
+for panel in review.panels:
+    if panel.status != "CLEAR":
+        print(review.panel(panel.panel_id).to_text())
+if review.status == "BLOCK":
+    raise ValueError("repair or choose another saved definition")
+acknowledge_dashboard_review(
+    FOLDER,
+    expected_review_signature=review.review_signature,
+    rationale=(
+        "Reviewed the selected saved definition with current persisted data; "
+        "accepted <specific panel findings and evidence>."
+    ),
+    version_id=target["version_id"],
+)
 result = restore_dashboard_version(
     FOLDER,
     version_id=target["version_id"],
@@ -269,7 +310,7 @@ Resolve the target in product language:
 4. “The newer one again” selects `previous_version_id` only after confirming its timestamp is newer than current; otherwise show newer timestamped candidates.
 5. Pass only the exact selected `version_id`; never invent or partially reconstruct a version.
 
-Re-run `list_dashboard_versions` immediately before every restore, including a second restore in the same turn, so the expected-current guard is fresh. A stale expected-current error means re-list and re-resolve; never retry with a guessed id.
+Re-run `list_dashboard_versions` immediately before every restore, including a second restore in the same turn, so the expected-current guard is fresh. Review and acknowledge that exact saved `version_id` against current data before each restore; a missing acknowledgment raises `DashboardReviewRequired` before any live bytes change. A stale expected-current error means re-list and re-resolve; never retry with a guessed id.
 
 If the selected definition fails current compilation or attachment validation, `DashboardVersionRestoreError` carries `code="saved_definition_incompatible"`, `version_id`, `current_version_id`, `cause_type`, and `fix_hint`; the live dashboard remains unchanged. Surface the product-level incompatibility, restate that restores use current data, and ask whether to choose another version or repair that saved definition. After success say: “Restored the dashboard definition from <local time>. It is using the latest available data.”
 
@@ -281,6 +322,7 @@ A diagnosis is complete when the cause and owner are identified. A repair is com
 - error findings relevant to the incident are gone;
 - every remaining quality warning has been surfaced and not silently
   transformed away;
+- the current review is non-`BLOCK`, its flagged panels were inspected, and its exact signature is acknowledged before publish;
 - `attachment_gaps` is empty;
 - registry match count is one and cadence is aligned;
 - a clean refresh reports success;

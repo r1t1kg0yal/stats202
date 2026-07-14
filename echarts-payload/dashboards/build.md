@@ -12,7 +12,9 @@ This file is the sole owner of first-build Tools 1-4. A first build is one unint
 ```text
 Tool 1  author pull_data.py → persist → run every PULLS entry → verify CSVs
    ↓
-Tool 2  compose template + author build.py → persist → build_dashboard
+Tool 2  compose template + author build.py → persist → review receipt
+        → flagged-panel drill-down → exact rationale acknowledgment
+        → build_dashboard
    ↓
 Tool 3  register exactly once → align cadence → verify registry (pointer: scheduled orchestrator only)
    ↓
@@ -214,12 +216,31 @@ TRANSFORMS = [derive_spread]
 '''.replace("{{FOLDER}}", FOLDER)
 
 s3_manager.put(build_py.encode("utf-8"), f"{FOLDER}/scripts/build.py")
+review = review_dashboard(FOLDER)
+print(review.to_text())
+for panel in review.panels:
+    if panel.status != "CLEAR":
+        print(review.panel(panel.panel_id).to_text())
+if review.status == "BLOCK":
+    raise ValueError("repair blocked panels, then review the new candidate")
+
+acknowledge_dashboard_review(
+    FOLDER,
+    expected_review_signature=review.review_signature,
+    rationale=(
+        "Reviewed the complete curve and spread panel index; accepted this "
+        "CLEAR first baseline because both default-state series are populated "
+        "and no Python-visible quality finding remains."
+    ),
+)
 built = build_dashboard(FOLDER)
 audit_dashboard_layout(FOLDER)
 ```
 
 Template rules:
 
+- A first build requires exact acknowledgment even when its `DashboardReview.status` is `CLEAR`. Always inspect the one-line-per-panel receipt, drill into every flagged panel with `review.panel(id)`, provide a real rationale, and only then call `build_dashboard`.
+- `BLOCK` is unacknowledgeable. Repair the deterministic defect and review the new signature.
 - The first successful `build_dashboard` creates the baseline definition version; later successful builds create a version only when the template or either persisted script changed.
 - Default to tabs when the product has separable jobs or is likely to grow; stable ids make later edits surgical.
 - Template dataset entries are slots, not embedded live rows.
@@ -354,13 +375,19 @@ with open(log_path, "wb") as log_file:
     )
     return_code = process.wait()
 
-if return_code != 0:
-    raise RuntimeError(f"refresh failed with rc={return_code}; log={log_path}")
-
 status = json.loads(
     s3_manager.get(f"{FOLDER}/refresh_status.json")
     .rstrip(b"\x00").decode("utf-8")
 )
+if status.get("status") == "review_required":
+    review = review_dashboard(FOLDER)
+    print(review.to_text())
+    raise RuntimeError(
+        "review the flagged panels, acknowledge the exact signature with "
+        "a rationale, then rerun the build and clean refresh"
+    )
+if return_code != 0:
+    raise RuntimeError(f"refresh failed with rc={return_code}; log={log_path}")
 if status.get("status") != "success":
     raise RuntimeError(
         f"refresh status={status.get('status')}; errors={status.get('errors')}"
@@ -378,10 +405,20 @@ for required_id in ('id="export-chart-data"', 'id="export-print"'):
 
 There is no universal per-pull refresh timeout. Do not impose an arbitrary authoring timeout; source-specific client timeouts still apply, and the subprocess plus status record provide terminal completion evidence. Require each expected CSV to have been produced successfully and verified non-empty in the current cycle so a stale retained file cannot qualify the build.
 
+`review_required` is a publish hold, not a failed refresh: the runner retains the live manifest/dashboard bytes, does not stamp registry or user-manifest pointers, and does not increment failure cooldown. Inspect the new receipt and flagged panels, acknowledge its exact signature with a rationale, then call `build_dashboard` and rerun Tool 4. Ordinary raw-value refreshes reuse an acknowledgment only while the definition and versioned quality signature remain unchanged; the quality signature uses finding codes and coarse count/fraction/ratio/span/text/shape classes rather than ordinary raw observations. When a fresh inspection reports `review.acknowledgment_match=True` and `review.publish_ready=True`, proceed without a redundant acknowledgment.
+
 The compile gate proves both export actions are present. In the browser gate,
 download chart-data CSV and trigger print once: print must use the light theme,
 mount every tab, open collapsed groups, and expand each `data_grid` to its
 complete filtered/sorted result up to `max_rows`.
+
+These are sequential gates, not competing claims. Python acknowledgment occurs
+before build and accepts the exact compile/default-state receipt, including any
+explicit `runtime_unverified` boundary. Browser-only JavaScript can run only
+after that build; exercise tool default/representative/edge inputs and exports
+before delivery. A browser failure requires a definition repair, a fresh
+review/acknowledgment when its signature changes, another build, and another
+browser check.
 
 ## Portal handoff
 
@@ -400,6 +437,8 @@ The user message contains the live URL and a concise product description. Do not
 - [ ] JSON artifacts, metadata sidecars, and `df.attrs` are not treated as datasets or provenance.
 - [ ] Template contains slots rather than live rows.
 - [ ] `TRANSFORMS` exists and each transform returns the dataset dictionary.
+- [ ] `review_dashboard` receipt and every flagged `review.panel(id)` were inspected.
+- [ ] The exact non-`BLOCK` review signature was acknowledged with a substantive rationale.
 - [ ] `build_dashboard` and `audit_dashboard_layout` pass.
 - [ ] Registry contains exactly one canonical entry.
 - [ ] Template and registry cadence are synchronized.
