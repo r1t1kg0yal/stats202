@@ -2208,7 +2208,6 @@ header.app-header {
   max-height: 210px; overflow-y: auto;
   border: 1px solid var(--border); border-radius: 3px;
 }
-.share-users-results[hidden] { display: none; }
 .share-user-result {
   display: flex; width: 100%; justify-content: space-between;
   gap: 12px; padding: 9px 10px; border: 0;
@@ -2238,39 +2237,6 @@ header.app-header {
 }
 .share-toast.visible { opacity: 1; transform: translateY(0); }
 .share-toast.error { background: var(--neg); }
-
-/* Share action in-flight: header button + modal/submenu primaries
-   show a CSS spinner so the click feels acknowledged while the
-   ACL / workspace POST is outstanding. */
-@keyframes share-spin {
-  to { transform: rotate(360deg); }
-}
-.share-spinner {
-  display: inline-block; width: 11px; height: 11px;
-  border: 1.5px solid currentColor; border-right-color: transparent;
-  border-radius: 50%; vertical-align: -1px;
-  animation: share-spin 0.7s linear infinite;
-  flex: 0 0 auto;
-}
-.header-actions .icon-btn.share-busy {
-  cursor: wait; opacity: 0.85;
-  gap: 6px;
-}
-.header-actions .icon-btn.share-busy .share-btn-label-row {
-  display: inline-flex; align-items: center; gap: 6px;
-}
-.header-actions .icon-btn.share-busy .share-caret { display: none; }
-.share-modal-btn.share-busy,
-.share-submenu-item.share-busy {
-  display: inline-flex; align-items: center; gap: 7px;
-  cursor: wait;
-}
-.share-menu-item.share-busy {
-  cursor: wait; opacity: 0.7; pointer-events: none;
-}
-.share-menu-item.share-busy .share-menu-icon {
-  display: inline-flex; align-items: center; justify-content: center;
-}
 
 :root[data-theme="dark"] .share-menu {
   background: var(--surface); border-color: var(--border);

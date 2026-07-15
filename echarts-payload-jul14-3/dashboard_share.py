@@ -99,11 +99,8 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
     var workspaceMenu = document.getElementById('share-workspace-submenu');
     var workspacesLoaded = false;
     var workspacesLoading = false;
-    var shareBusy = false;
-    var shareBusyDepth = 0;
 
     function paint(){
-      if (shareBusy) return;
       if (state === 'public') {
         lbl.textContent = 'Sharing';
         btn.classList.add('shared');
@@ -132,75 +129,8 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
     }
     paint();
 
-    function spinnerEl(){
-      var spin = document.createElement('span');
-      spin.className = 'share-spinner';
-      spin.setAttribute('aria-hidden', 'true');
-      return spin;
-    }
-
-    function setButtonBusy(button, busy, idleLabel, busyLabel){
-      if (!button) return;
-      if (busy) {
-        button.disabled = true;
-        button.classList.add('share-busy');
-        button.setAttribute('aria-busy', 'true');
-        button.textContent = '';
-        button.appendChild(spinnerEl());
-        button.appendChild(document.createTextNode(
-          ' ' + (busyLabel || 'Working\u2026')
-        ));
-      } else {
-        button.classList.remove('share-busy');
-        button.removeAttribute('aria-busy');
-        button.disabled = false;
-        button.textContent = idleLabel || 'Done';
-      }
-    }
-
-    function setShareBusy(busy){
-      if (busy) {
-        shareBusyDepth += 1;
-        if (shareBusy) return;
-        shareBusy = true;
-        closeMenu();
-        btn.classList.add('share-busy');
-        btn.disabled = true;
-        btn.setAttribute('aria-busy', 'true');
-        btn.setAttribute('aria-expanded', 'false');
-        lbl.textContent = '';
-        var row = document.createElement('span');
-        row.className = 'share-btn-label-row';
-        row.appendChild(spinnerEl());
-        row.appendChild(document.createTextNode(' Sharing\u2026'));
-        lbl.appendChild(row);
-      } else {
-        shareBusyDepth = Math.max(0, shareBusyDepth - 1);
-        if (shareBusyDepth > 0) return;
-        shareBusy = false;
-        btn.classList.remove('share-busy');
-        btn.disabled = false;
-        btn.removeAttribute('aria-busy');
-        paint();
-      }
-    }
-
-    function withShareBusy(work){
-      setShareBusy(true);
-      return Promise.resolve()
-        .then(work)
-        .then(function(value){
-          setShareBusy(false);
-          return value;
-        }, function(err){
-          setShareBusy(false);
-          throw err;
-        });
-    }
-
     // ----- dropdown open/close (mirrors download-dd pattern verbatim) -----
     function openMenu(){
-      if (shareBusy) return;
       menu.hidden = false;
       btn.setAttribute('aria-expanded', 'true');
       ddWrap.setAttribute('data-open', 'true');
@@ -218,7 +148,6 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
     }
     btn.addEventListener('click', function(e){
       e.stopPropagation();
-      if (shareBusy) return;
       if (menu.hidden) openMenu(); else closeMenu();
     });
     document.addEventListener('click', function(e){
@@ -233,17 +162,7 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
       options = options || {};
       options.credentials = 'same-origin';
       return fetch(url, options).then(function(r){
-        // Parse the body as text first so a non-JSON error page (e.g. a
-        // Django HTML 403/500) does not silently collapse to {} and erase
-        // the real status. A legitimate ok:False JSON error ({error/detail})
-        // is preserved and surfaced; a non-JSON body is reported with its
-        // HTTP status instead of the generic 'invalid response'.
-        return r.text().then(function(raw){
-          var data = {};
-          if (raw) {
-            try { data = JSON.parse(raw); }
-            catch (e) { data = {}; }
-          }
+        return r.json().catch(function(){ return {}; }).then(function(data){
           if (!r.ok) {
             throw new Error(
               (data && (data.error || data.detail))
@@ -379,18 +298,13 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
       confirm.textContent = confirmLabel;
       cancel.addEventListener('click', hideModal);
       confirm.addEventListener('click', function(){
-        if (confirm.classList.contains('share-busy')) return;
-        setButtonBusy(confirm, true, confirmLabel, 'Working\u2026');
-        cancel.disabled = true;
+        confirm.disabled = true;
         err.textContent = '';
-        withShareBusy(function(){
-          return Promise.resolve(onConfirm());
-        }).then(function(){
+        Promise.resolve(onConfirm()).then(function(){
           hideModal();
         }).catch(function(exc){
           err.textContent = exc.message;
-          setButtonBusy(confirm, false, confirmLabel);
-          cancel.disabled = false;
+          confirm.disabled = false;
         });
       });
     }
@@ -441,7 +355,9 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
           + '<div class="share-users-selected" '
           +      'id="share-users-selected"></div>'
           + '<div class="share-users-results" id="share-users-results" '
-          +      'role="listbox" hidden></div>'
+          +      'role="listbox">'
+          +   '<div class="share-submenu-status">Type to search for colleagues</div>'
+          + '</div>'
           + '<div class="share-modal-error" id="share-users-error"></div>'
           + '<div class="share-modal-actions">'
           +   '<button class="share-modal-btn" type="button" '
@@ -497,7 +413,6 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
       }
 
       function renderResults(results){
-        resultsEl.hidden = false;
         resultsEl.innerHTML = '';
         if (!results.length) {
           var empty = document.createElement('div');
@@ -537,19 +452,15 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
         });
       }
 
-      function hideResults(){
-        resultsEl.innerHTML = '';
-        resultsEl.hidden = true;
-      }
-
       function searchUsers(){
         var q = input.value.trim();
         errorEl.textContent = '';
         if (!q) {
-          hideResults();
+          resultsEl.innerHTML =
+            '<div class="share-submenu-status">'
+            + 'Type to search for colleagues</div>';
           return;
         }
-        resultsEl.hidden = false;
         resultsEl.innerHTML =
           '<div class="share-submenu-status">Searching\u2026</div>';
         fetchJson(
@@ -560,7 +471,6 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
           }
           renderResults(res.results);
         }).catch(function(exc){
-          resultsEl.hidden = false;
           resultsEl.innerHTML =
             '<div class="share-submenu-status">Search unavailable</div>';
           errorEl.textContent = exc.message;
@@ -578,21 +488,18 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
           errorEl.textContent = 'Select at least one colleague.';
           return;
         }
-        if (save.classList.contains('share-busy')) return;
-        setButtonBusy(save, true, 'Share', 'Sharing\u2026');
-        cancel.disabled = true;
+        save.disabled = true;
+        save.textContent = 'Sharing\u2026';
         errorEl.textContent = '';
-        withShareBusy(function(){
-          return postShareMode('users', {users: users}).then(function(res){
-            applyShareResponse(res, 'users');
-            hideModal();
-            showToast('Shared with ' + currentUsers.length
-              + (currentUsers.length === 1 ? ' colleague' : ' colleagues'));
-          });
+        postShareMode('users', {users: users}).then(function(res){
+          applyShareResponse(res, 'users');
+          hideModal();
+          showToast('Shared with ' + currentUsers.length
+            + (currentUsers.length === 1 ? ' colleague' : ' colleagues'));
         }).catch(function(exc){
           errorEl.textContent = exc.message;
-          setButtonBusy(save, false, 'Share');
-          cancel.disabled = false;
+          save.disabled = false;
+          save.textContent = 'Share';
         });
       });
       renderSelected();
@@ -612,39 +519,28 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
 
     function addToWorkspace(workspace, row){
       var workspaceId = workspace.workspace_id;
-      if (!workspaceId || row.classList.contains('share-busy')) return;
-      var idleCopy = row.innerHTML;
+      if (!workspaceId) return;
       row.disabled = true;
-      row.classList.add('share-busy');
-      row.setAttribute('aria-busy', 'true');
-      row.textContent = '';
-      row.appendChild(spinnerEl());
-      row.appendChild(document.createTextNode(' Adding\u2026'));
-      withShareBusy(function(){
-        return fetchJson(
-          WORKSPACES_API + encodeURIComponent(workspaceId) + '/add/',
-          {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-              resource_type: 'dashboard',
-              owner: author,
-              resource_id: DASHBOARD_ID,
-              name: MANIFEST.title || document.title || DASHBOARD_ID
-            })
-          }
-        ).then(function(res){
-          if (!res || res.ok !== true || !Array.isArray(res.resources)) {
-            throw new Error('workspace API returned an invalid response');
-          }
-          closeMenu();
-          showToast('Added to ' + (workspace.name || workspaceId));
-        });
+      fetchJson(
+        WORKSPACES_API + encodeURIComponent(workspaceId) + '/add/',
+        {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            resource_type: 'dashboard',
+            owner: author,
+            resource_id: DASHBOARD_ID,
+            name: MANIFEST.title || document.title || DASHBOARD_ID
+          })
+        }
+      ).then(function(res){
+        if (!res || res.ok !== true || !Array.isArray(res.resources)) {
+          throw new Error('workspace API returned an invalid response');
+        }
+        closeMenu();
+        showToast('Added to ' + (workspace.name || workspaceId));
       }).catch(function(exc){
-        row.classList.remove('share-busy');
-        row.removeAttribute('aria-busy');
         row.disabled = false;
-        row.innerHTML = idleCopy;
         showToast(exc.message, true);
       });
     }
@@ -729,12 +625,9 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
     // ----- menu-item handlers -----
     if (items['public']) {
       items['public'].addEventListener('click', function(){
-        if (shareBusy) return;
         closeMenu();
-        withShareBusy(function(){
-          return postShareMode('public').then(function(res){
-            applyShareResponse(res, 'public');
-          });
+        postShareMode('public').then(function(res){
+          applyShareResponse(res, 'public');
         }).catch(function(err){
           showToast(err.message, true);
         });
@@ -742,18 +635,15 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
     }
     if (items['link']) {
       items['link'].addEventListener('click', function(){
-        if (shareBusy) return;
         closeMenu();
-        withShareBusy(function(){
-          return postShareMode('link').then(function(res){
-            applyShareResponse(res, 'link');
-            if (!currentToken) {
-              throw new Error('share API did not return a link token');
-            }
-            var fullUrl = window.location.origin + window.location.pathname
-              + '?share=' + encodeURIComponent(currentToken);
-            showLinkModal(fullUrl);
-          });
+        postShareMode('link').then(function(res){
+          applyShareResponse(res, 'link');
+          if (!currentToken) {
+            throw new Error('share API did not return a link token');
+          }
+          var fullUrl = window.location.origin + window.location.pathname
+            + '?share=' + encodeURIComponent(currentToken);
+          showLinkModal(fullUrl);
         }).catch(function(err){
           showToast(err.message, true);
         });
@@ -761,21 +651,18 @@ _SHARE_CONTROLLER_JS_TEMPLATE = r"""  // ----- share dropdown (unified ACL + wor
     }
     if (items['users']) {
       items['users'].addEventListener('click', function(){
-        if (shareBusy) return;
         closeMenu();
         showUsersModal();
       });
     }
     if (items['department']) {
       items['department'].addEventListener('click', function(){
-        if (shareBusy) return;
         closeMenu();
         confirmDepartmentSharing();
       });
     }
     if (items['private']) {
       items['private'].addEventListener('click', function(){
-        if (shareBusy) return;
         closeMenu();
         confirmStopSharing();
       });
