@@ -69,9 +69,6 @@ public surface):
                           ``widget: chart`` in the manifest)
     rendering.py         editor HTML + dashboard HTML + headless-Chrome
                           PNG export (driven by ``compile_dashboard``)
-    dashboard_share.py   in-browser share fetch/ACL client
-                          (``SHARE_CONTROLLER_JS``); CSS/HTML chrome
-                          stays in ``rendering.py``
 
 Design: the manifest.json is the source of truth. ``compile_dashboard``
 takes that JSON (dict, path, or JSON string), validates, lowers each
