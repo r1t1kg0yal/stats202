@@ -259,7 +259,7 @@ same-source pipeline or adding dummy transform assignments.
 | `id` | Optional unique DOM id |
 | `primary` / `icon` / `title` | Styling and tooltip |
 
-Reserved ids: `methodology-btn`, `refresh-btn`, `refresh-btn-label`, `refresh-err-btn`, `share-btn`, `share-btn-label`, `share-mode-users`, `share-mode-department`, `share-add-workspace`, `share-workspace-submenu`, `download-btn`, `download-btn-label`, `download-menu`, `export-all`, `export-dashboard`, `export-chart-data`, `export-print`, `export-excel`, `theme-toggle`, `now-pill`, `now-pill-val`, `refresh-pill`, `refresh-pill-val`, `header-actions`.
+Reserved ids: `refresh-btn`, `share-btn`, `download-btn`, `download-menu`, `methodology-btn`, `theme-toggle`, `export-all`, `export-dashboard`, `export-chart-data`, `export-print`, `export-excel`, `data-as-of`, `data-as-of-val`, `header-actions`.
 
 Every successful strict compile emits `export-chart-data` and `export-print`;
 their presence is part of the compiler chrome contract, not a manifest option.

@@ -2104,150 +2104,15 @@ header.app-header {
 .share-menu-item .share-menu-label .share-menu-sub {
   font-size: 11px; color: var(--text-dim); font-weight: 400;
 }
-.share-menu-item .share-menu-submenu-caret {
-  margin-left: auto; padding-top: 2px; color: var(--text-faint);
-}
 .share-menu-item.danger:hover { color: var(--neg); }
 .share-menu-item[data-active="true"] { background: var(--accent-soft); }
 .share-menu-item[data-active="true"] .share-menu-label strong { color: var(--accent); }
-.share-menu-divider {
-  height: 1px; margin: 4px 8px !important;
-  background: var(--border);
-}
-.share-menu-has-submenu { position: relative; }
-.share-submenu {
-  position: absolute; top: -4px; right: calc(100% + 4px); z-index: 21;
-  min-width: 260px; padding: 4px; margin: 0; list-style: none;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.10);
-}
-.share-submenu[hidden] { display: none; }
-.share-submenu-item {
-  display: flex; width: 100%; align-items: center; gap: 10px;
-  padding: 9px 10px; border: 0; background: transparent;
-  color: var(--text); font-family: var(--gs-font-sans);
-  text-align: left; cursor: pointer; border-radius: 3px;
-}
-.share-submenu-item:hover { background: var(--bg-soft, #f0f3f8); }
-.share-submenu-item:disabled {
-  cursor: not-allowed; opacity: 0.55; background: transparent;
-}
-.share-workspace-copy {
-  display: flex; flex-direction: column; gap: 2px; min-width: 0;
-}
-.share-workspace-copy strong {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-size: 12px; font-weight: 600;
-}
-.share-workspace-copy span {
-  font-size: 10.5px; color: var(--text-dim); text-transform: capitalize;
-}
-.share-submenu-status {
-  padding: 10px 12px !important; color: var(--text-dim);
-  font-size: 11px; line-height: 1.45;
-}
-.share-modal-copy-row { display: flex; gap: 6px; margin: 12px 0 14px; }
-.share-modal-input {
-  width: 100%; min-width: 0; padding: 7px 9px;
-  border: 1px solid var(--border); border-radius: 3px;
-  background: var(--bg-soft); color: var(--text);
-  font-family: var(--gs-font-sans); font-size: 12px;
-}
-.share-modal-input:focus {
-  outline: none; border-color: var(--accent-2);
-  box-shadow: 0 0 0 2px var(--accent-soft);
-}
-.share-modal-actions {
-  display: flex; justify-content: flex-end; align-items: center;
-  gap: 8px; margin-top: 14px;
-}
-.share-modal-btn {
-  padding: 7px 13px; border: 1px solid var(--border);
-  border-radius: 3px; background: transparent; color: var(--text);
-  font-family: var(--gs-font-sans); font-size: 12px; cursor: pointer;
-}
-.share-modal-btn:hover { background: var(--surface-hover); }
-.share-modal-btn.primary {
-  background: var(--accent); border-color: var(--accent); color: #fff;
-}
-.share-modal-btn.danger {
-  background: var(--neg); border-color: var(--neg); color: #fff;
-}
-.share-modal-btn:disabled { cursor: wait; opacity: 0.55; }
-.share-modal-error {
-  min-height: 16px; margin-top: 8px; color: var(--neg);
-  font-size: 11px; line-height: 1.4;
-}
-.share-users-selected {
-  display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px;
-  margin: 10px 0; padding: 8px;
-  border: 1px solid var(--border); border-radius: 3px;
-  background: var(--bg-soft);
-}
-.share-user-chip {
-  display: inline-flex; align-items: center; gap: 5px;
-  max-width: 100%; padding: 4px 7px;
-  background: var(--accent-soft); color: var(--accent);
-  border-radius: 12px; font-size: 11px;
-}
-.share-user-chip span {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.share-user-chip button {
-  padding: 0; border: 0; background: transparent;
-  color: inherit; cursor: pointer; font-size: 13px; line-height: 1;
-}
-.share-users-empty {
-  align-self: center; color: var(--text-faint); font-size: 11px;
-}
-.share-users-results {
-  max-height: 210px; overflow-y: auto;
-  border: 1px solid var(--border); border-radius: 3px;
-}
-.share-user-result {
-  display: flex; width: 100%; justify-content: space-between;
-  gap: 12px; padding: 9px 10px; border: 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface); color: var(--text);
-  text-align: left; cursor: pointer;
-}
-.share-user-result:last-child { border-bottom: 0; }
-.share-user-result:hover { background: var(--surface-hover); }
-.share-user-result:disabled { cursor: default; opacity: 0.55; }
-.share-user-result-copy {
-  display: flex; flex-direction: column; gap: 2px; min-width: 0;
-}
-.share-user-result-copy strong { font-size: 12px; font-weight: 600; }
-.share-user-result-copy span { font-size: 10.5px; color: var(--text-dim); }
-.share-user-result-kerb {
-  flex: 0 0 auto; color: var(--text-faint); font-size: 10.5px;
-}
-.share-toast {
-  position: fixed; right: 22px; bottom: 22px; z-index: 10020;
-  max-width: 360px; padding: 10px 14px;
-  background: var(--gs-navy); color: #fff;
-  border-radius: 4px; box-shadow: 0 8px 24px rgba(0,0,0,0.22);
-  font-family: var(--gs-font-sans); font-size: 12px;
-  opacity: 0; transform: translateY(8px);
-  transition: opacity 0.15s var(--ease), transform 0.15s var(--ease);
-}
-.share-toast.visible { opacity: 1; transform: translateY(0); }
-.share-toast.error { background: var(--neg); }
 
 :root[data-theme="dark"] .share-menu {
   background: var(--surface); border-color: var(--border);
   box-shadow: 0 6px 18px rgba(0,0,0,0.4);
 }
-:root[data-theme="dark"] .share-submenu {
-  background: var(--surface); border-color: var(--border);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.4);
-}
 :root[data-theme="dark"] .share-menu-item:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-:root[data-theme="dark"] .share-submenu-item:hover,
-:root[data-theme="dark"] .share-user-result:hover {
   background: rgba(255, 255, 255, 0.06);
 }
 .icon-btn {
@@ -4028,50 +3893,6 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
                 </span>
               </button>
             </li>
-            <li role="none">
-              <button type="button" role="menuitem"
-                      class="share-menu-item" id="share-mode-users"
-                      title="Share this dashboard with specific colleagues.">
-                <span class="share-menu-icon">&#x1F464;</span>
-                <span class="share-menu-label">
-                  <strong>Share with people</strong>
-                  <span class="share-menu-sub">Pick specific colleagues</span>
-                </span>
-              </button>
-            </li>
-            <li role="none">
-              <button type="button" role="menuitem"
-                      class="share-menu-item" id="share-mode-department"
-                      title="Share this dashboard with your department.">
-                <span class="share-menu-icon">&#x1F3E2;</span>
-                <span class="share-menu-label">
-                  <strong>Share with my department</strong>
-                  <span class="share-menu-sub">Everyone in your department can view</span>
-                </span>
-              </button>
-            </li>
-            <li role="none" class="share-menu-has-submenu"
-                id="share-workspace-host">
-              <button type="button" role="menuitem"
-                      class="share-menu-item" id="share-add-workspace"
-                      title="Add this dashboard to a workspace you belong to."
-                      aria-haspopup="menu" aria-expanded="false">
-                <span class="share-menu-icon">&#x25A6;</span>
-                <span class="share-menu-label">
-                  <strong>Add to workspace</strong>
-                  <span class="share-menu-sub">Share into a workspace pool</span>
-                </span>
-                <span class="share-menu-submenu-caret"
-                      aria-hidden="true">&#x25C0;</span>
-              </button>
-              <ul class="share-submenu" id="share-workspace-submenu"
-                  role="menu" aria-label="Your workspaces" hidden>
-                <li class="share-submenu-status" role="none">
-                  Open to load your workspaces
-                </li>
-              </ul>
-            </li>
-            <li class="share-menu-divider" role="separator"></li>
             <li role="none">
               <button type="button" role="menuitem"
                       class="share-menu-item danger" id="share-mode-private"
@@ -13508,7 +13329,7 @@ DASHBOARD_APP_JS = r"""
     };
   }
 
-  // ----- share dropdown (unified ACL + workspace add-by-reference) -----
+  // ----- share dropdown (3-state: private | link | public) -----
   (function(){
     var ddWrap = document.getElementById('share-dd');
     var btn   = document.getElementById('share-btn');
@@ -13518,55 +13339,29 @@ DASHBOARD_APP_JS = r"""
 
     var viewer = window.PRISM_VIEWER || null;
     var author = window.PRISM_DASHBOARD_AUTHOR || MD.kerberos || null;
-    // Only the owner sees the share control. Some dashboard-serving
-    // views do not inject the portal-only flag, so only an explicit
-    // false disables this self-contained surface.
-    if (window.ENABLE_SHARING_UI === false
-        || !viewer || !author || viewer !== author) {
+    // Only the owner sees the share control.
+    if (!viewer || !author || viewer !== author) {
       ddWrap.style.display = 'none';
       return;
     }
     ddWrap.style.display = '';
 
-    var validModes = {
-      'private': true, 'link': true, 'users': true,
-      'department': true, 'workspace': true, 'public': true
-    };
-    // Prefer the unified mode global; retain the legacy boolean until
-    // every dashboard-serving view reads the nested registry share block.
+    // Initial state -- prefer the 3-state global, fall back to legacy bool.
     var state = window.PRISM_DASHBOARD_SHARE_MODE;
-    if (!validModes[state]) {
+    if (state !== 'private' && state !== 'link' && state !== 'public') {
       state = window.PRISM_DASHBOARD_SHARED ? 'public' : 'private';
     }
     var currentToken = window.PRISM_DASHBOARD_SHARE_TOKEN || null;
-    var currentUsers = Array.isArray(window.PRISM_DASHBOARD_SHARE_USERS)
-      ? window.PRISM_DASHBOARD_SHARE_USERS.filter(function(v){
-          return typeof v === 'string' && v;
-        })
-      : [];
-    var currentDepartment =
-      (typeof window.PRISM_DASHBOARD_SHARE_DEPARTMENT === 'string'
-       && window.PRISM_DASHBOARD_SHARE_DEPARTMENT)
-        ? window.PRISM_DASHBOARD_SHARE_DEPARTMENT : null;
 
     var SHARE_API = (window.MD && window.MD.share_api_url)
       || MD.share_api_url || '/api/dashboard/share/';
-    var USER_SEARCH_API = '/api/users/search/';
-    var WORKSPACES_API = '/api/workspaces/';
     var DASHBOARD_ID = window.PRISM_DASHBOARD_ID || MD.dashboard_id || MANIFEST.id || null;
 
     var items = {
       'public':  document.getElementById('share-mode-public'),
       'link':    document.getElementById('share-mode-link'),
-      'users':   document.getElementById('share-mode-users'),
-      'department': document.getElementById('share-mode-department'),
       'private': document.getElementById('share-mode-private')
     };
-    var workspaceHost = document.getElementById('share-workspace-host');
-    var workspaceBtn = document.getElementById('share-add-workspace');
-    var workspaceMenu = document.getElementById('share-workspace-submenu');
-    var workspacesLoaded = false;
-    var workspacesLoading = false;
 
     function paint(){
       if (state === 'public') {
@@ -13574,16 +13369,6 @@ DASHBOARD_APP_JS = r"""
         btn.classList.add('shared');
       } else if (state === 'link') {
         lbl.textContent = 'Sharing (link)';
-        btn.classList.add('shared');
-      } else if (state === 'users') {
-        lbl.textContent = currentUsers.length
-          ? 'Shared with ' + currentUsers.length : 'Shared with people';
-        btn.classList.add('shared');
-      } else if (state === 'department') {
-        lbl.textContent = 'Shared with dept';
-        btn.classList.add('shared');
-      } else if (state === 'workspace') {
-        lbl.textContent = 'Shared with workspace';
         btn.classList.add('shared');
       } else {
         lbl.textContent = 'Share';
@@ -13603,13 +13388,7 @@ DASHBOARD_APP_JS = r"""
       btn.setAttribute('aria-expanded', 'true');
       ddWrap.setAttribute('data-open', 'true');
     }
-    function closeWorkspaceMenu(){
-      if (!workspaceMenu || !workspaceBtn) return;
-      workspaceMenu.hidden = true;
-      workspaceBtn.setAttribute('aria-expanded', 'false');
-    }
     function closeMenu(){
-      closeWorkspaceMenu();
       menu.hidden = true;
       btn.setAttribute('aria-expanded', 'false');
       ddWrap.removeAttribute('data-open');
@@ -13625,469 +13404,103 @@ DASHBOARD_APP_JS = r"""
       if (e.key === 'Escape') closeMenu();
     });
 
-    // ----- API calls -----
-    function fetchJson(url, options){
-      options = options || {};
-      options.credentials = 'same-origin';
-      return fetch(url, options).then(function(r){
-        return r.json().catch(function(){ return {}; }).then(function(data){
-          if (!r.ok) {
-            throw new Error(
-              (data && (data.error || data.detail))
-              || ('request failed (' + r.status + ')')
-            );
-          }
-          return data;
-        });
-      });
-    }
-
+    // ----- API call -----
     function postShareMode(target_mode, opts){
       opts = opts || {};
-      if (!DASHBOARD_ID) {
-        return Promise.reject(new Error('dashboard id is unavailable'));
-      }
       var body = {
         dashboard_id: DASHBOARD_ID,
         share_mode: target_mode
       };
-      if (Array.isArray(opts.users)) body.users = opts.users;
-      if (typeof opts.department === 'string') body.department = opts.department;
-      if (typeof opts.workspace === 'string') body.workspace = opts.workspace;
       if (opts.reset_token) body.reset_token = true;
-      return fetchJson(SHARE_API, {
+      return fetch(SHARE_API, {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify(body)
+      }).then(function(r){
+        if (!r.ok) throw new Error('share api status ' + r.status);
+        return r.json();
       });
     }
 
-    function applyShareResponse(res, expectedMode){
-      if (!res || res.ok !== true || !res.share
-          || typeof res.share !== 'object') {
-        throw new Error('share API returned an invalid response');
-      }
-      var share = res.share;
-      if (!validModes[share.mode]) {
-        throw new Error('share API returned an invalid mode');
-      }
-      if (expectedMode && share.mode !== expectedMode) {
-        throw new Error(
-          'share API returned mode ' + share.mode
-          + ' after requesting ' + expectedMode
-        );
-      }
-      state = share.mode;
-      currentToken = (typeof share.token === 'string' && share.token)
-        ? share.token : null;
-      currentUsers = Array.isArray(share.users)
-        ? share.users.filter(function(v){
-            return typeof v === 'string' && v;
-          })
-        : [];
-      currentDepartment =
-        (typeof share.department === 'string' && share.department)
-          ? share.department : null;
-      paint();
-      return share;
-    }
-
-    function showToast(message, isError){
-      var prior = document.getElementById('share-toast');
-      if (prior) prior.remove();
-      var toast = document.createElement('div');
-      toast.id = 'share-toast';
-      toast.className = 'share-toast' + (isError ? ' error' : '');
-      toast.setAttribute('role', isError ? 'alert' : 'status');
-      toast.setAttribute('aria-live', 'polite');
-      toast.textContent = message;
-      document.body.appendChild(toast);
-      requestAnimationFrame(function(){ toast.classList.add('visible'); });
-      setTimeout(function(){
-        toast.classList.remove('visible');
-        setTimeout(function(){ toast.remove(); }, 180);
-      }, 2600);
-    }
-
-    function modalBody(){
-      var back = document.getElementById('ed-modal-backdrop');
-      return back ? back.querySelector('.ed-modal-body') : null;
-    }
-
-    // ----- link modal -----
+    // ----- link modal (built lazily on first "Share with link") -----
     function showLinkModal(fullUrl){
-      showModal(
-        'Share with link',
-        '<p>Anyone with this link can view the dashboard. '
-          + 'It is not listed in the Community gallery.</p>'
-          + '<div class="share-modal-copy-row">'
-          +   '<input class="share-modal-input" type="text" '
-          +          'id="share-link-input" readonly />'
-          +   '<button class="share-modal-btn primary" type="button" '
-          +           'id="share-link-copy">Copy</button>'
-          + '</div>'
-          + '<div class="share-modal-actions">'
-          +   '<button class="share-modal-btn" type="button" '
-          +           'id="share-link-close">Done</button>'
-          + '</div>'
-      );
-      var body = modalBody();
-      var input = body.querySelector('#share-link-input');
-      var copy  = body.querySelector('#share-link-copy');
-      var close = body.querySelector('#share-link-close');
-      input.value = fullUrl;
+      var prior = document.getElementById('share-link-modal');
+      if (prior) prior.remove();
+      var modal = document.createElement('div');
+      modal.id = 'share-link-modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);'
+                + 'display:flex;align-items:center;justify-content:center;z-index:9999;';
+      modal.innerHTML = ''
+       + '<div style="background:var(--surface);color:var(--text);'
+       +     'padding:20px 24px;border-radius:6px;min-width:420px;'
+       +     'max-width:560px;box-shadow:0 8px 32px rgba(0,0,0,0.25);">'
+       + '<h3 style="margin:0 0 12px;font-size:14px;font-weight:600;">Share with link</h3>'
+       + '<p style="margin:0 0 12px;font-size:12px;color:var(--text-dim);">'
+       +   'Anyone with this link can view the dashboard. It is not listed in the Community gallery.'
+       + '</p>'
+       + '<div style="display:flex;gap:6px;margin-bottom:14px;">'
+       +   '<input type="text" id="share-link-input" readonly value="' + fullUrl.replace(/"/g,'&quot;') + '" '
+       +      'style="flex:1;padding:6px 8px;font-size:12px;font-family:monospace;'
+       +         'border:1px solid var(--border);border-radius:3px;background:var(--bg-soft);'
+       +         'color:var(--text);" />'
+       +   '<button type="button" id="share-link-copy" '
+       +      'style="padding:6px 12px;font-size:12px;border:1px solid var(--border);'
+       +         'border-radius:3px;background:var(--accent);color:#fff;cursor:pointer;">Copy</button>'
+       + '</div>'
+       + '<div style="display:flex;justify-content:flex-end;">'
+       +   '<button type="button" id="share-link-close" '
+       +      'style="padding:6px 14px;font-size:12px;border:1px solid var(--border);'
+       +         'border-radius:3px;background:transparent;color:var(--text);cursor:pointer;">Done</button>'
+       + '</div>'
+       + '</div>';
+      document.body.appendChild(modal);
+      var input = modal.querySelector('#share-link-input');
+      var copy  = modal.querySelector('#share-link-copy');
+      var close = modal.querySelector('#share-link-close');
       copy.addEventListener('click', function(){
         input.select();
         try { document.execCommand('copy'); copy.textContent = 'Copied!'; }
-        catch(e){ copy.textContent = 'Select and copy'; }
+        catch(e){ /* clipboard blocked; user can still ctrl-c */ }
         setTimeout(function(){ copy.textContent = 'Copy'; }, 1800);
       });
-      close.addEventListener('click', hideModal);
+      function dismiss(){ modal.remove(); }
+      close.addEventListener('click', dismiss);
+      modal.addEventListener('click', function(e){ if (e.target === modal) dismiss(); });
     }
 
-    function showShareConfirm(title, message, confirmLabel, danger, onConfirm){
-      showModal(
-        title,
-        '<p id="share-confirm-message"></p>'
-          + '<div class="share-modal-error" id="share-confirm-error"></div>'
-          + '<div class="share-modal-actions">'
-          +   '<button class="share-modal-btn" type="button" '
-          +           'id="share-confirm-cancel">Cancel</button>'
-          +   '<button class="share-modal-btn '
-          +           (danger ? 'danger' : 'primary')
-          +           '" type="button" id="share-confirm-ok"></button>'
-          + '</div>'
-      );
-      var body = modalBody();
-      body.querySelector('#share-confirm-message').textContent = message;
-      var cancel = body.querySelector('#share-confirm-cancel');
-      var confirm = body.querySelector('#share-confirm-ok');
-      var err = body.querySelector('#share-confirm-error');
-      confirm.textContent = confirmLabel;
-      cancel.addEventListener('click', hideModal);
-      confirm.addEventListener('click', function(){
-        confirm.disabled = true;
-        err.textContent = '';
-        Promise.resolve(onConfirm()).then(function(){
-          hideModal();
-        }).catch(function(exc){
-          err.textContent = exc.message;
-          confirm.disabled = false;
-        });
+    // ----- confirm modal for "Stop sharing" (links will break) -----
+    function confirmStopSharing(onConfirm){
+      var prior = document.getElementById('share-stop-modal');
+      if (prior) prior.remove();
+      var modal = document.createElement('div');
+      modal.id = 'share-stop-modal';
+      modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);'
+                + 'display:flex;align-items:center;justify-content:center;z-index:9999;';
+      modal.innerHTML = ''
+       + '<div style="background:var(--surface);color:var(--text);'
+       +     'padding:20px 24px;border-radius:6px;min-width:380px;max-width:480px;'
+       +     'box-shadow:0 8px 32px rgba(0,0,0,0.25);">'
+       + '<h3 style="margin:0 0 12px;font-size:14px;font-weight:600;">Stop sharing?</h3>'
+       + '<p style="margin:0 0 16px;font-size:12px;color:var(--text-dim);">'
+       +   'The dashboard becomes private. Any existing share links will stop working immediately.'
+       + '</p>'
+       + '<div style="display:flex;justify-content:flex-end;gap:8px;">'
+       +   '<button type="button" id="share-stop-cancel" '
+       +      'style="padding:6px 14px;font-size:12px;border:1px solid var(--border);'
+       +         'border-radius:3px;background:transparent;color:var(--text);cursor:pointer;">Cancel</button>'
+       +   '<button type="button" id="share-stop-ok" '
+       +      'style="padding:6px 14px;font-size:12px;border:0;'
+       +         'border-radius:3px;background:var(--neg,#c0392b);color:#fff;cursor:pointer;">Stop sharing</button>'
+       + '</div>'
+       + '</div>';
+      document.body.appendChild(modal);
+      modal.querySelector('#share-stop-cancel').addEventListener('click', function(){ modal.remove(); });
+      modal.querySelector('#share-stop-ok').addEventListener('click', function(){
+        modal.remove();
+        onConfirm();
       });
-    }
-
-    function confirmStopSharing(){
-      showShareConfirm(
-        'Stop sharing?',
-        'The dashboard becomes private. Any existing share links '
-          + 'stop working immediately.',
-        'Stop sharing',
-        true,
-        function(){
-          return postShareMode('private').then(function(res){
-            applyShareResponse(res, 'private');
-            showToast('Dashboard is private');
-          });
-        }
-      );
-    }
-
-    function confirmDepartmentSharing(){
-      var audience = currentDepartment
-        ? currentDepartment : 'your department';
-      showShareConfirm(
-        'Share with your department?',
-        'Everyone in ' + audience + ' will be able to view this dashboard.',
-        'Share with department',
-        false,
-        function(){
-          return postShareMode('department').then(function(res){
-            applyShareResponse(res, 'department');
-            showToast('Shared with '
-              + (currentDepartment || 'your department'));
-          });
-        }
-      );
-    }
-
-    // ----- people picker -----
-    function showUsersModal(){
-      showModal(
-        'Share with people',
-        '<p>Search for colleagues, then choose the complete group '
-          + 'that should have access.</p>'
-          + '<input class="share-modal-input" type="search" '
-          +        'id="share-users-search" autocomplete="off" '
-          +        'placeholder="Search by name, kerberos, email, or department" />'
-          + '<div class="share-users-selected" '
-          +      'id="share-users-selected"></div>'
-          + '<div class="share-users-results" id="share-users-results" '
-          +      'role="listbox">'
-          +   '<div class="share-submenu-status">Type to search for colleagues</div>'
-          + '</div>'
-          + '<div class="share-modal-error" id="share-users-error"></div>'
-          + '<div class="share-modal-actions">'
-          +   '<button class="share-modal-btn" type="button" '
-          +           'id="share-users-cancel">Cancel</button>'
-          +   '<button class="share-modal-btn primary" type="button" '
-          +           'id="share-users-save">Share</button>'
-          + '</div>',
-        {wide: true}
-      );
-      var body = modalBody();
-      var input = body.querySelector('#share-users-search');
-      var selectedEl = body.querySelector('#share-users-selected');
-      var resultsEl = body.querySelector('#share-users-results');
-      var errorEl = body.querySelector('#share-users-error');
-      var cancel = body.querySelector('#share-users-cancel');
-      var save = body.querySelector('#share-users-save');
-      var selected = Object.create(null);
-      currentUsers.forEach(function(id){
-        selected[id] = {kerberos: id, display_name: id};
-      });
-      var searchTimer = null;
-
-      function selectedIds(){ return Object.keys(selected); }
-      function renderSelected(){
-        selectedEl.innerHTML = '';
-        var ids = selectedIds();
-        if (!ids.length) {
-          var empty = document.createElement('span');
-          empty.className = 'share-users-empty';
-          empty.textContent = 'No colleagues selected';
-          selectedEl.appendChild(empty);
-        } else {
-          ids.forEach(function(id){
-            var user = selected[id];
-            var chip = document.createElement('span');
-            chip.className = 'share-user-chip';
-            var label = document.createElement('span');
-            label.textContent = user.display_name || id;
-            var remove = document.createElement('button');
-            remove.type = 'button';
-            remove.setAttribute('aria-label', 'Remove ' + id);
-            remove.textContent = '\u00D7';
-            remove.addEventListener('click', function(){
-              delete selected[id];
-              renderSelected();
-            });
-            chip.appendChild(label);
-            chip.appendChild(remove);
-            selectedEl.appendChild(chip);
-          });
-        }
-        save.disabled = ids.length === 0;
-      }
-
-      function renderResults(results){
-        resultsEl.innerHTML = '';
-        if (!results.length) {
-          var empty = document.createElement('div');
-          empty.className = 'share-submenu-status';
-          empty.textContent = 'No matching colleagues';
-          resultsEl.appendChild(empty);
-          return;
-        }
-        results.forEach(function(user){
-          var id = user && user.kerberos;
-          if (!id || typeof id !== 'string') return;
-          var row = document.createElement('button');
-          row.type = 'button';
-          row.className = 'share-user-result';
-          row.setAttribute('role', 'option');
-          row.disabled = !!selected[id];
-          var copy = document.createElement('span');
-          copy.className = 'share-user-result-copy';
-          var name = document.createElement('strong');
-          name.textContent = user.display_name || id;
-          var meta = document.createElement('span');
-          meta.textContent = [user.department, user.location]
-            .filter(Boolean).join(' \u00B7 ') || 'PRISM user';
-          copy.appendChild(name);
-          copy.appendChild(meta);
-          var kerb = document.createElement('span');
-          kerb.className = 'share-user-result-kerb';
-          kerb.textContent = id;
-          row.appendChild(copy);
-          row.appendChild(kerb);
-          row.addEventListener('click', function(){
-            selected[id] = user;
-            renderSelected();
-            row.disabled = true;
-          });
-          resultsEl.appendChild(row);
-        });
-      }
-
-      function searchUsers(){
-        var q = input.value.trim();
-        errorEl.textContent = '';
-        if (!q) {
-          resultsEl.innerHTML =
-            '<div class="share-submenu-status">'
-            + 'Type to search for colleagues</div>';
-          return;
-        }
-        resultsEl.innerHTML =
-          '<div class="share-submenu-status">Searching\u2026</div>';
-        fetchJson(
-          USER_SEARCH_API + '?q=' + encodeURIComponent(q) + '&limit=10'
-        ).then(function(res){
-          if (!res || res.ok !== true || !Array.isArray(res.results)) {
-            throw new Error('user search returned an invalid response');
-          }
-          renderResults(res.results);
-        }).catch(function(exc){
-          resultsEl.innerHTML =
-            '<div class="share-submenu-status">Search unavailable</div>';
-          errorEl.textContent = exc.message;
-        });
-      }
-
-      input.addEventListener('input', function(){
-        clearTimeout(searchTimer);
-        searchTimer = setTimeout(searchUsers, 250);
-      });
-      cancel.addEventListener('click', hideModal);
-      save.addEventListener('click', function(){
-        var users = selectedIds();
-        if (!users.length) {
-          errorEl.textContent = 'Select at least one colleague.';
-          return;
-        }
-        save.disabled = true;
-        save.textContent = 'Sharing\u2026';
-        errorEl.textContent = '';
-        postShareMode('users', {users: users}).then(function(res){
-          applyShareResponse(res, 'users');
-          hideModal();
-          showToast('Shared with ' + currentUsers.length
-            + (currentUsers.length === 1 ? ' colleague' : ' colleagues'));
-        }).catch(function(exc){
-          errorEl.textContent = exc.message;
-          save.disabled = false;
-          save.textContent = 'Share';
-        });
-      });
-      renderSelected();
-      setTimeout(function(){ input.focus(); }, 0);
-    }
-
-    // ----- workspace add-by-reference -----
-    function renderWorkspaceStatus(message){
-      if (!workspaceMenu) return;
-      workspaceMenu.innerHTML = '';
-      var row = document.createElement('li');
-      row.className = 'share-submenu-status';
-      row.setAttribute('role', 'none');
-      row.textContent = message;
-      workspaceMenu.appendChild(row);
-    }
-
-    function addToWorkspace(workspace, row){
-      var workspaceId = workspace.workspace_id;
-      if (!workspaceId) return;
-      row.disabled = true;
-      fetchJson(
-        WORKSPACES_API + encodeURIComponent(workspaceId) + '/add/',
-        {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            resource_type: 'dashboard',
-            owner: author,
-            resource_id: DASHBOARD_ID,
-            name: MANIFEST.title || document.title || DASHBOARD_ID
-          })
-        }
-      ).then(function(res){
-        if (!res || res.ok !== true || !Array.isArray(res.resources)) {
-          throw new Error('workspace API returned an invalid response');
-        }
-        closeMenu();
-        showToast('Added to ' + (workspace.name || workspaceId));
-      }).catch(function(exc){
-        row.disabled = false;
-        showToast(exc.message, true);
-      });
-    }
-
-    function renderWorkspaces(workspaces){
-      workspaceMenu.innerHTML = '';
-      if (!workspaces.length) {
-        renderWorkspaceStatus('No workspaces yet');
-        return;
-      }
-      workspaces.forEach(function(workspace){
-        if (!workspace || !workspace.workspace_id) return;
-        var li = document.createElement('li');
-        li.setAttribute('role', 'none');
-        var row = document.createElement('button');
-        row.type = 'button';
-        row.className = 'share-submenu-item';
-        row.setAttribute('role', 'menuitem');
-        var canAdd = workspace.role === 'owner' || workspace.role === 'editor';
-        row.disabled = !canAdd;
-        if (!canAdd) row.title = 'Viewer access is read-only';
-        var copy = document.createElement('span');
-        copy.className = 'share-workspace-copy';
-        var name = document.createElement('strong');
-        name.textContent = workspace.name || workspace.workspace_id;
-        var meta = document.createElement('span');
-        var count = Number(workspace.resource_count) || 0;
-        meta.textContent = (workspace.role || 'viewer')
-          + ' \u00B7 ' + count + (count === 1 ? ' resource' : ' resources');
-        copy.appendChild(name);
-        copy.appendChild(meta);
-        row.appendChild(copy);
-        if (canAdd) {
-          row.addEventListener('click', function(e){
-            e.stopPropagation();
-            addToWorkspace(workspace, row);
-          });
-        }
-        li.appendChild(row);
-        workspaceMenu.appendChild(li);
-      });
-    }
-
-    function loadWorkspaces(){
-      if (workspacesLoaded || workspacesLoading || !workspaceMenu) return;
-      workspacesLoading = true;
-      renderWorkspaceStatus('Loading workspaces\u2026');
-      fetchJson(WORKSPACES_API).then(function(res){
-        if (!res || res.ok !== true || !Array.isArray(res.workspaces)) {
-          throw new Error('workspace list returned an invalid response');
-        }
-        workspacesLoaded = true;
-        renderWorkspaces(res.workspaces);
-      }).catch(function(exc){
-        renderWorkspaceStatus('Could not load workspaces');
-        showToast(exc.message, true);
-      }).then(function(){
-        workspacesLoading = false;
-      });
-    }
-
-    function openWorkspaceMenu(){
-      if (!workspaceMenu || !workspaceBtn) return;
-      workspaceMenu.hidden = false;
-      workspaceBtn.setAttribute('aria-expanded', 'true');
-      loadWorkspaces();
-    }
-
-    if (workspaceHost && workspaceBtn && workspaceMenu) {
-      workspaceBtn.addEventListener('click', function(e){
-        e.stopPropagation();
-        if (workspaceMenu.hidden) openWorkspaceMenu();
-        else closeWorkspaceMenu();
-      });
-      workspaceHost.addEventListener('mouseenter', openWorkspaceMenu);
-      workspaceHost.addEventListener('mouseleave', closeWorkspaceMenu);
-      workspaceMenu.addEventListener('click', function(e){
-        e.stopPropagation();
-      });
+      modal.addEventListener('click', function(e){ if (e.target === modal) modal.remove(); });
     }
 
     // ----- menu-item handlers -----
@@ -14095,9 +13508,11 @@ DASHBOARD_APP_JS = r"""
       items['public'].addEventListener('click', function(){
         closeMenu();
         postShareMode('public').then(function(res){
-          applyShareResponse(res, 'public');
+          state = res.share_mode || 'public';
+          currentToken = res.share_token || null;
+          paint();
         }).catch(function(err){
-          showToast(err.message, true);
+          alert('Could not change share mode: ' + err.message);
         });
       });
     }
@@ -14105,34 +13520,28 @@ DASHBOARD_APP_JS = r"""
       items['link'].addEventListener('click', function(){
         closeMenu();
         postShareMode('link').then(function(res){
-          applyShareResponse(res, 'link');
-          if (!currentToken) {
-            throw new Error('share API did not return a link token');
-          }
-          var fullUrl = window.location.origin + window.location.pathname
-            + '?share=' + encodeURIComponent(currentToken);
+          state = res.share_mode || 'link';
+          currentToken = res.share_token || null;
+          paint();
+          var fullUrl = window.location.origin + (res.share_url || window.location.pathname);
           showLinkModal(fullUrl);
         }).catch(function(err){
-          showToast(err.message, true);
+          alert('Could not change share mode: ' + err.message);
         });
-      });
-    }
-    if (items['users']) {
-      items['users'].addEventListener('click', function(){
-        closeMenu();
-        showUsersModal();
-      });
-    }
-    if (items['department']) {
-      items['department'].addEventListener('click', function(){
-        closeMenu();
-        confirmDepartmentSharing();
       });
     }
     if (items['private']) {
       items['private'].addEventListener('click', function(){
         closeMenu();
-        confirmStopSharing();
+        confirmStopSharing(function(){
+          postShareMode('private').then(function(res){
+            state = res.share_mode || 'private';
+            currentToken = null;
+            paint();
+          }).catch(function(err){
+            alert('Could not change share mode: ' + err.message);
+          });
+        });
       });
     }
     btn.style.display = 'inline-flex';
