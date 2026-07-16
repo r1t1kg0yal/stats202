@@ -4388,6 +4388,13 @@ def _format_manifest_repr(manifest: Dict[str, Any], *,
         parts.append(_format_diagnostics_inline(diagnostics))
     if review is not None:
         parts.append(f"review={review!r}")
+    if diagnostics and any(
+        getattr(d, "code", "") in (
+            "kpi_value_receipt", "stat_grid_value_receipt",
+        )
+        for d in diagnostics
+    ):
+        parts.append(f"note={KPI_VISIBLE_NUMBERS_SENSE_CHECK_NOTE!r}")
 
     return "Manifest(" + ", ".join(parts) + ")"
 
@@ -4451,6 +4458,13 @@ def _format_dashboard_result_repr(r: "DashboardResult") -> str:
             parts.append(f"{label}={val!r}")
     if r.review is not None:
         parts.append(f"review={r.review!r}")
+    if any(
+        getattr(d, "code", "") in (
+            "kpi_value_receipt", "stat_grid_value_receipt",
+        )
+        for d in (r.diagnostics or [])
+    ):
+        parts.append(f"note={KPI_VISIBLE_NUMBERS_SENSE_CHECK_NOTE!r}")
     return "DashboardResult(" + ", ".join(parts) + ")"
 
 
@@ -4558,7 +4572,8 @@ class DashboardReview:
             f"{self.review_signature}\n"
             f"definition_sha256={self.definition_sha256} "
             f"quality_signature={self.quality_signature} "
-            f"detector={self.detector_version}"
+            f"detector={self.detector_version}\n"
+            f"note={KPI_VISIBLE_NUMBERS_SENSE_CHECK_NOTE}"
         )
         index_lines = ["panel_index:"]
         index_lines.extend(
@@ -7553,6 +7568,14 @@ TABLE_ROWS_ERROR = 5_000
 # level). The threshold is symmetric: ``-25%`` fires the same as
 # ``+25%``.
 KPI_SENSE_CHECK_THRESHOLD: float = 20.0
+
+# Printed on the KPI receipt block, DashboardResult/Manifest repr, and
+# review text whenever any visible-number receipt exists. Visibility
+# only — the engine does not auto-correct authored numbers.
+KPI_VISIBLE_NUMBERS_SENSE_CHECK_NOTE = (
+    "Sense-check every visible number listed (headline and change) "
+    "before shipping; these are the strings the user will see."
+)
 
 # -----------------------------------------------------------------------------
 # Always-blocking error codes.
@@ -11739,6 +11762,71 @@ def _format_value_for_receipt(v: float, opts: Dict[str, Any]) -> str:
         return f"{v:g}"
 
 
+def _resolve_kpi_delta_pill(
+    item: Dict[str, Any],
+    dfs: Dict[str, Any],
+    headline: Optional[float],
+) -> Optional[Dict[str, Any]]:
+    """Mirror ``renderKpis`` delta formatting (declarative / auto path).
+
+    Returns ``{"text", "delta", "delta_pct", "delta_label"}`` for the
+    change pill the browser shows under the KPI headline, or ``None``
+    when the pill is hidden. Does not simulate drawer ``comparePeriod``
+    overrides (those are viewer-session only); receipts match the
+    shipped default state.
+    """
+    delta_val = _coerce_number(item.get("delta"))
+    pct = _coerce_number(item.get("delta_pct"))
+    delta_label = item.get("delta_label") or ""
+    if not isinstance(delta_label, str):
+        delta_label = str(delta_label) if delta_label is not None else ""
+
+    if delta_val is None:
+        delta_src = item.get("delta_source")
+        if isinstance(delta_src, str) and delta_src:
+            cur = headline
+            if cur is None and isinstance(item.get("source"), str):
+                cur, _ = _resolve_kpi_value(item["source"], dfs)
+            prev, _ = _resolve_kpi_value(delta_src, dfs)
+            if cur is not None and prev is not None:
+                delta_val = float(cur) - float(prev)
+                if prev != 0:
+                    pct = (delta_val / abs(float(prev))) * 100.0
+                else:
+                    pct = None
+
+    if delta_val is None:
+        return None
+
+    # Match JS: ``w.delta_decimals || 2`` (0/None both fall through to 2).
+    delta_decimals = item.get("delta_decimals") or 2
+    try:
+        delta_decimals = int(delta_decimals)
+    except (TypeError, ValueError):
+        delta_decimals = 2
+    abs_txt = _format_kpi_number(
+        abs(float(delta_val)), {"decimals": delta_decimals},
+    )
+    if float(delta_val) > 0:
+        arrow = "\u25B2"
+    elif float(delta_val) < 0:
+        arrow = "\u25BC"
+    else:
+        arrow = "\u25B6"
+    text = f"{arrow} {abs_txt}"
+    if pct is not None:
+        sign = "+" if pct >= 0 else ""
+        text += f" ({sign}{pct:.1f}%)"
+    if delta_label:
+        text += f" {delta_label}"
+    return {
+        "text": text,
+        "delta": float(delta_val),
+        "delta_pct": float(pct) if pct is not None else None,
+        "delta_label": delta_label or None,
+    }
+
+
 def _kpi_value_receipt_and_check(
     item: Dict[str, Any], path: str, dfs: Dict[str, Any],
     *, widget_kind: str,
@@ -11758,7 +11846,9 @@ def _kpi_value_receipt_and_check(
 
     For KPI: ``item`` is the widget dict; ``widget_id_override`` and
     ``container_label`` are not needed (the widget's own ``id`` /
-    ``label`` are used).
+    ``label`` are used). KPI receipts also include the change pill
+    string the browser renders (``delta_displayed`` /
+    ``displayed_full``) so PRISM sees every user-visible number.
 
     For stat_grid: ``item`` is the per-stat dict (each stat has its
     own label / value / source / format options but NO ``id`` field).
@@ -11808,11 +11898,23 @@ def _kpi_value_receipt_and_check(
         return out
 
     formatted = _format_value_for_receipt(displayed, item)
+    displayed_full = formatted
+    delta_displayed: Optional[str] = None
+    if widget_kind == "kpi":
+        delta_info = _resolve_kpi_delta_pill(item, dfs, displayed)
+        if delta_info is not None:
+            delta_displayed = delta_info["text"]
+            displayed_full = f"{formatted} | {delta_displayed}"
+
     receipt_ctx: Dict[str, Any] = {
         "label": label, "value": displayed,
-        "displayed": formatted, "binding": binding,
+        "displayed": formatted,
+        "displayed_full": displayed_full,
+        "binding": binding,
         "widget_kind": widget_kind,
     }
+    if delta_displayed is not None:
+        receipt_ctx["delta_displayed"] = delta_displayed
     if src_str:
         receipt_ctx["source"] = src_str
 
@@ -11823,7 +11925,7 @@ def _kpi_value_receipt_and_check(
         severity="info", code=receipt_code,
         widget_id=wid, path=path,
         message=(f"{widget_kind} '{wid}' ({label}) -> "
-                 f"{formatted}  (raw={displayed:g}, "
+                 f"{displayed_full}  (raw={displayed:g}, "
                  f"binding={binding})"),
         context=receipt_ctx,
     ))
@@ -11835,7 +11937,7 @@ def _kpi_value_receipt_and_check(
             severity="warning", code=sense_code,
             widget_id=wid, path=path,
             message=(f"{widget_kind} '{wid}' ({label}) resolves to "
-                     f"{formatted} (raw={displayed:g}); "
+                     f"{displayed_full} (raw={displayed:g}); "
                      f"|value| > {KPI_SENSE_CHECK_THRESHOLD:g}. "
                      f"are you sure {formatted} for {label!r} looks "
                      f"correct? Sense-check the NUMBER (right "
@@ -11847,7 +11949,9 @@ def _kpi_value_receipt_and_check(
                      f"this {('widget' if widget_kind == 'kpi' else 'stat')} "
                      f"to suppress."),
             context={"label": label, "value": displayed,
-                       "displayed": formatted, "binding": binding,
+                       "displayed": formatted,
+                       "displayed_full": displayed_full,
+                       "binding": binding,
                        "threshold": KPI_SENSE_CHECK_THRESHOLD,
                        "widget_kind": widget_kind,
                        "fix_hint": (
@@ -11861,7 +11965,9 @@ def _kpi_value_receipt_and_check(
                            "concept are right (S&P 4500, VIX 25, "
                            "probability=68%), set \"sense_check\": "
                            "False here to acknowledge."),
-                       **({"source": src_str} if src_str else {})},
+                       **({"source": src_str} if src_str else {}),
+                       **({"delta_displayed": delta_displayed}
+                          if delta_displayed is not None else {})},
         ))
     return out
 
@@ -13378,13 +13484,14 @@ def _print_kpi_value_receipts(
         kind = ctx.get("widget_kind") or "kpi"
         wid = d.widget_id or "?"
         item_label = ctx.get("label") or ""
-        formatted = ctx.get("displayed", "?")
+        formatted = ctx.get("displayed_full") or ctx.get("displayed", "?")
         binding = ctx.get("binding", "?")
         src = ctx.get("source")
         flag = "  *** SENSE-CHECK" if d.path in flagged_paths else ""
         bind_repr = f"[src={src}]" if src else f"[{binding}=literal]"
-        print(f"  {kind:<10} {wid:<30} -> {formatted:<14} "
+        print(f"  {kind:<10} {wid:<30} -> {formatted}  "
               f"{item_label}  {bind_repr}{flag}")
+    print(f"  {KPI_VISIBLE_NUMBERS_SENSE_CHECK_NOTE}")
     if sense_warnings:
         print(f"  see r.warnings (or DashboardResult.diagnostics) "
               f"for the {len(sense_warnings)} sense-check fire(s) "
@@ -14093,6 +14200,15 @@ def _build_dashboard_review(
             evidence = {"visible_values": receipts}
             if not receipts:
                 data_state = "NO_DATA"
+            else:
+                shown_texts: List[str] = []
+                for receipt in receipts:
+                    ctx = receipt.get("context") or {}
+                    text = ctx.get("displayed_full") or ctx.get("displayed")
+                    if text:
+                        shown_texts.append(str(text))
+                if shown_texts:
+                    evidence["user_visible"] = shown_texts
         elif kind in ("markdown", "note"):
             text = str(
                 widget.get("content")
@@ -14120,6 +14236,12 @@ def _build_dashboard_review(
         summary_bits = [data_state.lower().replace("_", " ")]
         if "row_count" in evidence:
             summary_bits.append(f"rows={evidence['row_count']}")
+        if isinstance(evidence.get("user_visible"), list) and evidence["user_visible"]:
+            summary_bits.append(
+                "shows=" + " ; ".join(
+                    str(t) for t in evidence["user_visible"][:4]
+                )
+            )
         if findings:
             summary_bits.append(
                 "findings=" + ",".join(

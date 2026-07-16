@@ -44,9 +44,9 @@ The closed aggregator enum is:
     "w": 3,
     "label": "US 10Y",
     "source": "rates.latest.us_10y",
-    "delta_source": "rates.latest.us_10y_change_bp",
-    "delta_label": "1D",
-    "delta_decimals": 0,
+    "delta_source": "rates.prev.us_10y",
+    "delta_label": "vs prev",
+    "delta_decimals": 2,
     "suffix": "%",
     "decimals": 2,
     "sparkline_source": "rates.us_10y",
@@ -58,12 +58,13 @@ The closed aggregator enum is:
 | `source` | Required refreshable value |
 | `label` | Required short identity |
 | `sub` | Optional subtitle |
-| `delta_source` | Optional refreshable comparison using the same source grammar |
+| `delta_source` | Optional previous-level comparison (`cur − prev`); same source grammar as `source` |
+| `delta` / `delta_pct` | Optional authored change magnitude and relative percent (shown as-authored) |
 | `delta_label`, `delta_decimals` | Delta presentation |
 | `prefix`, `suffix`, `decimals` | Value presentation |
 | `sparkline_source` | `<dataset>.<column>` full-series reference |
 
-`value` and `delta` may appear after compilation as resolved values, but persisted templates keep the source wires. A hand-typed value without `source` is invalid.
+`value` and `delta` may appear after compilation as resolved values, but persisted templates keep the source wires. A hand-typed value without `source` is invalid. Compile receipts list every user-visible KPI string (headline and change pill); sense-check those before shipping.
 
 ## Stat grid
 
