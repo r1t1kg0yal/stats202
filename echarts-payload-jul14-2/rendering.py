@@ -12287,9 +12287,9 @@ DASHBOARD_APP_JS = r"""
   // specs + metadata in place. If it returns 304, no-op.
   //
   // Cadence comes from ``manifest.metadata.live_refresh_seconds``;
-  // default 30s; 0 disables the auto poll. ETag is the registry's
-  // ``last_refreshed`` (= ``metadata.time.refresh_cycle_at``), so most
-  // polls return 304 with no body.
+  // default 60s; 0 disables. ETag is the registry's ``last_refreshed``
+  // (= ``metadata.time.refresh_cycle_at`` after Phase 3 staging-side
+  // refactor), so most polls return 304 with no body.
   //
   // Triggers that fire a 200 the next poll picks up:
   //   1. Hourly cron writes new manifest + bumps registry.last_refreshed
@@ -12308,11 +12308,8 @@ DASHBOARD_APP_JS = r"""
   var LIVE_KERBEROS    = MD.kerberos || null;
   var LIVE_DASHBOARD_ID = MD.dashboard_id || MANIFEST.id || null;
   var LIVE_DATA_URL    = MD.data_url || '/api/dashboard/data/';
-  // Default 30s (was 60). Explicit 0 still disables the poll loop;
-  // Refresh-button success still force-polls via opts.force.
   var LIVE_REFRESH_SEC = (MD.live_refresh_seconds == null)
-                             ? 30 : (+MD.live_refresh_seconds | 0);
-  var LIVE_PRESENCE_URL = MD.presence_url || '/api/dashboard/presence/';
+                             ? 60 : (+MD.live_refresh_seconds | 0);
   var LAST_KNOWN_TEMPLATE_HASH = (typeof window.PRISM_TEMPLATE_HASH !== 'undefined')
                                        ? window.PRISM_TEMPLATE_HASH : null;
   var LAST_KNOWN_REFRESHED = (MD.time && MD.time.refresh_cycle_at)
@@ -12431,18 +12428,10 @@ DASHBOARD_APP_JS = r"""
                                || LAST_KNOWN_REFRESHED;
   }
 
-  function pollLiveData(opts){
-    opts = opts || {};
-    if (!opts.force && LIVE_REFRESH_SEC <= 0){
-      return Promise.resolve('disabled');
-    }
-    if (window.location.protocol === 'file:'){
-      return Promise.resolve('file');
-    }
-    if (!LIVE_KERBEROS || !LIVE_DASHBOARD_ID){
-      return Promise.resolve('no_id');
-    }
-    var baseline = LAST_KNOWN_REFRESHED;
+  function pollLiveData(){
+    if (LIVE_REFRESH_SEC <= 0) return;
+    if (window.location.protocol === 'file:') return;
+    if (!LIVE_KERBEROS || !LIVE_DASHBOARD_ID) return;
     var url = LIVE_DATA_URL
               + '?dashboard_id=' + encodeURIComponent(LIVE_DASHBOARD_ID)
               + '&kerberos='     + encodeURIComponent(LIVE_KERBEROS);
@@ -12453,78 +12442,22 @@ DASHBOARD_APP_JS = r"""
       if (shareTok) url += '&share=' + encodeURIComponent(shareTok);
     } catch(e) { /* URLSearchParams unavailable -- skip */ }
     var headers = {};
-    if (LAST_KNOWN_REFRESHED && !opts.skipEtag){
+    if (LAST_KNOWN_REFRESHED){
       headers['If-None-Match'] = '"' + LAST_KNOWN_REFRESHED + '"';
     }
-    return fetch(url, {method: 'GET', headers: headers})
+    fetch(url, {method: 'GET', headers: headers})
       .then(function(r){
-        if (r.status === 304) return {kind: 'noop'};
-        if (!r.ok) return {kind: 'error', status: r.status};
-        return r.json().then(function(j){ return {kind: 'body', body: j}; });
+        if (r.status === 304) return null;
+        if (!r.ok) return null;
+        return r.json();
       })
-      .then(function(res){
-        if (!res) return 'error';
-        if (res.kind === 'noop') return 'noop';
-        if (res.kind === 'error') return 'error';
-        var j = res.body;
-        if (j && j.ok){
-          applyLiveData(j);
-          if (opts.expectNewerThan &&
-              (j.last_refreshed === opts.expectNewerThan ||
-               j.last_refreshed === baseline)){
-            return 'stale';
-          }
-          return 'applied';
-        }
-        return 'error';
+      .then(function(j){
+        if (j && j.ok) applyLiveData(j);
       })
       .catch(function(e){
         // Transient network blip -- log and let the next tick retry.
         console.warn('[live] poll error:', e);
-        return 'error';
       });
-  }
-
-  function pollLiveDataAfterRefresh(){
-    // Retry until registry last_refreshed advances (fixes one-shot 304
-    // race right after runner success) or attempts exhaust.
-    var baseline = LAST_KNOWN_REFRESHED;
-    var attempts = 0;
-    var maxAttempts = 10;
-    function tryOnce(){
-      attempts++;
-      return pollLiveData({force: true, expectNewerThan: baseline})
-        .then(function(result){
-          if (result === 'applied') return result;
-          if (attempts >= maxAttempts) return result;
-          return new Promise(function(resolve){
-            setTimeout(resolve, 400);
-          }).then(tryOnce);
-        });
-    }
-    return tryOnce();
-  }
-
-  function beatPresence(){
-    if (window.location.protocol === 'file:') return;
-    if (document.visibilityState && document.visibilityState !== 'visible'){
-      return;
-    }
-    if (!LIVE_KERBEROS || !LIVE_DASHBOARD_ID) return;
-    var viewer = (typeof window.PRISM_VIEWER !== 'undefined' && window.PRISM_VIEWER)
-                   ? window.PRISM_VIEWER : LIVE_KERBEROS;
-    fetch(LIVE_PRESENCE_URL, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        kerberos: LIVE_KERBEROS,
-        dashboard_id: LIVE_DASHBOARD_ID,
-        viewer: viewer
-      }),
-      keepalive: true
-    }).catch(function(e){
-      console.warn('[presence] heartbeat error:', e);
-    });
   }
 
   if (LIVE_REFRESH_SEC > 0){
@@ -12533,18 +12466,8 @@ DASHBOARD_APP_JS = r"""
     // returning to a tab they'd backgrounded sees fresh data without
     // waiting up to LIVE_REFRESH_SEC for the next tick.
     document.addEventListener('visibilitychange', function(){
-      if (document.visibilityState === 'visible'){
-        pollLiveData();
-        beatPresence();
-      }
+      if (document.visibilityState === 'visible') pollLiveData();
     });
-  }
-
-  // Open-tab presence: tell the server this dashboard is viewed so the
-  // open-only light orchestrator can pull fresh data on a short cadence.
-  if (window.location.protocol !== 'file:' && LIVE_KERBEROS && LIVE_DASHBOARD_ID){
-    beatPresence();
-    setInterval(beatPresence, 30000);
   }
 
   // ----- methodology popup -----
@@ -13225,9 +13148,8 @@ DASHBOARD_APP_JS = r"""
               clearErrorPill();
               // No location.reload(): pull fresh data + apply in place
               // via the live-refresh loop. Filter state, dataZoom
-              // sliders, table sort, dark mode all survive. Retry
-              // briefly so a registry stamp lag does not 304 forever.
-              pollLiveDataAfterRefresh();
+              // sliders, table sort, dark mode all survive.
+              pollLiveData();
               setTimeout(resetLabel, 1500);
             } else if (st.status === 'error'){
               clearInterval(timer);
@@ -13275,17 +13197,10 @@ DASHBOARD_APP_JS = r"""
         return;
       }
       btn.disabled = true; setLabel('refreshing', 'Refreshing...');
-      // mode=light: pull + update manifest datasets only (no HTML
-      // recompile). Django must forward this into refresh_runner
-      // --mode light; staging harness already does.
       fetch(apiUrl, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({
-          kerberos: kerberos,
-          dashboard_id: dashboardId,
-          mode: 'light'
-        })
+        body: JSON.stringify({kerberos: kerberos, dashboard_id: dashboardId})
       })
         .then(function(r){ return r.json().then(function(j){ return [r.status, j]; }); })
         .then(function(pair){
@@ -13315,7 +13230,7 @@ DASHBOARD_APP_JS = r"""
             // No location.reload(): the synchronous-finish branch lands
             // through the same in-place data swap path as the async
             // polled-status branch.
-            pollLiveDataAfterRefresh();
+            pollLiveData();
             setTimeout(resetLabel, 1500);
           } else {
             // 4xx / 5xx / explicit {error: ...} body. The runner never

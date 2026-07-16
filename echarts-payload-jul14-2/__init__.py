@@ -21,12 +21,8 @@ Public surface PRISM imports:
         acknowledge_dashboard_review,  # bind rationale to exact signature
         publish_dashboard,         # review -> ack(if needed) -> build; rationale optional when publish-ready
         build_dashboard,           # template + CSVs + transforms -> compile
-        build_dashboard_data_only, # datasets/time only; skip HTML
-        refresh_dashboard,         # all PULLS + build_dashboard (full)
-        light_refresh,             # all PULLS + build_dashboard_data_only
+        refresh_dashboard,         # all PULLS + build_dashboard
         launch_clean_refresh,      # isolated runner + S3 logs/status
-        record_open_presence,      # open-tab heartbeat writer
-        list_open_dashboards,      # TTL-fresh open folders
         inspect_dashboard,
         describe_dashboard,        # compact product floorplan for sync
         apply_manifest_operations,
@@ -60,10 +56,11 @@ Sibling scripts (also part of the payload):
 
     refresh_runner.py    single-dashboard CLI invoked by the Django
                           [Refresh] button via subprocess.Popen.
-                          --mode light|full (default full).
+                          Runs refresh_dashboard(folder).
     refresh_dashboards.py
-                          scheduled entry point. Full walk for cold HTML;
-                          --open-interval N light-refreshes open tabs.
+                          hourly cron entry point. Walks UserRegistry,
+                          per-user reads dashboards_registry.json,
+                          spawns refresh_runner.py per due dashboard.
 
 Internal-only modules (still drag-and-drop installed, not part of the
 public surface):
@@ -117,14 +114,8 @@ from dashboards.echart_dashboard import (  # noqa: E402,F401
     # Folder operations.
     run_pull,
     build_dashboard,
-    build_dashboard_data_only,
     publish_dashboard,
     refresh_dashboard,
-    light_refresh,
-    record_open_presence,
-    list_open_dashboards,
-    OPEN_PRESENCE_INDEX_KEY,
-    OPEN_PRESENCE_TTL_SECONDS,
     review_dashboard,
     acknowledge_dashboard_review,
     launch_clean_refresh,
@@ -197,14 +188,8 @@ __all__ = [
     # Folder operations.
     "run_pull",
     "build_dashboard",
-    "build_dashboard_data_only",
     "publish_dashboard",
     "refresh_dashboard",
-    "light_refresh",
-    "record_open_presence",
-    "list_open_dashboards",
-    "OPEN_PRESENCE_INDEX_KEY",
-    "OPEN_PRESENCE_TTL_SECONDS",
     "review_dashboard",
     "acknowledge_dashboard_review",
     "launch_clean_refresh",

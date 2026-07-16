@@ -2445,9 +2445,9 @@ def _validate_metadata(manifest: Dict[str, Any],
         if v is not None and not isinstance(v, list):
             errs.append(_err(f"metadata.{k}", "must be a list of strings"))
     # ``metadata.live_refresh_seconds``: optional non-negative int driving
-    # the chrome's pollLiveData() cadence (default 30s when omitted; 0
-    # disables the automatic poll loop). Soft floor of 15s enforced here
-    # so a runaway value can't generate gratuitous server traffic.
+    # the chrome's pollLiveData() cadence (default 60s; 0 disables live
+    # refresh entirely). Soft floor of 15s enforced here so a runaway
+    # value can't generate gratuitous server traffic.
     lrs = metadata.get("live_refresh_seconds")
     if lrs is not None:
         if not isinstance(lrs, bool) and isinstance(lrs, int):
@@ -6460,129 +6460,35 @@ def _spec_to_option(
     return opt
 
 
-# ISO-4217 currencies commonly seen on FX / rates dashboards. Used by
-# the label polish layer so ``eur_3m`` → ``EUR 3M`` and ``eurusd`` →
-# ``EURUSD`` instead of Title Case (``Eur 3M`` / ``Eurusd``).
-_ISO_CURRENCY_CODES: frozenset = frozenset({
-    "usd", "eur", "jpy", "gbp", "aud", "nzd", "cad", "chf",
-    "sek", "nok", "dkk", "cny", "cnh", "hkd", "sgd", "krw",
-    "inr", "brl", "mxn", "zar", "try", "rub", "pln", "twd",
-    "thb", "idr", "php", "myr", "ils", "clp", "cop", "pen",
-    "czk", "huf", "ron", "isk", "ars", "xau", "xag",
-})
-
-_REGION_UPPER_TOKENS: frozenset = frozenset({
-    "us", "eu", "uk", "jp", "cn", "em", "dm", "hk",
-})
-
-_ACRONYM_UPPER_TOKENS: frozenset = frozenset({
-    "pnl", "mtd", "ytd", "yoy", "mom", "wow", "eps", "dxy",
-    "gdp", "cpi", "pmi", "ism", "nfp", "oas", "vix", "var",
-    "fx", "hy", "ig", "ir", "atm", "otm", "itm", "vol",
-    "ois", "libor", "sofr", "sonia", "estr", "tonar",
-})
-
-# mapping.humanize modes. Bools keep historical behaviour; string modes
-# give Prism explicit casing control without per-series series_labels.
-_HUMANIZE_MODE_ALIASES: Dict[Any, str] = {
-    None: "title",
-    True: "title",
-    False: "preserve",
-    "title": "title",
-    "true": "title",
-    "humanize": "title",
-    "preserve": "preserve",
-    "false": "preserve",
-    "raw": "preserve",
-    "upper": "upper",
-    "uppercase": "upper",
-}
-
-
-def _resolve_humanize_mode(value: Any) -> str:
-    """Normalize ``mapping.humanize`` to ``title`` / ``preserve`` / ``upper``."""
-    if isinstance(value, str):
-        key: Any = value.strip().lower()
-    else:
-        key = value
-    mode = _HUMANIZE_MODE_ALIASES.get(key)
-    if mode is None:
-        # Unknown string/object: keep the historical default (title) so
-        # a typo does not silently freeze raw snake_case into the legend.
-        return "title"
-    return mode
-
-
-def _series_label_override(name: str, overrides: Dict[str, Any]) -> Optional[str]:
-    """Exact then case-insensitive lookup in ``mapping.series_labels``."""
-    if not overrides:
-        return None
-    if name in overrides:
-        val = overrides[name]
-        return val if isinstance(val, str) else None
-    folded = {
-        str(k).casefold(): v
-        for k, v in overrides.items()
-        if isinstance(k, str) and isinstance(v, str)
-    }
-    return folded.get(name.casefold())
-
-
-def _is_fx_pair_token(token: str) -> bool:
-    """True when ``token`` is two concatenated ISO currency codes."""
-    if len(token) != 6 or not token.isalpha():
-        return False
-    return (
-        token[:3] in _ISO_CURRENCY_CODES
-        and token[3:] in _ISO_CURRENCY_CODES
-    )
-
-
-def _humanize_token(token: str) -> str:
-    """Title-case one snake_case piece, keeping tickers / FX UPPER."""
-    if token == "(%)":
-        return "(%)"
-    if token in _REGION_UPPER_TOKENS or token in _ISO_CURRENCY_CODES:
-        return token.upper()
-    if _is_fx_pair_token(token):
-        return token.upper()
-    if len(token) <= 3 and any(ch.isdigit() for ch in token):
-        return token.upper()
-    if token in _ACRONYM_UPPER_TOKENS:
-        return token.upper()
-    return token.capitalize()
-
-
 def _humanize_col(name: Any) -> str:
     """Turn a column/series identifier into a readable label.
 
     Rules:
       * snake_case -> Title Case with spaces
       * '_pct' -> '(%)'
-      * ISO currency codes and 6-letter FX pairs stay UPPER
-        (``eur_3m`` -> ``EUR 3M``, ``eurusd`` -> ``EURUSD``)
-      * region / macro acronym tokens stay UPPER (``us_10y`` -> ``US 10Y``)
+      * preserves all-uppercase tokens (e.g. 'us_10y' -> 'US 10Y')
       * leaves non-string input untouched
     """
     if not isinstance(name, str) or not name:
         return name
     lowered = name.lower()
-    # Compact FX pairs have no underscore; promote before Title Case.
-    if "_" not in lowered and _is_fx_pair_token(lowered):
-        return lowered.upper()
-    if lowered in _ISO_CURRENCY_CODES:
-        return lowered.upper()
     if lowered.endswith("_pct"):
         lowered = lowered[:-4] + "_(%)"
     parts = [p for p in lowered.split("_") if p]
-    return " ".join(_humanize_token(p) for p in parts)
 
-
-def _upper_label(name: str) -> str:
-    """Force a display label to UPPER, turning snake_case into spaces."""
-    if "_" in name:
-        return " ".join(p for p in name.split("_") if p).upper()
-    return name.upper()
+    def _tok(t: str) -> str:
+        if t == "(%)":
+            return "(%)"
+        if t in {"us", "eu", "uk", "jp", "cn", "em", "dm", "hk"}:
+            return t.upper()
+        if len(t) <= 3 and any(ch.isdigit() for ch in t):
+            return t.upper()
+        if t in {"pnl", "mtd", "ytd", "yoy", "mom", "wow", "eps", "dxy",
+                  "gdp", "cpi", "pmi", "ism", "nfp", "oas", "vix", "var",
+                  "fx", "hy", "ig", "ir"}:
+            return t.upper()
+        return t.capitalize()
+    return " ".join(_tok(p) for p in parts)
 
 
 def _apply_post_build_polish(opt: Dict[str, Any],
@@ -6592,9 +6498,8 @@ def _apply_post_build_polish(opt: Dict[str, Any],
 
     Polish layers:
       * legend position/visibility (spec.legend_position, legend_show)
-      * series / legend display names via mapping.humanize modes
-        (``title`` default, ``preserve``, ``upper``) or per-series
-        ``mapping.series_labels = {raw_name: display_name}``
+      * humanize series names unless mapping.humanize is False, or override
+        via mapping.series_labels = {raw_name: display_name}
       * x-axis tick date formatting via mapping.x_date_format
     """
     # Legend visibility + position overrides. These are top-level knobs
@@ -6635,30 +6540,23 @@ def _apply_post_build_polish(opt: Dict[str, Any],
     if legend:
         opt["legend"] = legend
 
-    # Series / legend display names. ``series_labels`` always wins.
-    # ``humanize`` modes:
-    #   title (default / True)  — smart Title Case; FX/ISO stay UPPER
-    #   preserve (False)        — keep raw persisted names
-    #   upper                   — force UPPER (snake_case → spaced)
-    humanize_mode = _resolve_humanize_mode(mapping.get("humanize"))
+    # Humanize series names + legend entries. Caller can disable
+    # globally with mapping.humanize = False or override per-series
+    # with mapping.series_labels = {raw: display}.
+    humanize = mapping.get("humanize")
     overrides = mapping.get("series_labels") or {}
-    if not isinstance(overrides, dict):
-        overrides = {}
-
+    if humanize is None:
+        humanize = True
     def _maybe_humanize(name: str) -> Optional[str]:
-        override = _series_label_override(name, overrides)
-        if override is not None:
-            return override
-        if humanize_mode == "preserve":
+        if name in overrides:
+            return overrides[name]
+        if not humanize:
             return None
-        if humanize_mode == "upper":
-            return _upper_label(name)
-        # title mode (default)
         if "_" in name:
             return _humanize_col(name)
-        # single-word lowercase token: smart-humanize (so ``beta`` →
-        # ``Beta`` and ``eurusd`` → ``EURUSD``). Mixed/upper tokens
-        # like ``SPX`` / ``AAA`` / ``EUR`` are left alone.
+        # single-word lowercase token: capitalize it (so axis labels
+        # like "beta" render as "Beta"). Multi-case tokens like "SPX"
+        # or "AAA" are left alone.
         if name.isalpha() and name.islower():
             return _humanize_col(name)
         return None
@@ -6690,8 +6588,8 @@ def _apply_post_build_polish(opt: Dict[str, Any],
                 for n in ld
             ]
 
-    # Parallel coordinates axis names come from column names; apply the
-    # same humanize mode unless preserve.
+    # Parallel coordinates axis names come from column names; humanize
+    # them unless mapping.humanize is False.
     if isinstance(opt.get("parallelAxis"), list):
         for ax in opt["parallelAxis"]:
             if not isinstance(ax, dict):
@@ -19949,20 +19847,17 @@ def _max_pull_time(folder: str, s3_manager) -> Optional[str]:
     return format_iso(max_dt) if max_dt is not None else None
 
 
-def _materialize_recipe_datasets(
+def _compile_dashboard_recipe(
     folder: str,
     recipe: Dict[str, Any],
     *,
     s3_manager,
     refresh_cycle_at: Optional[str] = None,
     next_refresh_at: Optional[str] = None,
-) -> Tuple[Dict[str, Any], Dict[str, Any], int, int]:
-    """Load CSVs, run ``TRANSFORMS``, stamp ``metadata.time`` on a template copy.
-
-    Shared by the full compile path and the light (data-only) refresh path.
-    Returns ``(template, datasets, n_datasets, n_transforms)`` where
-    ``datasets`` values are still DataFrames (pre-``populate_template``).
-    """
+    allow_blocked_review: bool = False,
+    print_receipts: bool = True,
+) -> Tuple[DashboardResult, int, int]:
+    """Compile one recipe against current persisted CSV data, without writes."""
     import copy
     import io
     import pandas as pd
@@ -20027,27 +19922,6 @@ def _materialize_recipe_datasets(
     if time_block.get("data_domain_end"):
         meta["data_as_of"] = time_block["data_domain_end"]
     meta["generated_at"] = time_block["build_completed_at"]
-    return template, datasets, len(datasets), len(transforms)
-
-
-def _compile_dashboard_recipe(
-    folder: str,
-    recipe: Dict[str, Any],
-    *,
-    s3_manager,
-    refresh_cycle_at: Optional[str] = None,
-    next_refresh_at: Optional[str] = None,
-    allow_blocked_review: bool = False,
-    print_receipts: bool = True,
-) -> Tuple[DashboardResult, int, int]:
-    """Compile one recipe against current persisted CSV data, without writes."""
-    template, datasets, n_datasets, n_transforms = _materialize_recipe_datasets(
-        folder,
-        recipe,
-        s3_manager=s3_manager,
-        refresh_cycle_at=refresh_cycle_at,
-        next_refresh_at=next_refresh_at,
-    )
 
     manifest = populate_template(template, datasets)
     result = compile_dashboard(
@@ -20080,7 +19954,7 @@ def _compile_dashboard_recipe(
         )
     if isinstance(result.manifest, Manifest):
         result.manifest._review = result.review
-    return result, n_datasets, n_transforms
+    return result, len(datasets), len(transforms)
 
 
 def _load_dashboard_review_acknowledgment(
@@ -20621,210 +20495,6 @@ def publish_dashboard(
     }
 
 
-# Open-tab presence index (S3). Heartbeats from open browser tabs land
-# here; the open-only light orchestrator reads TTL-fresh entries.
-OPEN_PRESENCE_INDEX_KEY = "secondary/dashboard_open_presence/index.json"
-OPEN_PRESENCE_TTL_SECONDS = 90
-
-
-def record_open_presence(
-    folder: str,
-    viewer: str,
-    *,
-    s3_manager=None,
-    heartbeat_at: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Record that ``viewer`` currently has ``folder`` open in a browser tab.
-
-    Writes / merges ``secondary/dashboard_open_presence/index.json``. The
-    Django presence endpoint (or staging harness) calls this on each
-    browser heartbeat. Entries older than ``OPEN_PRESENCE_TTL_SECONDS``
-    are ignored by ``list_open_dashboards``.
-    """
-    from dashboards_time import utcnow, format_iso
-
-    s3 = _resolve_s3_manager(s3_manager)
-    canonical, _kerberos, _dashboard_id = _canonical_dashboard_identity(
-        folder
-    )
-    if not isinstance(viewer, str) or not viewer.strip():
-        raise ValueError("record_open_presence: viewer must be a non-empty string")
-    ts = heartbeat_at or format_iso(utcnow())
-    index: Dict[str, Any] = {"entries": {}}
-    if s3.exists(OPEN_PRESENCE_INDEX_KEY):
-        try:
-            raw = bytes(s3.get(OPEN_PRESENCE_INDEX_KEY)).rstrip(b"\x00")
-            loaded = json.loads(raw.decode("utf-8"))
-            if isinstance(loaded, dict) and isinstance(loaded.get("entries"), dict):
-                index = loaded
-        except (json.JSONDecodeError, UnicodeDecodeError, TypeError):
-            index = {"entries": {}}
-    entries = index.setdefault("entries", {})
-    if not isinstance(entries, dict):
-        entries = {}
-        index["entries"] = entries
-    entries[canonical] = {
-        "folder": canonical,
-        "viewer": viewer.strip(),
-        "last_heartbeat_at": ts,
-    }
-    index["updated_at"] = ts
-    s3.put(
-        json.dumps(index, indent=2, ensure_ascii=False).encode("utf-8"),
-        OPEN_PRESENCE_INDEX_KEY,
-    )
-    return entries[canonical]
-
-
-def list_open_dashboards(
-    *,
-    s3_manager=None,
-    ttl_seconds: int = OPEN_PRESENCE_TTL_SECONDS,
-) -> List[str]:
-    """Return canonical folders with a heartbeat newer than ``ttl_seconds``."""
-    from dashboards_time import utcnow, parse_iso
-
-    s3 = _resolve_s3_manager(s3_manager)
-    if not s3.exists(OPEN_PRESENCE_INDEX_KEY):
-        return []
-    try:
-        raw = bytes(s3.get(OPEN_PRESENCE_INDEX_KEY)).rstrip(b"\x00")
-        index = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError, TypeError, OSError):
-        return []
-    entries = index.get("entries") if isinstance(index, dict) else None
-    if not isinstance(entries, dict):
-        return []
-    now = utcnow()
-    open_folders: List[str] = []
-    for folder, entry in entries.items():
-        if not isinstance(entry, dict):
-            continue
-        hb = entry.get("last_heartbeat_at")
-        if not isinstance(hb, str) or not hb:
-            continue
-        try:
-            age = (now - parse_iso(hb)).total_seconds()
-        except (TypeError, ValueError):
-            continue
-        if 0 <= age <= float(ttl_seconds):
-            open_folders.append(
-                str(entry.get("folder") or folder)
-            )
-    return sorted(set(open_folders))
-
-
-def build_dashboard_data_only(
-    folder: str,
-    *,
-    s3_manager=None,
-    refresh_cycle_at: Optional[str] = None,
-    next_refresh_at: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Update live ``manifest.json`` datasets from CSVs + transforms; skip HTML.
-
-    Light path for open-tab / Refresh-button cycles:
-      1. Require an existing live ``manifest.json`` (prior full build).
-      2. Load CSVs + run ``TRANSFORMS`` + stamp ``metadata.time.*``.
-      3. Swap ``datasets`` + time metadata into the live manifest.
-      4. Write ``manifest.json`` only -- never ``compile_dashboard``,
-         never rewrite ``dashboard.html``, never advance version state.
-
-    Open tabs pick up the new bytes via ``GET /api/dashboard/data/``
-    (``resolve_chart_specs`` + ``applyLiveData`` / ``setOption``).
-    Cold loads keep serving the last fully compiled HTML until the next
-    full ``build_dashboard`` / cron ``--mode full`` cycle.
-    """
-    s3 = _resolve_s3_manager(s3_manager)
-    canonical, _kerberos, _dashboard_id = _canonical_dashboard_identity(
-        folder
-    )
-    manifest_path = f"{canonical}/manifest.json".replace("//", "/")
-    if not s3.exists(manifest_path):
-        raise RuntimeError(
-            f"build_dashboard_data_only: {manifest_path} missing -- "
-            "run a full build_dashboard / refresh --mode full once before "
-            "using the light path"
-        )
-    live = _decode_json_object(bytes(s3.get(manifest_path)), manifest_path)
-    if not isinstance(live, dict):
-        raise RuntimeError(
-            f"build_dashboard_data_only: {manifest_path} must be a JSON object"
-        )
-    recipe = _load_dashboard_recipe(canonical, s3)
-    template, datasets, n_datasets, n_transforms = _materialize_recipe_datasets(
-        canonical,
-        recipe,
-        s3_manager=s3,
-        refresh_cycle_at=refresh_cycle_at,
-        next_refresh_at=next_refresh_at,
-    )
-    populated = populate_template(template, datasets)
-    live["datasets"] = populated.get("datasets", {})
-    live_meta = live.setdefault("metadata", {})
-    if not isinstance(live_meta, dict):
-        live_meta = {}
-        live["metadata"] = live_meta
-    pop_meta = populated.get("metadata") or {}
-    if isinstance(pop_meta, dict):
-        if isinstance(pop_meta.get("time"), dict):
-            live_meta["time"] = pop_meta["time"]
-        if pop_meta.get("data_as_of") is not None:
-            live_meta["data_as_of"] = pop_meta["data_as_of"]
-        if pop_meta.get("generated_at") is not None:
-            live_meta["generated_at"] = pop_meta["generated_at"]
-    s3.put(
-        json.dumps(live, indent=2, ensure_ascii=False).encode("utf-8"),
-        manifest_path,
-    )
-    print(
-        f"[build_dashboard_data_only] {canonical} :: datasets OK "
-        f"({n_datasets} dataset(s), {n_transforms} transform(s); "
-        f"HTML unchanged)"
-    )
-    return live
-
-
-def light_refresh(
-    folder: str,
-    *,
-    s3_manager=None,
-    refresh_cycle_at: Optional[str] = None,
-    next_refresh_at: Optional[str] = None,
-) -> Dict[str, Any]:
-    """Pull every ``PULLS`` entry, then ``build_dashboard_data_only``.
-
-    Same pull surface as ``refresh_dashboard``, but skips
-    ``compile_dashboard`` / ``dashboard.html`` rewrite. Used by
-    ``refresh_runner.py --mode light`` (Refresh button + open-tab
-    cadence). Structural edits and the scheduled cold-HTML walk keep
-    using ``refresh_dashboard`` / ``--mode full``.
-    """
-    from dashboards_time import utcnow, format_iso
-
-    s3 = _resolve_s3_manager(s3_manager)
-    _audit_refresh_attachment(folder, s3_manager=s3, strict=True)
-
-    ns = _exec_dashboard_script(folder, "pull_data", s3_manager=s3)
-    pulls = ns.get("PULLS")
-    if not isinstance(pulls, dict):
-        raise RuntimeError(
-            f"light_refresh: {folder}/scripts/pull_data.py must define "
-            f"a module-level PULLS dict (got {type(pulls).__name__})"
-        )
-    print(f"[light_refresh] {folder} :: running {len(pulls)} pull(s)")
-    for name, fn in pulls.items():
-        print(f"[light_refresh] {folder} :: pull {name}")
-        fn()
-    cycle = refresh_cycle_at or format_iso(utcnow())
-    return build_dashboard_data_only(
-        folder,
-        s3_manager=s3,
-        refresh_cycle_at=cycle,
-        next_refresh_at=next_refresh_at,
-    )
-
-
 def build_dashboard(folder: str, *, s3_manager=None,
                      refresh_cycle_at: Optional[str] = None,
                      next_refresh_at: Optional[str] = None,
@@ -20847,8 +20517,6 @@ def build_dashboard(folder: str, *, s3_manager=None,
          back to S3
 
     Returns the populated manifest dict.
-
-    For pull + data-only (no HTML rewrite), use ``light_refresh()``.
 
     Use from PRISM ephemeral code to recompile after a
     ``manifest_template.json`` edit, a ``build.py`` transforms edit, or
@@ -20923,21 +20591,13 @@ def build_dashboard(folder: str, *, s3_manager=None,
     return r.manifest
 
 
-def launch_clean_refresh(
-    folder: str,
-    *,
-    mode: str = "full",
-) -> Dict[str, Any]:
+def launch_clean_refresh(folder: str) -> Dict[str, Any]:
     """Run the canonical refresh subprocess and return its structured result.
 
     This is the public authoring wrapper for clean-process verification.
     Callers provide dashboard intent (the canonical folder); the engine owns
     runner resolution, environment markers, S3 log streaming, metadata, wait,
     status collection, and failure propagation.
-
-    ``mode`` is ``"full"`` (pull + compile + HTML; default, cron / Tool 4)
-    or ``"light"`` (pull + manifest datasets only; Refresh button /
-    open-tab cadence).
     """
     import os
     import subprocess
@@ -20974,19 +20634,12 @@ def launch_clean_refresh(
         kind="dashboard_refresh",
         ts=spawn_ts,
     )
-    mode_norm = (mode or "full").strip().lower()
-    if mode_norm not in ("full", "light"):
-        raise ValueError(
-            f"launch_clean_refresh: mode must be 'full' or 'light' "
-            f"(got {mode!r})"
-        )
     env = os.environ.copy()
     env["PRISM_SUBPROCESS_S3_FOLDER_KEY"] = folder_key
     env["PRISM_SUBPROCESS_SESSION_FOLDER_KEY"] = session_folder_key
     header = (
         "=== refresh_runner spawn ===\n"
         f"folder: {canonical}\n"
-        f"mode: {mode_norm}\n"
         f"started: {spawn_ts.isoformat()}\n"
         f"s3_log_key: {log_key}\n"
         + "=" * 60 + "\n"
@@ -21002,7 +20655,6 @@ def launch_clean_refresh(
                 runner_module.__file__,
                 "--folder", canonical,
                 "--log-path", log_key,
-                "--mode", mode_norm,
             ],
             stdout=pipe_w,
             stderr=subprocess.STDOUT,
@@ -21022,7 +20674,6 @@ def launch_clean_refresh(
             "pid": process.pid,
             "started_at": spawn_ts.isoformat(),
             "folder": canonical,
-            "mode": mode_norm,
             "s3_log_key": log_key,
             "s3_folder_key": folder_key,
             "session_s3_log_key": session_log_key,
@@ -21132,14 +20783,11 @@ __all__ = [
     "load_tool_def", "normalize_tool_def",
     "df_to_source", "manifest_template", "populate_template",
     "Diagnostic", "chart_data_diagnostics",
-    "run_pull", "build_dashboard", "build_dashboard_data_only",
-    "publish_dashboard",
-    "refresh_dashboard", "light_refresh",
-    "record_open_presence", "list_open_dashboards",
+    "run_pull", "build_dashboard", "publish_dashboard",
+    "refresh_dashboard",
     "review_dashboard", "acknowledge_dashboard_review",
     "launch_clean_refresh",
     "audit_dashboard_layout",
-    "OPEN_PRESENCE_INDEX_KEY", "OPEN_PRESENCE_TTL_SECONDS",
     "apply_manifest_operations", "apply_persisted_script_operations",
     "inspect_dashboard",
     "list_dashboard_versions", "restore_dashboard_version",

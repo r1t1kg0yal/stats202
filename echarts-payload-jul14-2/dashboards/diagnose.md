@@ -187,7 +187,6 @@ the incident as environment/network evidence before mutating the dashboard.
 | Producer output unresolved through a helper/dynamic key | `pipelines.md` | Preserve the coherent producer; make its fixed output names statically visible at literal helper call sites or finite literal loops |
 | Dataset has no pull/transform producer | `pipelines.md` | Attach a real producer; do not preserve a silently aging CSV |
 | Refresh failed before browser errors | `pipelines.md` | Follow refresh error/log evidence, repair script/data, refresh |
-| Open tab stale while cron HTML ok | Light path / presence | Confirm `refresh_status.mode` / runner `--mode light`, presence heartbeat, and `/api/dashboard/data/` ETag advance; cold HTML lags until next full walk |
 | Refresh succeeded plus ECharts/browser error | Primitive owner plus `template_crud.md` | Repair the authored spec |
 | `resource_404` for dashboard data | `pipelines.md` | Repair the persisted path/stem and refresh |
 | Registry count invalid | Registry owner | Diagnose the canonical entry and report the exact registry merge/create action; no dashboard-template API removes duplicate registry rows |

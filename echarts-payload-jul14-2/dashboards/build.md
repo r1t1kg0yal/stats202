@@ -338,14 +338,11 @@ Registration rules:
 
 ## Tool 4: fresh-process refresh
 
-Run the same refresh runner used by scheduled refreshes. Tool 4 must use
-`--mode full` (compile + HTML) so cold loads see fresh bytes. The browser
-Refresh button uses `--mode light` (datasets only); do not close a
-first-build on light mode. Prefer `launch_clean_refresh(FOLDER, mode="full")`
-when the import resolves. Otherwise launch the runner by its resolved file
-path, not with `python -m dashboards.refresh_runner`. Production spawners
-also set `start_new_session=True` and `cwd=REPO_ROOT`; the runner accepts
-`--folder`, optional `--log-path`, and `--mode full|light` (default `full`).
+Run the same refresh runner used by scheduled and browser-triggered refreshes. Stream output to a file, wait for completion, then require both a zero return code and persisted success.
+Launch the runner by its resolved file path, not with
+`python -m dashboards.refresh_runner`. Production spawners also set
+`start_new_session=True` and `cwd=REPO_ROOT`; the runner itself accepts
+`--folder` plus optional `--log-path`.
 
 ```python
 import dashboards.refresh_runner as refresh_runner_module
@@ -364,7 +361,6 @@ with open(log_path, "wb") as log_file:
             refresh_runner_module.__file__,
             "--folder", FOLDER,
             "--log-path", log_path,
-            "--mode", "full",
         ],
         stdout=log_file,
         stderr=subprocess.STDOUT,

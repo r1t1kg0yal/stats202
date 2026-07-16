@@ -256,8 +256,7 @@ Common mapping/spec controls:
 | Key | Purpose |
 |---|---|
 | `legend_position`, `legend_show` | Legend placement/visibility |
-| `series_labels` | Exact display names `{raw: "EUR/USD"}`; case-insensitive key match; always wins |
-| `humanize` | Legend casing: `true`/`"title"` (default), `false`/`"preserve"`, or `"upper"`. Default title mode keeps ISO FX codes UPPER (`eur_3m`→`EUR 3M`, `eurusd`→`EURUSD`) |
+| `series_labels`, `humanize` | Persisted-name display mapping |
 | `x_date_format` | `"auto"` or an explicit JavaScript function string; token literals such as `"MMM YY"` block |
 | `y_min`, `y_max`, `x_min`, `x_max` | Fixed ranges |
 | `y_format`, `x_format` | `percent`, `bp`, `usd`, `compact`, or JS formatter |

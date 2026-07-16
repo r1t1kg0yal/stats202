@@ -282,16 +282,12 @@ def _user_registry_entries(kerberos: str) -> list:
 # subprocess spawn (S3 log streaming)
 # ============================================================================
 
-def _spawn_runner(folder: str, *, mode: str = "full") -> dict:
-    """Run the shared dashboard-owned clean-refresh launcher.
-
-    ``mode`` is ``"full"`` (cold HTML / scheduled walk) or ``"light"``
-    (open-tab cadence / data-only).
-    """
+def _spawn_runner(folder: str) -> dict:
+    """Run the shared dashboard-owned clean-refresh launcher."""
     from dashboards import launch_clean_refresh
 
     try:
-        return launch_clean_refresh(folder, mode=mode)
+        return launch_clean_refresh(folder)
     except BaseException as exc:
         print(
             f"SPAWN FAIL {folder}: {type(exc).__name__}: {exc}",
@@ -488,68 +484,13 @@ def _walk_once(*, walk_id: int = 1) -> int:
     return 0 if failures == 0 else 1
 
 
-def _walk_open_once(*, walk_id: int = 1) -> int:
-    """Light-refresh every dashboard with a fresh open-tab heartbeat.
-
-    Reads ``secondary/dashboard_open_presence/index.json`` via
-    ``list_open_dashboards`` (TTL 90s). Spawns
-    ``launch_clean_refresh(..., mode="light")`` for each open folder.
-    Does not consult registry cadence / failure cooldown -- open tabs
-    always get a light pull while viewed. Cold HTML remains on the
-    full ``_walk_once`` schedule.
-    """
-    from dashboards import list_open_dashboards
-
-    started_perf = time.perf_counter()
-    _banner(f"open-walk #{walk_id} start")
-    open_folders = list_open_dashboards(s3_manager=s3_manager)
-    if not open_folders:
-        _banner(f"open-walk #{walk_id} done -- no open dashboards")
-        return 0
-
-    results = []
-    success_kerberos: set = set()
-    for folder in open_folders:
-        _line(f"light refresh {folder}")
-        result = _spawn_runner(folder, mode="light")
-        results.append(result)
-        if result.get("returncode") == 0:
-            parts = folder.strip("/").split("/")
-            if len(parts) >= 2 and parts[0] == "users":
-                success_kerberos.add(parts[1])
-            _sub("ok")
-        else:
-            _sub(
-                f"fail rc={result.get('returncode')} "
-                f"err={result.get('error')}"
-            )
-
-    pointer_results = _update_user_manifests(success_kerberos)
-    elapsed = time.perf_counter() - started_perf
-    successes = sum(1 for r in results if r.get("returncode") == 0)
-    failures = len(results) - successes
-    _banner(
-        f"open-walk #{walk_id} done -- elapsed={elapsed:.2f}s  "
-        f"open={len(open_folders)} ok={successes} fail={failures}  "
-        f"manifests={len(pointer_results)}"
-    )
-    return 0 if failures == 0 else 1
-
-
-def _daemon(
-    interval_seconds: int,
-    *,
-    open_interval_seconds: Optional[int] = None,
-) -> int:
+def _daemon(interval_seconds: int) -> int:
     """Loop forever, walking the registry every ``interval_seconds``.
 
     Each tick = one ``_walk_once`` pass with a monotonic walk counter.
     Walk time is reckoned into the sleep so the effective wall-clock
     cadence is constant: a 12s walk followed by an 18s sleep, not 30s
     of sleep on top of the walk.
-
-    When ``open_interval_seconds`` is set, also runs
-    ``_walk_open_once`` on that shorter cadence (light mode only).
 
     Walk-time exceptions are caught and logged but the daemon survives
     (subprocess failures inside ``_walk_once`` are already handled by
@@ -570,69 +511,30 @@ def _daemon(
             file=sys.stderr, flush=True,
         )
         return 2
-    if open_interval_seconds is not None and open_interval_seconds <= 0:
-        print(
-            f"refresh_dashboards: --open-interval must be > 0; got "
-            f"{open_interval_seconds}",
-            file=sys.stderr, flush=True,
-        )
-        return 2
 
     _banner(
         f"refresh_dashboards daemon mode -- interval={interval_seconds}s"
-        + (
-            f" open-interval={open_interval_seconds}s"
-            if open_interval_seconds is not None else ""
-        )
     )
 
     walk_id = 0
-    open_walk_id = 0
-    next_full = time.time()
-    next_open = (
-        time.time() if open_interval_seconds is not None else None
-    )
     try:
         while True:
-            now = time.time()
-            if now >= next_full:
-                walk_id += 1
-                tick_started = time.time()
-                try:
-                    _walk_once(walk_id=walk_id)
-                except BaseException as exc:
-                    print(
-                        f"WALK CRASHED #{walk_id}: "
-                        f"{type(exc).__name__}: {exc}",
-                        file=sys.stderr, flush=True,
-                    )
-                    print(traceback.format_exc(),
-                          file=sys.stderr, flush=True)
-                next_full = tick_started + float(interval_seconds)
-            if (
-                open_interval_seconds is not None
-                and next_open is not None
-                and now >= next_open
-            ):
-                open_walk_id += 1
-                open_started = time.time()
-                try:
-                    _walk_open_once(walk_id=open_walk_id)
-                except BaseException as exc:
-                    print(
-                        f"OPEN WALK CRASHED #{open_walk_id}: "
-                        f"{type(exc).__name__}: {exc}",
-                        file=sys.stderr, flush=True,
-                    )
-                    print(traceback.format_exc(),
-                          file=sys.stderr, flush=True)
-                next_open = open_started + float(open_interval_seconds)
-            sleep_until = next_full
-            if next_open is not None:
-                sleep_until = min(sleep_until, next_open)
-            sleep_for = max(0.0, sleep_until - time.time())
+            walk_id += 1
+            tick_started = time.time()
+            try:
+                _walk_once(walk_id=walk_id)
+            except BaseException as exc:
+                print(
+                    f"WALK CRASHED #{walk_id}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                print(traceback.format_exc(),
+                      file=sys.stderr, flush=True)
+            tick_elapsed = time.time() - tick_started
+            sleep_for = max(0.0, float(interval_seconds) - tick_elapsed)
             if sleep_for > 0:
-                time.sleep(min(sleep_for, 1.0))
+                time.sleep(sleep_for)
     except KeyboardInterrupt:
         _banner(
             f"refresh_dashboards daemon interrupted "
@@ -653,8 +555,7 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
             "dashboard via per-dashboard subprocess. Default: one "
             "walk + exit (legacy entrypoint.py contract). With "
             "--interval N: run as a daemon, walking every N seconds "
-            "forever. With --open-interval N: also light-refresh "
-            "open-tab dashboards on that cadence."
+            "forever."
         ),
     )
     parser.add_argument(
@@ -670,35 +571,17 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
             "shortest refresh_frequency in the registry."
         ),
     )
-    parser.add_argument(
-        "--open-interval",
-        type=int,
-        default=None,
-        metavar="N",
-        help=(
-            "Open-tab light-refresh cadence in seconds. Reads the "
-            "presence index and spawns refresh_runner --mode light "
-            "for each TTL-fresh open dashboard. Typical N=60. "
-            "Implies daemon mode when --interval is omitted "
-            "(uses --interval default 900 for the full cold walk)."
-        ),
-    )
-    parser.add_argument(
-        "--open-once",
-        action="store_true",
-        help="One-shot open-tab light walk, then exit.",
-    )
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    """Entry point. Callable shapes:
+    """Entry point. Two callable shapes:
 
-    1. ``main()`` (no args) -- single full walk and exit. Preserves the
+    1. ``main()`` (no args) -- single walk and exit. Preserves the
        legacy ``entrypoint.py`` contract; PRISM's
        ``fifteen_minute_context_generator`` calls this with no args.
-    2. ``main(argv)`` (CLI args list) -- argparse-driven:
-       ``--open-once``, ``--interval N``, ``--open-interval N``.
+    2. ``main(argv)`` (CLI args list) -- argparse-driven. With
+       ``--interval N`` runs as a daemon, otherwise one-shot.
 
     Splitting on ``argv is None`` instead of ``sys.argv`` so the
     Python-level call from entrypoint.py never picks up stray CLI
@@ -707,12 +590,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if argv is None:
         return _walk_once()
     args = _parse_args(argv)
-    if args.open_once:
-        return _walk_open_once()
-    if args.interval is None and args.open_interval is None:
+    if args.interval is None:
         return _walk_once()
-    interval = args.interval if args.interval is not None else 900
-    return _daemon(interval, open_interval_seconds=args.open_interval)
+    return _daemon(args.interval)
 
 
 if __name__ == "__main__":

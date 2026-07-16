@@ -4,24 +4,14 @@
 Spawned by the Django Refresh button handler (POST
 ``/api/dashboard/refresh/``) and by the hourly cron
 (``refresh_dashboards.py``). Runs ``run_pull`` for every ``PULLS``
-entry, then either a light data-only build or a full
-``build_dashboard``, then writes ``<folder>/refresh_status.json``.
-
-Modes:
-
-* ``full`` (default) -- pull + compile + rewrite ``dashboard.html``.
-  Used by the scheduled cold-HTML walk and Tool 4 authoring.
-* ``light`` -- pull + update ``manifest.json`` datasets / time stamps
-  only (no ``compile_dashboard``, no HTML rewrite). Used by the
-  browser Refresh button and open-tab autorefresh cadence. Open tabs
-  consume the new datasets via ``GET /api/dashboard/data/``.
+entry, then ``build_dashboard`` for the named folder, then writes
+``<folder>/refresh_status.json`` with the outcome.
 
 Usage::
 
     python -m dashboards.refresh_runner \
         --folder    users/<kerberos>/dashboards/<name> \
         --log-path  subprocess_logs/YYYY/MM/DD/.../run.log   # optional S3 key
-        --mode      light|full                               # default full
 
 Status JSON shape (matches the polling endpoint contract documented in
 ``prism/dashboard-refresh.md`` \u00a78.1 so the in-browser failure modal
@@ -74,7 +64,6 @@ from core.s3_bucket_manager import s3_manager
 from dashboards import (
     DashboardReviewRequired,
     build_dashboard,
-    build_dashboard_data_only,
     run_pull,
 )
 from dashboards.echart_dashboard import _build_dashboard_exec_namespace
@@ -266,11 +255,7 @@ def _banner(text: str) -> None:
     print(f"====== {text} ======", flush=True)
 
 
-def run(
-    folder: str,
-    log_path: Optional[str] = None,
-    mode: str = "full",
-) -> int:
+def run(folder: str, log_path: Optional[str] = None) -> int:
     """Refresh the dashboard at ``folder``. Returns process exit code
     (``0`` on success, ``1`` on any failure). The refresh-status JSON
     is the load-bearing observability surface; this function's exit
@@ -279,28 +264,15 @@ def run(
     ``log_path`` is the S3 key the spawner is streaming this
     subprocess's stdout/stderr to via ``S3LogStreamer``. Surfaced
     verbatim into ``refresh_status.json`` for PRISM-side triage
-    (\u00a78.1).
-
-    ``mode`` is ``"full"`` (compile + HTML) or ``"light"`` (datasets
-    only). See module docstring.
-    """
-    mode_norm = (mode or "full").strip().lower()
-    if mode_norm not in ("full", "light"):
-        print(
-            f"FAIL invalid --mode {mode!r} (expected 'full' or 'light')",
-            file=sys.stderr, flush=True,
-        )
-        return 1
-
+    (\u00a78.1)."""
     folder, kerberos, dashboard_id = _parse_folder(folder)
 
     started_at = _utcnow_iso()
     pid = os.getpid()
     started_perf = time.perf_counter()
 
-    _banner(f"refresh_runner {folder} -- pid={pid} mode={mode_norm}")
+    _banner(f"refresh_runner {folder} -- pid={pid}")
     print(f"started_at={started_at}", flush=True)
-    print(f"mode={mode_norm}", flush=True)
     if log_path:
         print(f"log_path={log_path}", flush=True)
 
@@ -379,29 +351,20 @@ def run(
                 flush=True,
             )
 
-        # PHASE 2: build. full -> compile + HTML; light -> datasets only.
-        # Pass cycle_iso so metadata.time.refresh_cycle_at matches the
-        # registry stamp; the chrome pill renders "refreshed <ET wall
-        # time>" off this value.
+        # PHASE 2: build (template + CSVs + transforms -> compile +
+        # write). Pass cycle_iso so build_dashboard stamps
+        # metadata.time.refresh_cycle_at; the chrome pill renders
+        # "refreshed <ET wall time>" off this value. next_refresh_iso
+        # is optional ("next refresh in N minutes" UX is future; the
+        # field is observability-only today).
         failing_phase = _PHASE_BUILD
-        build_label = (
-            "build_dashboard_data_only"
-            if mode_norm == "light" else "build_dashboard"
-        )
-        print(f"[PHASE 2/3] {build_label}", flush=True)
+        print(f"[PHASE 2/3] build", flush=True)
         t0 = time.perf_counter()
-        if mode_norm == "light":
-            manifest = build_dashboard_data_only(
-                folder, s3_manager=s3_manager,
-                refresh_cycle_at=cycle_iso,
-                next_refresh_at=next_refresh_iso,
-            )
-        else:
-            manifest = build_dashboard(
-                folder, s3_manager=s3_manager,
-                refresh_cycle_at=cycle_iso,
-                next_refresh_at=next_refresh_iso,
-            )
+        manifest = build_dashboard(
+            folder, s3_manager=s3_manager,
+            refresh_cycle_at=cycle_iso,
+            next_refresh_at=next_refresh_iso,
+        )
         build_dt = time.perf_counter() - t0
         if isinstance(manifest, dict):
             widgets = _count_widgets(manifest.get("layout", {}))
@@ -410,7 +373,7 @@ def run(
             widgets = 0
             datasets_n = 0
         print(
-            f"    {build_label}  \u2713  {build_dt:.2f}s  "
+            f"    build_dashboard  \u2713  {build_dt:.2f}s  "
             f"widgets={widgets} datasets={datasets_n}",
             flush=True,
         )
@@ -556,16 +519,8 @@ def main(argv: Optional[list] = None) -> int:
               "live under subprocess_logs/YYYY/MM/DD/...; the local "
               "staging stub writes to <sandbox>/_logs/<flat-key> instead.",
     )
-    parser.add_argument(
-        "--mode",
-        default="full",
-        choices=("full", "light"),
-        help="full = pull + compile + HTML (cron / Tool 4 default); "
-             "light = pull + manifest datasets only (Refresh button / "
-             "open-tab cadence).",
-    )
     args = parser.parse_args(argv)
-    return run(args.folder, log_path=args.log_path, mode=args.mode)
+    return run(args.folder, log_path=args.log_path)
 
 
 if __name__ == "__main__":
