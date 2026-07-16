@@ -6,33 +6,47 @@ created: 2026-07-16
 depends_on:
   - staging/prompts/open/2026-07-16_django_light_refresh_presence_wire.md
 prerequisite_payload:
-  - jobs/hourly/refresh_dashboards.py  # must accept --open-interval / --interval daemon
+  - jobs/hourly/refresh_dashboards.py  # --open-interval alone = open-only daemon
   - prism-core/dashboards/refresh_runner.py  # --mode light|full
 ---
 
-# PRISM patch prompt — Change 4: `entrypoint.py site` starts open-tab light refresh
+# PRISM patch prompt — Change 4: `entrypoint.py site` starts **open-only** light refresh
 
 **Why this exists (staging-side note; do not paste this section into
 PRISM):**
 
-Django presence + light refresh POST are already wired. Browser logs show:
+Presence + light Refresh button already work. Logs show presence `200`
+and data `304`/`cache_hit` — nothing is light-refreshing open tabs
+automatically.
 
-- `POST /api/dashboard/presence/` → 200 (heartbeat OK)
-- `GET /api/dashboard/data/` → 304 / cache_hit (no new stamps)
-- refreshes only with `trigger=manual`
+**Requirement (user):** `entrypoint.py site` must refresh **only
+dashboards that are actively open**. It must **not** walk the whole
+registry / run the cold full refresh. Full walks stay on the existing
+15-minute one-shot (or whatever already owns that).
 
-Missing piece: nothing is calling
-`jobs/hourly/refresh_dashboards.py --open-interval 60` while the site
-runs. The user wants **`entrypoint.py site` to start that daemon by
-default** alongside Django.
+Staged CLI contract (re-drop `jobs/hourly/refresh_dashboards.py` if
+needed):
+
+```text
+# OPEN-ONLY daemon (what site must spawn)
+python jobs/hourly/refresh_dashboards.py --open-interval 60
+
+# FULL walk daemon (do NOT use from site)
+python jobs/hourly/refresh_dashboards.py --interval 900
+
+# BOTH (also do NOT use from site)
+python jobs/hourly/refresh_dashboards.py --interval 900 --open-interval 60
+```
+
+`--open-interval` alone = open-only (no full walk).
 
 ---
 
 ## Paste the following into PRISM
 
-# Wire open-tab light refresh into `entrypoint.py site`
+# Wire open-only tab light refresh into `entrypoint.py site`
 
-Implement Change 4 so that running:
+Implement Change 4 so that:
 
 ```text
 entrypoint.py site
@@ -40,150 +54,129 @@ entrypoint.py site
 
 starts **both**:
 
-1. the Django site (existing behavior on `0.0.0.0:8501`), and
-2. the open-tab light-refresh daemon:
+1. the Django site (existing `_run_site` / port 8501), and
+2. an **open-only** refresh daemon — **no full registry walk**:
 
 ```text
-python <REPO_ROOT>/jobs/hourly/refresh_dashboards.py \
-    --interval 900 \
-    --open-interval 60
+python <REPO_ROOT>/jobs/hourly/refresh_dashboards.py --open-interval 60
 ```
+
+That daemon must:
+
+- read `secondary/dashboard_open_presence/index.json` (TTL-fresh entries)
+- spawn `refresh_runner.py --mode light` **only** for those folders
+- **never** call the full `_walk_once` / due-registry walk
 
 As you come into Frictions, document and let me know what those
 Frictions are.
 
 ## Prerequisite check (do first)
 
-1. Confirm `jobs/hourly/refresh_dashboards.py --help` shows
-   `--interval` and `--open-interval`.
-2. Confirm that file's daemon path calls
-   `launch_clean_refresh(folder, mode="light")` for open folders and
-   default/`full` for the cold walk.
-3. If the installed `refresh_dashboards.py` lacks `--open-interval`,
-   **stop** and report that the echarts payload drop is stale — do not
-   invent a parallel scheduler inside `entrypoint.py`.
+1. `jobs/hourly/refresh_dashboards.py --help` shows `--open-interval`.
+2. Running with **only** `--open-interval 60` (no `--interval`) starts a
+   daemon whose banner says full-interval is off / open-only — not a
+   full walk every 900s. If `--open-interval` alone still implies a
+   full walk, **stop** and report the payload is stale (staging fixed
+   this: open-interval alone = open-only).
+3. Do not invent a custom scheduler inside `entrypoint.py` that lists
+   all users/dashboards.
 
 ## Goal behavior
 
 ```text
 entrypoint.py site
         │
-        ├─► Popen Django runserver (existing _run_site)
+        ├─► Popen Django runserver          (existing)
         │
-        └─► Popen refresh_dashboards --interval 900 --open-interval 60
+        └─► Popen refresh_dashboards --open-interval 60
                 │
-                ├─ every 60s: light-refresh TTL-fresh open tabs
-                │             (reads secondary/dashboard_open_presence/index.json)
-                └─ every 900s: full cold-HTML walk (unchanged contract)
+                └─ every 60s: light-refresh ONLY presence-fresh folders
+                   (no UserRegistry full walk, no cold HTML compile)
 
-Ctrl+C / site exit
-        │
-        └─► terminate BOTH children cleanly
+Ctrl+C
+        └─► terminate BOTH children
 ```
 
-Default = heartbeat/open-refresh **on**. Provide an opt-out flag so
-legacy site-only runs remain possible.
+Cold / full refresh remains whoever already owns it
+(`fifteen_minute_context_generator` / one-shot `refresh_dashboards.main()`).
+**Do not** attach a full walk to `site`.
+
+Default for `site` = open-refresh **on**. Opt-out via
+`--no-open-refresh`.
 
 ---
 
-## Change A — constants near `SITE_DEFAULT_PORT`
-
-In `entrypoint.py`, next to `SITE_DEFAULT_PORT = 8501`, add:
+## Change A — constant near `SITE_DEFAULT_PORT`
 
 ```python
-# Open-tab light refresh (Change 4). While `site` is up, dashboards with
-# a fresh presence heartbeat get refresh_runner --mode light every N
-# seconds. Full cold-HTML walk stays on the longer interval.
+# Open-tab light refresh only (Change 4). While `site` is up, folders
+# with a fresh presence heartbeat get refresh_runner --mode light.
+# Does NOT walk the full registry — cold HTML stays on the 15-minute job.
 SITE_OPEN_REFRESH_INTERVAL_S = 60
-SITE_FULL_REFRESH_INTERVAL_S = 900
 ```
+
+Do **not** add a `SITE_FULL_REFRESH_INTERVAL_S` used by `site`.
 
 ---
 
-## Change B — helper to spawn the refresh daemon
-
-Add a helper in the same file as `_run_site` (adapt imports/`REPO_ROOT`
-to whatever `entrypoint.py` already uses — `Path(__file__).resolve()`,
-`prism_meta.REPO_ROOT`, etc.):
+## Change B — spawn helper (open-only argv)
 
 ```python
 def _refresh_dashboards_script():
-    """Return absolute path to jobs/hourly/refresh_dashboards.py."""
-    # Prefer the same REPO_ROOT resolution entrypoint already uses.
-    # Example if REPO_ROOT is available:
-    return os.path.join(str(REPO_ROOT), "jobs", "hourly", "refresh_dashboards.py")
+    return os.path.join(
+        str(REPO_ROOT), "jobs", "hourly", "refresh_dashboards.py"
+    )
 
 
-def _run_open_refresh_daemon(
-    open_interval_s=SITE_OPEN_REFRESH_INTERVAL_S,
-    full_interval_s=SITE_FULL_REFRESH_INTERVAL_S,
-):
-    """Spawn the open-tab light + cold full refresh daemon. Returns Popen."""
+def _run_open_refresh_daemon(open_interval_s=SITE_OPEN_REFRESH_INTERVAL_S):
+    """Open-tab light refresh only. Returns Popen."""
     script = _refresh_dashboards_script()
     if not os.path.isfile(script):
         raise FileNotFoundError(
-            f"refresh_dashboards.py not found at {script} — "
-            "drop the staged echarts payload / jobs copy first"
+            f"refresh_dashboards.py not found at {script}"
         )
     cmd = [
         sys.executable,
         script,
-        "--interval", str(int(full_interval_s)),
         "--open-interval", str(int(open_interval_s)),
+        # Intentionally NO --interval: open-only daemon.
     ]
     print(
-        f"Starting open-tab dashboard refresh daemon: "
-        f"open every {open_interval_s}s, full walk every {full_interval_s}s"
+        f"Starting open-tab light-refresh daemon "
+        f"(open dashboards only, every {open_interval_s}s)"
     )
     print(f"  cmd: {' '.join(cmd)}")
-    # Inherit env (needs same S3 / kerberos / PYTHONPATH as site).
     return subprocess.Popen(cmd, env=os.environ.copy())
 ```
 
-Do **not** use `shell=True`. Do **not** redirect away stdout/stderr —
-operator should see open-walk banners in the same terminal (or follow
-whatever logging pattern sibling entrypoint jobs already use; if site
-already tees child logs, match that).
+Hard rule: the argv list must **not** contain `--interval`.
 
 ---
 
-## Change C — evolve `_run_site` to supervise both processes
+## Change C — `_run_site` supervises site + open daemon
 
-Current shape (from live read):
+Evolve the existing `_run_site` wait/shutdown to also start the open
+daemon by default (same pattern as before: `open_refresh=True` kwarg,
+terminate both on Ctrl+C, warn-but-continue if daemon fails to start).
 
-```python
-def _run_site(port, on_started=None):
-    ...
-    proc = subprocess.Popen(cmd, env=env)
-    if on_started is not None:
-        on_started()
-    try:
-        proc.wait()
-    except KeyboardInterrupt:
-        proc.terminate()
-        ...
-```
+Keep Django `run.py runserver --noreload` construction unchanged.
 
-**Replace the wait/shutdown section** so `_run_site` also starts the
-refresh daemon by default:
+Sketch:
 
 ```python
 def _run_site(port, on_started=None, open_refresh=True):
     ...
-    # existing Django Popen → proc
-    proc = subprocess.Popen(cmd, env=env)
+    proc = subprocess.Popen(cmd, env=env)  # django — unchanged
 
     refresh_proc = None
     if open_refresh:
         try:
             refresh_proc = _run_open_refresh_daemon()
         except Exception as exc:
-            # Site can still serve HTML/data; open-tab auto pull is dead.
             print(
                 f"WARN open-refresh daemon failed to start: "
                 f"{type(exc).__name__}: {exc}"
             )
-            refresh_proc = None
 
     if on_started is not None:
         on_started()
@@ -200,11 +193,8 @@ def _run_site(port, on_started=None, open_refresh=True):
         print(f"Stopped {name}")
 
     try:
-        # Wait on the site process; if refresh daemon dies early, log once
-        # but keep the site up (presence still works; only auto-pull dies).
         while True:
-            site_rc = proc.poll()
-            if site_rc is not None:
+            if proc.poll() is not None:
                 break
             if refresh_proc is not None and refresh_proc.poll() is not None:
                 print(
@@ -220,67 +210,22 @@ def _run_site(port, on_started=None, open_refresh=True):
         _stop_child(proc, "django site")
 ```
 
-Add `import time` at module top if not already present.
-
-Keep the existing `REPORT_API_URL` / `run.py runserver --noreload`
-construction **unchanged**.
+Add `import time` if missing.
 
 ---
 
 ## Change D — `site` CLI defaults open-refresh ON
 
-Current:
+Match local click/typer style. Minimum:
 
-```python
-@cli.command("site")
-def site():
-    """Run web/prism_site Django app on 0.0.0.0:8501. ..."""
-    _run_site(SITE_DEFAULT_PORT)
+```text
+entrypoint.py site                  → open_refresh=True
+entrypoint.py site --no-open-refresh → Django only
+entrypoint.py site --open-interval 30 → override cadence (still open-only)
 ```
 
-**Change to** (match whatever click/typer/argparse style this file uses
-for other commands — prefer the local idiom):
-
-### If the CLI is click-style
-
-```python
-@cli.command("site")
-@click.option(
-    "--no-open-refresh",
-    is_flag=True,
-    default=False,
-    help="Do not start the open-tab light-refresh daemon.",
-)
-@click.option(
-    "--open-interval",
-    type=int,
-    default=SITE_OPEN_REFRESH_INTERVAL_S,
-    show_default=True,
-    help="Seconds between open-tab light refreshes.",
-)
-def site(no_open_refresh, open_interval):
-    """Run the Django portal and (by default) the open-tab refresh daemon.
-
-    Open dashboards heartbeat POST /api/dashboard/presence/; this daemon
-    light-refreshes those folders every --open-interval seconds so the
-    browser poll of /api/dashboard/data/ sees new last_refreshed stamps
-    without a manual Refresh click.
-    """
-    # Allow overriding the module default for this run only.
-    global SITE_OPEN_REFRESH_INTERVAL_S
-    SITE_OPEN_REFRESH_INTERVAL_S = int(open_interval)
-    _run_site(SITE_DEFAULT_PORT, open_refresh=not no_open_refresh)
-```
-
-### If the CLI is a custom decorator without click options
-
-Add a parallel flag the way sibling commands do. Minimum requirement:
-
-- `entrypoint.py site` → `open_refresh=True` (default)
-- Some explicit opt-out (`--no-open-refresh` or `site_no_refresh`) exists
-  and is documented in the command docstring
-
-Also update the `site` docstring to mention the daemon explicitly.
+Docstring must say explicitly: **open dashboards only; no full registry
+walk.**
 
 ---
 
@@ -288,54 +233,46 @@ Also update the `site` docstring to mention the daemon explicitly.
 
 | Surface | Why |
 |---|---|
-| `fifteen_minute_context_generator` one-shot `refresh_dashboards.main()` | Keep as the production cold walk if still registered; `site`'s daemon is additive for interactive sessions |
-| `refresh_dashboard_api` / presence view | Already wired in Change 1–3 |
-| Default runner mode for the cold walk | Must remain `full` |
-
-If both the 15-minute one-shot **and** the site daemon run full walks,
-that is acceptable (overlapping full walks are gated by
-`refresh_status` / due logic). Do not disable the 15-minute job in this
-pass unless you hit a concrete lock conflict — then report under
-Frictions.
+| 15-minute / hourly full `refresh_dashboards.main()` | Keeps cold HTML for everyone |
+| `refresh_dashboard_api` / presence view | Already wired |
+| Spawning `--interval` from `site` | Forbidden in this pass |
 
 ---
 
 ## Verification
 
-After editing, run:
-
 ```text
 entrypoint.py site
 ```
 
-Expected startup prints (approximate):
+Startup must print a cmd that is **exactly** open-only, e.g.:
 
 ```text
-Starting open-tab dashboard refresh daemon: open every 60s, full walk every 900s
-  cmd: .../python .../jobs/hourly/refresh_dashboards.py --interval 900 --open-interval 60
-... django site URL ...
+.../python .../jobs/hourly/refresh_dashboards.py --open-interval 60
 ```
 
-Then with an owned dashboard tab open (`smoke_intraday_yields` is fine):
+Fail verification if the cmd includes `--interval`.
 
-1. Django log keeps showing `POST /api/dashboard/presence/` → 200.
-2. Within ~60–90s, refresh daemon stdout shows an **open-walk** banner
-   and a light refresh for that folder (not only `trigger=manual` in
-   Django).
-3. Django log then shows `GET /api/dashboard/data/` → **200** (not only
-   304/cache_hit), and the page pill/values update with **no** Refresh
-   click and **no** full reload.
-4. `entrypoint.py site --no-open-refresh` starts Django only (no daemon
-   cmd print); data stays 304 until manual Refresh.
+With `smoke_intraday_yields` (or any owned dash) open:
 
-Report pass/fail for each of 1–4.
+1. `POST /api/dashboard/presence/` → 200 continues.
+2. Within ~60–90s, daemon shows an **open-walk** for that folder only
+   (not a multi-user full walk banner listing every kerberos).
+3. `GET /api/dashboard/data/` → **200** (not only 304), pill/values
+   update with no Refresh click.
+4. Close the tab / stop heartbeats → within ~2–3 minutes that folder
+   drops out of open walks (TTL expiry); no full-registry activity
+   appears in the daemon output.
+5. `entrypoint.py site --no-open-refresh` → no daemon cmd.
+
+Report pass/fail for 1–5.
 
 ---
 
 ## Reply format
 
-1. Prerequisite check  
-2. Exact files touched (`entrypoint.py` path + any tiny helper moves)  
-3. Final `site` / `_run_site` signatures  
-4. Verification 1–4  
+1. Prerequisite check (confirm open-interval-alone = open-only)  
+2. Files touched  
+3. Exact spawn argv used by `site`  
+4. Verification 1–5  
 5. **## Frictions**

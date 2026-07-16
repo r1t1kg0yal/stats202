@@ -537,33 +537,32 @@ def _walk_open_once(*, walk_id: int = 1) -> int:
 
 
 def _daemon(
-    interval_seconds: int,
+    interval_seconds: Optional[int] = None,
     *,
     open_interval_seconds: Optional[int] = None,
 ) -> int:
-    """Loop forever, walking the registry every ``interval_seconds``.
+    """Loop forever on the requested walk kinds.
 
-    Each tick = one ``_walk_once`` pass with a monotonic walk counter.
-    Walk time is reckoned into the sleep so the effective wall-clock
-    cadence is constant: a 12s walk followed by an 18s sleep, not 30s
-    of sleep on top of the walk.
+    * ``interval_seconds`` set -- full registry walk (cold HTML) on that
+      cadence via ``_walk_once``.
+    * ``open_interval_seconds`` set -- light-refresh only dashboards with
+      a fresh open-tab presence heartbeat via ``_walk_open_once``.
+    * Either may be omitted. ``entrypoint.py site`` uses open-only
+      (``open_interval_seconds`` set, ``interval_seconds=None``) so it
+      never walks the whole registry. The 15-minute one-shot keeps the
+      cold full walk.
 
-    When ``open_interval_seconds`` is set, also runs
-    ``_walk_open_once`` on that shorter cadence (light mode only).
-
-    Walk-time exceptions are caught and logged but the daemon survives
-    (subprocess failures inside ``_walk_once`` are already handled by
-    ``_spawn_runner``; this branch covers genuinely-unexpected crashes
-    like an S3 listing failure or a UserRegistry race).
+    Walk-time exceptions are caught and logged but the daemon survives.
     KeyboardInterrupt exits cleanly with rc=0.
-
-    Cadence floor: a dashboard with ``refresh_frequency = "60s"`` and
-    a daemon walking every 30s sees effective cadence ~60-90s (60s
-    threshold + up to 30s walk granularity + ~11s spawn). Pick
-    ``--interval`` to match the SHORTEST refresh_frequency you have
-    registered; walking faster than that just wastes CPU.
     """
-    if interval_seconds <= 0:
+    if interval_seconds is None and open_interval_seconds is None:
+        print(
+            "refresh_dashboards: daemon requires --interval and/or "
+            "--open-interval",
+            file=sys.stderr, flush=True,
+        )
+        return 2
+    if interval_seconds is not None and interval_seconds <= 0:
         print(
             f"refresh_dashboards: --interval must be > 0; got "
             f"{interval_seconds}",
@@ -578,24 +577,32 @@ def _daemon(
         )
         return 2
 
-    _banner(
-        f"refresh_dashboards daemon mode -- interval={interval_seconds}s"
-        + (
-            f" open-interval={open_interval_seconds}s"
-            if open_interval_seconds is not None else ""
-        )
-    )
+    parts = []
+    if interval_seconds is not None:
+        parts.append(f"full-interval={interval_seconds}s")
+    else:
+        parts.append("full-interval=off")
+    if open_interval_seconds is not None:
+        parts.append(f"open-interval={open_interval_seconds}s")
+    else:
+        parts.append("open-interval=off")
+    _banner("refresh_dashboards daemon mode -- " + " ".join(parts))
 
     walk_id = 0
     open_walk_id = 0
-    next_full = time.time()
+    now0 = time.time()
+    next_full = now0 if interval_seconds is not None else None
     next_open = (
-        time.time() if open_interval_seconds is not None else None
+        now0 if open_interval_seconds is not None else None
     )
     try:
         while True:
             now = time.time()
-            if now >= next_full:
+            if (
+                interval_seconds is not None
+                and next_full is not None
+                and now >= next_full
+            ):
                 walk_id += 1
                 tick_started = time.time()
                 try:
@@ -627,16 +634,18 @@ def _daemon(
                     print(traceback.format_exc(),
                           file=sys.stderr, flush=True)
                 next_open = open_started + float(open_interval_seconds)
-            sleep_until = next_full
-            if next_open is not None:
-                sleep_until = min(sleep_until, next_open)
-            sleep_for = max(0.0, sleep_until - time.time())
+            candidates = [
+                t for t in (next_full, next_open) if t is not None
+            ]
+            if not candidates:
+                return 2
+            sleep_for = max(0.0, min(candidates) - time.time())
             if sleep_for > 0:
                 time.sleep(min(sleep_for, 1.0))
     except KeyboardInterrupt:
         _banner(
             f"refresh_dashboards daemon interrupted "
-            f"after walk #{walk_id}"
+            f"after full-walk #{walk_id} open-walk #{open_walk_id}"
         )
         return 0
 
@@ -649,12 +658,12 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="refresh_dashboards",
         description=(
-            "Walk the dashboards registry and refresh every due "
-            "dashboard via per-dashboard subprocess. Default: one "
-            "walk + exit (legacy entrypoint.py contract). With "
-            "--interval N: run as a daemon, walking every N seconds "
-            "forever. With --open-interval N: also light-refresh "
-            "open-tab dashboards on that cadence."
+            "Dashboard refresh orchestrator. Default (no args): one "
+            "full registry walk + exit (legacy entrypoint / 15-minute "
+            "contract). --interval N: full-walk daemon. "
+            "--open-interval N alone: open-tab light-refresh daemon "
+            "only (no full walk; for entrypoint.py site). Both flags "
+            "together: full walk + open light refresh."
         ),
     )
     parser.add_argument(
@@ -663,11 +672,9 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         default=None,
         metavar="N",
         help=(
-            "Daemon mode: walk the registry every N seconds. "
-            "Recommended N=30 for registries containing sub-minute "
-            "refresh_frequency dashboards. Effective per-dashboard "
-            "cadence = max(N, refresh_frequency); pick N <= the "
-            "shortest refresh_frequency in the registry."
+            "Full registry walk daemon cadence in seconds (cold HTML). "
+            "Omit this when you only want open-tab light refresh "
+            "(pass --open-interval alone)."
         ),
     )
     parser.add_argument(
@@ -678,9 +685,10 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         help=(
             "Open-tab light-refresh cadence in seconds. Reads the "
             "presence index and spawns refresh_runner --mode light "
-            "for each TTL-fresh open dashboard. Typical N=60. "
-            "Implies daemon mode when --interval is omitted "
-            "(uses --interval default 900 for the full cold walk)."
+            "for each TTL-fresh open dashboard only (never walks the "
+            "full registry by itself). Typical N=60. Alone = "
+            "open-only daemon (what entrypoint.py site should use). "
+            "Combine with --interval N to also run the cold full walk."
         ),
     )
     parser.add_argument(
@@ -699,6 +707,7 @@ def main(argv: Optional[List[str]] = None) -> int:
        ``fifteen_minute_context_generator`` calls this with no args.
     2. ``main(argv)`` (CLI args list) -- argparse-driven:
        ``--open-once``, ``--interval N``, ``--open-interval N``.
+       ``--open-interval`` alone is an open-only daemon (no full walk).
 
     Splitting on ``argv is None`` instead of ``sys.argv`` so the
     Python-level call from entrypoint.py never picks up stray CLI
@@ -711,8 +720,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _walk_open_once()
     if args.interval is None and args.open_interval is None:
         return _walk_once()
-    interval = args.interval if args.interval is not None else 900
-    return _daemon(interval, open_interval_seconds=args.open_interval)
+    return _daemon(
+        args.interval,
+        open_interval_seconds=args.open_interval,
+    )
 
 
 if __name__ == "__main__":
