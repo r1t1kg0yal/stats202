@@ -23,7 +23,7 @@ Size guards: `fetch_csv`/`fetch_zip` raise (not truncate) above `max_mb` — ste
 
 ## Triggers
 
-**Primary** — Physical + demand layers with no clean feed elsewhere: training-compute and cost of frontier models; **AI-capability trajectory** (Epoch Capabilities Index + benchmark scores over time — FrontierMath, SWE-bench, GPQA, ARC-AGI, GDPval, METR time-horizons); AI accelerator specs/prices; GPU-cluster and **frontier data-center** fleet (power MW, capital cost, construction timelines, water use); AI chip sales/components/owners (units, H100-equivalents, power, wafer/CoWoS/HBM consumption, compute distribution); AI company revenue/funding/valuation; where AI is used by occupation/task (adoption, automation-vs-augmentation); cloud GPU rental $/hr and inference $/token.
+**Primary** — Physical + demand layers with no clean feed elsewhere: training-compute and cost of frontier models; **AI-capability trajectory** (Epoch Capabilities Index + benchmark scores over time — FrontierMath, SWE-bench, GPQA, ARC-AGI, GDPval, METR time-horizons); AI accelerator specs/prices; GPU-cluster and **frontier data-center** fleet (power MW, capital cost, construction timelines, water use); AI chip sales/components/owners (units, H100-equivalents, power, wafer/CoWoS/HBM consumption, compute distribution); AI company revenue/funding/valuation; where AI is used by occupation/task (adoption, automation-vs-augmentation); cloud GPU rental $/hr and inference $/token; **CVE disclosure trends** among notable vendors (`cve_severity_monthly`).
 
 **Not for** (route to the existing client) — company capex/filings (`sec_edgar_client`), macro series (`fred_client`), cross-border banking (`bis_client`), petroleum/nat-gas (`eia_client`), grid demand by balancing authority (`electricity_client`).
 
@@ -66,6 +66,12 @@ Size guards: `fetch_csv`/`fetch_zip` raise (not truncate) above `max_mb` — ste
 | `benchmarks` (`capabilities`) | capabilities | csv | per-run benchmark scores |
 | `benchmark_data` (`benchmarking_hub`,`eci`) | capabilities | zip | Benchmarking Hub: Epoch Capabilities Index + ~50 per-benchmark series |
 | `polling` | adoption | csv | AI-usage polling by demographic |
+| `cve_severity_monthly` (`cve`,`cyber`,`vulnerabilities`) | cyber | csv | monthly High+Critical CVE counts from 21 notable CNAs |
+
+Epoch's Cyber Vulnerabilities explorer (`epoch.ai/data/cve`) is built on
+the CVE Program's `cvelistV5` GitHub dump. This client ships the thin
+public aggregate CSV Epoch publishes for analysis; it does **not** mirror
+the multi-GB record-level JSON tree.
 
 ### Key schemas (column names are exact; types are post-coercion)
 
@@ -87,6 +93,7 @@ Size guards: `fetch_csv`/`fetch_zip` raise (not truncate) above `max_mb` — ste
 **`benchmarks`**: `task`, `model`, `Best score (across scorers)`, `Status`, `billable_input_tokens`, `billable_output_tokens`.
 **`benchmark_data`** (ZIP, `epoch.get("benchmark_data", member=...)`): the AI-capability trajectory layer. Member `epoch_capabilities_index` (the headline **Epoch Capabilities Index** — one aggregate capability score per model: `Model version`, `ECI Score`, `Release date`, `Organization`, `Country`, `Model accessibility`, `Training compute (FLOP)`, `Confidence`, `Display name`). ~50 per-benchmark members (`frontiermath`, `frontiermath_tier_4`, `swe_bench_verified`, `gpqa_diamond`, `math_level_5`, `simpleqa_verified`, `gdpval_external`, `metr_time_horizons_external`, `arc_agi_external`, `arc_agi_2_external`, `hle_external`, `mmlu_external`, `gsm8k_external`, ...) each shaped `Model version`, `mean_score`, `Best score (across scorers)`, `Release date`, `Organization`, `Country`, `Training compute (FLOP)`, `stderr`, `id`. Member `eci_scaling` carries the ECI-vs-compute fit (`a`, `b`, `scaling_anchor1/2`, `..._eci`). Call `epoch.get("benchmark_data")` (no member) to enumerate every series.
 **`polling`**: `Question`, `Response`, `Overall` + demographic columns (`Age: 18-29`, `Income: $100K+`, ...).
+**`cve_severity_monthly`**: `month` (`YYYY-MM`), `critical` (int), `high` (int) — notable-CNA High/Critical counts only.
 
 ---
 

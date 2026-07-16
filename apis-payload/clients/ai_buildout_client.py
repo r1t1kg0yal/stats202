@@ -20,8 +20,9 @@ pandas against these fetchers rather than calling rigid wrappers.
 Sources:
     epoch       Epoch AI -- models, ML hardware, GPU clusters, FRONTIER DATA
                 CENTERS (power/MW, capital cost, construction, water), AI chip
-                sales/components/owners, AI companies, benchmarks, polling.
-                Free CSV/ZIP, no key, CC-BY.
+                sales/components/owners, AI companies, benchmarks, polling,
+                CVE severity aggregates (notable CNAs). Free CSV/ZIP, no key,
+                CC-BY.
     anthropic   Anthropic Economic Index on Hugging Face. AI adoption by
                 occupation/task, automation-vs-augmentation, wages, SOC/O*NET.
                 Free, no key, CC-BY.
@@ -289,6 +290,14 @@ class _EpochSource:
         "polling": {"kind": "csv", "group": "adoption",
             "url": f"{_EPOCH_BASE}/polling_on_ai_usage_mar_2026.csv",
             "desc": "Polling on AI usage/adoption broken out by demographics (age, income, etc.)."},
+        # --- Cyber vulnerabilities (Epoch explorer aggregates) ---
+        "cve_severity_monthly": {"kind": "csv", "group": "cyber",
+            "url": "https://epoch.ai/data/charts/cve-severity-spike-di/cve_severity_monthly.csv",
+            "desc": "Monthly High + Critical CVE counts from 21 notable CNAs "
+                    "(Microsoft/Google/Apple/Linux/...). Epoch's thin public "
+                    "aggregate for the Cyber Vulnerabilities explorer; full "
+                    "record-level CVE JSON lives upstream at "
+                    "github.com/CVEProject/cvelistV5 (not mirrored here)."},
     }
 
     _ALIASES = {
@@ -305,12 +314,14 @@ class _EpochSource:
         "eci": "benchmark_data", "capabilities_index": "benchmark_data",
         "sales": "chip_sales", "components": "chip_components",
         "owners": "chip_owners",
+        "cve": "cve_severity_monthly", "cves": "cve_severity_monthly",
+        "cyber": "cve_severity_monthly", "vulnerabilities": "cve_severity_monthly",
     }
 
     def catalog(self, group: Optional[str] = None) -> List[Dict[str, Any]]:
         """List datasets (slug, group, kind, members, desc, url). Filter by
         group: models / hardware / compute_facilities / chips / companies /
-        capabilities / adoption."""
+        capabilities / adoption / cyber."""
         out = []
         for slug, meta in self.DATASETS.items():
             if group and meta["group"] != group:
@@ -494,7 +505,7 @@ cloud = _CloudSource()
 SOURCES = {
     "epoch": {
         "name": "Epoch AI",
-        "layer": "compute / chips / supercomputers / data centers / companies",
+        "layer": "compute / chips / supercomputers / data centers / companies / cyber",
         "auth": "none (free CSV + ZIP, CC-BY)",
         "surface": "epoch.catalog([group]) / epoch.get(slug[, member]) / epoch.url(slug)",
     },

@@ -1,8 +1,8 @@
 # IMF (International Monetary Fund)
 
 Sandbox name: `imf_client`
-Layer: cross-country macro — official forecasts (WEO), fiscal/debt (Fiscal Monitor, Global Debt Database), reserves (ARA), and the deep statistical tail (CPI, BOP, trade, GFS, FSI, exchange rates, policy rates) behind a keyed SDMX surface.
-Auth: **none** for the Datamapper backbone; the SDMX 3.0 surface needs an Azure APIM subscription key. Transport: Bucket C (plain `requests`).
+Layer: cross-country macro — official forecasts (WEO), fiscal/debt (Fiscal Monitor, Global Debt Database), reserves (ARA), and the deep SDMX statistical warehouse (CPI, BOP, trade, GFS, FSI, FX, rates).
+Auth: **none** for Datamapper + SDMX structure/discovery; `IMF_API_PRIMARY_KEY` required only for `sdmx.data` observation pulls. Transport: Bucket C (plain `requests`).
 Design: catalog + thin getters. `get_data` returns tidy long rows; you write pandas on top. Entities and indicators accept friendly aliases ("US", "United States", "UK", "Korea", "Euro area", "real gdp growth", "inflation") resolved to codes internally; basket names ("G7", "G20", "BRICS") expand to member countries. Values are numeric-coerced. `imf_client.to_dataframe(rows, pivot=...)` for pandas.
 
 ## Surface (no key — the Datamapper backbone)
@@ -27,7 +27,7 @@ Design: catalog + thin getters. `get_data` returns tidy long rows; you write pan
 
 **Primary** — Cross-country comparisons; IMF **official forecasts** (WEO projections to ~T+5); government debt / fiscal balance / primary balance / revenue / expenditure (% of GDP); current account; GDP (level, growth, per-capita, PPP, world share); inflation (WEO annual); unemployment; reserves adequacy; household / corporate / public debt (Global Debt Database); regional outlooks. Anything framed "across countries", "vs other economies", "IMF projects", "in the WEO/Fiscal Monitor".
 
-**Keyed (SDMX 3.0)** — Monthly CPI, Balance of Payments, bilateral trade matrix (IMTS), Government Finance Statistics, Financial Soundness Indicators (NPLs/capital adequacy), exchange rates, policy rates, commodity prices. See the SDMX section — needs a subscription key.
+**SDMX 3.0** — Deep warehouse (CPI, BOP, IMTS, GFS, FSI, FX, rates, commodities, …). Ontology via `sdmx.catalog()` / `sdmx.dataflows()` with no key; observation pulls need `IMF_API_PRIMARY_KEY`.
 
 **Not for** (route elsewhere) — US high-frequency series (`fred_client`), cross-border banking / credit-to-GDP / DSR (`bis_client`), company financials / XBRL (`sec_edgar_client`).
 
@@ -100,22 +100,44 @@ This table is illustrative — `resolve_indicator` also accepts the **exact IMF 
 
 The wrapper already absorbs (you do not handle any of these): friendly entity/indicator aliases (incl. `US`/`UK`/`Korea`), basket expansion, numeric coercion, the `is_projection` flag, the multi-entity filter (the API only filters one entity server-side; the wrapper fetches-and-filters for >1), `compare(year=None)` → latest year, and the unknown-indicator quirk (the API returns its country catalog at HTTP 200 for a bad code — the wrapper detects this and raises).
 
-## SDMX 3.0 — keyed escape hatch (deep datasets)
+## SDMX 3.0 — deep statistical warehouse
 
-`imf_client.sdmx.*` reaches `api.imf.org/external/sdmx/3.0` for datasets the Datamapper omits. **Requires** an Azure APIM subscription key in `IMF_API_PRIMARY_KEY` (free at https://datamarketplace.imf.org/). Without a key these methods raise `ImfError` — never a silent fallback.
+`imf_client.sdmx.*` reaches `api.imf.org/external/sdmx/3.0`. **Split auth:**
+structure/discovery is public; **observation fetches need a key**.
 
-| Call | Returns |
-|---|---|
-| `imf_client.sdmx.catalog([keyword])` | curated dataflows: `dataflow, agency, version, freq, name, note` (offline) |
-| `imf_client.sdmx.has_key()` | whether a key is configured |
-| `imf_client.sdmx.build_path(dataflow, key="*")` | the wire path (offline preview) |
-| `imf_client.sdmx.key_grammar()` | how to construct the dot-joined series key |
-| `imf_client.sdmx.data(dataflow, key, start=, end=)` | tidy rows (one col per dimension + `TIME_PERIOD`, `value`) — **key required** |
-| `imf_client.sdmx.dataflows()` | live dataflow list — **key required** |
+| Call | Auth | Returns |
+|---|---|---|
+| `imf_client.sdmx.catalog([keyword])` | none | offline snapshot of ~100 current (non-vintage) dataflows |
+| `imf_client.sdmx.dataflows([include_vintages=False])` | none | live structure list (same filter as catalog by default) |
+| `imf_client.sdmx.has_key()` | none | whether a key is configured |
+| `imf_client.sdmx.build_path(dataflow, key="*")` | none | the wire path (offline preview) |
+| `imf_client.sdmx.key_grammar()` | none | how to construct the dot-joined series key |
+| `imf_client.sdmx.data(dataflow, key, start=, end=)` | **key** | tidy rows (one col per dimension + `TIME_PERIOD`, `value`) |
 
-**Dataflows**: `CPI` (monthly inflation), `BOP`/`BOP_AGG` (balance of payments), `IMTS` (trade matrix; replaces DOTS), `GFS_COFOG` (govt finance), `FSI` (financial soundness), `ER` (exchange rates), `MFS_IR` (policy rates), `PCPS` (commodity prices), `CDIS`/`CPIS` (investment surveys), `WEO`/`FM` (prefer the no-key Datamapper).
+Get a free Azure APIM key at https://datamarketplace.imf.org/ and set
+`IMF_API_PRIMARY_KEY`. Without a key, `sdmx.data` raises `ImfError` — never
+a silent Datamapper fallback.
 
-**Key grammar**: the wire path is `/data/dataflow/{agency}/{flow}/{version}/{key}` (slash form; the comma form 404s). `{key}` = dimension values joined by `.`, `*` wildcards a dimension, `+` ORs values. SDMX keys use **ISO3** country codes (`USA`, not the `US` alias the Datamapper accepts) — call `imf_client.resolve_entity("US")` → `"USA"` to convert a friendly name to the ISO3 a key needs. `start`/`end` take SDMX period strings or ints (`"2024"`, `2024`, `"2024-01"`). Use `key_grammar()` + (keyed) `dataflows()` to discover the exact dimensions for a flow before composing a precise key. Example: `imf_client.sdmx.data("CPI", "USA.CPI._T.IX.M", start="2024")`. Pass an explicit `"AGENCY,FLOW,VERSION"` to override the catalog. The on-wire SDMX-JSON parser is verified against the documented format but not a live keyed call — confirm shapes on first keyed use.
+**Scope vs Datamapper:** Datamapper = 132 headline annual indicators (WEO/FM/GDD/…).
+SDMX = the full current statistical warehouse (~100 non-vintage dataflows,
+plus optional `*_VINTAGE` snapshots via `dataflows(include_vintages=True)`).
+Prefer Datamapper for WEO/FM/GDD annuals; use SDMX for monthly/quarterly
+and everything Datamapper omits.
+
+**Headline dataflows** (full list via `sdmx.catalog()`): `CPI`, `PPI`,
+`BOP`/`BOP_AGG`, `IMTS`/`ITG` (goods trade; `IMTS` replaces retired DOT/DOTS),
+`GFS_*` / `QGFS`, `FSIC` (alias `FSI`), `ER`/`EER`, `MFS_IR` + other `MFS_*`,
+`PCPS`, `DIP`/`PIP` (aliases `CDIS`/`CPIS`), `IIP`/`IRFCL`, `ANEA`/`QNEA`,
+REOs (`AFRREO`/`APDREO`/`MCDREO`/`WHDREO`), climate/`SDG`, `WEO`/`FM`/`GDD`
+(Datamapper preferred when no key).
+
+**Key grammar**: wire path `/data/dataflow/{agency}/{flow}/{version}/{key}`
+(slash form; comma form 404s). `{key}` = dimension values joined by `.`,
+`*` wildcards a dimension, `+` ORs values. SDMX keys use **ISO3**
+(`USA`, not Datamapper's `US` alias) — `imf_client.resolve_entity("US")` →
+`"USA"`. Example: `imf_client.sdmx.data("CPI", "USA.CPI._T.IX.M", start="2024")`.
+Pass `"AGENCY,FLOW,VERSION"` to override the catalog. Confirm shapes on
+first keyed use.
 
 ## Recipes
 
@@ -147,11 +169,18 @@ agg = imf.to_dataframe(imf.get_data("real gdp growth", ["ADVEC","OEMDC","WEOWORL
 fiscal = imf.search_indicators("balance")           # indicators across datasets
 print(imf.list_groups(keyword="g-7"))               # group codes
 
-# 7. Deep monthly data (SDMX, key required) — falls cleanly to ImfError if no key
+# 7. Discover SDMX universe (no key), then fetch if keyed
+print(len(imf.sdmx.catalog()), "offline dataflows;", len(imf.sdmx.dataflows()), "live")
 if imf.sdmx.has_key():
     cpi = imf.to_dataframe(imf.sdmx.data("CPI", "USA.CPI._T.IX.M", start="2024"))
 ```
 
 ## Coverage gaps
 
-The Datamapper carries headline annual indicators only; sub-annual frequency and the full statistical detail (monthly CPI, BOP components, bilateral trade, GFS, FSI, FX, policy rates) require the keyed SDMX surface. The legacy `dataservices.imf.org` JSON/XML service was retired in Sept 2025 and is not supported.
+The Datamapper carries 132 headline annual indicators only — complete for
+that surface (`refresh_catalog()` detects drift). Sub-annual frequency and
+the deep statistical warehouse (monthly CPI, BOP, bilateral trade, GFS,
+FSI, FX, policy rates, …) are on SDMX: ontology via `sdmx.catalog()` /
+`sdmx.dataflows()` with no key; observations via `sdmx.data` with
+`IMF_API_PRIMARY_KEY`. The legacy `dataservices.imf.org` JSON/XML service
+was retired in Sept 2025 and is not supported.

@@ -17,20 +17,20 @@ TWO TRANSPORT SURFACES (post September-2025 IMF API migration):
        imf_client.list_indicators(dataset="WEO")
        imf_client.to_dataframe(rows, pivot="entity")
 
-2. SDMX 3.0 (KEY REQUIRED, documented escape hatch). api.imf.org/external/
-   sdmx/3.0. Covers the deep statistical tail the Datamapper does NOT expose
-   -- CPI (monthly), Balance of Payments (BOP), trade matrix (IMTS),
-   Government Finance Statistics (GFS), Financial Soundness Indicators (FSI),
-   Exchange Rates (ER), policy rates (MFS_IR), commodity prices (PCPS); the
-   legacy monolithic IFS dataflow was decomposed into these component flows in
-   the 2026-05 SDMX 3.0 refactor. Needs
-   an Azure APIM ``Ocp-Apim-Subscription-Key`` (free at
-   https://datamarketplace.imf.org/) supplied via the ``IMF_API_PRIMARY_KEY``
-   env var. Without a key these methods raise a clear ImfError -- they never
-   silently fall back to the Datamapper.
+2. SDMX 3.0 (structure public; DATA needs key). api.imf.org/external/
+   sdmx/3.0. The public structure endpoint lists the full current dataflow
+   universe (~100 non-vintage flows: CPI, BOP, IMTS, GFS_*, FSIC, ER, MFS_*,
+   PCPS, DIP/PIP, REOs, climate, ...). ``sdmx.catalog()`` / ``sdmx.dataflows()``
+   expose that ontology without a key. Fetching observations via ``sdmx.data``
+   still needs an Azure APIM ``Ocp-Apim-Subscription-Key`` (free at
+   https://datamarketplace.imf.org/) in ``IMF_API_PRIMARY_KEY``. Without a key
+   ``sdmx.data`` raises ImfError -- never a silent Datamapper fallback.
+   Datamapper remains the no-key backbone for WEO/FM/GDD headline annuals;
+   SDMX is the deep statistical warehouse, not a second copy of Datamapper.
 
-       imf_client.sdmx.catalog()                       # curated dataflow list
-       imf_client.sdmx.data("CPI", "USA.CPI._T.IX.M")  # needs key
+       imf_client.sdmx.catalog()                       # offline full current catalog
+       imf_client.sdmx.dataflows()                     # live structure (no key)
+       imf_client.sdmx.data("CPI", "USA.CPI._T.IX.M")  # observations need key
 
 The legacy ``dataservices.imf.org`` JSON/XML service was retired in Sept 2025
 and is intentionally NOT supported here.
@@ -658,13 +658,14 @@ def to_dataframe(rows: Sequence[Dict[str, Any]],
 
 
 class _SdmxSurface:
-    """Key-gated access to the IMF SDMX 3.0 API (api.imf.org) for the deep
-    datasets the Datamapper does not expose. Every method that hits the wire
-    requires an Azure APIM subscription key in one of the env vars in
-    ``KEY_ENV`` (get one at https://datamarketplace.imf.org/). Without a key
-    these methods raise ImfError -- they never fall back to the Datamapper.
+    """IMF SDMX 3.0 API (api.imf.org) for the deep statistical warehouse the
+    Datamapper does not expose.
 
-    Catalog/grammar helpers (catalog, build_path, key_grammar) work offline.
+    Structure/discovery (``catalog``, ``dataflows``, ``build_path``,
+    ``key_grammar``) is public. Observation fetches (``data``) require an
+    Azure APIM subscription key in one of ``KEY_ENV`` (free at
+    https://datamarketplace.imf.org/). Without a key ``data`` raises
+    ImfError -- never a silent Datamapper fallback.
 
     NOTE: the on-the-wire parser (_parse_sdmx_json) targets SDMX-JSON 2.0.0
     and is verified only against the documented format, not against a live
@@ -675,52 +676,116 @@ class _SdmxSurface:
     KEY_ENV = ("IMF_API_PRIMARY_KEY", "IMF_SDMX_SUBSCRIPTION_KEY",
                "IMF_API_KEY", "IMF_API_SECONDARY_KEY")
 
-    # Curated dataflow catalog (post-2026-05 SDMX 3.0 refactor). version "+"
-    # = latest; known explicit versions noted. Confirm live via dataflows().
+    # Offline snapshot of CURRENT (non-vintage) SDMX 3.0 dataflows from the
+    # public structure endpoint (2026-07-15): 103 flows. Vintage snapshot
+    # flows (*_VINTAGE) are omitted — pass AGENCY,FLOW,VERSION explicitly
+    # or call dataflows() (no key required for structure) to refresh.
+    # Legacy aliases resolved in _resolve_flow: CDIS->DIP, CPIS->PIP,
+    # FSI->FSIC, DOT/DOTS->IMTS. version "+" = latest.
     CATALOG: Dict[str, Dict[str, str]] = {
-        "CPI": {"agency": "IMF.STA", "version": "+", "freq": "M/Q/A",
-                "name": "Consumer Price Index",
-                "note": "v5.0.0; split out of legacy IFS in 2026-05 refactor."},
-        "BOP": {"agency": "IMF.STA", "version": "+", "freq": "Q",
-                "name": "Balance of Payments (detailed)",
-                "note": "v21.0.0."},
-        "BOP_AGG": {"agency": "IMF.STA", "version": "+", "freq": "Q",
-                    "name": "Balance of Payments -- Aggregates", "note": ""},
-        "IMTS": {"agency": "IMF.STA", "version": "+", "freq": "M/Q",
-                 "name": "International Merchandise Trade Statistics",
-                 "note": "v1.0.0; replaces the retired DOTS; bilateral flows "
-                         "need a partner-country dimension."},
-        "DOT": {"agency": "IMF.STA", "version": "+", "freq": "M/Q",
-                "name": "Direction of Trade Statistics (legacy)",
-                "note": "Superseded by IMTS in 2026-05; may 404."},
-        "GFS_COFOG": {"agency": "IMF.STA", "version": "+", "freq": "A",
-                      "name": "Government Finance Statistics -- COFOG",
-                      "note": "v11.0.0."},
-        "FSI": {"agency": "IMF.STA", "version": "+", "freq": "Q",
-                "name": "Financial Soundness Indicators",
-                "note": "NPLs, capital adequacy, ROA/ROE."},
-        "ER": {"agency": "IMF.STA", "version": "+", "freq": "M",
-               "name": "Exchange Rates (NEER/REER + bilateral)",
-               "note": "v4.0.1; ENDA_/ENDE_XDC_USD_RATE retired -- use "
-                       "USD_XDC.PA_RT / EOP_RT."},
-        "MFS_IR": {"agency": "IMF.STA", "version": "+", "freq": "M",
-                   "name": "Monetary & Financial Statistics -- Interest Rates "
-                           "(policy rates)",
-                   "note": "v8.0.1."},
-        "PCPS": {"agency": "IMF.RES", "version": "+", "freq": "M",
-                 "name": "Primary Commodity Price System",
-                 "note": "v9.0.0; moved IMF.STA -> IMF.RES in 2026-05."},
-        "CDIS": {"agency": "IMF.STA", "version": "+", "freq": "A",
-                 "name": "Coordinated Direct Investment Survey (FDI stocks)",
-                 "note": ""},
-        "CPIS": {"agency": "IMF.STA", "version": "+", "freq": "SA/A",
-                 "name": "Coordinated Portfolio Investment Survey", "note": ""},
-        "WEO": {"agency": "IMF.RES", "version": "+", "freq": "A",
-                "name": "World Economic Outlook",
-                "note": "Prefer the no-key Datamapper (imf_client.get_data)."},
-        "FM": {"agency": "IMF.FAD", "version": "+", "freq": "A",
-               "name": "Fiscal Monitor",
-               "note": "Prefer the no-key Datamapper (imf_client.get_data)."},
+        "AEA": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Air Emissions Accounts (AEA)", "note": ""},
+        "AFRREO": {"agency": "IMF.AFR", "version": "+", "freq": "A", "name": "Sub-Saharan Africa Regional Economic Outlook (AFRREO)", "note": ""},
+        "ANEA": {"agency": "IMF.STA", "version": "+", "freq": "A", "name": "National Economic Accounts (NEA), Annual Data", "note": ""},
+        "APDREO": {"agency": "IMF.APD", "version": "+", "freq": "A", "name": "Asia and Pacific Regional Economic Outlook (APDREO)", "note": ""},
+        "BOP": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "Balance of Payments (BOP)", "note": ""},
+        "BOP_AGG": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "Balance of Payments and International Investment Position Statistics (BOP/IIP), World and Country Group Aggregates", "note": ""},
+        "CCI": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Climate Change Indicators", "note": ""},
+        "CFBL": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Carbon Footprint of Bank Loans", "note": ""},
+        "CO2E": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "CO2 emissions embodied in domestic final demand, production, and trade (CO2E)", "note": ""},
+        "CO2EEIEM": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Carbon Emission Per Unit of Output (CO2EEIEM)", "note": ""},
+        "COFER": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Currency Composition of Official Foreign Exchange Reserves (COFER)", "note": ""},
+        "CPI": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Consumer Price Index (CPI)", "note": ""},
+        "CPI_WCA": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Consumer Price Index (CPI), World and Country Aggregates (CPI_WCA)", "note": ""},
+        "CRBRATE": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Carbon Rates", "note": ""},
+        "CTOT": {"agency": "IMF.RES", "version": "+", "freq": "A", "name": "Commodity Terms of Trade (CTOT)", "note": ""},
+        "DIP": {"agency": "IMF.STA", "version": "+", "freq": "A", "name": "Direct Investment Positions by Counterpart Economy (formerly CDIS)", "note": "formerly CDIS"},
+        "ECFIE": {"agency": "IMF.RES", "version": "+", "freq": "varies", "name": "Earnings-Calls-based Firm Inflation Expectations (ECFIE)", "note": ""},
+        "ED": {"agency": "IMF.RES", "version": "+", "freq": "A", "name": "Export Diversification (ED)", "note": ""},
+        "EER": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Effective Exchange Rate (EER)", "note": "effective exchange rates (NEER/REER); distinct from bilateral ER"},
+        "ENVTX": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Environmental Taxes", "note": ""},
+        "EQ": {"agency": "IMF.RES", "version": "+", "freq": "A", "name": "Export Quality (EQ)", "note": ""},
+        "ER": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Exchange Rates (ER)", "note": "bilateral / market exchange rates; ENDA_/ENDE_XDC_USD_RATE retired"},
+        "ESG_FINANCE": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Sustainable Bonds", "note": ""},
+        "ESG_FINANCE_CURRENCY": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Sustainable Bonds by Type of Currency", "note": ""},
+        "ESG_FINANCE_ISSUER": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Sustainable Bonds by Type of Issuer", "note": ""},
+        "FA": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Fund Accounts (FA)", "note": ""},
+        "FAS": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Financial Access Survey (FAS)", "note": ""},
+        "FD": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Fiscal Decentralization (FD)", "note": ""},
+        "FDI": {"agency": "IMF.MCM", "version": "+", "freq": "A", "name": "Financial Development Index (FDI)", "note": ""},
+        "FFS": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Fossil Fuel Subsidies", "note": ""},
+        "FLTRI": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Forward Looking Transition Risk Indicators", "note": ""},
+        "FM": {"agency": "IMF.FAD", "version": "+", "freq": "A", "name": "Fiscal Monitor (FM)", "note": "Prefer the no-key Datamapper (imf_client.get_data)."},
+        "FSIBSIS": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "Financial Soundness Indicators (FSI), Balance Sheet, Income Statement and Memorandum Series", "note": ""},
+        "FSIC": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "Financial Soundness Indicators (FSI), Core and Additional Indicators", "note": "core FSI indicators (alias FSI -> FSIC)"},
+        "FSICDM": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "Financial Soundness Indicators (FSI), Concentration and Distribution Measures", "note": ""},
+        "FSI_COUNTRY_METADATA_TABLE_2": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Financial Soundness Indicators (FSI), Country Metadata Table 2", "note": ""},
+        "GDD": {"agency": "IMF.FAD", "version": "+", "freq": "A", "name": "Global Debt Database (GDD)", "note": "Prefer the no-key Datamapper (imf_client.get_data)."},
+        "GENENVPROEXP": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Government Environmental Protection Expenditures", "note": ""},
+        "GFS_BS": {"agency": "IMF.STA", "version": "+", "freq": "A", "name": "GFS Balance Sheet", "note": ""},
+        "GFS_COFOG": {"agency": "IMF.STA", "version": "+", "freq": "A", "name": "GFS Government Expenditures by Function", "note": ""},
+        "GFS_SFCP": {"agency": "IMF.STA", "version": "+", "freq": "A", "name": "GFS Stocks and Flows by Counterparty", "note": ""},
+        "GFS_SOEF": {"agency": "IMF.STA", "version": "+", "freq": "A", "name": "GFS Statement of Other Economic Flows", "note": ""},
+        "GFS_SOO": {"agency": "IMF.STA", "version": "+", "freq": "A", "name": "GFS Statement of Operations ", "note": ""},
+        "GFS_SSUC": {"agency": "IMF.STA", "version": "+", "freq": "A", "name": "GFS Statement of Sources and Uses of Cash", "note": ""},
+        "GPT": {"agency": "IMF.SPR", "version": "+", "freq": "varies", "name": "IMF Global Policy Tracker: How Countries are Responding to the Economic Impact of the War in the Middle East", "note": ""},
+        "GS_ATF": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Gender Statistics (GS) Access to Finance (ATF)", "note": ""},
+        "GS_CGI": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Gender Statistics (GS) Composite Gender Indices (CGI)", "note": ""},
+        "GS_ED": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Gender Statistics (GS) Education", "note": ""},
+        "GS_HEALTH": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Gender Statistics (GS) Health", "note": ""},
+        "GS_LEPM": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Gender Statistics (GS) Leadership and empowerment (LEPM)", "note": ""},
+        "GS_LGRGHTS": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Gender Statistics (GS) Legal Rights", "note": ""},
+        "GS_LI": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Gender Statistics (GS) Labor and Income ", "note": ""},
+        "GS_SDO": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Gender Statistics (GS) Social, demographic and other", "note": ""},
+        "HPD": {"agency": "IMF.FAD", "version": "+", "freq": "A", "name": "Historical Public Debt (HPD)", "note": ""},
+        "ICSD": {"agency": "IMF.FAD", "version": "+", "freq": "A", "name": "Investment and Capital Stock Dataset (ICSD)", "note": ""},
+        "IIP": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "International Investment Position (IIP)", "note": ""},
+        "IIPCC": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "Currency Composition of the International Investment Position (IIPCC)", "note": ""},
+        "IL": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "International Liquidity (IL)", "note": ""},
+        "IMTS": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "International Trade in Goods (by partner country) (IMTS)", "note": "bilateral goods by partner; replaces retired DOT/DOTS"},
+        "INFORMRISK": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Climate-Driven INFORM Risk Indicator", "note": ""},
+        "IRFCL": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "International Reserves and Foreign Currency Liquidity (IRFCL)", "note": ""},
+        "ISORA_2016_DATA_PUB": {"agency": "ISORA", "version": "+", "freq": "varies", "name": "ISORA 2016 Data", "note": ""},
+        "ISORA_2018_DATA_PUB": {"agency": "ISORA", "version": "+", "freq": "varies", "name": "ISORA 2018 Data", "note": ""},
+        "ISORA_LATEST_DATA_PUB": {"agency": "ISORA", "version": "+", "freq": "varies", "name": "ISORA Latest Data", "note": ""},
+        "ITG": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "International Trade in Goods (ITG)", "note": "goods trade aggregates (no partner dimension)"},
+        "ITS": {"agency": "IMF.RES", "version": "+", "freq": "A", "name": "International Trade in Services (ITS)", "note": ""},
+        "LS": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Labor Statistics (LS)", "note": ""},
+        "MCDREO": {"agency": "IMF.MCD", "version": "+", "freq": "A", "name": "Middle East and Central Asia Regional Economic Outlook (MCDREO) ", "note": ""},
+        "MFS_CBS": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Monetary and Financial Statistics (MFS), Central Bank Data", "note": ""},
+        "MFS_DC": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Monetary and Financial Statistics (MFS), Depository Corporations", "note": ""},
+        "MFS_FC": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Monetary and Financial Statistics (MFS), Financial Corporations", "note": ""},
+        "MFS_FMP": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Monetary and Financial Statistics (MFS): Financial Market Prices", "note": ""},
+        "MFS_IR": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Monetary and Financial Statistics (MFS), Interest Rate", "note": "policy / market interest rates (IFS rates block)"},
+        "MFS_MA": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Monetary and Financial Statistics (MFS), Monetary Aggregates", "note": ""},
+        "MFS_NSRF": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Monetary and Financial Statistics (MFS),  Non-Standard Data", "note": ""},
+        "MFS_ODC": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Monetary and Financial Statistics (MFS), Other Depository Corporations", "note": ""},
+        "MFS_OFC": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Monetary and Financial Statistics (MFS), Other Financial Corporations", "note": ""},
+        "MPFT": {"agency": "IMF.RES", "version": "+", "freq": "varies", "name": "Monetary Policy Frameworks Toolkit (MPFT)", "note": ""},
+        "NA_MAIN": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "National Accounts Main Aggregates (SDMX)", "note": ""},
+        "NDGAIN": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "IMF-Adapted ND-GAIN Index (NDGAIN)", "note": ""},
+        "NSDP": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "National Summary Data Page (NSDP)", "note": ""},
+        "PCPS": {"agency": "IMF.RES", "version": "+", "freq": "M", "name": "Primary Commodity Price System (PCPS)", "note": "commodity prices; agency IMF.RES"},
+        "PI": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Production Indexes (PI)", "note": ""},
+        "PIP": {"agency": "IMF.STA", "version": "+", "freq": "A", "name": "Portfolio Investment Positions by Counterpart Economy (formerly CPIS)", "note": "formerly CPIS"},
+        "PI_WCA": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Production Indexes, World and Country Group Aggregates", "note": ""},
+        "PPI": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Producer Price Index (PPI)", "note": ""},
+        "PSBS": {"agency": "IMF.FAD", "version": "+", "freq": "A", "name": "Public Sector Balance Sheet (PSBS)", "note": ""},
+        "QGDP_WCA": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "Quarterly Gross Domestic Product (GDP), World and Country Aggregates", "note": ""},
+        "QGFS": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "Quarterly Government Finance Statistics (QGFS)", "note": ""},
+        "QNEA": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "National Economic Accounts (NEA), Quarterly Data", "note": ""},
+        "RE": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Renewable Energy", "note": ""},
+        "RSUI": {"agency": "IMF.WHD", "version": "+", "freq": "varies", "name": "Reported Social Unrest Index (RSUI)", "note": ""},
+        "SDG": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "IMF Reported SDG Data", "note": ""},
+        "SPE": {"agency": "IMF.STA", "version": "+", "freq": "Q", "name": "Special Purpose Entities (SPEs)", "note": ""},
+        "SRD": {"agency": "IMF.RES", "version": "+", "freq": "varies", "name": "Structural Reform Database (SRD)", "note": ""},
+        "TAXFIT": {"agency": "IMF.FAD", "version": "+", "freq": "varies", "name": "Tax and Benefits Analysis Tool (TAXFIT)", "note": ""},
+        "TEG": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Trade in Low Carbon Technology Goods (TEG)", "note": ""},
+        "UNFCCC": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Greenhouse Gas Emissions (UNFCCC)", "note": ""},
+        "WEO": {"agency": "IMF.RES", "version": "+", "freq": "A", "name": "World Economic Outlook (WEO)", "note": "Prefer the no-key Datamapper (imf_client.get_data)."},
+        "WHDREO": {"agency": "IMF.WHD", "version": "+", "freq": "A", "name": "Western Hemisphere Regional Economic Outlook (WHDREO)", "note": ""},
+        "WORLD": {"agency": "IMF.FAD", "version": "+", "freq": "A", "name": "World Revenue Longitudinal Database (WoRLD)", "note": ""},
+        "WPCPER": {"agency": "IMF.STA", "version": "+", "freq": "M", "name": "Crypto-based Parallel Exchange Rates (Working Paper dataset WP-CPER)", "note": ""},
+        "WPFXI": {"agency": "IMF.STA", "version": "+", "freq": "varies", "name": "Working Paper Foreign Exchange Intervention (WPFXI) A Dataset of Public Data and Proxies", "note": ""},
     }
 
     def has_key(self) -> bool:
@@ -741,8 +806,9 @@ class _SdmxSurface:
         )
 
     def catalog(self, keyword: Optional[str] = None) -> List[Dict[str, str]]:
-        """The curated SDMX 3.0 dataflow catalog (offline). Each row: dataflow,
-        agency, version, freq, name, note. Filter by keyword."""
+        """Offline snapshot of current (non-vintage) SDMX 3.0 dataflows.
+        Each row: dataflow, agency, version, freq, name, note.
+        Filter by keyword. Call dataflows() (no key) to refresh."""
         kw = keyword.strip().lower() if keyword else None
         out = []
         for flow, m in self.CATALOG.items():
@@ -762,6 +828,12 @@ class _SdmxSurface:
         for all of a dataflow."""
         return self.key_grammar.__doc__ or ""
 
+    # Legacy / friendly dataflow aliases -> current SDMX 3.0 ids.
+    FLOW_ALIASES = {
+        "CDIS": "DIP", "CPIS": "PIP", "FSI": "FSIC",
+        "DOT": "IMTS", "DOTS": "IMTS",
+    }
+
     def _resolve_flow(self, dataflow: str):
         if "," in dataflow:
             parts = [p.strip() for p in dataflow.split(",")]
@@ -770,6 +842,7 @@ class _SdmxSurface:
             version = parts[2] if len(parts) > 2 else "+"
             return agency, flow, version
         flow = dataflow.strip().upper()
+        flow = self.FLOW_ALIASES.get(flow, flow)
         m = self.CATALOG.get(flow)
         if m:
             return m["agency"], flow, m.get("version", "+")
@@ -832,13 +905,23 @@ class _SdmxSurface:
             raise ImfError(f"non-JSON SDMX body from {url}: {resp.text[:200]}") from e
         return _parse_sdmx_json(payload, coerce=coerce)
 
-    def dataflows(self) -> List[Dict[str, Any]]:
-        """Live list of all SDMX 3.0 dataflows (KEY REQUIRED). Returns
-        [{id, agency, version, name}]. Use to confirm/refresh CATALOG."""
-        sub = self._key()
-        url = self.BASE + "/structure/dataflow/IMF"
-        headers = {"Ocp-Apim-Subscription-Key": sub,
-                   "Accept": "application/vnd.sdmx.structure+json;version=2.0.0"}
+    def dataflows(self, *, include_vintages: bool = False) -> List[Dict[str, Any]]:
+        """Live list of SDMX 3.0 dataflows from the public structure endpoint.
+
+        Structure queries do NOT require a subscription key. Returns
+        ``[{id, agency, version, name}]``. By default omits ``*_VINTAGE``
+        snapshot flows (same filter as the offline ``CATALOG``). Pass
+        ``include_vintages=True`` to keep them. Use to refresh / validate
+        ``CATALOG``; data fetches still need ``IMF_API_PRIMARY_KEY``.
+        """
+        url = self.BASE + "/structure/dataflow"
+        headers = {"Accept": "application/vnd.sdmx.structure+json;version=2.0.0"}
+        # Optional key — not required for structure, but send if present.
+        for e in self.KEY_ENV:
+            v = os.environ.get(e, "").strip()
+            if v:
+                headers["Ocp-Apim-Subscription-Key"] = v
+                break
         try:
             resp = _SESSION.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
         except requests.RequestException as e:
@@ -846,7 +929,8 @@ class _SdmxSurface:
         if resp.status_code in (204, 404):
             raise ImfError(
                 f"IMF SDMX returned HTTP {resp.status_code} for the dataflow "
-                f"list -- check IMF_API_PRIMARY_KEY."
+                f"list — the public structure endpoint may be temporarily "
+                f"unavailable."
             )
         if resp.status_code >= 400:
             raise ImfError(f"HTTP {resp.status_code}: {resp.text[:200]}")
@@ -855,10 +939,13 @@ class _SdmxSurface:
                  or data.get("dataflows") or [])
         out = []
         for f in flows:
+            fid = f.get("id") or ""
+            if not include_vintages and "_VINTAGE" in fid:
+                continue
             name = f.get("name")
             if isinstance(name, dict):
                 name = name.get("en") or next(iter(name.values()), "")
-            out.append({"id": f.get("id"), "agency": f.get("agencyID"),
+            out.append({"id": fid, "agency": f.get("agencyID"),
                         "version": f.get("version"), "name": name})
         return out
 

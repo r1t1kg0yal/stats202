@@ -2,10 +2,16 @@
 
 Sandbox name: ``chinadata_client``.
 
-Thin transport over the chinadata.live public JSON API (v2): ~320 cleaned
-datasets built from NBS / World Bank / GACC official sources (GDP, CPI,
-population, energy, technology, transport, ...) plus monthly GACC customs
-trade data by partner country and HS product code.
+Thin transport over the chinadata.live public JSON API (v2). Scope is the
+aggregator's public snapshot (~330 cleaned datasets + GACC trade), NOT the
+full NBS ``data.stats.gov.cn`` indicator catalog. chinadata.live itself
+documents this as curated key series vs NBS's large official tree --
+``list_datasets()`` / ``search_datasets()`` expose every dataset this API
+publishes; they do not reach raw NBS EasyQuery codes.
+
+Coverage: NBS / World Bank / GACC-sourced GDP, CPI, population, energy,
+technology, transport, ... plus monthly GACC customs trade by partner
+country and HS product code.
 
 Base URL: ``https://chinadata.live/api/v2``
 Auth: none (no key, no registration; fair-use ~100 req/min).

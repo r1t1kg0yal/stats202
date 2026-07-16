@@ -5,12 +5,17 @@ Base URL: `https://chinadata.live/api/v2`
 Auth: none (no key; fair-use ~100 req/min).
 Transport: Bucket C — plain `requests` (no GS proxy).
 
-`chinadata_client` wraps the chinadata.live public JSON API: ~320 cleaned
-datasets sourced from NBS / World Bank / GACC (GDP, CPI, population,
-energy, technology, transport, ...) plus **monthly GACC customs trade**
-by partner country and HS product. The wrapper absorbs country→slug
-mapping, the response envelope, value coercion, and passes through the
-API's QA metadata (suppressed values, flags) untouched.
+`chinadata_client` wraps the chinadata.live public JSON API: the
+aggregator's full public snapshot (~330 cleaned datasets + GACC trade),
+discovered live via `list_datasets()` / `search_datasets()`. Scope stops
+at chinadata.live — it is **not** a client for the full NBS
+`data.stats.gov.cn` EasyQuery catalog (chinadata documents itself as
+curated key series vs NBS's large official tree). Datasets are sourced
+from NBS / World Bank / GACC (GDP, CPI, population, energy, technology,
+transport, ...) plus **monthly GACC customs trade** by partner country
+and HS product. The wrapper absorbs country→slug mapping, the response
+envelope, value coercion, and passes through the API's QA metadata
+(suppressed values, flags) untouched.
 
 ## Triggers
 
@@ -21,12 +26,12 @@ bilateral trade, HS6/HS8 product-level trade with partner rankings
 (e.g. lithium-ion battery exports by destination). Anything framed
 "China's exports of X", "China-US trade balance", "China GDP/CPI series".
 
-**Not for** — cross-country panels where China is one column
-(`imf_client` / `oecd_client` / `ilo_client`); global trade matrices
-(`imf_client` SDMX IMTS); US-side trade prints (Census via `fred_client`
-or `usitc_client`). This is an independent aggregator of official data,
-not the NBS itself — for load-bearing numbers cross-check against an
-official source.
+**Not for** — the full NBS indicator universe / arbitrary EasyQuery codes
+(use NBS directly, or request a chinadata custom delivery); cross-country
+panels where China is one column (`imf_client` / `oecd_client` /
+`ilo_client`); global trade matrices (`imf_client` SDMX IMTS); US-side
+trade prints (Census via `fred_client` or `usitc_client`). For
+load-bearing numbers cross-check against an official source.
 
 ### Format quirks (wrapper-absorbed unless noted)
 
