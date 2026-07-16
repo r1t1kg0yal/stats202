@@ -12286,9 +12286,8 @@ DASHBOARD_APP_JS = r"""
   // (data changed since last_refreshed), apply the new datasets +
   // specs + metadata in place. If it returns 304, no-op.
   //
-  // Cadence comes from ``manifest.metadata.live_refresh_seconds``
-  // (engine-stamped from refresh_frequency when omitted; default 30s
-  // for legacy HTML). 0 disables the auto poll. ETag is the registry's
+  // Cadence comes from ``manifest.metadata.live_refresh_seconds``;
+  // default 30s; 0 disables the auto poll. ETag is the registry's
   // ``last_refreshed`` (= ``metadata.time.refresh_cycle_at``), so most
   // polls return 304 with no body.
   //

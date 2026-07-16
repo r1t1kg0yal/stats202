@@ -82,8 +82,8 @@ manifest = {
 | `metadata.methodology` | Required non-empty markdown |
 | `metadata.sources` | Human-readable source systems |
 | `metadata.summary` | String or `{title, body}` banner |
-| `metadata.refresh_frequency` | Pull cadence (one authoring knob). Duration string, positive int seconds, or `hourly` / `daily` / `weekly` / `manual`. Pick from the cadence class table in [build.md](dashboards/build.md#cadence) |
-| `metadata.live_refresh_seconds` | Browser `/api/dashboard/data/` poll. Omit — engine stamps from `refresh_frequency` (`manual`→0; else clamp 5–60s). Override only if needed; `0` disables; floor 5 when set |
+| `metadata.refresh_frequency` | Duration string, positive integer seconds, or `hourly` / `daily` / `weekly` / `manual` |
+| `metadata.live_refresh_seconds` | Browser data-poll cadence; omit for default 30s; `0` disables auto-poll; floor 15 when set |
 | `metadata.presence_url` | Open-tab heartbeat POST URL; default `/api/dashboard/presence/` |
 | `metadata.time.data_domain_freq` | `daily`, `weekly`, `monthly`, `quarterly`, or `annual`; set only to correct inference |
 | `datasets` | Named slots populated from CSVs/transforms |
@@ -257,19 +257,6 @@ same-source pipeline or adding dummy transform assignments.
 - Stable tab and widget ids are selectors, state keys, and relationship targets. Do not rename them casually.
 
 ## Header actions
-
-## Live refresh surfaces
-
-| Surface | What PRISM / ops use | Effect |
-|---|---|---|
-| Browser `[Refresh]` | Chrome POSTs `mode=light` | Pulls + `manifest.json` datasets only now (bypasses due gate); open tab swaps via `/api/dashboard/data/` |
-| Open-tab autorefresh | Tab heartbeats `/api/dashboard/presence/`; `entrypoint.py site` ticks `refresh_dashboards.py --open-interval 10` | Light-refreshes presence-fresh folders that are **due** per `refresh_frequency`; no full registry walk |
-| Cold / scheduled | 15-minute one-shot `refresh_dashboards.main()` or `--interval N` | Full compile + `dashboard.html` for due dashboards |
-
-Author **`metadata.refresh_frequency`** only. The engine stamps
-`live_refresh_seconds` for the browser poll. Open-interval is a check
-tick (recommend 10s), not “always pull while open”. Opt out of the site
-daemon with `entrypoint.py site --no-open-refresh`.
 
 `header_actions[]` adds custom actions to the left of always-on Methodology, Refresh, Share, Download, theme, and freshness controls.
 

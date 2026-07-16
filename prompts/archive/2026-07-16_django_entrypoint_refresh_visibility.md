@@ -1,40 +1,46 @@
 ---
 class: context-extraction
 topic: django-entrypoint-refresh-visibility
-status: OPEN
+status: FOLDED
 created: 2026-07-16
-depends_on:
-  - staging/prompts/archive/2026-07-16_light_refresh_open_presence.md
-prerequisite_payload: []
+reply_received: 2026-07-16
+reply_source: cursor-chat screenshots (25 images, 14:50–14:53 ET)
+folded_on: 2026-07-16
+checkout:
+  prism_main_HEAD: a9dfe6c
+  prism_core_HEAD: 9a27923
+file_identities:
+  urls.py: {bytes: 11052, lines: 176, sha256: e61d8162dbf3a2bc1e0d5e909b417a484f404c5c5958bfc2a7d9ee0305302da6}
+  views.py: {bytes: 269772, lines: 6856, sha256: a99b366983d0471a1b49f458d8068dd8644340430ba8d00622eb35937c548b6e}
+  entrypoint.py: {bytes: 94755, lines: 2317, sha256: a1a3cd1fb6ef7ca91ac0ccb9ceb782e1817602fb1111283dbfec73de83e2e83b}
 reply_folded_into:
   - prism/dashboard-refresh.md
   - prism/dashboards-portal.md
   - prism/_changelog.md
+supersedes_gap_from:
+  - staging/prompts/archive/2026-07-16_light_refresh_open_presence.md
 ---
 
 # Context-extraction prompt — verbatim `views.py` / `urls.py` / `entrypoint.py`
 
-**Why this exists (staging-side note; do not paste this section into
-PRISM):**
+**Folded 2026-07-16.** Live reply confirmed the parent-tree wire that
+morning extraction still listed as GAP:
 
-Staging already owns the echarts payload half of open-tab light refresh
-(`refresh_runner --mode light|full`, `record_open_presence`, chrome
-heartbeat + `pollLiveData`). Two END-USAGE patch prompts are also open:
+| Checklist item | Live answer |
+|---|---|
+| `/api/dashboard/presence/` registered | yes (`urls.py:70`) |
+| `dashboard_presence_api` defined | yes (`views.py:5544-5638`) |
+| refresh forwards body `mode` → `--mode` | yes (default `light`) |
+| runner accepts `--mode light\|full` | yes (default `full`) |
+| `site` spawns `--open-interval` alone | yes (no `--interval`) |
+| `site --no-open-refresh` | yes |
+| `PRISM_TEMPLATE_HASH` injected | yes (`_inject_prism_globals`) |
 
-- `2026-07-16_django_light_refresh_presence_wire.md`
-- `2026-07-16_entrypoint_site_open_refresh.md`
+The two END-USAGE patch prompts
+(`django_light_refresh_presence_wire`, `entrypoint_site_open_refresh`)
+are superseded by this live state.
 
-Cursor still lacks **verbatim current source** for the three PRISM-parent
-files that close the loop. A prior extraction
-(`2026-07-16_light_refresh_open_presence`) confirmed gaps (Django ignored
-`mode`; no `/api/dashboard/presence/`) but did not paste full route
-tables, full refresh/presence views, or `entrypoint.py site` wiring.
-
-This prompt is read-only introspection of exactly those three files so
-docs can pin live behavior vs staged contract without guessing.
-
-Fold the reply into the paths listed in `reply_folded_into` after
-review.
+Original paste body retained below for audit only.
 
 ---
 

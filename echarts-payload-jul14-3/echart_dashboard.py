@@ -2445,10 +2445,9 @@ def _validate_metadata(manifest: Dict[str, Any],
         if v is not None and not isinstance(v, list):
             errs.append(_err(f"metadata.{k}", "must be a list of strings"))
     # ``metadata.live_refresh_seconds``: optional non-negative int driving
-    # the chrome's pollLiveData() cadence. When omitted, the engine stamps
-    # a value derived from ``refresh_frequency`` at build time (see
-    # ``dashboards_time.derive_live_refresh_seconds``). ``0`` disables the
-    # automatic poll loop. Soft floor of 5s when explicitly set.
+    # the chrome's pollLiveData() cadence (default 30s when omitted; 0
+    # disables the automatic poll loop). Soft floor of 15s enforced here
+    # so a runaway value can't generate gratuitous server traffic.
     lrs = metadata.get("live_refresh_seconds")
     if lrs is not None:
         if not isinstance(lrs, bool) and isinstance(lrs, int):
@@ -2456,10 +2455,10 @@ def _validate_metadata(manifest: Dict[str, Any],
                 errs.append(_err(
                     "metadata.live_refresh_seconds",
                     f"must be non-negative (got {lrs})"))
-            elif 0 < lrs < 5:
+            elif 0 < lrs < 15:
                 errs.append(_err(
                     "metadata.live_refresh_seconds",
-                    f"must be 0 (disabled) or >= 5 seconds (got {lrs})"))
+                    f"must be 0 (disabled) or >= 15 seconds (got {lrs})"))
         else:
             errs.append(_err(
                 "metadata.live_refresh_seconds",
@@ -19967,9 +19966,7 @@ def _materialize_recipe_datasets(
     import copy
     import io
     import pandas as pd
-    from dashboards_time import (
-        utcnow, format_iso, derive_live_refresh_seconds,
-    )
+    from dashboards_time import utcnow, format_iso
 
     template = copy.deepcopy(recipe["manifest_template"])
     data_prefix = f"{folder}/data/".replace("//", "/")
@@ -20030,12 +20027,6 @@ def _materialize_recipe_datasets(
     if time_block.get("data_domain_end"):
         meta["data_as_of"] = time_block["data_domain_end"]
     meta["generated_at"] = time_block["build_completed_at"]
-    # Browser poll cadence: derive from refresh_frequency when omitted so
-    # PRISM authors one knob. Explicit live_refresh_seconds is preserved.
-    if meta.get("live_refresh_seconds") is None:
-        meta["live_refresh_seconds"] = derive_live_refresh_seconds(
-            meta.get("refresh_frequency")
-        )
     return template, datasets, len(datasets), len(transforms)
 
 

@@ -332,30 +332,9 @@ Registration rules:
 - Never store the dashboard as a top-level registry key.
 - Preserve unrelated registry fields and entries.
 - `folder`, `html_path`, and `data_path` use the canonical folder.
-- Pick cadence from the class table below; set the same value on the
-  template and registry entry.
+- Pick cadence from source cadence and product need.
 - `synchronize_refresh_frequency` is the update path after registration because it commits template and registry together.
 - Stop after the registry write and verification. There is no authoring helper named `update_user_manifest`; the scheduled orchestrator owns `UserManifestManager.update_dashboard_pointer(kerberos)`, and an on-demand browser refresh does not update that pointer today.
-
-### Cadence
-
-Author **one** field: `metadata.refresh_frequency` (and the matching
-registry value via `synchronize_refresh_frequency`). Do not author
-`live_refresh_seconds` unless you need an explicit browser-poll override;
-the engine stamps it from `refresh_frequency` at build time.
-
-| Dashboard class | Example `refresh_frequency` |
-|---|---|
-| Intraday market / live positioning | `30s` or `60s` |
-| Email / ops monitoring | `60s` or `5m` |
-| Rates/FX desk monitors | `5m` or `15m` |
-| Macro / GDP / releases | `1h` or `1d` |
-| Static / one-shot | `manual` |
-
-That frequency gates both the cold 15-minute full walk and open-tab
-light pulls (presence-fresh folders that are due). Browser
-`[Refresh]` always pulls now. Site `--open-interval` is only how often
-the open daemon *checks* due state (recommend 10s).
 
 ## Tool 4: fresh-process refresh
 

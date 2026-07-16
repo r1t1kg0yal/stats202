@@ -1,16 +1,24 @@
 ---
 class: end-usage
 topic: entrypoint-site-open-refresh
-status: OPEN
+status: SUPERSEDED
 created: 2026-07-16
+superseded_on: 2026-07-16
+superseded_by: staging/prompts/archive/2026-07-16_django_entrypoint_refresh_visibility.md
 depends_on:
-  - staging/prompts/open/2026-07-16_django_light_refresh_presence_wire.md
+  - staging/prompts/archive/2026-07-16_django_light_refresh_presence_wire.md
 prerequisite_payload:
   - jobs/hourly/refresh_dashboards.py  # --open-interval alone = open-only daemon
   - prism-core/dashboards/refresh_runner.py  # --mode light|full
 ---
 
 # PRISM patch prompt — Change 4: `entrypoint.py site` starts **open-only** light refresh
+
+**SUPERSEDED 2026-07-16.** Afternoon visibility extraction confirmed
+`entrypoint.py site` already spawns
+`refresh_dashboards.py --open-interval N` with no `--interval`, plus
+`--no-open-refresh` / `--open-interval` flags. Do not re-apply this
+patch. Retained for audit only.
 
 **Why this exists (staging-side note; do not paste this section into
 PRISM):**

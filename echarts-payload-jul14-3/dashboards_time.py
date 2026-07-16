@@ -182,34 +182,6 @@ def freq_delta(freq: Optional[str]) -> Optional[timedelta]:
     return parse_freq(freq)
 
 
-def derive_live_refresh_seconds(
-    refresh_frequency: Union[None, int, float, str],
-) -> int:
-    """Browser ``/api/dashboard/data/`` poll cadence from pull cadence.
-
-    PRISM authors ``metadata.refresh_frequency``; the engine stamps
-    ``metadata.live_refresh_seconds`` when omitted so chrome polls at a
-    sensible rate without a second authoring knob.
-
-    Rules:
-      - ``manual`` → ``0`` (disable auto-poll)
-      - finite freq → ``clamp(seconds, 5, 60)`` so intraday ``30s``/``60s``
-        dashboards poll quickly and macro ``1d``/``daily`` poll at most
-        once a minute (304s dominate until a due pull stamps data)
-      - unknown / missing → ``30`` (legacy chrome default)
-    """
-    if isinstance(refresh_frequency, str):
-        if refresh_frequency.strip().lower() == "manual":
-            return 0
-    delta = parse_freq(refresh_frequency)
-    if delta is None:
-        return 30
-    secs = int(delta.total_seconds())
-    if secs <= 0:
-        return 30
-    return max(5, min(60, secs))
-
-
 def is_stale(started_at: Optional[str],
              max_age_seconds: int = 600) -> bool:
     """Return ``True`` if ``started_at`` (an ISO string) is older than
@@ -235,6 +207,5 @@ __all__ = [
     "format_iso",
     "parse_freq",
     "freq_delta",
-    "derive_live_refresh_seconds",
     "is_stale",
 ]

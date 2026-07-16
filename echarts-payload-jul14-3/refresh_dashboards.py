@@ -278,32 +278,6 @@ def _user_registry_entries(kerberos: str) -> list:
     return entries if isinstance(entries, list) else []
 
 
-def _registry_entry_for_folder(folder: str) -> Optional[dict]:
-    """Return the registry entry for a canonical dashboard folder, or None.
-
-    Used by the open-tab walk to apply the same ``_is_due`` cadence gate
-    as the full registry walk (``refresh_frequency`` + failure cooldown).
-    """
-    canonical = folder.strip("/")
-    parts = canonical.split("/")
-    if (
-        len(parts) != 4
-        or parts[0] != "users"
-        or parts[2] != "dashboards"
-    ):
-        return None
-    kerberos, dashboard_id = parts[1], parts[3]
-    for entry in _user_registry_entries(kerberos):
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("id") == dashboard_id:
-            return entry
-        entry_folder = (entry.get("folder") or "").strip("/")
-        if entry_folder == canonical:
-            return entry
-    return None
-
-
 # ============================================================================
 # subprocess spawn (S3 log streaming)
 # ============================================================================
@@ -515,16 +489,14 @@ def _walk_once(*, walk_id: int = 1) -> int:
 
 
 def _walk_open_once(*, walk_id: int = 1) -> int:
-    """Light-refresh presence-fresh dashboards that are cadence-due.
+    """Light-refresh every dashboard with a fresh open-tab heartbeat.
 
     Reads ``secondary/dashboard_open_presence/index.json`` via
-    ``list_open_dashboards`` (TTL 90s). For each open folder, loads the
-    matching registry entry and applies the same ``_is_due`` gate as the
-    full walk (``refresh_frequency`` + failure cooldown). Open-interval
-    on the daemon is therefore a *tick* (how often we check), not
-    "always pull every open tab". Cold HTML remains on the full
-    ``_walk_once`` schedule. Manual Refresh still bypasses this gate
-    (Django spawns the runner directly).
+    ``list_open_dashboards`` (TTL 90s). Spawns
+    ``launch_clean_refresh(..., mode="light")`` for each open folder.
+    Does not consult registry cadence / failure cooldown -- open tabs
+    always get a light pull while viewed. Cold HTML remains on the
+    full ``_walk_once`` schedule.
     """
     from dashboards import list_open_dashboards
 
@@ -537,26 +509,8 @@ def _walk_open_once(*, walk_id: int = 1) -> int:
 
     results = []
     success_kerberos: set = set()
-    skipped_not_due = 0
-    skipped_no_entry = 0
     for folder in open_folders:
-        entry = _registry_entry_for_folder(folder)
-        if entry is None:
-            skipped_no_entry += 1
-            _line(f"{folder}  -> SKIP no registry entry")
-            continue
-        status = _read_refresh_status(folder)
-        freq = entry.get("refresh_frequency", "daily")
-        if not _is_due(entry, status=status):
-            skipped_not_due += 1
-            if status and status.get("status") in ("error", "partial"):
-                _line(
-                    f"{folder}  freq={freq}  -> SKIP cooldown/not_due"
-                )
-            else:
-                _line(f"{folder}  freq={freq}  -> SKIP not_due")
-            continue
-        _line(f"light refresh {folder}  freq={freq}")
+        _line(f"light refresh {folder}")
         result = _spawn_runner(folder, mode="light")
         results.append(result)
         if result.get("returncode") == 0:
@@ -576,10 +530,7 @@ def _walk_open_once(*, walk_id: int = 1) -> int:
     failures = len(results) - successes
     _banner(
         f"open-walk #{walk_id} done -- elapsed={elapsed:.2f}s  "
-        f"open={len(open_folders)} refreshed={len(results)} "
-        f"(ok={successes} fail={failures})  "
-        f"skipped={skipped_not_due + skipped_no_entry} "
-        f"(not_due={skipped_not_due} no_entry={skipped_no_entry})  "
+        f"open={len(open_folders)} ok={successes} fail={failures}  "
         f"manifests={len(pointer_results)}"
     )
     return 0 if failures == 0 else 1
@@ -594,14 +545,12 @@ def _daemon(
 
     * ``interval_seconds`` set -- full registry walk (cold HTML) on that
       cadence via ``_walk_once``.
-    * ``open_interval_seconds`` set -- tick that runs ``_walk_open_once``
-      (presence-fresh folders, cadence-gated by ``_is_due``).
+    * ``open_interval_seconds`` set -- light-refresh only dashboards with
+      a fresh open-tab presence heartbeat via ``_walk_open_once``.
     * Either may be omitted. ``entrypoint.py site`` uses open-only
       (``open_interval_seconds`` set, ``interval_seconds=None``) so it
-      never walks the whole registry. Recommended tick is 10s so
-      intraday ``30s``/``60s`` dashes get pulled soon after they become
-      due; slower freqs skip most ticks. The 15-minute one-shot keeps
-      the cold full walk.
+      never walks the whole registry. The 15-minute one-shot keeps the
+      cold full walk.
 
     Walk-time exceptions are caught and logged but the daemon survives.
     KeyboardInterrupt exits cleanly with rc=0.
@@ -734,12 +683,12 @@ def _parse_args(argv: List[str]) -> argparse.Namespace:
         default=None,
         metavar="N",
         help=(
-            "Open-tab check tick in seconds. Reads the presence index "
-            "and light-refreshes TTL-fresh open dashboards that are "
-            "due per registry refresh_frequency (never walks the full "
-            "registry by itself). Typical N=10. Alone = open-only "
-            "daemon (what entrypoint.py site should use). Combine with "
-            "--interval N to also run the cold full walk."
+            "Open-tab light-refresh cadence in seconds. Reads the "
+            "presence index and spawns refresh_runner --mode light "
+            "for each TTL-fresh open dashboard only (never walks the "
+            "full registry by itself). Typical N=60. Alone = "
+            "open-only daemon (what entrypoint.py site should use). "
+            "Combine with --interval N to also run the cold full walk."
         ),
     )
     parser.add_argument(

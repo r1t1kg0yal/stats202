@@ -1,8 +1,10 @@
 ---
 class: end-usage
 topic: django-light-refresh-presence-wire
-status: OPEN
+status: SUPERSEDED
 created: 2026-07-16
+superseded_on: 2026-07-16
+superseded_by: staging/prompts/archive/2026-07-16_django_entrypoint_refresh_visibility.md
 depends_on:
   - staging/prompts/archive/2026-07-16_light_refresh_open_presence.md
 prerequisite_payload:
@@ -13,6 +15,11 @@ prerequisite_payload:
 ---
 
 # PRISM patch prompt — wire light refresh + open-tab presence in Django
+
+**SUPERSEDED 2026-07-16.** Afternoon visibility extraction confirmed
+presence route, `mode`→`--mode` forward (default `light`), and
+`dashboard_presence_api` are already LIVE on `prism-main` `a9dfe6c`.
+Do not re-apply this patch. Retained for audit only.
 
 **Why this exists (staging-side note; do not paste this section into
 PRISM):**
