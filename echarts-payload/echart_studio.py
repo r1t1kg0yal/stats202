@@ -1530,9 +1530,39 @@ def _resolve_axis_specs(
         if dual:
             if not isinstance(dual, (list, tuple)):
                 dual = [dual]
-            right_set = {str(v) for v in dual}
-            left_series = [n for n in series_names if str(n) not in right_set]
-            right_series = [n for n in series_names if str(n) in right_set]
+            # Absorb ASCII `` -- `` / en-dash dialects to the em-dash
+            # form emitted by color×strokeDash cross-product names.
+            def _norm_label(label: Any) -> str:
+                text = str(label)
+                for sep in (" -- ", " \u2013 "):
+                    text = text.replace(sep, " \u2014 ")
+                return text
+
+            emitted_by_norm = {
+                _norm_label(n): str(n) for n in series_names
+            }
+            right_canonical: List[str] = []
+            unmatched: List[str] = []
+            for raw in dual:
+                key = _norm_label(raw)
+                hit = emitted_by_norm.get(key)
+                if hit is None:
+                    unmatched.append(str(raw))
+                elif hit not in right_canonical:
+                    right_canonical.append(hit)
+            if unmatched:
+                raise ValueError(
+                    "dual_axis_series names not in emitted series: "
+                    f"{unmatched!r}. Emitted series: "
+                    f"{list(series_names)}. Use exact emitted names "
+                    "(color — strokeDash with em dash; ASCII ' -- ' "
+                    "is accepted)."
+                )
+            right_set = set(right_canonical)
+            left_series = [
+                n for n in series_names if str(n) not in right_set
+            ]
+            right_series = list(right_canonical)
             axes: List[Dict[str, Any]] = [
                 {"side": "left", "title": y_title,
                   "series": list(left_series),

@@ -16,8 +16,9 @@ This is the compact cross-cutting contract. It does not own first-build steps, m
 5. **Flat CSV routing.** Every pull writes to `{folder}/data`; only CSV files become datasets, and each dataset key matches the complete emitted stem byte-for-byte.
 6. **Portal handoff.** Surface only `http://reports.prism-ai.url.gs.com:8501/users/{kerberos}/dashboards/{dashboard_id}/`.
 7. **Atomic work.** Do not return between steps of a build or edit. Once a response is sent, no autonomous work continues.
-8. **Preserve inherited intent.** Inspect before mutation. Use typed operations for manifests and evidence-based edits for scripts. Root replacement is forbidden.
+8. **Preserve inherited intent.** Describe before mutation on ordinary edits; inspect only for heal/triage. Use typed operations for manifests and evidence-based edits for scripts. Root replacement is forbidden.
 9. **Engine diagnostics are instructions.** Follow each structured `fix_hint`, retry, and expose only product-level residue to the user.
+10. **Layout sync.** On every inherited-dashboard edit, call `describe_dashboard` before and after mutation and paraphrase `text` in product language so the user and PRISM share the same floorplan. Never dump paths, SHAs, or graph internals.
 
 ## Canonical folder
 
@@ -100,10 +101,12 @@ Import public operations from `dashboards`:
 from dashboards import (
     run_pull,
     build_dashboard,
+    publish_dashboard,
     refresh_dashboard,
     review_dashboard,
     acknowledge_dashboard_review,
     audit_dashboard_layout,
+    describe_dashboard,
     inspect_dashboard,
     list_dashboard_versions,
     restore_dashboard_version,
@@ -132,14 +135,16 @@ from dashboards import (
 | `run_pull(folder, pull_name)` | Execute one named `PULLS` entry and persist its side effects |
 | `review_dashboard(folder, version_id=None)` | Compile current persisted data with the working recipe or one exact saved definition, without publishing, and return the gate's `DashboardReview` |
 | `acknowledge_dashboard_review(folder, expected_review_signature=..., rationale=..., version_id=None)` | Recompute and immutably acknowledge one exact non-`BLOCK` working or saved-definition review; the rationale must explain why the candidate is acceptable |
-| `build_dashboard(folder, expected_current_version_id=None)` | Recompute the review, require its exact acknowledgment, then write outputs and record a changed recipe; pass the inspected current version id for a changed existing recipe, while unchanged refreshes and the first baseline need none |
+| `publish_dashboard(folder, rationale=None, expected_current_version_id=None)` | Preferred publish path: review → refuse `BLOCK` → acknowledge exact signature when needed → `build_dashboard`. Omit `rationale` when already publish-ready; require a substantive rationale when a new ack is written |
+| `build_dashboard(folder, expected_current_version_id=None)` | Recompute the review, require its exact acknowledgment, then write outputs and record a changed recipe; pass the current version id for a changed existing recipe, while unchanged refreshes and the first baseline need none |
 | `refresh_dashboard(folder)` | Run all pulls, then `build_dashboard`; there is no universal per-pull refresh timeout |
 | `launch_clean_refresh(folder)` | Launch the isolated canonical runner, own S3 logs/status/completion metadata, and return terminal `success` or `review_required`; raise on failure |
 | `audit_dashboard_layout(folder)` | Require the five canonical paths; return `True` |
-| `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, script hashes, definition-version, review/acknowledgment state, graph, refresh, registry, telemetry, and finding report |
+| `describe_dashboard(folder, mode="layout")` | Compact product floorplan: `text` / `layout_text` / `filters_text`, counts, review publish-ready flags, plus concurrency guards (`manifest_template_sha256`, `versioning.current_version_id`) for typed edits. Prefer this for ordinary edit sync; it is not a screenshot |
+| `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, script hashes, definition-version, review/acknowledgment state, graph, refresh, registry, telemetry, and finding report. Use for heal/triage, not ordinary layout sync |
 | `list_dashboard_versions(folder, limit=20, timezone_name="UTC")` | Return recent immutable definition versions with UTC/local timestamps, local calendar date, product summaries, and current/previous markers; pass the user’s IANA timezone for relative-date requests |
 | `restore_dashboard_version(folder, version_id, expected_current_version_id=...)` | Restore one exact listed definition only after its current-data review is acknowledged; compile it with current persisted data and preserve every other version |
-| `apply_manifest_operations(folder_or_state, operations, recompile=True, ...)` | Ordered typed template transaction; an inspection state supplies both guards directly |
+| `apply_manifest_operations(folder_or_state, operations, recompile=True, ...)` | Ordered typed template transaction; a describe/inspect state supplies both guards directly. Nested dict patches deep-merge; lists/scalars replace; `None` clears |
 | `apply_persisted_script_operations(folder_or_state, script, operations, ...)` | Typed fragment transaction for `pull_data`/`build`: hash gate, syntax/pipeline check, atomic write, strict compile, exact rollback |
 | `synchronize_refresh_frequency(folder, value, expected_sha256=None, expected_current_version_id=None)` | Atomically align template metadata and the matching registry entry; existing versioned dashboards require the inspected current version id; `sync_refresh_frequency` is the alias |
 | `validate_manifest(manifest)` | Structural validation only |
@@ -174,34 +179,30 @@ signature; moving values inside the same classes does not.
 
 `review.to_text()` always emits one index line per panel and, within its bounded output, full detail for flagged panels by default. Inspect any omitted or flagged panel with `review.panel(panel_id)`; do not infer detail from the index line. This is a compile/default-state semantic receipt, not a screenshot or proof of arbitrary browser interactions. In particular, browser-only tool `compute_js` is never executed in Python: its panel has `coverage="runtime_unverified"` and requires acknowledgment of that boundary before build, followed by browser verification before delivery.
 
-Persistent folder publication is always:
+Persistent folder publication — preferred path:
 
 ```python
-review = review_dashboard(FOLDER)
-print(review.to_text())
-for panel in review.panels:
-    if panel.status != "CLEAR":
-        print(review.panel(panel.panel_id).to_text())
-
-if review.status == "BLOCK":
-    raise ValueError("repair the blocked panels, then review again")
-
-acknowledge_dashboard_review(
-    FOLDER,
-    expected_review_signature=review.review_signature,
-    rationale=(
-        "Reviewed <panel ids or the complete CLEAR panel index>; "
-        "accepted <finding or CLEAR baseline> because "
-        "<specific receipt evidence and analytical reason>."
-    ),
-)
-build_dashboard(
-    FOLDER,
-    expected_current_version_id=current_version_id,  # changed existing recipe
-)
+state = describe_dashboard(FOLDER)  # or inspect_dashboard for heal/triage
+if state["review"]["publish_ready"]:
+    published = publish_dashboard(FOLDER)  # rationale optional when publish-ready
+else:
+    review = review_dashboard(FOLDER)
+    print(review.to_text())
+    for panel in review.panels:
+        if panel.status != "CLEAR":
+            print(review.panel(panel.panel_id).to_text())
+    published = publish_dashboard(
+        FOLDER,
+        rationale=(
+            "Reviewed <panel ids or the complete CLEAR panel index>; "
+            "accepted <finding or CLEAR baseline> because "
+            "<specific receipt evidence and analytical reason>."
+        ),
+        expected_current_version_id=state["versioning"]["current_version_id"],
+    )
 ```
 
-Omit `expected_current_version_id` only for the first baseline or an unchanged recipe; copy it from a fresh inspection when an existing recipe changed. First builds and every definition- or quality-signature change require a new exact acknowledgment. Ordinary raw-value refreshes carry the existing acknowledgment only while the quality signature remains unchanged: do not call `acknowledge_dashboard_review` again when a fresh `inspect_dashboard(FOLDER)["review"]` reports `acknowledgment_match=True` and `publish_ready=True`.
+`publish_dashboard` refuses `BLOCK`, binds a new rationale only when the signature still needs acknowledgment, and builds. Restores that need an explicit ack may still use `acknowledge_dashboard_review` + `restore_dashboard_version`. Omit `expected_current_version_id` only for the first baseline or an unchanged recipe; take it from a fresh `describe_dashboard` / `inspect_dashboard` when an existing recipe changed. First builds and every definition- or quality-signature change require a new exact acknowledgment. When `review.acknowledgment_match` and `review.publish_ready` are both true, call `publish_dashboard` without a new rationale.
 
 Saved-definition restores use the same gate: call `review_dashboard(FOLDER, version_id=target_id)`, inspect its flagged panels, then pass the same `version_id` to `acknowledge_dashboard_review` before `restore_dashboard_version`. The review uses current persisted data; an older or materially changed saved definition therefore cannot bypass the publish boundary.
 
@@ -323,7 +324,8 @@ Cadence examples: `"60s"`/`"5m"` for intraday, `"1h"` for frequently changing ag
 | Template and registry cadence differ | Use `synchronize_refresh_frequency` |
 | Treating validation as delivery | Complete strict build and clean subprocess refresh |
 | Reporting engine mechanics to the user | Rewrite in product language |
-| Guessing a fix before inspection | Start with `inspect_dashboard` |
+| Guessing a fix before describe/inspect | Start with `describe_dashboard` for ordinary edits; `inspect_dashboard` for heal/triage |
+| Editing without layout sync | Call `describe_dashboard` before and after mutation; paraphrase `text` to the user |
 | Reusing a popup join without key overlap | Fix source/target binding before compile |
 
 ## Owner index
@@ -334,6 +336,7 @@ context-registry entry.
 | Authority | File |
 |---|---|
 | First-build transaction | [build.md](dashboards/build.md#four-tool-transaction) |
+| Layout sync / ordinary edit floorplan | `describe_dashboard` in this kernel |
 | Inspect, triage, heal, revert | [diagnose.md](dashboards/diagnose.md#structured-inspection) |
 | Manifest operations | [template_crud.md](dashboards/template_crud.md#manifest-operations) |
 | Pull/build script edits | [pipelines.md](dashboards/pipelines.md#pipeline-reuse-decision) |

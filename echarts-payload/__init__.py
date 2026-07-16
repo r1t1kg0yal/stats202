@@ -19,10 +19,12 @@ Public surface PRISM imports:
         run_pull,                  # run ONE pull from PULLS (in-process)
         review_dashboard,          # compile bounded panel receipt, no publish
         acknowledge_dashboard_review,  # bind rationale to exact signature
+        publish_dashboard,         # review -> ack(if needed) -> build; rationale optional when publish-ready
         build_dashboard,           # template + CSVs + transforms -> compile
         refresh_dashboard,         # all PULLS + build_dashboard
         launch_clean_refresh,      # isolated runner + S3 logs/status
         inspect_dashboard,
+        describe_dashboard,        # compact product floorplan for sync
         apply_manifest_operations,
         apply_persisted_script_operations,
         synchronize_refresh_frequency,
@@ -112,6 +114,7 @@ from dashboards.echart_dashboard import (  # noqa: E402,F401
     # Folder operations.
     run_pull,
     build_dashboard,
+    publish_dashboard,
     refresh_dashboard,
     review_dashboard,
     acknowledge_dashboard_review,
@@ -135,6 +138,7 @@ from dashboards.echart_dashboard import (  # noqa: E402,F401
     synchronize_refresh_frequency,
     sync_refresh_frequency,
     inspect_dashboard,
+    describe_dashboard,
     list_dashboard_versions,
     restore_dashboard_version,
     # Python builder sugar retained for installed-call-site compatibility.
@@ -184,6 +188,7 @@ __all__ = [
     # Folder operations.
     "run_pull",
     "build_dashboard",
+    "publish_dashboard",
     "refresh_dashboard",
     "review_dashboard",
     "acknowledge_dashboard_review",
@@ -207,6 +212,7 @@ __all__ = [
     "synchronize_refresh_frequency",
     "sync_refresh_frequency",
     "inspect_dashboard",
+    "describe_dashboard",
     "list_dashboard_versions",
     "restore_dashboard_version",
     # Python builder sugar.

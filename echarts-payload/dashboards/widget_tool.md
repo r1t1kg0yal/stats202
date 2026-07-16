@@ -194,13 +194,14 @@ defaults = {
     "ahe_yoy_pct": float(latest["ahe_yoy_pct"]),
     "cpi_yoy_pct": float(latest["cpi_yoy_pct"]),
 }
-updated_tool_def = copy.deepcopy(current_tool_def)
-for item in updated_tool_def["inputs"]:
+updated_inputs = copy.deepcopy(current_tool_def["inputs"])
+for item in updated_inputs:
     if item["id"] in defaults:
         item["default"] = defaults[item["id"]]
+# patch: {"tool_def": {"inputs": updated_inputs}} — deep-merge keeps compute_js/outputs
 ```
 
-These are author-time defaults, not live bindings. To append methodology without losing inherited text: inspect; copy the complete current `state["metadata"]["methodology"]`; concatenate the exact new markdown to that value; submit the complete merged string through one `patch_metadata` operation at the inspected SHA.
+These are author-time defaults, not live bindings. To append methodology without losing inherited text: describe/inspect; deep-merge `patch_metadata` with the complete new `methodology` string (or concatenate onto the current value and patch that key).
 
 ## Scalar calculator pattern
 
@@ -319,22 +320,20 @@ function compute(i) {
 
 ## Editing a tool
 
-Use inspection to identify the stable widget id, read the current full tool definition, change only the intended field, then patch the complete updated `tool_def`:
+Use `describe_dashboard` (or inspect for heal/triage) to identify the stable widget id. Deep-merge into `tool_def` and replace only list-valued keys that change (`inputs` replaces; `compute_js` / `outputs` are preserved):
 
 ```python
-updated = copy.deepcopy(current_tool_def)
-target = next(item for item in updated["inputs"] if item["id"] == "phi_pi")
+updated_inputs = copy.deepcopy(current_tool_def["inputs"])
+target = next(item for item in updated_inputs if item["id"] == "phi_pi")
 target["default"] = 1.7
 
 apply_manifest_operations(
-    FOLDER,
+    before,  # describe_dashboard / inspect_dashboard state
     [{
         "op": "update_widget",
         "selector": {"id": "taylor"},
-        "patch": {"tool_def": updated},
+        "patch": {"tool_def": {"inputs": updated_inputs}},
     }],
-    expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
 )
 ```
 

@@ -77,7 +77,7 @@ For a first build, fetch each primitive owner required by the requested user-vis
 
 | Rule | Trigger and timing | Fetch |
 |---|---|---|
-| `adaptive.inspect` | A build or edit reaches inspection, destructive dependency analysis, or post-edit verification. Fetch at that decision point, immediately before `inspect_dashboard`; never include this file in the initial build/edit fetch. | `dashboards/diagnose.md` |
+| `adaptive.inspect` | Heal, revert, findings triage, refresh failure, or the user asks why something is broken. Fetch immediately before `inspect_dashboard`. Ordinary manifest edits do **not** use this rule: they use `describe_dashboard` from the hub/template_crud contract for layout sync and concurrency guards. Never include diagnose in the initial build/edit fetch. | `dashboards/diagnose.md` |
 | `phase.manifest_after_build` | A first build crosses into typed manifest operations. Before the first `apply_manifest_operations` call, ensure this context is loaded. It may join the initial fetch only when the prompt already states that same-turn second phase; otherwise fetch when the phase becomes known. | `dashboards_hub.md`, `dashboards/template_crud.md`, plus every affected primitive spoke |
 | `phase.revert` | The user asks for an older, previous, yesterday, or pre-change dashboard version. Diagnosis owns version listing, ambiguity handling, and exact restore. Fetch a repair owner only when the selected version cannot compile against current data or current engine rules. | `dashboards/diagnose.md` |
 | `evidence.repair_owner` | After `inspect_dashboard`, classify a required repair through the exhaustive evidence map below and fetch its one matching branch. Selecting diagnosis now plus the mandated unique branch later is route-complete deterministic deferred routing, not router ambiguity. | Exactly one evidence-map branch; never guess multiple owners or fetch all |
@@ -97,7 +97,7 @@ Read-only diagnosis is the only request that includes diagnosis in its initial f
 list_ai_repo(file_paths=["dashboards/diagnose.md"], mode="full")
 ```
 
-For build/edit work, fetch `dashboards/diagnose.md` separately when `adaptive.inspect` fires. Call `inspect_dashboard(folder)` before choosing a destructive change or repair and after mutation for verification. Its findings, graph, refresh evidence, registry state, and telemetry identify the owner. A later `list_ai_repo` call is allowed when that evidence identifies the repair surface; fetch only the hub if mutation needs cross-cutting contracts, the owner spoke, and any primitive reference needed to author the fix.
+For ordinary manifest edits, stay on the hub + `template_crud` + primitive bundle: call `describe_dashboard(folder)` before and after mutation (product floorplan sync + concurrency guards), apply typed operations, publish/refresh, then hand off. Fetch `dashboards/diagnose.md` only when `adaptive.inspect` fires. Call `inspect_dashboard(folder)` for heal/triage evidence; its findings, graph, refresh evidence, registry state, and telemetry identify the owner. A later `list_ai_repo` call is allowed when that evidence identifies the repair surface; fetch only the hub if mutation needs cross-cutting contracts, the owner spoke, and any primitive reference needed to author the fix.
 
 ## Adaptive bundles
 
@@ -136,8 +136,8 @@ The router is the only fetch menu. The production context inventory is:
 ## Atomic completion
 
 - First build means all four tools in [build.md](dashboards/build.md#four-tool-transaction) complete in one turn.
-- An edit means inspection, the owner API, recompile, clean refresh verification, and portal handoff complete before responding.
-- Every publish follows the hub-owned receipt sequence: review, drill into each flagged panel, acknowledge the exact signature with a rationale, then run the guarded build. Repair `BLOCK`; never acknowledge it.
+- An edit means `describe_dashboard` (before), the owner API, publish/recompile as required, clean refresh verification, `describe_dashboard` (after), and portal handoff complete before responding.
+- Every publish follows the hub-owned path: prefer `publish_dashboard`. When `describe_dashboard` / `inspect_dashboard` reports `acknowledgment_match` and `publish_ready`, omit a new rationale. Otherwise review, drill into each flagged panel, and publish with a substantive rationale. Repair `BLOCK`; never acknowledge it.
 - A missing product decision may block. Mechanical uncertainty does not: follow structured engine fix hints.
 - Never report success from `validate_manifest` or retained file existence alone. The persisted dashboard must pass the final refresh path, report `refresh_status.status == "success"`, and prove each required CSV is non-empty output from the current cycle.
 - Refresh has no universal per-pull timeout. Do not add an arbitrary authoring timeout; respect source-specific client timeouts and wait for terminal refresh evidence.

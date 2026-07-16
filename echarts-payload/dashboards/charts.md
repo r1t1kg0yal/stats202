@@ -223,7 +223,7 @@ These decisions describe the Python compiler's default-filter state. Browser int
 
 `strokeDash` names a persisted semantic-state column. Pair it with `strokeDashScale: {"domain": [...], "range": [[solid_on, solid_off], [dash_on, dash_off], ...]}` in matching order; `[1, 0]` is solid and `[8, 3]` is dashed. Set `strokeDashLegend: true` only when the dash-state legend adds information beyond the color legend.
 
-`dual_axis_series` must name concrete emitted series, not source columns. When scalar `y` is split by both `color` and `strokeDash` with `strokeDashLegend: true`, each emitted name is exactly `<color value> — <strokeDash value>` using space, em dash, space. For example, `color="metric"` values `level`/`change` and `strokeDash="state"` values `actual`/`estimate` emit `level — actual`, `level — estimate`, `change — actual`, and `change — estimate`; assign the latter two to the right axis with `dual_axis_series: ["change — actual", "change — estimate"]`.
+`dual_axis_series` must name concrete emitted series, not source columns. When scalar `y` is split by both `color` and `strokeDash` with `strokeDashLegend: true`, emitted names are `<color> — <strokeDash>` (em dash). ASCII ` -- ` is accepted and normalized. A mismatch fails with the concrete emitted-series list in `fix:`. Example: `dual_axis_series: ["change — actual", "change — estimate"]`.
 
 Line, `multi_line`, and `area` have a hard cap of four visible y-series in both wide and long form. If five or more series are all load-bearing, preserve every series in explicit small multiples: create separate chart widgets with at most four series each, use the same x field/range, and place them in 2-up or 3-up rows. Do not request one over-cap chart and do not silently drop series.
 

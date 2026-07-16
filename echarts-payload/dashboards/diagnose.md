@@ -5,7 +5,7 @@
 - **Fetch when:** Routed by `dashboards.md`.
 - **Depends on:** None for read-only inspection; fetch the evidence-identified repair owner before mutation.
 
-Start every inherited-dashboard investigation with the public read-only inspector. Do not begin with manual S3 listings, handwritten layout walks, direct telemetry parsing, or a guessed repair.
+Start every inherited-dashboard investigation with the public read-only inspector. Do not begin with manual S3 listings, handwritten layout walks, direct telemetry parsing, or a guessed repair. For ordinary “what does this look like?” layout sync on a healthy edit path, use `describe_dashboard` from the hub instead of this spoke.
 
 ## Structured inspection
 
@@ -123,24 +123,24 @@ for panel in review.panels:
         print(review.panel(panel.panel_id).to_text())
 ```
 
-The receipt is Python compile/default-state semantics only. It always indexes every panel and includes flagged detail by default; `review.panel(id)` is the authoritative drill-down. `state["review"]["pending_findings"]` and top-level `state["findings"]` are read-only triage indexes, not a second publish loop: use them to locate owners, then enumerate each non-`CLEAR` panel exactly once from the fresh `DashboardReview`. `BLOCK` is deterministic and unacknowledgeable. For a first build or changed review signature, acknowledge the exact current `review_signature` with a rationale that names the reviewed panel ids (or complete `CLEAR` index), accepted finding/baseline, receipt evidence, and analytical reason; then call `build_dashboard`, passing the freshly inspected current version id when the existing-recipe guard requires it. For an unchanged raw-value refresh where `state["review"]["acknowledgment_match"]` and `publish_ready` are both true, skip redundant acknowledgment and continue the refresh. Browser-only tool `compute_js` remains `runtime_unverified` because Python never executes it.
+The receipt is Python compile/default-state semantics only. It always indexes every panel and includes flagged detail by default; `review.panel(id)` is the authoritative drill-down. `state["review"]["pending_findings"]` and top-level `state["findings"]` are read-only triage indexes, not a second publish loop: use them to locate owners, then enumerate each non-`CLEAR` panel exactly once from the fresh `DashboardReview`. `BLOCK` is deterministic and unacknowledgeable. For a first build or changed review signature, prefer `publish_dashboard(FOLDER, rationale=..., expected_current_version_id=...)` after inspecting flagged panels (or the equivalent `acknowledge_dashboard_review` + `build_dashboard`); the rationale must name the reviewed panel ids (or complete `CLEAR` index), accepted finding/baseline, receipt evidence, and analytical reason. When `state["review"]["acknowledgment_match"]` and `publish_ready` are both true, follow that state's `fix_hint` — skip redundant acknowledgment and continue the refresh. Browser-only tool `compute_js` remains `runtime_unverified` because Python never executes it.
 
-`update_widget.patch` is shallow. After inspection identifies the widget, read its complete current object from the decoded template, copy the whole popup subtree, change one leaf, and patch that subtree:
+`update_widget.patch` deep-merges nested dicts (lists replace; `None` clears). After inspection identifies the widget, patch only the leaf dict path — sibling popup fields are preserved:
 
 ```python
-popup = copy.deepcopy(current_widget["row_click"])
-popup["detail"]["sections"][0]["filter_field"] = "cusip"
 apply_manifest_operations(
-    FOLDER,
+    state,
     [{"op": "update_widget",
       "selector": {"id": "bond_table"},
-      "patch": {"row_click": popup}}],
-    expected_sha256=state["manifest_template_sha256"],
-    expected_current_version_id=state["versioning"]["current_version_id"],
+      "patch": {
+          "row_click": {
+              "detail": {"title": "Bond detail"},
+          },
+      }}],
 )
 ```
 
-Use the same pattern with `click_popup`; never patch only `detail` or `sections` and thereby discard sibling popup fields.
+When changing one element inside a list (for example `detail.sections`), replace that list with the full intended value while still deep-merging the surrounding dict. Use the same pattern with `click_popup`.
 
 ### Telemetry categories
 
@@ -329,4 +329,4 @@ A diagnosis is complete when the cause and owner are identified. A repair is com
 - the dependency graph confirms the repaired producer/consumer path;
 - new telemetry does not reproduce the incident, when browser evidence was part of the report.
 
-User-facing completion is concise product language: acknowledge, state the fixed/live outcome, and give the portal URL when useful.
+User-facing completion is concise product language: acknowledge, state the fixed/live outcome, optionally paraphrase `describe_dashboard(FOLDER)["text"]` for layout sync, and give the portal URL when useful.

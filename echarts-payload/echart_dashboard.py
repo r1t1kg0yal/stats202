@@ -118,7 +118,7 @@ from config import MAX_DASHBOARD_DECIMALS, clamp_decimals
 # =============================================================================
 
 SCHEMA_VERSION = 1
-ENGINE_VERSION = "0.6.0"
+ENGINE_VERSION = "0.6.1"
 _DASHBOARD_VERSION_SCHEMA = 1
 _DASHBOARD_REVIEW_SCHEMA = 1
 _DASHBOARD_REVIEW_DETECTOR_VERSION = "semantic-panel-review-v1"
@@ -863,6 +863,150 @@ _WIDGET_BOOL_FIELDS: frozenset = frozenset({
 })
 
 
+# Mapping keys PRISM commonly authors in camelCase JSON. Only rewrite when
+# the canonical snake_case key is absent so an intentional dual-key author
+# is never stomped.
+_MAPPING_KEY_ALIASES: Dict[str, str] = {
+    "yTitle": "y_title",
+    "xTitle": "x_title",
+    "yTitleRight": "y_title_right",
+    "dualAxisSeries": "dual_axis_series",
+    "invertY": "invert_y",
+    "invertRightAxis": "invert_right_axis",
+    "yLog": "y_log",
+    "xLog": "x_log",
+    "xDateFormat": "x_date_format",
+    "xType": "x_type",
+    "xSort": "x_sort",
+    "showSymbol": "show_symbol",
+}
+
+
+def _normalize_emitted_series_label(name: str) -> str:
+    """Canonicalize series-label dash dialects to em dash.
+
+    Emitted dual-axis / strokeDash cross-product names use
+    ``\"{color} — {strokeDash}\"`` (U+2014). Authors often type ASCII
+    `` -- `` or en-dash `` – ``; normalize those separators only.
+    """
+    text = str(name)
+    for sep in (" -- ", " \u2013 "):
+        text = text.replace(sep, " \u2014 ")
+    return text
+
+
+def _casefold_lookup(value: Any, valid: frozenset) -> Optional[str]:
+    """Return the canonical member of ``valid`` when ``value`` matches
+    case-insensitively; otherwise ``None``.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    folded = {item.lower(): item for item in valid}
+    return folded.get(value.lower())
+
+
+def _absorb_manifest_authoring_dialects(
+    manifest: Dict[str, Any],
+) -> List[str]:
+    """Normalize common LLM authoring dialects before validation.
+
+    Mutates in place. Returns human-readable rewrite warnings. Covers:
+      - filter ``type`` / chart ``chart_type`` / widget ``widget`` case-fold
+      - ``chart_type: \"line\"`` with list ``y`` → ``multi_line``
+      - mapping camelCase aliases (``yTitle`` → ``y_title``, ...)
+      - ``dual_axis_series`` ASCII/en-dash → em dash
+
+    Idempotent for already-canonical manifests.
+    """
+    warnings: List[str] = []
+    layout = manifest.get("layout") or {}
+    if not isinstance(layout, dict):
+        layout = {}
+
+    for i, filt in enumerate(manifest.get("filters", []) or []):
+        if not isinstance(filt, dict):
+            continue
+        ft = filt.get("type")
+        canonical = _casefold_lookup(ft, VALID_FILTERS)
+        if canonical is not None and canonical != ft:
+            filt["type"] = canonical
+            warnings.append(
+                f"filters[{i}].type: coerced {ft!r} -> {canonical!r}"
+            )
+
+    for w, _row, _idx, _container in _walk_widgets_in_layout(layout):
+        if not isinstance(w, dict):
+            continue
+        wid = w.get("id") or "<unnamed>"
+        wt = w.get("widget")
+        canonical_wt = _casefold_lookup(wt, VALID_WIDGETS)
+        if canonical_wt is not None and canonical_wt != wt:
+            w["widget"] = canonical_wt
+            warnings.append(
+                f"widget[{wid}].widget: coerced {wt!r} -> {canonical_wt!r}"
+            )
+            wt = canonical_wt
+
+        spec = w.get("spec")
+        if not isinstance(spec, dict):
+            continue
+        ct = spec.get("chart_type")
+        canonical_ct = _casefold_lookup(ct, VALID_CHART_TYPES)
+        if canonical_ct is not None and canonical_ct != ct:
+            spec["chart_type"] = canonical_ct
+            warnings.append(
+                f"widget[{wid}].spec.chart_type: coerced {ct!r} -> "
+                f"{canonical_ct!r}"
+            )
+            ct = canonical_ct
+
+        mapping = spec.get("mapping")
+        if not isinstance(mapping, dict):
+            continue
+
+        for alias, canonical_key in _MAPPING_KEY_ALIASES.items():
+            if alias in mapping and canonical_key not in mapping:
+                mapping[canonical_key] = mapping.pop(alias)
+                warnings.append(
+                    f"widget[{wid}].spec.mapping: renamed {alias!r} -> "
+                    f"{canonical_key!r}"
+                )
+
+        dual = mapping.get("dual_axis_series")
+        if isinstance(dual, str):
+            dual = [dual]
+            mapping["dual_axis_series"] = dual
+        if isinstance(dual, list):
+            rewritten: List[Any] = []
+            changed = False
+            for item in dual:
+                if isinstance(item, str):
+                    normalized = _normalize_emitted_series_label(item)
+                    if normalized != item:
+                        changed = True
+                    rewritten.append(normalized)
+                else:
+                    rewritten.append(item)
+            if changed:
+                mapping["dual_axis_series"] = rewritten
+                warnings.append(
+                    f"widget[{wid}].spec.mapping.dual_axis_series: "
+                    "normalized dash separators to em dash"
+                )
+
+        if (
+            ct == "line"
+            and isinstance(mapping.get("y"), list)
+        ):
+            spec["chart_type"] = "multi_line"
+            warnings.append(
+                f"widget[{wid}].spec.chart_type: coerced 'line' -> "
+                "'multi_line' because mapping.y is a list"
+            )
+
+    return warnings
+
+
 def _coerce_manifest_booleans(manifest: Dict[str, Any]) -> List[str]:
     """Walk the manifest and coerce every known boolean-typed field
     from PRISM's likely dialects (string "true"/"false"/"1"/"0", int
@@ -1436,18 +1580,44 @@ def _validate_chart_widget(w: Dict[str, Any], wbase: str,
         if not ct:
             errs.append(_err(f"{wbase}.spec.chart_type", "required"))
         elif ct not in VALID_CHART_TYPES:
+            suggestions = _did_you_mean(str(ct), sorted(VALID_CHART_TYPES))
+            if suggestions:
+                opts = " | ".join(f"'{s}'" for s in suggestions)
+                hint = (
+                    f"Did you mean {opts}? Replace chart_type with one of "
+                    f"those (valid: {sorted(VALID_CHART_TYPES)})."
+                )
+            else:
+                hint = (
+                    f"Choose one of {sorted(VALID_CHART_TYPES)}."
+                )
             errs.append(_err(
                 f"{wbase}.spec.chart_type",
-                f"'{ct}' not in {sorted(VALID_CHART_TYPES)}"
+                f"'{ct}' not in {sorted(VALID_CHART_TYPES)}",
+                hint,
             ))
         ds = spec.get("dataset")
         if not ds:
             errs.append(_err(f"{wbase}.spec.dataset", "required"))
         elif ds not in dataset_names:
+            suggestions = _did_you_mean(str(ds), sorted(dataset_names))
+            if suggestions:
+                opts = " | ".join(f"'{s}'" for s in suggestions)
+                hint = (
+                    f"Did you mean {opts}? Replace dataset with a declared "
+                    f"manifest.datasets key (available: "
+                    f"{sorted(dataset_names)})."
+                )
+            else:
+                hint = (
+                    f"Declare the dataset or pick from "
+                    f"{sorted(dataset_names)}."
+                )
             errs.append(_err(
                 f"{wbase}.spec.dataset",
                 f"'{ds}' not declared in manifest.datasets "
-                f"(available: {sorted(dataset_names)})"
+                f"(available: {sorted(dataset_names)})",
+                hint,
             ))
         if "mapping" not in spec:
             errs.append(_err(f"{wbase}.spec.mapping", "required"))
@@ -1689,6 +1859,50 @@ def _validate_kpi_widget(w: Dict[str, Any], wbase: str,
             "source=\"<dataset>.<aggregator>.<col>\" so the value "
             "refreshes with pull_data.py."
         ))
+    elif has_source and isinstance(w.get("source"), str):
+        ds_name, agg, _col, parse_err = _parse_kpi_source(
+            w["source"], "value",
+        )
+        if parse_err is None and agg not in VALID_KPI_AGGREGATORS:
+            suggestions = _did_you_mean(
+                str(agg), sorted(VALID_KPI_AGGREGATORS),
+            )
+            if suggestions:
+                opts = " | ".join(f"'{s}'" for s in suggestions)
+                hint = (
+                    f"Did you mean {opts}? Aggregator must be one of "
+                    f"{sorted(VALID_KPI_AGGREGATORS)}."
+                )
+            else:
+                hint = (
+                    f"Replace the aggregator with one of "
+                    f"{sorted(VALID_KPI_AGGREGATORS)}."
+                )
+            errs.append(_err(
+                f"{wbase}.source",
+                f"aggregator {agg!r} is unsupported",
+                hint,
+            ))
+        if parse_err is None and ds_name not in dataset_names:
+            suggestions = _did_you_mean(
+                str(ds_name), sorted(dataset_names),
+            )
+            if suggestions:
+                opts = " | ".join(f"'{s}'" for s in suggestions)
+                hint = (
+                    f"Did you mean {opts}? Prefix source with a declared "
+                    f"dataset (available: {sorted(dataset_names)})."
+                )
+            else:
+                hint = (
+                    f"Declare the dataset or pick from "
+                    f"{sorted(dataset_names)}."
+                )
+            errs.append(_err(
+                f"{wbase}.source",
+                f"dataset {ds_name!r} is not declared",
+                hint,
+            ))
 
 
 def _validate_table_widget(w: Dict[str, Any], wbase: str,
@@ -2748,8 +2962,23 @@ def _validate_filters(manifest: Dict[str, Any],
             ctx.filter_ids.add(fid)
         ft = f.get("type")
         if ft not in VALID_FILTERS:
-            errs.append(_err(f"{base}.type",
-                              f"'{ft}' not in {sorted(VALID_FILTERS)}"))
+            suggestions = _did_you_mean(
+                str(ft) if ft is not None else "",
+                sorted(VALID_FILTERS),
+            )
+            if suggestions:
+                opts = " | ".join(f"'{s}'" for s in suggestions)
+                hint = (
+                    f"Did you mean {opts}? Replace type with one of those "
+                    f"(valid: {sorted(VALID_FILTERS)})."
+                )
+            else:
+                hint = f"Choose one of {sorted(VALID_FILTERS)}."
+            errs.append(_err(
+                f"{base}.type",
+                f"'{ft}' not in {sorted(VALID_FILTERS)}",
+                hint,
+            ))
         if ft == "dateRange" and "default" in f:
             default = f.get("default")
             valid_default = (
@@ -2990,8 +3219,23 @@ def _validate_layout(manifest: Dict[str, Any],
                     continue
                 wt = w.get("widget")
                 if wt not in VALID_WIDGETS:
-                    errs.append(_err(f"{wbase}.widget",
-                                       f"'{wt}' not in {sorted(VALID_WIDGETS)}"))
+                    suggestions = _did_you_mean(
+                        str(wt) if wt is not None else "",
+                        sorted(VALID_WIDGETS),
+                    )
+                    if suggestions:
+                        opts = " | ".join(f"'{s}'" for s in suggestions)
+                        hint = (
+                            f"Did you mean {opts}? Replace widget with one "
+                            f"of those (valid: {sorted(VALID_WIDGETS)})."
+                        )
+                    else:
+                        hint = f"Choose one of {sorted(VALID_WIDGETS)}."
+                    errs.append(_err(
+                        f"{wbase}.widget",
+                        f"'{wt}' not in {sorted(VALID_WIDGETS)}",
+                        hint,
+                    ))
                 wid = w.get("id")
                 if not wid:
                     # Every widget needs a stable id: filter targets,
@@ -3385,10 +3629,21 @@ def _validate_widget_interaction_refs(
                 "that column to the dataset before compiling.",
             ))
         if agg not in VALID_KPI_AGGREGATORS:
+            suggestions = _did_you_mean(
+                str(agg), sorted(VALID_KPI_AGGREGATORS),
+            )
+            if suggestions:
+                opts = " | ".join(f"'{s}'" for s in suggestions)
+                hint = (
+                    f"Did you mean {opts}? Aggregator must be one of "
+                    f"{sorted(VALID_KPI_AGGREGATORS)}."
+                )
+            else:
+                hint = f"use one of {sorted(VALID_KPI_AGGREGATORS)}."
             errs.append(_err(
                 f"{path}.data",
                 f"aggregator {agg!r} is unsupported",
-                f"use one of {sorted(VALID_KPI_AGGREGATORS)}.",
+                hint,
             ))
 
     def _validate_show_when(cond: Any, path: str, depth: int = 0) -> None:
@@ -3530,6 +3785,76 @@ def _validate_links(manifest: Dict[str, Any],
                                        f"'{bt}' not in {sorted(VALID_BRUSH_TYPES)}"))
 
 
+def _validate_dual_axis_series_refs(
+    manifest: Dict[str, Any], errs: List[str],
+) -> None:
+    """Fail closed when ``dual_axis_series`` names miss emitted series.
+
+    Previously a typo silently left the right axis empty. Surface the
+    concrete emitted names in ``fix:`` so PRISM can repair in one shot.
+    """
+    from echart_studio import _enumerate_series_names
+
+    try:
+        dfs = _materialize_datasets(manifest)
+    except Exception:  # noqa: BLE001
+        return
+    layout = manifest.get("layout") or {}
+    if not isinstance(layout, dict):
+        return
+    for w, _row, _idx, _container in _walk_widgets_in_layout(layout):
+        if not isinstance(w, dict) or w.get("widget") != "chart":
+            continue
+        spec = w.get("spec")
+        if not isinstance(spec, dict):
+            continue
+        mapping = spec.get("mapping")
+        if not isinstance(mapping, dict):
+            continue
+        dual = mapping.get("dual_axis_series")
+        if dual is None:
+            continue
+        if isinstance(dual, str):
+            dual_list: List[Any] = [dual]
+        elif isinstance(dual, (list, tuple)):
+            dual_list = list(dual)
+        else:
+            continue
+        ds_name = spec.get("dataset")
+        df = dfs.get(ds_name) if isinstance(ds_name, str) else None
+        try:
+            emitted = _enumerate_series_names(df, mapping)
+        except Exception:  # noqa: BLE001
+            continue
+        emitted_norm = {
+            _normalize_emitted_series_label(name): name
+            for name in emitted
+        }
+        unmatched = [
+            name for name in dual_list
+            if isinstance(name, str)
+            and _normalize_emitted_series_label(name) not in emitted_norm
+        ]
+        if not unmatched:
+            continue
+        wid = w.get("id")
+        wbase = (
+            f"widget[{wid!r}]" if isinstance(wid, str) and wid
+            else "widget"
+        )
+        errs.append(_err(
+            f"{wbase}.spec.mapping.dual_axis_series",
+            f"names {unmatched!r} are not in emitted series",
+            (
+                f"Emitted series for this chart: {list(emitted)}. "
+                "dual_axis_series must name concrete emitted series "
+                "(for color+strokeDash with strokeDashLegend use "
+                "'<color> — <strokeDash>' with em dash; ASCII ' -- ' "
+                "is accepted and normalized)."
+            ),
+        ))
+
+
 def validate_manifest(
     manifest: Dict[str, Any],
     require_persistence_metadata: bool = False,
@@ -3607,6 +3932,11 @@ def validate_manifest(
         for ce in compute_errors_inner:
             errs.append(ce)
         _augment_manifest(manifest)
+        # Authoring-dialect absorption (case-fold enums, line+list y,
+        # camelCase mapping keys, dual_axis dash separators) BEFORE
+        # boolean coercion / validators so PRISM typos do not hard-fail
+        # when the intent is unambiguous. Per Principle #7.
+        _absorb_manifest_authoring_dialects(manifest)
         # Boolean dialect normalisation on the working manifest. Closes
         # the JS `!!"false"` is True trapdoor by replacing PRISM's
         # alternate boolean dialects (string "true"/"false"/"1"/"0",
@@ -3647,6 +3977,7 @@ def validate_manifest(
         _validate_map_assets(manifest, errs, ctx)
         _validate_filters(manifest, errs, ctx)
         _validate_layout(manifest, errs, ctx)
+        _validate_dual_axis_series_refs(manifest, errs)
         _validate_filter_target_refs(manifest, errs, ctx)
         _validate_filter_depends_on_refs(manifest, errs, ctx)
         _validate_widget_show_when_filter_refs(manifest, errs, ctx)
@@ -5773,11 +6104,14 @@ def prepare_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
         4. ``_augment_manifest``             -- infer filter ``scope``,
            strip ``{value, label}`` defaults to primitives, auto-wire
            ``widget.dataset_ref`` for filter-reachable charts.
-        5. ``_coerce_manifest_booleans``     -- normalize PRISM dialects
+        5. ``_absorb_manifest_authoring_dialects`` -- case-fold filter /
+           chart / widget enums, ``line``+list ``y`` → ``multi_line``,
+           camelCase mapping aliases, dual_axis dash normalization.
+        6. ``_coerce_manifest_booleans``     -- normalize PRISM dialects
            ("true"/"false" strings, 1/0 ints, numpy.bool_) to canonical
            Python bool on every known boolean-typed field. Closes the
            silent JS `!!"false"` is True trapdoor.
-        6. ``_sanitize_manifest_compute_js`` -- Tier A Python-literal
+        7. ``_sanitize_manifest_compute_js`` -- Tier A Python-literal
            rewrite on every tool widget's compute_js source (None ->
            null, True -> true, etc.).
 
@@ -5790,7 +6124,7 @@ def prepare_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     manifest, or PRISM-side tooling that wants to inspect the
     canonical post-augment shape.
 
-    The four helpers below remain in module-private form for callers
+    The helpers below remain in module-private form for callers
     that need finer-grained control (e.g. compile_dashboard captures
     the compute-error list separately to surface as a distinct failure
     mode); ``prepare_manifest`` is the canonical orchestrator.
@@ -5799,6 +6133,7 @@ def prepare_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     _apply_computed_datasets(manifest)
     _apply_show_when_compile(manifest)
     _augment_manifest(manifest)
+    _absorb_manifest_authoring_dialects(manifest)
     _coerce_manifest_booleans(manifest)
     _sanitize_manifest_compute_js(manifest)
     return manifest
@@ -12798,6 +13133,7 @@ def render_dashboard(manifest: Dict[str, Any],
     shape_diags = _check_dataset_shape(manifest, pre_shapes)
     _normalize_manifest_datasets(manifest)
     _augment_manifest(manifest)
+    _absorb_manifest_authoring_dialects(manifest)
     ok, errs = validate_manifest(manifest)
     if not ok:
         # Carry the full diagnostic body in error_message so the
@@ -13958,6 +14294,11 @@ def compile_dashboard(
     # contribute diagnostics, target counts, etc.).
     _apply_show_when_compile(manifest_dict)
     _augment_manifest(manifest_dict)
+    # Authoring-dialect absorption (Principle #7). Case-fold enums,
+    # line+list y → multi_line, camelCase mapping aliases, dual_axis
+    # dash separators. Must mutate the compile working dict (not only
+    # validate_manifest's private copy) so lowering sees canonical keys.
+    absorb_warnings = _absorb_manifest_authoring_dialects(manifest_dict)
     # Boolean dialect normalisation (Principle #7). Coerce PRISM's
     # alternate boolean dialects (string "true"/"false"/"1"/"0", int
     # 1/0, numpy.bool_) to canonical Python bool on every known
@@ -14033,6 +14374,8 @@ def compile_dashboard(
                          + [str(d) for d in shape_diags]
                          + [str(d) for d in cdd_diags_pre
                             if d.severity != "info"]
+                         + [f"manifest dialect absorbed: {w}"
+                            for w in absorb_warnings]
                          + [f"manifest bool coerced: {w}" for w in coerce_warnings]
                          + [f"compute_js sanitized: {w}" for w in sanitize_warnings])
         agg_diags = list(shape_diags) + list(cdd_diags_pre)
@@ -14266,10 +14609,12 @@ def compile_dashboard(
     # the warnings stream.
     warnings: List[str] = [str(d) for d in diags
                               if d.severity != "info"]
-    # Surface Tier A compute_js sanitization rewrites + manifest boolean
-    # coercion rewrites (Principle #7) so each rewrite is observable to
-    # the caller (PRISM logs them; the in-browser failure modal never
-    # sees them because compile succeeded).
+    # Surface authoring-dialect / boolean / compute_js rewrites
+    # (Principle #7) so each rewrite is observable to the caller
+    # (PRISM logs them; the in-browser failure modal never sees them
+    # because compile succeeded).
+    for aw in absorb_warnings:
+        warnings.append(f"manifest dialect absorbed: {aw}")
     for cw in coerce_warnings:
         warnings.append(f"manifest bool coerced: {cw}")
     for sw in sanitize_warnings:
@@ -15635,6 +15980,25 @@ def _remove_widget_locations(
     return removed_ids
 
 
+def _deep_merge_patch(target: Dict[str, Any], patch: Dict[str, Any]) -> None:
+    """Deep-merge ``patch`` into ``target`` in place.
+
+    Nested dicts merge recursively. Lists and scalars replace.
+    Explicit ``None`` deletes the key from ``target``.
+    """
+    import copy
+
+    for key, value in patch.items():
+        if value is None:
+            target.pop(key, None)
+            continue
+        existing = target.get(key)
+        if isinstance(value, dict) and isinstance(existing, dict):
+            _deep_merge_patch(existing, value)
+        else:
+            target[key] = copy.deepcopy(value)
+
+
 _OPERATION_SCHEMAS: Dict[str, Tuple[set, set]] = {
     "add_widget": (
         {"op", "widget", "destination"},
@@ -15851,7 +16215,7 @@ def _apply_manifest_operation(
                     index, f"updated widget id {new_id!r} already exists",
                     "keep the existing id or choose a unique replacement.",
                 )
-            location["widget"].update(copy.deepcopy(patch))
+            _deep_merge_patch(location["widget"], copy.deepcopy(patch))
             if new_id != selected_id:
                 _rewrite_widget_id_references(
                     manifest, selected_id, new_id,
@@ -15937,7 +16301,7 @@ def _apply_manifest_operation(
                     "use typed widget operations to preserve inherited "
                     "contents.",
                 )
-            tab.update(copy.deepcopy(patch))
+            _deep_merge_patch(tab, copy.deepcopy(patch))
             return
         if op_name == "remove_tab":
             doomed_locations = [
@@ -16024,7 +16388,7 @@ def _apply_manifest_operation(
                     index, f"updated filter id {new_id!r} already exists",
                     "keep the current id or choose a unique replacement.",
                 )
-            filter_spec.update(copy.deepcopy(patch))
+            _deep_merge_patch(filter_spec, copy.deepcopy(patch))
             if new_id != selected_id:
                 _rewrite_filter_id_references(
                     manifest, selected_id, new_id,
@@ -16093,7 +16457,7 @@ def _apply_manifest_operation(
                     index, f"dataset {name!r} is not an object",
                     "repair the slot shape before applying a field patch.",
                 )
-            datasets[name].update(copy.deepcopy(patch))
+            _deep_merge_patch(datasets[name], copy.deepcopy(patch))
             return
         del datasets[name]
         dependent_locations = [
@@ -16148,7 +16512,7 @@ def _apply_manifest_operation(
                 index, "manifest.metadata is not an object",
                 "repair metadata before applying a field patch.",
             )
-        metadata.update(copy.deepcopy(patch))
+        _deep_merge_patch(metadata, copy.deepcopy(patch))
         return
 
 
@@ -16159,7 +16523,7 @@ def _transaction_target_from_state(
     expected_current_version_id: Optional[str],
     script: Optional[str] = None,
 ) -> Tuple[str, Optional[str], Optional[str]]:
-    """Resolve a canonical folder and concurrency guards from inspection."""
+    """Resolve folder and concurrency guards from inspect/describe state."""
     if isinstance(folder_or_state, str):
         return (
             folder_or_state,
@@ -16169,13 +16533,14 @@ def _transaction_target_from_state(
     if not isinstance(folder_or_state, dict):
         raise ValueError(
             "transaction target must be a canonical folder string or the "
-            "dict returned by inspect_dashboard"
+            "dict returned by inspect_dashboard / describe_dashboard"
         )
     folder = folder_or_state.get("folder")
     if not isinstance(folder, str):
         raise ValueError(
-            "inspection state is missing its canonical 'folder' field | "
-            "fix: pass the unmodified inspect_dashboard result."
+            "state is missing its canonical 'folder' field | "
+            "fix: pass the unmodified inspect_dashboard or "
+            "describe_dashboard result."
         )
     inferred_sha = folder_or_state.get("manifest_template_sha256")
     if script is not None:
@@ -16220,9 +16585,10 @@ def apply_manifest_operations(
 ) -> Dict[str, Any]:
     """Apply ordered, typed manifest edits as one rollback-safe transaction.
 
-    ``folder`` may be the canonical path or the complete state returned by
-    :func:`inspect_dashboard`. Passing state consumes its template SHA and
-    current version guard directly.
+    ``folder`` may be the canonical path or the state returned by
+    :func:`inspect_dashboard` / :func:`describe_dashboard`. Passing state
+    consumes its template SHA and current version guard directly. Nested
+    dict patches deep-merge; lists and scalars replace; ``None`` clears.
     """
     if isinstance(operations, (str, bytes, dict)) \
             or not isinstance(operations, Sequence):
@@ -16709,6 +17075,297 @@ def _inspect_pull_pipelines(source: str) -> Tuple[List[Dict[str, Any]], Optional
         for item in analysis["roots"]
     ]
     return sorted(pipelines, key=lambda item: item["name"]), None
+
+
+def _describe_widget_line(widget: Dict[str, Any]) -> str:
+    """One compact floorplan token for a widget."""
+    widget_id = widget.get("id") or "?"
+    kind = widget.get("widget") or "?"
+    title = widget.get("title") or widget.get("label") or ""
+    width = widget.get("w")
+    spec = widget.get("spec") if isinstance(widget.get("spec"), dict) else {}
+    chart_type = spec.get("chart_type") if kind == "chart" else None
+    refs = sorted(_widget_dataset_refs(widget))
+    parts = [str(widget_id), str(kind)]
+    if chart_type:
+        parts.append(str(chart_type))
+    if title:
+        parts.append(str(title))
+    if width is not None:
+        parts.append(f"w={width}")
+    if refs:
+        parts.append("ds=" + ",".join(refs))
+    return "[" + " ".join(parts) + "]"
+
+
+def _describe_layout_text(template: Dict[str, Any]) -> str:
+    """ASCII floorplan: tabs → rows → widgets."""
+    layout = template.get("layout") if isinstance(template, dict) else {}
+    if not isinstance(layout, dict):
+        return "(no layout)"
+    lines: List[str] = []
+    if layout.get("kind", "grid") == "tabs":
+        tabs = layout.get("tabs") or []
+        for tab_index, tab in enumerate(tabs):
+            if not isinstance(tab, dict):
+                continue
+            label = tab.get("label") or tab.get("id") or f"tab_{tab_index}"
+            tab_id = tab.get("id") or ""
+            header = f"[{label}]"
+            if tab_id and tab_id != label:
+                header = f"[{label} | id={tab_id}]"
+            lines.append(header)
+            rows = tab.get("rows") or []
+            if not rows:
+                lines.append("  (empty)")
+                continue
+            for row_index, row in enumerate(rows):
+                if not isinstance(row, list):
+                    continue
+                widgets = [
+                    _describe_widget_line(widget)
+                    for widget in row if isinstance(widget, dict)
+                ]
+                lines.append(
+                    f"  row {row_index}: " + (" ".join(widgets) or "(empty)")
+                )
+    else:
+        lines.append("[grid]")
+        rows = layout.get("rows") or []
+        if not rows:
+            lines.append("  (empty)")
+        for row_index, row in enumerate(rows):
+            if not isinstance(row, list):
+                continue
+            widgets = [
+                _describe_widget_line(widget)
+                for widget in row if isinstance(widget, dict)
+            ]
+            lines.append(
+                f"  row {row_index}: " + (" ".join(widgets) or "(empty)")
+            )
+    return "\n".join(lines) if lines else "(no layout)"
+
+
+def _describe_filters_text(template: Dict[str, Any]) -> str:
+    """Ordered filter one-liners for product sync."""
+    filters = template.get("filters") if isinstance(template, dict) else []
+    if not isinstance(filters, list) or not filters:
+        return "(none)"
+    lines: List[str] = []
+    for filter_spec in filters:
+        if not isinstance(filter_spec, dict):
+            continue
+        filter_id = filter_spec.get("id") or "?"
+        filter_type = filter_spec.get("type") or "?"
+        field = filter_spec.get("field")
+        targets = filter_spec.get("targets") or []
+        target_text = (
+            ", ".join(str(t) for t in targets)
+            if isinstance(targets, list) and targets else "*"
+        )
+        pieces = [f"- {filter_id}", str(filter_type)]
+        if field:
+            pieces.append(f"field={field}")
+        pieces.append(f"-> {target_text}")
+        lines.append(" ".join(pieces))
+    return "\n".join(lines) if lines else "(none)"
+
+
+def describe_dashboard(
+    folder: str,
+    *,
+    s3_manager=None,
+    mode: str = "layout",
+) -> Dict[str, Any]:
+    """Return a compact product floorplan for user/PRISM layout sync.
+
+    Unlike :func:`inspect_dashboard`, this omits telemetry, findings graph,
+    and file inventories. The ``text`` field is safe to paraphrase to the
+    user (no paths or SHAs). The returned dict still carries
+    ``manifest_template_sha256`` and ``versioning.current_version_id`` so
+    it can be passed directly to :func:`apply_manifest_operations`.
+    """
+    if mode != "layout":
+        raise ValueError(
+            f"describe_dashboard mode={mode!r} is unsupported | fix: pass "
+            "mode='layout'."
+        )
+    s3 = _resolve_s3_manager(s3_manager)
+    canonical, kerberos, dashboard_id = _canonical_dashboard_identity(folder)
+    audit_dashboard_layout(canonical, s3_manager=s3)
+    template_path = f"{canonical}/manifest_template.json"
+    template_raw = _manifest_template_bytes(s3, canonical)
+    template_sha = _sha256(template_raw)
+    template = _decode_json_object(template_raw, template_path)
+
+    layout = template.get("layout") if isinstance(template.get("layout"), dict) \
+        else {}
+    tabs_raw = (
+        layout.get("tabs")
+        if layout.get("kind", "grid") == "tabs"
+        else []
+    )
+    tabs = [
+        {
+            "id": tab.get("id"),
+            "label": tab.get("label"),
+            "index": index,
+        }
+        for index, tab in enumerate(tabs_raw or [])
+        if isinstance(tab, dict)
+    ]
+    locations = _widget_locations(template)
+    widget_kind_counts: Dict[str, int] = {}
+    for location in locations:
+        kind = location["widget"].get("widget")
+        if isinstance(kind, str):
+            widget_kind_counts[kind] = widget_kind_counts.get(kind, 0) + 1
+    filters = template.get("filters") \
+        if isinstance(template.get("filters"), list) else []
+    datasets = template.get("datasets") \
+        if isinstance(template.get("datasets"), dict) else {}
+
+    versioning: Dict[str, Any] = {
+        "current_version_id": None,
+        "previous_version_id": None,
+        "clean": None,
+        "summary": {
+            "title": str(template.get("title") or template.get("id") or ""),
+            "tab_names": [
+                str(tab.get("label") or tab.get("id") or "")
+                for tab in tabs
+                if tab.get("label") or tab.get("id")
+            ],
+            "widget_count": len(locations),
+            "filter_count": len(filters),
+        },
+    }
+    try:
+        listed = list_dashboard_versions(canonical, s3_manager=s3, limit=1)
+        versioning["current_version_id"] = listed.get("current_version_id")
+        versioning["previous_version_id"] = listed.get("previous_version_id")
+        state = _load_dashboard_version_state(s3, canonical)
+        pull_path = f"{canonical}/scripts/pull_data.py"
+        build_path = f"{canonical}/scripts/build.py"
+        if state is not None and s3.exists(pull_path) and s3.exists(build_path):
+            working = {
+                "manifest_template": template,
+                "pull_data_py": bytes(s3.get(pull_path)).decode("utf-8"),
+                "build_py": bytes(s3.get(build_path)).decode("utf-8"),
+            }
+            working_sha = _recipe_fingerprint(working)
+            current_sha = state.get("current_recipe_sha256")
+            versioning["clean"] = (
+                working_sha == current_sha
+                if isinstance(current_sha, str) else None
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+    review_state: Dict[str, Any] = {
+        "status": None,
+        "acknowledgment_match": False,
+        "publish_ready": False,
+        "fix_hint": (
+            "Call review_dashboard before publish when review state is "
+            "unavailable."
+        ),
+    }
+    try:
+        semantic_review = review_dashboard(canonical, s3_manager=s3)
+        acknowledgment = _load_dashboard_review_acknowledgment(
+            s3, canonical, semantic_review,
+        )
+        ack_match = acknowledgment is not None
+        publish_ready = semantic_review.status != "BLOCK" and ack_match
+        if semantic_review.status == "BLOCK":
+            fix_hint = (
+                "Review status is BLOCK; repair deterministic failures, "
+                "then review again. Do not acknowledge or publish."
+            )
+        elif ack_match and publish_ready:
+            fix_hint = (
+                "acknowledgment_match and publish_ready are both true; "
+                "call publish_dashboard without a new rationale (or "
+                "build_dashboard) directly."
+            )
+        else:
+            fix_hint = (
+                "Call review_dashboard, inspect every flagged panel, then "
+                "publish_dashboard(folder, rationale=...) with evidence."
+            )
+        review_state = {
+            "status": semantic_review.status,
+            "acknowledgment_match": ack_match,
+            "publish_ready": publish_ready,
+            "fix_hint": fix_hint,
+        }
+    except Exception as exc:  # noqa: BLE001
+        review_state["fix_hint"] = (
+            f"Review unavailable ({type(exc).__name__}: {exc}); use "
+            "inspect_dashboard or review_dashboard before publish."
+        )
+
+    layout_text = _describe_layout_text(template)
+    filters_text = _describe_filters_text(template)
+    title = str(template.get("title") or template.get("id") or dashboard_id)
+    counts = {
+        "tabs": len(tabs),
+        "widgets": len(locations),
+        "widgets_by_kind": dict(sorted(widget_kind_counts.items())),
+        "filters": len(filters),
+        "datasets": len(datasets),
+    }
+    tab_labels = [
+        str(tab.get("label") or tab.get("id") or "")
+        for tab in tabs
+        if tab.get("label") or tab.get("id")
+    ]
+    review_line = (
+        f"Review: {review_state.get('status') or 'unknown'}"
+        f" | publish_ready={bool(review_state.get('publish_ready'))}"
+    )
+    text_parts = [
+        title,
+        (
+            "Tabs: " + " | ".join(tab_labels)
+            if tab_labels else "Tabs: (grid)"
+        ),
+        "",
+        layout_text,
+        "",
+        "Filters:",
+        filters_text,
+        "",
+        (
+            f"Counts: {counts['tabs']} tabs, {counts['widgets']} widgets, "
+            f"{counts['filters']} filters, {counts['datasets']} datasets"
+        ),
+        review_line,
+    ]
+    if versioning.get("clean") is False:
+        text_parts.append("State: dirty (unsaved recipe vs current version)")
+    text = "\n".join(text_parts)
+
+    return {
+        "folder": canonical,
+        "title": title,
+        "dashboard_id": dashboard_id,
+        "identity": {
+            "kerberos": kerberos,
+            "dashboard_id": dashboard_id,
+        },
+        "tabs": tabs,
+        "layout_text": layout_text,
+        "filters_text": filters_text,
+        "counts": counts,
+        "versioning": versioning,
+        "review": review_state,
+        "manifest_template_sha256": template_sha,
+        "text": text,
+        "mode": mode,
+    }
 
 
 def inspect_dashboard(
@@ -17447,6 +18104,31 @@ def inspect_dashboard(
                     "codes": ["review_acknowledgment_pending"],
                     "drill_down": f"review_dashboard({canonical!r})",
                 })
+            ack_match = acknowledgment is not None
+            publish_ready = (
+                semantic_review.status != "BLOCK" and ack_match
+            )
+            if semantic_review.status == "BLOCK":
+                review_fix_hint = (
+                    "Review status is BLOCK; repair deterministic "
+                    "failures, then review again. Do not acknowledge "
+                    "or publish this signature."
+                )
+            elif ack_match and publish_ready:
+                review_fix_hint = (
+                    "acknowledgment_match and publish_ready are both "
+                    "true; do not call acknowledge_dashboard_review "
+                    "again — call build_dashboard or "
+                    "publish_dashboard without a new rationale."
+                )
+            else:
+                review_fix_hint = (
+                    "Call review_dashboard, inspect every flagged "
+                    "panel, then publish_dashboard(folder, "
+                    "rationale=...) (or acknowledge_dashboard_review "
+                    "+ build_dashboard) with a rationale that names "
+                    "the evidence."
+                )
             review_state = {
                 "available": True,
                 "source": "candidate_recipe_with_current_data",
@@ -17454,15 +18136,13 @@ def inspect_dashboard(
                 "definition_sha256": semantic_review.definition_sha256,
                 "quality_signature": semantic_review.quality_signature,
                 "review_signature": semantic_review.review_signature,
-                "acknowledgment_match": acknowledgment is not None,
-                "publish_ready": (
-                    semantic_review.status != "BLOCK"
-                    and acknowledgment is not None
-                ),
+                "acknowledgment_match": ack_match,
+                "publish_ready": publish_ready,
                 "acknowledgment_path": _dashboard_review_ack_path(
                     canonical, semantic_review.review_signature,
                 ),
                 "pending_findings": pending_findings,
+                "fix_hint": review_fix_hint,
             }
         except Exception as exc:  # noqa: BLE001
             findings.append(_inspection_finding(
@@ -19745,6 +20425,76 @@ def restore_dashboard_version(
     }
 
 
+def publish_dashboard(
+    folder: str,
+    rationale: Optional[str] = None,
+    *,
+    s3_manager=None,
+    expected_current_version_id: Optional[str] = None,
+    refresh_cycle_at: Optional[str] = None,
+    next_refresh_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Review → refuse BLOCK → acknowledge exact signature → build.
+
+    Collapses the standard publish ceremony into one call without
+    weakening the Garbage Gate: ``rationale`` is required when a new
+    acknowledgment is written, ``BLOCK`` still cannot publish, and
+    ``build_dashboard`` still enforces the exact acknowledgment match.
+
+    When the current signature is already acknowledged and
+    publish-ready, skips a redundant acknowledgment write and builds.
+    In that green path ``rationale`` may be omitted or ``None``.
+
+    Returns
+    -------
+    dict with keys ``review`` (DashboardReview), ``acknowledgment``
+    (dict), and ``manifest`` (populated manifest from build).
+    """
+    review = review_dashboard(folder, s3_manager=s3_manager)
+    if review.status == "BLOCK":
+        raise ValueError(
+            "publish_dashboard: review status is BLOCK; repair the "
+            "deterministic failures and publish again | fix: call "
+            f"review_dashboard({folder!r}).to_text() and repair each "
+            f"blocked panel (signature={review.review_signature})."
+        )
+    s3 = _resolve_s3_manager(s3_manager)
+    canonical, _kerberos, _dashboard_id = _canonical_dashboard_identity(
+        folder
+    )
+    existing = _load_dashboard_review_acknowledgment(s3, canonical, review)
+    if existing is None:
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise ValueError(
+                "rationale must be a non-empty explanation of why the "
+                "candidate is acceptable to publish | fix: review flagged "
+                "panels and pass rationale=..., or omit rationale only "
+                "when acknowledgment_match and publish_ready are already "
+                "true."
+            )
+        acknowledgment = acknowledge_dashboard_review(
+            folder,
+            expected_review_signature=review.review_signature,
+            rationale=rationale,
+            s3_manager=s3,
+        )
+    else:
+        acknowledgment = dict(existing)
+        acknowledgment["already_acknowledged"] = True
+    manifest = build_dashboard(
+        folder,
+        s3_manager=s3,
+        refresh_cycle_at=refresh_cycle_at,
+        next_refresh_at=next_refresh_at,
+        expected_current_version_id=expected_current_version_id,
+    )
+    return {
+        "review": review,
+        "acknowledgment": acknowledgment,
+        "manifest": manifest,
+    }
+
+
 def build_dashboard(folder: str, *, s3_manager=None,
                      refresh_cycle_at: Optional[str] = None,
                      next_refresh_at: Optional[str] = None,
@@ -20033,7 +20783,8 @@ __all__ = [
     "load_tool_def", "normalize_tool_def",
     "df_to_source", "manifest_template", "populate_template",
     "Diagnostic", "chart_data_diagnostics",
-    "run_pull", "build_dashboard", "refresh_dashboard",
+    "run_pull", "build_dashboard", "publish_dashboard",
+    "refresh_dashboard",
     "review_dashboard", "acknowledge_dashboard_review",
     "launch_clean_refresh",
     "audit_dashboard_layout",

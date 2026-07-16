@@ -13,8 +13,7 @@ This file is the sole owner of first-build Tools 1-4. A first build is one unint
 Tool 1  author pull_data.py → persist → run every PULLS entry → verify CSVs
    ↓
 Tool 2  compose template + author build.py → persist → review receipt
-        → flagged-panel drill-down → exact rationale acknowledgment
-        → build_dashboard
+        → flagged-panel drill-down → publish_dashboard(rationale=...)
    ↓
 Tool 3  register exactly once → align cadence → verify registry (pointer: scheduled orchestrator only)
    ↓
@@ -221,26 +220,22 @@ print(review.to_text())
 for panel in review.panels:
     if panel.status != "CLEAR":
         print(review.panel(panel.panel_id).to_text())
-if review.status == "BLOCK":
-    raise ValueError("repair blocked panels, then review the new candidate")
-
-acknowledge_dashboard_review(
+published = publish_dashboard(
     FOLDER,
-    expected_review_signature=review.review_signature,
     rationale=(
         "Reviewed the complete curve and spread panel index; accepted this "
         "CLEAR first baseline because both default-state series are populated "
         "and no Python-visible quality finding remains."
     ),
 )
-built = build_dashboard(FOLDER)
+built = published["manifest"]
 audit_dashboard_layout(FOLDER)
 ```
 
 Template rules:
 
-- A first build requires exact acknowledgment even when its `DashboardReview.status` is `CLEAR`. Always inspect the one-line-per-panel receipt, drill into every flagged panel with `review.panel(id)`, provide a real rationale, and only then call `build_dashboard`.
-- `BLOCK` is unacknowledgeable. Repair the deterministic defect and review the new signature.
+- A first build requires exact acknowledgment even when its `DashboardReview.status` is `CLEAR`. Always inspect the one-line-per-panel receipt, drill into every flagged panel with `review.panel(id)`, then call `publish_dashboard` with a real rationale (or the equivalent `acknowledge_dashboard_review` + `build_dashboard`).
+- `BLOCK` is unacknowledgeable (`publish_dashboard` refuses it). Repair the deterministic defect and review the new signature.
 - The first successful `build_dashboard` creates the baseline definition version; later successful builds create a version only when the template or either persisted script changed.
 - Default to tabs when the product has separable jobs or is likely to grow; stable ids make later edits surgical.
 - Template dataset entries are slots, not embedded live rows.
@@ -426,7 +421,7 @@ After all four tools pass:
 
 `http://reports.prism-ai.url.gs.com:8501/users/{kerberos}/dashboards/{dashboard_id}/`
 
-The user message contains the live URL and a concise product description. Do not expose the four-tool transaction, internal files, or engine diagnostics unless explicitly asked.
+The user message contains the live URL and a concise product description. Prefer paraphrasing `describe_dashboard(FOLDER)["text"]` so create and edit share the same layout-sync grammar. Do not expose the four-tool transaction, internal files, or engine diagnostics unless explicitly asked.
 
 ## First-build checklist
 
