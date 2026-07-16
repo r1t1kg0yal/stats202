@@ -1,11 +1,16 @@
 ---
 class: context-extraction
 topic: light-refresh-open-presence
-status: OPEN
+status: FOLDED
 created: 2026-07-16
+reply_received: 2026-07-16
+reply_source: cursor-chat screenshots (13 images)
+folded_on: 2026-07-16
+session: sessions/20260716_122851_goyalri_dashboard_light_refresh_presence/
 reply_folded_into:
   - prism/dashboard-refresh.md
   - prism/dashboards-portal.md
+  - prism/_changelog.md
   - projects/echarts/echarts-payload/dashboards_hub.md
 ---
 
