@@ -19740,7 +19740,6 @@ def _make_chart(
     y_title_right: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
     facet_cols: Optional[int] = None,
@@ -19884,16 +19883,6 @@ def _make_chart(
     ):
         if kwarg_val is not None and not mapping.get(mapping_key):
             mapping[mapping_key] = kwarg_val
-
-    # ---- Source attribution -> caption (one uniform rule) --------------------
-    # source= is a first-class, source-agnostic kwarg: the CALLER states
-    # the attribution string (Haver / FRED / GS Market Data / PlotTool /
-    # computed frame -- all identical). It routes to the existing caption
-    # path. An explicit caption is more specific and always wins; source
-    # only fills an unset caption. Nothing is auto-derived, so there is no
-    # wrong-source-binding / fabricated-attribution failure mode.
-    if source and caption is None:
-        caption = f"Source: {source}"
 
     # ---- Promote a meaningful index to the x column (fail-path only) ----
     # Data pulls routinely land with dates in the index; without this the
@@ -21076,7 +21065,6 @@ class ChartSpec:
     annotations: Optional[List[Annotation]] = None
     layers: Optional[List[Dict[str, Any]]] = None
     caption: Union[str, Dict[str, Any], None] = None
-    source: Optional[str] = None
     side_left: Union[str, Dict[str, Any], None] = None
     side_right: Union[str, Dict[str, Any], None] = None
     x_label: Optional[str] = None
@@ -21096,7 +21084,6 @@ class ChartSpec:
         annotations: Optional[List[Annotation]] = None,
         layers: Optional[List[Dict[str, Any]]] = None,
         caption: Union[str, Dict[str, Any], None] = None,
-        source: Optional[str] = None,
         side_left: Union[str, Dict[str, Any], None] = None,
         side_right: Union[str, Dict[str, Any], None] = None,
         x_label: Optional[str] = None,
@@ -21115,12 +21102,7 @@ class ChartSpec:
         self.subtitle = subtitle
         self.annotations = annotations
         self.layers = layers
-        # source= fills an unset caption with the same uniform rule as
-        # make_chart / make_table. Explicit caption wins.
-        if source and caption is None:
-            caption = f"Source: {source}"
         self.caption = caption
-        self.source = source
         self.side_left = side_left
         self.side_right = side_right
         self.x_label = x_label
@@ -21134,8 +21116,8 @@ class ChartSpec:
     def _raise_unknown_kwargs(unknown: List[str]) -> None:
         valid = [
             "df", "chart_type", "mapping", "title", "subtitle", "annotations",
-            "layers", "caption", "source", "side_left", "side_right",
-            "x_label", "y_label", "x_title", "y_title", "y_title_right",
+            "layers", "caption", "side_left", "side_right", "x_label",
+            "y_label", "x_title", "y_title", "y_title_right",
         ]
         bad = unknown[0]
         global_hint = ""
@@ -23623,7 +23605,6 @@ def make_composite(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
@@ -23641,20 +23622,12 @@ def make_composite(
 
     Composite-level text panels:
       ``caption`` sits below the entire pack (composite footer).
-      ``source`` fills an unset caption with ``Source: {source}``
-      (same uniform rule as ``make_chart`` / ``make_table`` /
-      ``ChartSpec``); an explicit ``caption`` always wins.
       ``side_left`` / ``side_right`` flank the whole pack (also
       accepted under the legacy aliases ``narrative_left`` /
       ``narrative_right``). Each accepts a string or a style dict
       (see ``make_chart``). Sub-chart-level text panels live on each
       ``ChartSpec`` instead.
     """
-    # source= fills an unset pack-level caption (same uniform rule as
-    # make_chart / make_table / ChartSpec). Explicit caption wins.
-    if source and caption is None:
-        caption = f"Source: {source}"
-
     warnings_list: List[str] = []
     dimension_preset, narrative_left, narrative_right, alias_warnings = (
         _resolve_composite_aliases(
@@ -24033,7 +24006,6 @@ def make_2pack_horizontal(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
@@ -24050,7 +24022,7 @@ def make_2pack_horizontal(
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
-        caption=caption, source=source,
+        caption=caption,
         side_left=side_left, narrative_left=narrative_left,
         side_right=side_right, narrative_right=narrative_right,
     )
@@ -24076,7 +24048,6 @@ def make_2pack_vertical(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
@@ -24093,7 +24064,7 @@ def make_2pack_vertical(
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
-        caption=caption, source=source,
+        caption=caption,
         side_left=side_left, narrative_left=narrative_left,
         side_right=side_right, narrative_right=narrative_right,
     )
@@ -24120,7 +24091,6 @@ def make_3pack_triangle(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
@@ -24137,7 +24107,7 @@ def make_3pack_triangle(
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
-        caption=caption, source=source,
+        caption=caption,
         side_left=side_left, narrative_left=narrative_left,
         side_right=side_right, narrative_right=narrative_right,
     )
@@ -24165,7 +24135,6 @@ def make_4pack_grid(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
@@ -24182,7 +24151,7 @@ def make_4pack_grid(
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
-        caption=caption, source=source,
+        caption=caption,
         side_left=side_left, narrative_left=narrative_left,
         side_right=side_right, narrative_right=narrative_right,
     )
@@ -24213,7 +24182,6 @@ def make_6pack_grid(
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
@@ -24284,7 +24252,7 @@ def make_6pack_grid(
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
-        caption=caption, source=source,
+        caption=caption,
         side_left=side_left, narrative_left=narrative_left,
         side_right=side_right, narrative_right=narrative_right,
     )
@@ -25071,7 +25039,6 @@ class Chart:
         annotations: Optional[List[Annotation]] = None,
         layers: Optional[List[Dict[str, Any]]] = None,
         caption: Union[str, Dict[str, Any], None] = None,
-        source: Optional[str] = None,
         side_left: Union[str, Dict[str, Any], None] = None,
         side_right: Union[str, Dict[str, Any], None] = None,
         # ----- Style --------------------------------------------------
@@ -25136,12 +25103,7 @@ class Chart:
         self._subtitle = subtitle
         self._annotations: List[Annotation] = list(annotations) if annotations else []
         self._layers: List[Dict[str, Any]] = list(layers) if layers else []
-        # source= fills an unset caption with the same uniform rule as
-        # make_chart / make_table / ChartSpec. Explicit caption wins.
-        if source and caption is None:
-            caption = f"Source: {source}"
         self._caption = caption
-        self._source = source
         self._side_left = side_left
         self._side_right = side_right
         self._skin = skin
@@ -25400,7 +25362,6 @@ def render_grid(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
-    source: Optional[str] = None,
     narrative_left: Union[str, Dict[str, Any], None] = None,
     narrative_right: Union[str, Dict[str, Any], None] = None,
     save_as: Optional[str] = None,
@@ -25437,10 +25398,6 @@ def render_grid(
             top of the whole pack). For per-panel titles, set
             ``title`` on each Chart.
         caption: Below-pack caption text or style dict.
-        source: Pack-level attribution; fills an unset ``caption``
-            as ``Source: {source}`` (same uniform rule as
-            ``make_chart`` / ``make_table`` / ``ChartSpec`` /
-            ``make_*pack_*``). Explicit ``caption`` wins.
         narrative_left / narrative_right: Side panels flanking the
             entire pack. (For per-panel side panels, set
             ``side_left`` / ``side_right`` on each Chart.)
@@ -25513,7 +25470,6 @@ def render_grid(
         s3_manager=ctx.s3_manager,
         user_id=ctx.user_id,
         caption=caption,
-        source=source,
         narrative_left=narrative_left,
         narrative_right=narrative_right,
     )
@@ -26966,7 +26922,6 @@ def make_table(
     title: Optional[str] = None,
     subtitle: Optional[str] = None,
     caption: Optional[str] = None,
-    source: Optional[str] = None,
     skin: str = "gs_clean",
     column_formats: Optional[Dict[str, str]] = None,
     column_aligns: Optional[Dict[str, str]] = None,
@@ -27059,12 +27014,6 @@ def make_table(
                 success=False,
                 error_message=f"rows= entries must be dicts or tuples/lists, got {type(first).__name__}",
             )
-
-    # ---- Source attribution -> caption (same uniform rule as make_chart)
-    # Caller-stated, source-agnostic; explicit caption wins, source only
-    # fills an unset caption. No auto-derivation.
-    if source and caption is None:
-        caption = f"Source: {source}"
 
     if df is None or len(df.columns) == 0:
         return TableResult(success=False, error_message="DataFrame has no columns")

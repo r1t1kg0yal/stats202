@@ -83,7 +83,6 @@ result = make_chart(
     skin='gs_clean', intent='explore',
     annotations=[...], layers=[...],
     caption='note...',            # below-chart italic note
-    source='Haver',               # attribution -> below-chart 'Source: ...' caption
     side_left='...', side_right='...',   # str or {'text': ..., 'italic': True, ...}
     save_as='charts/name.png',    # overwrites, no timestamp
     auto_beautify=True,
@@ -94,8 +93,6 @@ result = make_chart(
 ```
 
 Canvas size engine-decided per `chart_type`. `interactive=True` (default) auto-emits an interactive HTML companion alongside the PNG. `skin`: only `gs_clean` ships -- never pass anything else. `intent`: `'explore'` (default) / `'publish'` (fixed 700x400, no interactive params) / `'monitor'` (fixed 500x300 dashboard tile) -- leave default unless the artifact is a report or a tile.
-
-**Source attribution.** Pass `source=<attribution str>` on `make_chart` / `make_table` / `ChartSpec` / `make_*pack_*` / `render_grid` (and each composite panel). Renders a below-chart / below-pack `Source: <str>` note. `source` routes to `caption`; an explicit `caption` wins (`source` only fills an unset caption). Verbatim string -- formatted as `Source: {source}`. Nothing auto-derived. Examples: `'Haver'`, `'GS Market Data'`, `'FRED'`, `'BLS via Haver'`. Never guess; never invent. Never put a dataset-code string here. For composites: `source=` per `ChartSpec` panel for per-panel attribution, or `source=` on the `make_*pack_*` / `render_grid` call for pack-level attribution.
 
 **Auto-injected names:** `make_chart`, `make_table`, `build_charts` (§2a), `profile_df` (§5), `ChartResult` / `ChartSpec` / `TableResult` / `CompositeResult`, `check_charts_quality` (§2), all composites (§10), all 11 annotation classes (§8).
 
@@ -231,7 +228,7 @@ Engine rejects scatters with < 10 distinct (x, y) coords in the visible region (
 - **Labels: shortest string that still reads — caps are ceilings, aim roughly half.** Prefer `'IT'` over `'Info Tech'` over `'Information Technology'`.
 - **X column must be `'date'` for time series, as a column.** `df.rename(columns={'datetime': 'date'}).reset_index()`.
 - **Multi-line long format: rename FIRST, then melt** -- or use auto-melt (no `color` key, pass `y=[list]`).
-- **No source attribution in title/subtitle -- use `source=` instead.** Title argues; source goes in the below-chart caption via `source='Haver'`, never the title/subtitle. Good: `title='Inflation Has Peaked'`, `subtitle='Core CPI decelerating 6 months'`, `source='BLS via Haver'`. Bad: `title='US CPI Data'`, `subtitle='Source: Haver'`.
+- **No source attribution in title/subtitle.** Title argues; sources in PRISM metadata. Good: `title='Inflation Has Peaked'`, `subtitle='Core CPI decelerating 6 months'`. Bad: `title='US CPI Data'`, `subtitle='Source: Haver'`.
 - **Clean before charting.** `pd.to_numeric(errors='coerce')` + `dropna(subset=['date', 'value'])`. Max 10 color cats; facet panel floor/cap (7 / 36) in the grids spoke. >5,000 rows auto-downsample to ~2,000 (warning).
 - **Never plot `np.zeros()` placeholder.** Skip the panel or add text annotation.
 - **Title/subtitle: 2-line cap, auto-wrap.** Engine reports exact char limit on rejection; explicit `\n` honored (counts toward cap). Wrapped titles grow the header band vertically only — font-size-aware pre-wrap keeps lines inside the plot width (never Vega-Lite ``title.limit``, which ellipsis-truncates).
@@ -661,7 +658,7 @@ spec = ChartSpec(df=df, chart_type='multi_line',
 | `make_4pack_grid(tl, tr, bl, br, ...)` | 2x2 | 4 ChartSpecs |
 | `make_6pack_grid(...)` | 3x2 | 6 ChartSpecs (also `specs=[c1..c6]`) |
 
-All accept `title`, `subtitle`, `caption`, `source`, `side_left`, `side_right`, `save_as`, `spacing`, `filename_prefix`, `filename_suffix`; return `CompositeResult` (`ChartResult` fields + `chart_errors`). `caption` / `source` / `side_*` flank the whole pack (like `make_chart`; `source` fills an unset `caption` as `Source: {source}`); per-sub-chart text panels go on each `ChartSpec`.
+All accept `title`, `subtitle`, `caption`, `side_left`, `side_right`, `save_as`, `spacing`, `filename_prefix`, `filename_suffix`; return `CompositeResult` (`ChartResult` fields + `chart_errors`). `caption` / `side_*` flank the whole pack (like `make_chart`); per-sub-chart text panels go on each `ChartSpec`.
 
 > **`build_charts` vs. composite-raise interaction.** `build_charts` (§2a) wraps WHOLE chart calls -- including a `make_*pack_*` composite call as a single thunk. When that thunk raises, the traceback is one composite-level `ValidationError` naming how many sub-charts failed, with each failing panel's complete finding list folded in. Build every `ChartSpec` from validated, non-empty data before composing; `build_charts` does not partial-render composites.
 
@@ -748,7 +745,6 @@ result = make_table(
 | `columns` | list[str] | Header names for `rows=`-as-tuples; reorders for dicts |
 | `title` / `subtitle` | str | Top labels (left-aligned, FT/Bloomberg style) |
 | `caption` | str | Italic note below table (auto-wraps) |
-| `source` | str | Attribution -> below-table `Source: {str}` caption; explicit `caption` wins (§1) |
 | `column_formats` | dict | `{col: hint}` -- §13.9 |
 | `column_aligns` | dict | `{col: 'left'\|'center'\|'right'}` (default: numeric→right, text→left) |
 | `header_levels` | list | Multi-level column headers -- §13.6 |
