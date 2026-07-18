@@ -1,7 +1,17 @@
 ---
 class: context-extraction
 topic: Composer architecture and compiled-dashboard integration boundary
-status: OPEN
+status: USED
+sent_at: 2026-07-18
+reply_session: sessions/20260718_112944_goyalri_composer_architecture_introspection/
+reply_folded_into:
+  - prism/dashboards-portal.md
+  - prism/architecture.md
+  - prism/codebase-tree.md
+  - prism/security.md
+  - projects/echarts/README.md
+  - projects/echarts/dev/notes.md
+  - staging/README.md
 ---
 
 # Extract the Composer and compiled-dashboard boundary

@@ -1801,24 +1801,6 @@ html, body {
 
 .app { display: flex; flex-direction: column; min-height: 100vh; }
 
-/* Header brand home link -- wraps either .prism-mark or .gs-mark and
-   navigates to the PRISM profile home (/profile/). Keep link chrome
-   invisible so the mark still reads as a brand, not a hyperlink. */
-a.brand-home {
-  display: inline-flex; align-items: center;
-  text-decoration: none; color: inherit; cursor: pointer;
-}
-a.brand-home:hover,
-a.brand-home:focus,
-a.brand-home:visited {
-  text-decoration: none; color: inherit;
-}
-a.brand-home:focus-visible {
-  outline: 2px solid var(--gs-sky);
-  outline-offset: 3px;
-  border-radius: 2px;
-}
-
 /* GS brand mark -- a compact navy "blue-box" reminiscent of the
    historic Goldman Sachs logo. Pure CSS, no images. */
 .gs-mark {
@@ -13692,9 +13674,6 @@ __SHARE_CONTROLLER__
         try { TOOL_CHARTS[k].resize(); } catch(e){}
       });
     });
-    document.dispatchEvent(new CustomEvent('prism:dashboard:ready', {
-      detail: { dashboard: window.DASHBOARD }
-    }));
   });
 
   // ===========================================================================
@@ -14525,7 +14504,6 @@ __SHARE_CONTROLLER__
   }
 
   window.DASHBOARD = { manifest: MANIFEST, charts: CHARTS,
-                        widgets: WIDGET_META,
                         filters: filterState, datasets: currentDatasets,
                         chartControlState: chartControlState,
                         tableState: TABLE_STATE,
@@ -16557,12 +16535,10 @@ def render_dashboard_html(
     # (PRISM S3 fetch, $PRISM_LOGO_PATH override, or assets/prism_logo.png)
     # we emit a .prism-mark span; otherwise we fall back to the original
     # .gs-mark span, which is still defined in DASHBOARD_SHELL's CSS.
-    # Either mark is wrapped in a.brand-home -> /profile/ so a click
-    # returns to the PRISM main page. The footer keeps the GS mark
-    # (unlinked) in either case.
+    # The footer keeps the GS mark in either case.
     prism_logo_b64 = _get_prism_logo_b64()
     if prism_logo_b64:
-        brand_inner = (
+        header_brand_html = (
             '<span class="prism-mark">'
             f'<img src="data:image/png;base64,{prism_logo_b64}" '
             'alt="Prism AI" '
@@ -16571,18 +16547,12 @@ def render_dashboard_html(
             '</span>'
         )
     else:
-        brand_inner = (
+        header_brand_html = (
             '<span class="gs-mark">'
             '<span class="gs-box">GS</span>'
             '<span class="gs-wordmark">Goldman Sachs</span>'
             '</span>'
         )
-    header_brand_html = (
-        '<a class="brand-home" href="/profile/" '
-        'title="Back to PRISM home" aria-label="Back to PRISM home">'
-        f'{brand_inner}'
-        '</a>'
-    )
 
     app_js = DASHBOARD_APP_JS.replace(
         "__MAX_DECIMALS__", str(int(MAX_DASHBOARD_DECIMALS))
