@@ -494,15 +494,11 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
       return;
     }
     state.revisionId = widget.revision_id || null;
-    state.parentRevisionId = widget.parent_revision_id || null;
-    state.contentSha256 = widget.content_sha256 || null;
-    state.source = widget.source || null;
     state.content = _uiClone(widget.content || _uiSeed(state.entry));
     state.persistedContent = _uiClone(state.content);
     state.canWrite = canWrite === true;
     state.dirty = false;
     state.updatedAt = widget.updated_at || null;
-    state.updatedBy = widget.updated_by || null;
     _uiRenderState(state);
     _uiSetPhase(
       state,
@@ -576,16 +572,12 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
         widgetId: widgetId,
         entry: entry,
         revisionId: null,
-        parentRevisionId: null,
-        contentSha256: null,
-        source: null,
         content: _uiSeed(entry),
         persistedContent: null,
         canWrite: false,
         dirty: false,
         phase: 'idle',
-        updatedAt: null,
-        updatedBy: null
+        updatedAt: null
       };
       _uiRenderState(USER_INPUT_STATE[widgetId]);
       _uiSetPhase(USER_INPUT_STATE[widgetId], 'idle', 'Not loaded');

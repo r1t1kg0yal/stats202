@@ -5619,17 +5619,10 @@ DASHBOARD_APP_JS = r"""
 
   // ----- widget meta registry -----
   var WIDGET_META = {};
-  // Stable snapshot boundary: only manifest-owned top-level widgets enter
-  // this registry. Runtime popup/detail leaves may temporarily join
-  // WIDGET_META for rendering, but they are not independent artifacts.
-  var TOP_LEVEL_WIDGET_META = {};
   function collectWidgets(){
     function visit(rows){
       rows.forEach(function(row){ row.forEach(function(w){
-        if (w.id) {
-          WIDGET_META[w.id] = w;
-          TOP_LEVEL_WIDGET_META[w.id] = w;
-        }
+        if (w.id) WIDGET_META[w.id] = w;
       }); });
     }
     var layout = MANIFEST.layout || {};
@@ -8473,7 +8466,6 @@ DASHBOARD_APP_JS = r"""
   // =========================================================================
 
   var KPI_STATE = {};
-  var KPI_RESOLVED = {};
   function _kpiState(cid){
     if (!KPI_STATE[cid]){
       KPI_STATE[cid] = {
@@ -10149,7 +10141,6 @@ DASHBOARD_APP_JS = r"""
       var kst = (typeof KPI_STATE !== 'undefined') ? (KPI_STATE[id] || {}) : {};
       var value = w.value != null ? w.value : resolveSource(w.source);
       var formatted;
-      var deltaSnapshot = null;
       if (typeof value === 'number'){
         formatted = formatNumber(value, {
           decimals: kst.decimals != null ? kst.decimals : w.decimals,
@@ -10201,13 +10192,6 @@ DASHBOARD_APP_JS = r"""
           if (deltaLabel) txt += ' ' + deltaLabel;
           dNode.textContent = txt;
           dNode.style.display = 'inline-flex';
-          deltaSnapshot = {
-            value: deltaVal,
-            percent: (pct != null && !isNaN(pct)) ? pct : null,
-            label: deltaLabel || null,
-            formatted: txt,
-            direction: sign,
-          };
         } else {
           dNode.style.display = 'none';
         }
@@ -10246,17 +10230,6 @@ DASHBOARD_APP_JS = r"""
           }
         }
       }
-      KPI_RESOLVED[id] = {
-        status: 'ready',
-        label: w.label || w.title || id,
-        value: value,
-        formatted_value: formatted,
-        delta: deltaSnapshot,
-        sub: w.sub || null,
-        sparkline_visible: !!(
-          w.sparkline_source && kst.showSparkline !== false
-        ),
-      };
     });
   }
 
@@ -10402,7 +10375,6 @@ DASHBOARD_APP_JS = r"""
   // Per-pivot state: row dim, col dim, value column, agg name. Keyed
   // by widget id. Initialized from the manifest's *_default fields.
   var PIVOT_STATE = {};
-  var PIVOT_RESOLVED = {};
 
   function _pivotState(wid){
     if (!PIVOT_STATE[wid]){
@@ -10472,20 +10444,12 @@ DASHBOARD_APP_JS = r"""
     var bodyEl = document.getElementById('pivot-' + id);
     var ctrlEl = document.getElementById('pivot-controls-' + id);
     if (!bodyEl || !ctrlEl) return;
-    var st = _pivotState(id);
     var ds = w.dataset_ref ? currentDatasets[w.dataset_ref] : null;
     if (!ds || !ds.length){
-      PIVOT_RESOLVED[id] = {
-        status: 'empty',
-        state: {row: st.row, col: st.col, val: st.val, agg: st.agg},
-        input_row_count: 0,
-        rows: [],
-        columns: [],
-        cells: {},
-      };
       bodyEl.innerHTML = '<div class="table-empty">No rows.</div>';
       return;
     }
+    var st = _pivotState(id);
     // Render the controls bar (idempotent: rebuild every render so the
     // dropdowns stay in sync with state changes from URL state restore).
     var aggOpts = w.agg_options || ['mean', 'sum', 'median', 'min',
@@ -10515,14 +10479,6 @@ DASHBOARD_APP_JS = r"""
     var cIdx = header.indexOf(st.col);
     var vIdx = header.indexOf(st.val);
     if (rIdx < 0 || cIdx < 0 || vIdx < 0){
-      PIVOT_RESOLVED[id] = {
-        status: 'missing_columns',
-        state: {row: st.row, col: st.col, val: st.val, agg: st.agg},
-        input_row_count: allBody.length,
-        rows: [],
-        columns: [],
-        cells: {},
-      };
       bodyEl.innerHTML = '<div class="table-empty">Pivot column missing in dataset.</div>';
     } else {
       // Aggregate by (row, col)
@@ -10590,18 +10546,6 @@ DASHBOARD_APP_JS = r"""
           return bucket[k];
         })), st.agg
       );
-      PIVOT_RESOLVED[id] = {
-        status: 'ready',
-        state: {row: st.row, col: st.col, val: st.val, agg: st.agg},
-        input_row_count: allBody.length,
-        rows: rowVals.slice(),
-        columns: colVals.slice(),
-        cells: cells,
-        row_totals: rowTotals,
-        column_totals: colTotals,
-        grand_total: grand,
-        show_totals: showTotals,
-      };
 
       var minV = allNums.length ? Math.min.apply(null, allNums) : 0;
       var maxV = allNums.length ? Math.max.apply(null, allNums) : 0;
@@ -10695,7 +10639,6 @@ DASHBOARD_APP_JS = r"""
   // The widget shape is preserved verbatim; only the `.stat-value`
   // span text is overwritten. Stats without a `source` (author-baked
   // value) are left alone.
-  var STAT_GRID_RESOLVED = {};
   function renderStatGrids(){
     Object.keys(WIDGET_META).forEach(function(wid){
       var w = WIDGET_META[wid];
@@ -10733,25 +10676,6 @@ DASHBOARD_APP_JS = r"""
         var trendHTML = trendNode ? trendNode.outerHTML : '';
         vNode.innerHTML = trendHTML + formatted;
       }
-      var resolvedStats = [];
-      for (var j = 0; j < stats.length && j < cells.length; j++){
-        var meta = stats[j] || {};
-        var valueNode = cells[j].querySelector('.stat-value');
-        var semanticValue = meta.source ? resolveSource(meta.source) : meta.value;
-        resolvedStats.push({
-          id: meta.id || null,
-          label: meta.label || '',
-          value: semanticValue == null ? null : semanticValue,
-          formatted_value: valueNode ? valueNode.textContent.trim() : null,
-          sub: meta.sub || null,
-          trend: meta.trend == null ? null : meta.trend,
-        });
-      }
-      STAT_GRID_RESOLVED[wid] = {
-        status: 'ready',
-        title: w.title || null,
-        stats: resolvedStats,
-      };
     });
   }
   window.renderStatGrids = renderStatGrids;
@@ -12869,15 +12793,13 @@ DASHBOARD_APP_JS = r"""
     if (ts && ts.search){
       body = body.filter(function(r){ return _rowMatchesSearch(r, ts.search); });
     }
-    var allCols = w.columns;
-    if (!allCols || !allCols.length){
-      allCols = header.map(function(h){ return {field: h, label: h}; });
+    var cols = w.columns;
+    if (!cols || !cols.length){
+      cols = header.map(function(h){ return {field: h, label: h}; });
     }
-    var allColIndexes = allCols.map(function(c){
-      return header.indexOf(c.field);
-    });
-    if (ts && ts.sortCol != null && allColIndexes[ts.sortCol] >= 0){
-      var ci = allColIndexes[ts.sortCol], dir = ts.sortDir;
+    var colIndexes = cols.map(function(c){ return header.indexOf(c.field); });
+    if (ts && ts.sortCol != null && colIndexes[ts.sortCol] >= 0){
+      var ci = colIndexes[ts.sortCol], dir = ts.sortDir;
       body = body.slice().sort(function(a, b){
         var av = a[ci], bv = b[ci];
         if (av == null && bv == null) return 0;
@@ -12888,10 +12810,6 @@ DASHBOARD_APP_JS = r"""
         return String(av).localeCompare(String(bv)) * dir;
       });
     }
-    var cols = allCols.filter(function(_, index){
-      return !(ts && ts.hidden && ts.hidden[index]);
-    });
-    var colIndexes = cols.map(function(c){ return header.indexOf(c.field); });
     var outHeader = cols.map(function(c){ return c.label != null ? c.label : c.field; });
     var rows = body.map(function(row){
       return cols.map(function(c, i){
@@ -13976,7 +13894,7 @@ __USER_INPUT_CONTROLLER__
   var TOOLS = (PAYLOAD && PAYLOAD.tools) || {};
   var TOOL_FN_CACHE = {};   // wid -> compiled compute function
   var TOOL_CHARTS   = {};   // tool-output chart instances (keyed by wid+oid)
-  var TOOL_STATE    = {};   // wid -> {inputs, outputs, error, computedAt}
+  var TOOL_STATE    = {};   // wid -> {inputs: {...}}
 
   function _toolCompileFn(wid, source){
     if (TOOL_FN_CACHE[wid]) return TOOL_FN_CACHE[wid];
@@ -14393,31 +14311,15 @@ __USER_INPUT_CONTROLLER__
     if (!entry) return;
     var tile = document.querySelector('[data-tool-id="' + wid + '"]');
     if (!tile) return;
-    var state = TOOL_STATE[wid] = TOOL_STATE[wid] || {
-      inputs: {}, outputs: null, error: null, computedAt: null
-    };
     var fn = _toolCompileFn(wid, (entry.def.compute || {}).source);
-    if (!fn) {
-      state.error = {message: 'Compute function is unavailable.'};
-      state.computedAt = new Date().toISOString();
-      return;
-    }
+    if (!fn) return;
     var inputs = _toolGatherInputs(tile, wid);
     try {
       var outputs = fn(inputs) || {};
       _toolHideError(tile);
       _toolRenderOutputs(tile, wid, outputs);
-      // Cache only after the render succeeds so this record describes
-      // the output the browser actually shows.
-      state.outputs = outputs;
-      state.error = null;
-      state.computedAt = new Date().toISOString();
     } catch (e) {
       _toolShowError(tile, e);
-      state.error = {
-        message: e && e.message ? e.message : String(e)
-      };
-      state.computedAt = new Date().toISOString();
     }
   }
 
@@ -14739,17 +14641,12 @@ __USER_INPUT_CONTROLLER__
   function initTools(){
     Object.keys(TOOLS).forEach(function(wid){
       var entry = TOOLS[wid];
-      TOOL_STATE[wid] = TOOL_STATE[wid] || {
-        inputs: {}, outputs: null, error: null, computedAt: null
-      };
       if (!entry || entry._error){
         var t = document.querySelector('[data-tool-id="' + wid + '"]');
         if (t) _toolShowError(t, entry && entry._error || 'tool def could not be loaded');
-        TOOL_STATE[wid].error = {
-          message: entry && entry._error || 'tool def could not be loaded'
-        };
         return;
       }
+      TOOL_STATE[wid] = TOOL_STATE[wid] || {inputs: {}};
       // Seed scalar inputs from initial_inputs OR def defaults.
       (entry.def.inputs || []).forEach(function(inp){
         if (inp.kind === 'matrix'){
@@ -14799,1073 +14696,6 @@ __USER_INPUT_CONTROLLER__
     });
   }
 
-  // ===========================================================================
-  // NEUTRAL WIDGET SNAPSHOTS
-  // ===========================================================================
-  // Browser-owned, current-view semantic state for external integrations.
-  // The server-owned widget definition is intentionally not copied into the
-  // envelope. Every producer below resolves only what the browser is showing.
-  var SNAPSHOT_LIMITS = {
-    component_bytes: 256 * 1024,
-    string_bytes: 32 * 1024,
-    table_rows: 500,
-    chart_points: 2000,
-    pivot_tool_cells: 2000,
-  };
-  var SNAPSHOT_OMIT = {};
-
-  function _snapshotUtf8Bytes(value){
-    return new TextEncoder().encode(String(value)).length;
-  }
-
-  function _snapshotJsonBytes(value){
-    var encoded = JSON.stringify(value);
-    return _snapshotUtf8Bytes(encoded == null ? 'null' : encoded);
-  }
-
-  function _snapshotBoundString(value, ctx){
-    var text = String(value);
-    var originalBytes = _snapshotUtf8Bytes(text);
-    if (originalBytes <= SNAPSHOT_LIMITS.string_bytes) return text;
-    var lo = 0;
-    var hi = text.length;
-    while (lo < hi){
-      var mid = Math.ceil((lo + hi) / 2);
-      if (_snapshotUtf8Bytes(text.slice(0, mid))
-          <= SNAPSHOT_LIMITS.string_bytes){
-        lo = mid;
-      } else {
-        hi = mid - 1;
-      }
-    }
-    // Do not leave a dangling UTF-16 high surrogate at the boundary.
-    if (lo > 0){
-      var code = text.charCodeAt(lo - 1);
-      if (code >= 0xD800 && code <= 0xDBFF) lo -= 1;
-    }
-    var bounded = text.slice(0, lo);
-    ctx.omitted.strings += 1;
-    ctx.omitted.string_bytes += (
-      originalBytes - _snapshotUtf8Bytes(bounded)
-    );
-    return bounded;
-  }
-
-  function _snapshotJsonSafe(value, ctx, seen, depth){
-    if (value == null) return null;
-    var typ = typeof value;
-    if (typ === 'string') return _snapshotBoundString(value, ctx);
-    if (typ === 'number'){
-      if (isFinite(value)) return value;
-      ctx.omitted.values += 1;
-      ctx.omitted.value_bytes += 4;
-      return null;
-    }
-    if (typ === 'boolean') return value;
-    if (typ === 'undefined') return null;
-    if (typ === 'function' || typ === 'symbol' || typ === 'bigint'){
-      throw new TypeError(
-        'Widget snapshot encountered a non-JSON runtime value.'
-      );
-    }
-    if (depth > 40){
-      throw new Error('Widget snapshot runtime state exceeds depth 40.');
-    }
-    if (value instanceof Date){
-      return value.toISOString();
-    }
-    seen = seen || new WeakSet();
-    if (seen.has(value)){
-      throw new Error('Widget snapshot runtime state contains a cycle.');
-    }
-    seen.add(value);
-    var out;
-    if (Array.isArray(value)){
-      out = value.map(function(item){
-        return _snapshotJsonSafe(item, ctx, seen, depth + 1);
-      });
-    } else {
-      out = {};
-      Object.keys(value).forEach(function(key){
-        var boundedKey = _snapshotBoundString(key, ctx);
-        if (Object.prototype.hasOwnProperty.call(out, boundedKey)){
-          throw new Error(
-            'Widget snapshot string bounding produced a duplicate key.'
-          );
-        }
-        out[boundedKey] = _snapshotJsonSafe(
-          value[key], ctx, seen, depth + 1
-        );
-      });
-    }
-    seen.delete(value);
-    return out;
-  }
-
-  function _snapshotValueCount(value){
-    if (value == null || typeof value !== 'object') return 1;
-    if (Array.isArray(value)){
-      if (!value.length) return 1;
-      return value.reduce(function(total, item){
-        return total + _snapshotValueCount(item);
-      }, 0);
-    }
-    var keys = Object.keys(value);
-    if (!keys.length) return 1;
-    return keys.reduce(function(total, key){
-      return total + _snapshotValueCount(value[key]);
-    }, 0);
-  }
-
-  function _snapshotRecordBudgetOmission(value, ctx){
-    ctx.omitted.values += _snapshotValueCount(value);
-    ctx.omitted.value_bytes += _snapshotJsonBytes(value);
-  }
-
-  function _snapshotBudgetClone(value, maxBytes, ctx){
-    var remaining = maxBytes;
-
-    function clone(current){
-      if (current == null || typeof current !== 'object'){
-        var primitiveBytes = _snapshotJsonBytes(current);
-        if (primitiveBytes > remaining) return SNAPSHOT_OMIT;
-        remaining -= primitiveBytes;
-        return current;
-      }
-
-      if (Array.isArray(current)){
-        if (remaining < 2) return SNAPSHOT_OMIT;
-        remaining -= 2;  // []
-        var arr = [];
-        for (var i = 0; i < current.length; i++){
-          var before = remaining;
-          var commaBytes = arr.length ? 1 : 0;
-          if (remaining < commaBytes){
-            for (var ai = i; ai < current.length; ai++){
-              _snapshotRecordBudgetOmission(current[ai], ctx);
-            }
-            break;
-          }
-          remaining -= commaBytes;
-          var item = clone(current[i]);
-          if (item === SNAPSHOT_OMIT){
-            remaining = before;
-            for (var aj = i; aj < current.length; aj++){
-              _snapshotRecordBudgetOmission(current[aj], ctx);
-            }
-            break;
-          }
-          arr.push(item);
-        }
-        return arr;
-      }
-
-      if (remaining < 2) return SNAPSHOT_OMIT;
-      remaining -= 2;  // {}
-      var obj = {};
-      var keys = Object.keys(current);
-      for (var k = 0; k < keys.length; k++){
-        var key = keys[k];
-        var beforeKey = remaining;
-        var keyBytes = _snapshotJsonBytes(key) + 1
-          + (Object.keys(obj).length ? 1 : 0);
-        if (remaining < keyBytes){
-          for (var oi = k; oi < keys.length; oi++){
-            _snapshotRecordBudgetOmission(current[keys[oi]], ctx);
-          }
-          break;
-        }
-        remaining -= keyBytes;
-        var cloned = clone(current[key]);
-        if (cloned === SNAPSHOT_OMIT){
-          remaining = beforeKey;
-          for (var oj = k; oj < keys.length; oj++){
-            _snapshotRecordBudgetOmission(current[keys[oj]], ctx);
-          }
-          break;
-        }
-        obj[key] = cloned;
-      }
-      return obj;
-    }
-
-    var result = clone(value);
-    if (result === SNAPSHOT_OMIT){
-      _snapshotRecordBudgetOmission(value, ctx);
-      return null;
-    }
-    return result;
-  }
-
-  function _snapshotTile(widgetId){
-    var tile = document.querySelector(
-      '[data-tile-id="' + widgetId + '"]'
-    );
-    if (!tile){
-      throw new Error(
-        'Widget snapshot could not find tile for id "' + widgetId + '".'
-      );
-    }
-    return tile;
-  }
-
-  function _snapshotTileTitle(tile, widget){
-    var node = tile.querySelector(
-      '.tile-title, .kpi-label, .note-title, .section-label'
-    );
-    if (node && node.textContent) return node.textContent.trim();
-    return widget.title || widget.label || null;
-  }
-
-  function _snapshotCommonState(widgetId){
-    var tile = _snapshotTile(widgetId);
-    var panel = tile.closest('.tab-panel');
-    var group = tile.closest('.layout-group');
-    var filters = {};
-    (MANIFEST.filters || []).forEach(function(filter){
-      var targets = filter.targets || [];
-      var applies = !targets.length || targets.some(function(target){
-        return targetMatch(target, widgetId);
-      });
-      if (applies){
-        filters[filter.id] = filterState[filter.id];
-      }
-    });
-    var visible = !tile.hidden && tile.style.display !== 'none';
-    if (panel && !panel.classList.contains('active')) visible = false;
-    if (group && group.tagName === 'DETAILS' && !group.open) visible = false;
-    return {
-      rendered: true,
-      visible: visible,
-      tab_id: panel
-        ? String(panel.id || '').replace(/^tab-panel-/, '') || null
-        : null,
-      tab_active: panel ? panel.classList.contains('active') : true,
-      group_id: group
-        ? String(group.id || '').replace(/^layout-group-/, '') || null
-        : null,
-      group_open: group && group.tagName === 'DETAILS'
-        ? !!group.open : null,
-      filters: filters,
-    };
-  }
-
-  function _snapshotAddRef(refs, kind, ref, extra){
-    if (ref == null || ref === '') return;
-    var record = Object.assign({kind: kind, ref: ref}, extra || {});
-    var key = JSON.stringify(record);
-    if (!refs.some(function(existing){
-      return JSON.stringify(existing) === key;
-    })){
-      refs.push(record);
-    }
-  }
-
-  function _snapshotBaseRefs(widgetId, widget){
-    var refs = [];
-    if (widget.widget === 'chart'){
-      var chartDataset = widget.dataset_ref
-        || ((widget.spec || {}).dataset);
-      _snapshotAddRef(refs, 'dataset', chartDataset);
-    } else if (widget.widget === 'kpi'){
-      _snapshotAddRef(refs, 'value_source', widget.source);
-      _snapshotAddRef(refs, 'value_source', widget.delta_source);
-      _snapshotAddRef(refs, 'value_source', widget.sparkline_source);
-    } else if (_isTableWidget(widget) || widget.widget === 'pivot'){
-      _snapshotAddRef(refs, 'dataset', widget.dataset_ref);
-    } else if (widget.widget === 'stat_grid'){
-      (widget.stats || []).forEach(function(stat){
-        _snapshotAddRef(refs, 'value_source', stat && stat.source);
-      });
-    } else if (widget.widget === 'tool'){
-      var toolEntry = TOOLS[widgetId];
-      _snapshotAddRef(
-        refs,
-        'tool',
-        toolEntry && toolEntry.def && (
-          toolEntry.def.name || toolEntry.def.title
-        )
-      );
-    }
-    return refs;
-  }
-
-  function _snapshotChartDatumCount(value){
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return 1;
-    var children = Array.isArray(value.children) ? value.children : [];
-    return 1 + children.reduce(function(total, child){
-      return total + _snapshotChartDatumCount(child);
-    }, 0);
-  }
-
-  var SNAPSHOT_CHART_VISUAL_KEYS = {
-    itemStyle: true, lineStyle: true, areaStyle: true, label: true,
-    labelLine: true, emphasis: true, blur: true, select: true,
-    symbol: true, symbolSize: true, tooltip: true, animation: true,
-    animationDuration: true, animationDelay: true,
-  };
-
-  function _snapshotTakeChartDatum(value, pointState, ctx){
-    if (pointState.remaining <= 0){
-      var omitted = _snapshotChartDatumCount(value);
-      pointState.total += omitted;
-      ctx.omitted.points += omitted;
-      return SNAPSHOT_OMIT;
-    }
-    pointState.remaining -= 1;
-    pointState.total += 1;
-    if (value == null || typeof value !== 'object') return value;
-    if (Array.isArray(value)) return value.slice();
-    var out = {};
-    Object.keys(value).forEach(function(key){
-      if (SNAPSHOT_CHART_VISUAL_KEYS[key]) return;
-      if (key === 'children' && Array.isArray(value.children)){
-        var children = [];
-        for (var i = 0; i < value.children.length; i++){
-          var child = _snapshotTakeChartDatum(
-            value.children[i], pointState, ctx
-          );
-          if (child === SNAPSHOT_OMIT) break;
-          children.push(child);
-        }
-        out.children = children;
-      } else {
-        out[key] = value[key];
-      }
-    });
-    return out;
-  }
-
-  function _snapshotTakeChartItems(items, pointState, ctx){
-    var out = [];
-    for (var i = 0; i < items.length; i++){
-      if (pointState.remaining <= 0){
-        var omitted = 0;
-        for (var j = i; j < items.length; j++){
-          omitted += _snapshotChartDatumCount(items[j]);
-        }
-        pointState.total += omitted;
-        ctx.omitted.points += omitted;
-        break;
-      }
-      var item = _snapshotTakeChartDatum(items[i], pointState, ctx);
-      if (item !== SNAPSHOT_OMIT) out.push(item);
-    }
-    return out;
-  }
-
-  function _snapshotAxis(option, axisName){
-    var axes = option && option[axisName];
-    if (!axes) return null;
-    var axis = Array.isArray(axes) ? axes[0] : axes;
-    return axis || null;
-  }
-
-  function _snapshotDatasetSource(option){
-    var datasets = option && option.dataset;
-    if (!datasets) return null;
-    var dataset = Array.isArray(datasets) ? datasets[0] : datasets;
-    return dataset && Array.isArray(dataset.source) ? dataset.source : null;
-  }
-
-  function _snapshotEncodedValue(ref, row, header){
-    if (Array.isArray(ref)){
-      var values = ref.map(function(item){
-        return _snapshotEncodedValue(item, row, header);
-      });
-      return values.length === 1 ? values[0] : values;
-    }
-    if (typeof ref === 'number') return row[ref];
-    if (typeof ref === 'string'){
-      var index = header.indexOf(ref);
-      return index >= 0 ? row[index] : null;
-    }
-    return null;
-  }
-
-  function _snapshotSeriesData(series, option){
-    var direct = Array.isArray(series.data) ? series.data : [];
-    var xAxis = _snapshotAxis(option, 'xAxis');
-    var categories = xAxis && Array.isArray(xAxis.data) ? xAxis.data : null;
-    if (direct.length){
-      if (categories && direct.every(function(item){
-        return item == null || typeof item !== 'object';
-      })){
-        return direct.map(function(item, index){
-          return [categories[index], item];
-        });
-      }
-      return direct;
-    }
-
-    var source = _snapshotDatasetSource(option);
-    if (!source || source.length < 2 || !Array.isArray(source[0])) return [];
-    var header = source[0];
-    var encode = series.encode || {};
-    return source.slice(1).map(function(row){
-      var x = _snapshotEncodedValue(encode.x, row, header);
-      var y = _snapshotEncodedValue(encode.y, row, header);
-      if (x != null || y != null) return [x, y];
-      var name = _snapshotEncodedValue(
-        encode.itemName != null ? encode.itemName : encode.name,
-        row,
-        header
-      );
-      var value = _snapshotEncodedValue(encode.value, row, header);
-      if (name != null || value != null) return {name: name, value: value};
-      return row.slice();
-    });
-  }
-
-  function _snapshotChart(widgetId, widget, ctx){
-    var record = CHARTS[widgetId];
-    var option;
-    var optionSource;
-    if (record && record.inst){
-      option = record.inst.getOption();
-      optionSource = 'live';
-    } else {
-      option = materializeOption(widgetId);
-      optionSource = 'materialized';
-    }
-    if (!option || typeof option !== 'object'){
-      throw new Error(
-        'Chart snapshot could not resolve current option for "'
-        + widgetId + '".'
-      );
-    }
-
-    var pointState = {
-      remaining: SNAPSHOT_LIMITS.chart_points,
-      total: 0,
-    };
-    var series = (Array.isArray(option.series)
-      ? option.series : (option.series ? [option.series] : [])
-    ).map(function(item, index){
-      var data = _snapshotSeriesData(item || {}, option);
-      var resolved = {
-        name: item && item.name != null
-          ? item.name : 'series ' + (index + 1),
-        type: item && item.type || null,
-        data: _snapshotTakeChartItems(data, pointState, ctx),
-      };
-      if (item && item.stack != null) resolved.stack = item.stack;
-      if (item && item.coordinateSystem != null){
-        resolved.coordinate_system = item.coordinateSystem;
-      }
-      if (item && Array.isArray(item.links)){
-        resolved.links = _snapshotTakeChartItems(
-          item.links, pointState, ctx
-        );
-      }
-      if (item && item.markLine && Array.isArray(item.markLine.data)){
-        resolved.mark_lines = item.markLine.data;
-      }
-      if (item && item.markArea && Array.isArray(item.markArea.data)){
-        resolved.mark_areas = item.markArea.data;
-      }
-      return resolved;
-    });
-    var zoom = (Array.isArray(option.dataZoom)
-      ? option.dataZoom : (option.dataZoom ? [option.dataZoom] : [])
-    ).map(function(item){
-      return {
-        start: item.start == null ? null : item.start,
-        end: item.end == null ? null : item.end,
-        start_value: item.startValue == null ? null : item.startValue,
-        end_value: item.endValue == null ? null : item.endValue,
-      };
-    });
-    var selected = {};
-    var legends = Array.isArray(option.legend)
-      ? option.legend : (option.legend ? [option.legend] : []);
-    legends.forEach(function(legend){
-      Object.keys((legend && legend.selected) || {}).forEach(function(key){
-        selected[key] = !!legend.selected[key];
-      });
-    });
-    var spec = widget.spec || {};
-    return {
-      resolved_view: {
-        status: 'ready',
-        title: _snapshotTileTitle(_snapshotTile(widgetId), widget),
-        chart_type: spec.chart_type || null,
-        series: series,
-        total_point_count: pointState.total,
-      },
-      view_state: {
-        option_source: optionSource,
-        controls: chartControlState[widgetId] || {},
-        data_zoom: zoom,
-        legend_selected: selected,
-      },
-      source_refs: _snapshotBaseRefs(widgetId, widget),
-      coverage: 'full',
-      coverage_notes: optionSource === 'materialized'
-        ? ['Chart was not mounted; current filter and control state was materialized.']
-        : [],
-    };
-  }
-
-  function _snapshotTable(widgetId, widget, ctx){
-    var aoa = _exportTableRowsForXlsx(widgetId);
-    var columns = aoa && aoa.length ? aoa[0] : [];
-    var allRows = aoa && aoa.length ? aoa.slice(1) : [];
-    var rows = allRows.slice(0, SNAPSHOT_LIMITS.table_rows);
-    ctx.omitted.rows += allRows.length - rows.length;
-    var state = tableState(widgetId);
-    return {
-      resolved_view: {
-        status: aoa ? 'ready' : 'empty',
-        columns: columns,
-        rows: rows,
-        row_count: rows.length,
-        total_row_count: allRows.length,
-      },
-      view_state: {
-        search: state.search || '',
-        sort_column_index: state.sortCol == null ? null : state.sortCol,
-        sort_direction: state.sortDir === -1 ? 'desc' : 'asc',
-        hidden_column_indexes: Object.keys(state.hidden || {}).filter(
-          function(index){ return !!state.hidden[index]; }
-        ).map(Number),
-        density: state.density || null,
-        freeze_first_column: !!state.freezeFirst,
-        decimals: state.decimals == null ? null : state.decimals,
-        virtualized: widget.virtualized === true
-          || widget.widget === 'data_grid',
-      },
-      source_refs: _snapshotBaseRefs(widgetId, widget),
-      coverage: 'full',
-      coverage_notes: [],
-    };
-  }
-
-  function _snapshotKpi(widgetId, widget, ctx){
-    var resolved = KPI_RESOLVED[widgetId];
-    if (!resolved){
-      throw new Error(
-        'KPI snapshot is unavailable before the first browser render.'
-      );
-    }
-    var sparkRows = _ccKpiSparklineRows(widgetId);
-    var sparkHeader = sparkRows && sparkRows.length ? sparkRows[0] : [];
-    var allPoints = sparkRows && sparkRows.length ? sparkRows.slice(1) : [];
-    var points = allPoints.slice(0, SNAPSHOT_LIMITS.chart_points);
-    ctx.omitted.points += allPoints.length - points.length;
-    var state = _kpiState(widgetId);
-    return {
-      resolved_view: Object.assign({}, resolved, {
-        sparkline: {
-          columns: sparkHeader,
-          points: points,
-          total_point_count: allPoints.length,
-        },
-      }),
-      view_state: {
-        compare_period: state.comparePeriod || 'auto',
-        sparkline_visible: state.showSparkline !== false,
-        delta_visible: state.showDelta !== false,
-        decimals: state.decimals == null ? null : state.decimals,
-      },
-      source_refs: _snapshotBaseRefs(widgetId, widget),
-      coverage: 'full',
-      coverage_notes: [],
-    };
-  }
-
-  function _snapshotPivot(widgetId, widget, ctx){
-    var resolved = PIVOT_RESOLVED[widgetId];
-    if (!resolved){
-      throw new Error(
-        'Pivot snapshot is unavailable before the first browser render.'
-      );
-    }
-    var cells = [];
-    var rowValues = resolved.rows || [];
-    var colValues = resolved.columns || [];
-    var totalCells = rowValues.length * colValues.length;
-    if (resolved.show_totals){
-      totalCells += rowValues.length + colValues.length + 1;
-    }
-    function pushCell(record){
-      if (cells.length < SNAPSHOT_LIMITS.pivot_tool_cells){
-        cells.push(record);
-      }
-    }
-    for (var ri = 0;
-         ri < rowValues.length
-           && cells.length < SNAPSHOT_LIMITS.pivot_tool_cells;
-         ri++){
-      var row = rowValues[ri];
-      var rowRecord = resolved.cells[String(row)] || {};
-      for (var ci = 0;
-           ci < colValues.length
-             && cells.length < SNAPSHOT_LIMITS.pivot_tool_cells;
-           ci++){
-        var column = colValues[ci];
-        pushCell({
-          row: row,
-          column: column,
-          value: rowRecord[String(column)],
-          total_kind: null,
-        });
-      }
-    }
-    if (resolved.show_totals){
-      for (var rti = 0;
-           rti < rowValues.length
-             && cells.length < SNAPSHOT_LIMITS.pivot_tool_cells;
-           rti++){
-        var totalRow = rowValues[rti];
-        pushCell({
-          row: totalRow,
-          column: null,
-          value: (resolved.row_totals || {})[String(totalRow)],
-          total_kind: 'row',
-        });
-      }
-      for (var cti = 0;
-           cti < colValues.length
-             && cells.length < SNAPSHOT_LIMITS.pivot_tool_cells;
-           cti++){
-        var totalColumn = colValues[cti];
-        pushCell({
-          row: null,
-          column: totalColumn,
-          value: (resolved.column_totals || {})[String(totalColumn)],
-          total_kind: 'column',
-        });
-      }
-      if (cells.length < SNAPSHOT_LIMITS.pivot_tool_cells){
-        pushCell({
-          row: null,
-          column: null,
-          value: resolved.grand_total,
-          total_kind: 'grand',
-        });
-      }
-    }
-    ctx.omitted.cells += Math.max(0, totalCells - cells.length);
-    return {
-      resolved_view: {
-        status: resolved.status,
-        row_dimension: resolved.state && resolved.state.row,
-        column_dimension: resolved.state && resolved.state.col,
-        value_column: resolved.state && resolved.state.val,
-        aggregation: resolved.state && resolved.state.agg,
-        cells: cells,
-        total_cell_count: totalCells,
-        input_row_count: resolved.input_row_count || 0,
-      },
-      view_state: Object.assign({}, resolved.state || {}),
-      source_refs: _snapshotBaseRefs(widgetId, widget),
-      coverage: 'full',
-      coverage_notes: [],
-    };
-  }
-
-  function _snapshotStatGrid(widgetId, widget){
-    var resolved = STAT_GRID_RESOLVED[widgetId];
-    if (!resolved){
-      throw new Error(
-        'Stat-grid snapshot is unavailable before the first browser render.'
-      );
-    }
-    return {
-      resolved_view: resolved,
-      view_state: {},
-      source_refs: _snapshotBaseRefs(widgetId, widget),
-      coverage: 'full',
-      coverage_notes: [],
-    };
-  }
-
-  function _snapshotToolCellCount(value){
-    if (value == null || typeof value !== 'object') return 1;
-    if (Array.isArray(value)){
-      return value.reduce(function(total, item){
-        return total + _snapshotToolCellCount(item);
-      }, 0);
-    }
-    return Object.keys(value).reduce(function(total, key){
-      return total + _snapshotToolCellCount(value[key]);
-    }, 0);
-  }
-
-  function _snapshotTakeToolValue(value, cellState, ctx){
-    if (value == null || typeof value !== 'object'){
-      if (cellState.remaining <= 0){
-        ctx.omitted.cells += 1;
-        return SNAPSHOT_OMIT;
-      }
-      cellState.remaining -= 1;
-      return value;
-    }
-    if (Array.isArray(value)){
-      var arr = [];
-      for (var i = 0; i < value.length; i++){
-        if (cellState.remaining <= 0){
-          for (var j = i; j < value.length; j++){
-            ctx.omitted.cells += _snapshotToolCellCount(value[j]);
-          }
-          break;
-        }
-        var item = _snapshotTakeToolValue(value[i], cellState, ctx);
-        if (item !== SNAPSHOT_OMIT) arr.push(item);
-      }
-      return arr;
-    }
-    var out = {};
-    var keys = Object.keys(value);
-    for (var k = 0; k < keys.length; k++){
-      if (cellState.remaining <= 0){
-        for (var q = k; q < keys.length; q++){
-          ctx.omitted.cells += _snapshotToolCellCount(value[keys[q]]);
-        }
-        break;
-      }
-      var child = _snapshotTakeToolValue(value[keys[k]], cellState, ctx);
-      if (child !== SNAPSHOT_OMIT) out[keys[k]] = child;
-    }
-    return out;
-  }
-
-  function _snapshotTool(widgetId, widget, ctx){
-    var state = TOOL_STATE[widgetId];
-    if (!state){
-      throw new Error(
-        'Tool snapshot is unavailable before tool initialization.'
-      );
-    }
-    var cellState = {remaining: SNAPSHOT_LIMITS.pivot_tool_cells};
-    var totalCells = _snapshotToolCellCount(state.outputs)
-      + _snapshotToolCellCount(state.inputs || {});
-    // Outputs are the shown result, so they consume the shared cell budget
-    // before the input controls.
-    var outputs = _snapshotTakeToolValue(state.outputs, cellState, ctx);
-    var inputs = _snapshotTakeToolValue(state.inputs || {}, cellState, ctx);
-    var notes = [];
-    if (state.outputs == null){
-      notes.push('Tool has not produced an output yet.');
-    }
-    if (state.error && state.error.message){
-      notes.push('Tool compute error: ' + state.error.message);
-    }
-    return {
-      resolved_view: {
-        status: state.error ? 'error'
-          : (state.outputs == null ? 'pending' : 'ready'),
-        outputs: outputs === SNAPSHOT_OMIT ? null : outputs,
-        total_cell_count: totalCells,
-      },
-      view_state: {
-        inputs: inputs === SNAPSHOT_OMIT ? null : inputs,
-        computed_at: state.computedAt || null,
-        error: state.error || null,
-      },
-      source_refs: _snapshotBaseRefs(widgetId, widget),
-      coverage: notes.length ? 'partial' : 'full',
-      coverage_notes: notes,
-    };
-  }
-
-  function _snapshotUserInput(widgetId, widget){
-    var state = USER_INPUT_STATE[widgetId];
-    if (!state){
-      throw new Error(
-        'User-input snapshot is unavailable before input initialization.'
-      );
-    }
-    var mode = state.entry && state.entry.mode || widget.mode;
-    var content = state.content || {};
-    var refs = _snapshotBaseRefs(widgetId, widget);
-    _snapshotAddRef(refs, 'user_input', widgetId, {mode: mode});
-    var contentMetadata;
-    if (mode === 'text'){
-      contentMetadata = {
-        text_bytes: _snapshotUtf8Bytes(
-          typeof content.text === 'string' ? content.text : ''
-        ),
-      };
-    } else if (mode === 'checklist'){
-      var items = Array.isArray(content.items) ? content.items : [];
-      contentMetadata = {
-        item_count: items.length,
-        checked_count: items.filter(function(item){
-          return !!(item && item.checked);
-        }).length,
-      };
-    } else {
-      var files = (Array.isArray(content.files) ? content.files : []).map(
-        function(file){
-          var metadata = {
-            file_id: file.file_id || null,
-            original_filename: file.original_filename || null,
-            normalized_filename: file.normalized_filename || null,
-            size_bytes: file.size_bytes == null ? null : file.size_bytes,
-            detected_mime: file.detected_mime || null,
-            content_sha256: file.content_sha256 || file.sha256 || null,
-            uploaded_at: file.uploaded_at || file.created_at || null,
-            uploaded_by: file.uploaded_by || file.created_by || null,
-          };
-          if (metadata.file_id){
-            _snapshotAddRef(
-              refs,
-              'user_input_file',
-              metadata.file_id,
-              {
-                file_id: metadata.file_id,
-                filename: metadata.normalized_filename
-                  || metadata.original_filename,
-              }
-            );
-          }
-          return metadata;
-        }
-      );
-      contentMetadata = {files: files, file_count: files.length};
-    }
-    var pending = (
-      state.phase === 'idle'
-      || state.phase === 'loading'
-      || state.phase === 'saving'
-      || state.phase === 'conflict'
-      || state.phase === 'unavailable'
-      || state.dirty === true
-    );
-    var notes = [
-      'Persisted user-input content must be resolved server-side.',
-    ];
-    if (pending){
-      notes.push('User-input state is not a confirmed clean server revision.');
-    }
-    return {
-      resolved_view: {
-        status: state.phase || 'idle',
-        title: _snapshotTileTitle(_snapshotTile(widgetId), widget),
-        mode: mode,
-        content_metadata: contentMetadata,
-      },
-      view_state: {
-        phase: state.phase || 'idle',
-        source: state.source || null,
-        revision_id: state.revisionId || null,
-        parent_revision_id: state.parentRevisionId || null,
-        content_sha256: state.contentSha256 || null,
-        updated_at: state.updatedAt || null,
-        updated_by: state.updatedBy || null,
-        can_write: state.canWrite === true,
-        dirty: state.dirty === true,
-      },
-      source_refs: refs,
-      coverage: 'metadata_only',
-      coverage_notes: notes,
-    };
-  }
-
-  function _snapshotMarkdown(widgetId, widget){
-    var tile = _snapshotTile(widgetId);
-    var body = tile.querySelector('.markdown-body');
-    if (!body){
-      throw new Error(
-        'Markdown snapshot could not find rendered body for "'
-        + widgetId + '".'
-      );
-    }
-    return {
-      resolved_view: {
-        status: 'ready',
-        title: _snapshotTileTitle(tile, widget),
-        note_kind: widget.kind
-          || (widget.widget === 'note' ? 'insight' : null),
-        text: body.textContent || '',
-      },
-      view_state: {},
-      source_refs: [],
-      coverage: 'full',
-      coverage_notes: [],
-    };
-  }
-
-  function _snapshotImage(widgetId, widget){
-    var tile = _snapshotTile(widgetId);
-    var image = tile.querySelector('img');
-    if (!image){
-      throw new Error(
-        'Image snapshot could not find rendered image for "'
-        + widgetId + '".'
-      );
-    }
-    var refs = [];
-    var imageRef = image.getAttribute('src') || '';
-    var notes = [];
-    if (/^data:/i.test(imageRef)){
-      // Embedded data URLs carry bytes, not a neutral reference. Keep the
-      // visible title/alt semantics and omit the binary payload.
-      notes.push('Embedded image bytes were omitted from the snapshot.');
-    } else {
-      _snapshotAddRef(refs, 'image', imageRef);
-    }
-    var link = image.closest('a');
-    if (link) _snapshotAddRef(refs, 'link', link.getAttribute('href'));
-    return {
-      resolved_view: {
-        title: _snapshotTileTitle(tile, widget),
-        alt: image.getAttribute('alt') || '',
-      },
-      view_state: {},
-      source_refs: refs,
-      coverage: notes.length ? 'partial' : 'full',
-      coverage_notes: notes,
-    };
-  }
-
-  function _snapshotDivider(){
-    return {
-      resolved_view: {marker: 'divider'},
-      view_state: {},
-      source_refs: [],
-      coverage: 'full',
-      coverage_notes: [],
-    };
-  }
-
-  var WIDGET_SNAPSHOTTERS = {
-    chart: _snapshotChart,
-    kpi: _snapshotKpi,
-    table: _snapshotTable,
-    data_grid: _snapshotTable,
-    pivot: _snapshotPivot,
-    stat_grid: _snapshotStatGrid,
-    tool: _snapshotTool,
-    user_input: _snapshotUserInput,
-    note: _snapshotMarkdown,
-    markdown: _snapshotMarkdown,
-    image: _snapshotImage,
-    divider: _snapshotDivider,
-  };
-
-  function _snapshotFinalize(widgetId, widgetKind, part, ctx){
-    var common = _snapshotCommonState(widgetId);
-    var viewState = Object.assign(common, part.view_state || {});
-    var safeResolved = _snapshotJsonSafe(
-      part.resolved_view || {}, ctx, null, 0
-    );
-    var safeState = _snapshotJsonSafe(viewState, ctx, null, 0);
-    var safeRefs = _snapshotJsonSafe(part.source_refs || [], ctx, null, 0);
-
-    // Reserve deterministic space for the fixed envelope and truncation
-    // accounting. The final hard check below pins the complete JSON payload.
-    var resolvedView = _snapshotBudgetClone(
-      safeResolved, 156 * 1024, ctx
-    );
-    var boundedState = _snapshotBudgetClone(
-      safeState, 48 * 1024, ctx
-    );
-    var sourceRefs = _snapshotBudgetClone(
-      safeRefs, 8 * 1024, ctx
-    );
-    var safeNotes = _snapshotJsonSafe(
-      (part.coverage_notes || []).slice(), ctx, null, 0
-    );
-    var notes = _snapshotBudgetClone(safeNotes, 8 * 1024, ctx) || [];
-    var truncated = Object.keys(ctx.omitted).some(function(key){
-      return ctx.omitted[key] > 0;
-    });
-    if (ctx.omitted.rows || ctx.omitted.points || ctx.omitted.cells){
-      notes.push('Current-view collections were truncated at snapshot limits.');
-    }
-    if (ctx.omitted.strings){
-      notes.push('One or more strings were truncated at 32 KiB.');
-    }
-    if (ctx.omitted.values){
-      notes.push('Additional semantic values were omitted to honor 256 KiB.');
-    }
-    notes = notes.filter(function(note, index, all){
-      return all.indexOf(note) === index;
-    });
-    var envelope = {
-      snapshot_schema_version: 1,
-      widget_id: widgetId,
-      widget_kind: widgetKind,
-      captured_at: new Date().toISOString(),
-      resolved_view: resolvedView,
-      view_state: boundedState,
-      source_refs: sourceRefs,
-      truncation: {
-        truncated: truncated,
-        limits: {
-          component_bytes: SNAPSHOT_LIMITS.component_bytes,
-          string_bytes: SNAPSHOT_LIMITS.string_bytes,
-          table_rows: SNAPSHOT_LIMITS.table_rows,
-          chart_points: SNAPSHOT_LIMITS.chart_points,
-          pivot_tool_cells: SNAPSHOT_LIMITS.pivot_tool_cells,
-        },
-        omitted: Object.assign({}, ctx.omitted),
-        result_bytes: 0,
-      },
-      coverage: truncated ? 'partial' : (part.coverage || 'full'),
-      coverage_notes: notes,
-    };
-    for (var i = 0; i < 12; i++){
-      var measuredBytes = _snapshotJsonBytes(envelope);
-      if (measuredBytes === envelope.truncation.result_bytes) break;
-      envelope.truncation.result_bytes = measuredBytes;
-    }
-    var finalBytes = _snapshotJsonBytes(envelope);
-    if (finalBytes > SNAPSHOT_LIMITS.component_bytes){
-      throw new Error(
-        'Widget snapshot exceeded the 256 KiB envelope limit.'
-      );
-    }
-    if (finalBytes !== envelope.truncation.result_bytes){
-      throw new Error(
-        'Widget snapshot byte accounting did not stabilize.'
-      );
-    }
-    return envelope;
-  }
-
-  function getWidgetSnapshot(widgetId){
-    if (typeof widgetId !== 'string' || !widgetId){
-      throw new TypeError('getWidgetSnapshot(widgetId) requires a non-empty id.');
-    }
-    var widget = TOP_LEVEL_WIDGET_META[widgetId];
-    if (!widget){
-      throw new Error('Unknown top-level widget id "' + widgetId + '".');
-    }
-    var kind = widget.widget;
-    var snapshotter = WIDGET_SNAPSHOTTERS[kind];
-    if (!snapshotter){
-      throw new Error(
-        'Unsupported top-level widget kind "' + kind
-        + '" for id "' + widgetId + '".'
-      );
-    }
-    var ctx = {
-      omitted: {
-        rows: 0,
-        points: 0,
-        cells: 0,
-        strings: 0,
-        string_bytes: 0,
-        values: 0,
-        value_bytes: 0,
-      },
-    };
-    var part = snapshotter(widgetId, widget, ctx);
-    if (!part || typeof part !== 'object'
-        || !part.resolved_view || !part.view_state
-        || !Array.isArray(part.source_refs)){
-      throw new Error(
-        'Widget snapshot producer returned an invalid result for "'
-        + widgetId + '".'
-      );
-    }
-    return _snapshotFinalize(widgetId, kind, part, ctx);
-  }
-
   window.DASHBOARD = { manifest: MANIFEST, charts: CHARTS,
                         widgets: WIDGET_META,
                         filters: filterState, datasets: currentDatasets,
@@ -15877,8 +14707,7 @@ __USER_INPUT_CONTROLLER__
                         tools: TOOLS, toolState: TOOL_STATE,
                         toolCharts: TOOL_CHARTS,
                         userInputs: USER_INPUTS,
-                        userInputState: USER_INPUT_STATE,
-                        getWidgetSnapshot: getWidgetSnapshot };
+                        userInputState: USER_INPUT_STATE };
 })();
 """
 DASHBOARD_APP_JS = DASHBOARD_APP_JS.replace(
