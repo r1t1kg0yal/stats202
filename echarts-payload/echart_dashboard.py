@@ -112,6 +112,10 @@ if str(_here) not in sys.path:
 
 from rendering import render_dashboard_html
 from config import MAX_DASHBOARD_DECIMALS, clamp_decimals
+from dashboard_user_input import (
+    VALID_USER_INPUT_MODES,
+    VALID_USER_INPUT_MODES_SET,
+)
 
 # =============================================================================
 # MANIFEST SCHEMA + VALIDATOR
@@ -2252,6 +2256,146 @@ def _validate_markdown_widget(w: Dict[str, Any], wbase: str,
         ))
 
 
+_USER_INPUT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
+
+def _validate_user_input_widget(w: Dict[str, Any], wbase: str,
+                                errs: List[str], dataset_names: Any) -> None:
+    """Validate a persisted ``widget: user_input`` definition."""
+    del dataset_names
+
+    wid = w.get("id")
+    if not isinstance(wid, str) or _USER_INPUT_ID_RE.fullmatch(wid) is None:
+        errs.append(_err(
+            f"{wbase}.id",
+            "user_input id must match "
+            "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+        ))
+
+    mode = w.get("mode")
+    if mode not in VALID_USER_INPUT_MODES_SET:
+        errs.append(_err(
+            f"{wbase}.mode",
+            f"required and must be one of {list(VALID_USER_INPUT_MODES)}",
+        ))
+        return
+
+    for field_name in ("title", "description"):
+        value = w.get(field_name)
+        if value is not None and not isinstance(value, str):
+            errs.append(_err(f"{wbase}.{field_name}", "must be a string"))
+
+    seed = w.get("seed")
+    if mode == "text":
+        placeholder = w.get("placeholder")
+        if placeholder is not None:
+            if not isinstance(placeholder, str):
+                errs.append(_err(
+                    f"{wbase}.placeholder", "must be a string",
+                ))
+            elif len(placeholder) > 500:
+                errs.append(_err(
+                    f"{wbase}.placeholder",
+                    "must contain at most 500 characters",
+                ))
+        rows = w.get("rows", 8)
+        if (isinstance(rows, bool) or not isinstance(rows, int)
+                or rows < 3 or rows > 30):
+            errs.append(_err(
+                f"{wbase}.rows", "must be an integer from 3 through 30",
+            ))
+        if seed is not None:
+            if not isinstance(seed, dict) or set(seed) != {"text"}:
+                errs.append(_err(
+                    f"{wbase}.seed",
+                    "text mode seed must be exactly {'text': <string>}",
+                ))
+            else:
+                text = seed.get("text")
+                if not isinstance(text, str):
+                    errs.append(_err(
+                        f"{wbase}.seed.text", "must be a string",
+                    ))
+                elif len(text.encode("utf-8")) > 250_000:
+                    errs.append(_err(
+                        f"{wbase}.seed.text",
+                        "must not exceed 250000 UTF-8 bytes",
+                    ))
+        return
+
+    for text_only_field in ("placeholder", "rows"):
+        if text_only_field in w:
+            errs.append(_err(
+                f"{wbase}.{text_only_field}",
+                f"is supported only when mode='text', not mode={mode!r}",
+            ))
+
+    if mode == "checklist":
+        if seed is None:
+            return
+        if not isinstance(seed, dict) or set(seed) != {"items"}:
+            errs.append(_err(
+                f"{wbase}.seed",
+                "checklist mode seed must be exactly {'items': [...]}",
+            ))
+            return
+        items = seed.get("items")
+        if not isinstance(items, list):
+            errs.append(_err(f"{wbase}.seed.items", "must be a list"))
+            return
+        if len(items) > 500:
+            errs.append(_err(
+                f"{wbase}.seed.items", "must contain at most 500 items",
+            ))
+        seen_ids = set()
+        for index, item in enumerate(items):
+            base = f"{wbase}.seed.items[{index}]"
+            if not isinstance(item, dict):
+                errs.append(_err(base, "must be an object"))
+                continue
+            if set(item) != {"id", "text", "checked"}:
+                errs.append(_err(
+                    base,
+                    "must contain exactly id, text, and checked",
+                ))
+                continue
+            item_id = item.get("id")
+            if (not isinstance(item_id, str)
+                    or _USER_INPUT_ID_RE.fullmatch(item_id) is None):
+                errs.append(_err(
+                    f"{base}.id",
+                    "must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+                ))
+            elif item_id in seen_ids:
+                errs.append(_err(
+                    f"{base}.id", f"duplicate checklist id {item_id!r}",
+                ))
+            else:
+                seen_ids.add(item_id)
+            text = item.get("text")
+            if not isinstance(text, str) or not text.strip():
+                errs.append(_err(
+                    f"{base}.text", "must be a non-empty string",
+                ))
+            elif len(text.encode("utf-8")) > 2_000:
+                errs.append(_err(
+                    f"{base}.text", "must not exceed 2000 UTF-8 bytes",
+                ))
+            if not isinstance(item.get("checked"), bool):
+                errs.append(_err(f"{base}.checked", "must be boolean"))
+        return
+
+    if seed is not None and (
+        not isinstance(seed, dict)
+        or set(seed) != {"files"}
+        or seed.get("files") != []
+    ):
+        errs.append(_err(
+            f"{wbase}.seed",
+            "files mode seed must be exactly {'files': []}",
+        ))
+
+
 def _validate_note_widget(w: Dict[str, Any], wbase: str,
                             errs: List[str], dataset_names: Any) -> None:
     """Validate a ``widget: note`` entry.
@@ -2305,6 +2449,8 @@ WIDGETS: Dict[str, WidgetSpec] = {
     "stat_grid": WidgetSpec("stat_grid", _validate_stat_grid_widget,
                               data_bound=True,  filter_targetable=True),
     "tool":      WidgetSpec("tool",      _validate_tool_widget,
+                              data_bound=False, filter_targetable=False),
+    "user_input": WidgetSpec("user_input", _validate_user_input_widget,
                               data_bound=False, filter_targetable=False),
     "note":      WidgetSpec("note",      _validate_note_widget,
                               data_bound=False, filter_targetable=False),
@@ -15058,6 +15204,280 @@ def _decode_json_object(raw: bytes, path: str) -> Dict[str, Any]:
     return value
 
 
+def _user_input_content_sha256(content: Dict[str, Any]) -> str:
+    import hashlib
+
+    raw = json.dumps(
+        content,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _validate_user_input_uuid(value: Any, path: str) -> str:
+    import uuid
+
+    if not isinstance(value, str):
+        raise ValueError(f"{path} must be a UUID4 string")
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(f"{path} must be a UUID4 string") from exc
+    if parsed.version != 4 or str(parsed) != value:
+        raise ValueError(f"{path} must be a canonical lowercase UUID4 string")
+    return value
+
+
+def read_dashboard_user_input(
+    folder: str,
+    widget_id: Optional[str] = None,
+    *,
+    s3_manager: Any = None,
+    include_deleted: bool = False,
+) -> Dict[str, Any]:
+    """Read persisted dashboard-shared ``user_input`` state without mutation.
+
+    The helper follows each widget's ``current.json`` pointer, verifies the
+    immutable revision and active file objects, and returns trusted S3 keys for
+    Prism-side analysis. Missing state is an empty dict; corrupt or incomplete
+    state raises.
+    """
+    s3 = _resolve_s3_manager(s3_manager)
+    canonical, owner, dashboard_id = _canonical_dashboard_identity(folder)
+
+    if widget_id is not None and (
+        not isinstance(widget_id, str)
+        or _USER_INPUT_ID_RE.fullmatch(widget_id) is None
+    ):
+        raise ValueError(
+            "widget_id must match ^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+        )
+
+    pointer_paths: List[Tuple[str, str]] = []
+    if widget_id is not None:
+        pointer_path = (
+            f"{canonical}/user_input/widgets/{widget_id}/current.json"
+        )
+        if not s3.exists(pointer_path):
+            return {}
+        pointer_paths.append((widget_id, pointer_path))
+    else:
+        pattern = re.compile(
+            r"^user_input/widgets/"
+            r"(?P<widget>[A-Za-z0-9][A-Za-z0-9_-]{0,127})/"
+            r"current\.json$"
+        )
+        for relative in _s3_relative_listing(s3, canonical):
+            match = pattern.fullmatch(relative)
+            if match is not None:
+                pointer_paths.append((
+                    match.group("widget"),
+                    f"{canonical}/{relative}",
+                ))
+
+    def _require_identity(
+        value: Dict[str, Any],
+        path: str,
+        expected_widget: str,
+    ) -> None:
+        expected = {
+            "owner": owner,
+            "dashboard_id": dashboard_id,
+            "widget_id": expected_widget,
+        }
+        for key, expected_value in expected.items():
+            if value.get(key) != expected_value:
+                raise ValueError(
+                    f"{path}.{key} identity mismatch: "
+                    f"expected {expected_value!r}, got {value.get(key)!r}"
+                )
+
+    def _active_files(
+        content: Dict[str, Any],
+        base: str,
+        expected_widget: str,
+    ) -> Dict[str, Any]:
+        files = content.get("files")
+        if not isinstance(files, list):
+            raise ValueError(
+                f"{base}.content.files must be a list for files mode"
+            )
+        enriched: List[Dict[str, Any]] = []
+        active_ids = set()
+        for index, item in enumerate(files):
+            item_path = f"{base}.content.files[{index}]"
+            if not isinstance(item, dict):
+                raise ValueError(f"{item_path} must be an object")
+            file_id = _validate_user_input_uuid(
+                item.get("file_id"), f"{item_path}.file_id",
+            )
+            if file_id in active_ids:
+                raise ValueError(f"{item_path}.file_id is duplicated")
+            active_ids.add(file_id)
+            file_root = (
+                f"{canonical}/user_input/widgets/{expected_widget}/"
+                f"files/{file_id}"
+            )
+            metadata_path = f"{file_root}/metadata.json"
+            blob_path = f"{file_root}/blob"
+            if not s3.exists(metadata_path) or not s3.exists(blob_path):
+                raise ValueError(
+                    f"{item_path} references missing immutable file objects"
+                )
+            metadata = _decode_json_object(
+                bytes(s3.get(metadata_path)), metadata_path,
+            )
+            _require_identity(metadata, metadata_path, expected_widget)
+            if metadata.get("file_id") != file_id:
+                raise ValueError(
+                    f"{metadata_path}.file_id identity mismatch"
+                )
+            if metadata.get("object_key") != blob_path:
+                raise ValueError(
+                    f"{metadata_path}.object_key must equal {blob_path!r}"
+                )
+            blob = bytes(s3.get(blob_path))
+            if metadata.get("size_bytes") != len(blob):
+                raise ValueError(
+                    f"{metadata_path}.size_bytes does not match blob bytes"
+                )
+            if metadata.get("sha256") != _sha256(blob):
+                raise ValueError(
+                    f"{metadata_path}.sha256 does not match blob bytes"
+                )
+            for key in (
+                "original_filename", "normalized_filename", "size_bytes",
+                "sha256", "detected_mime", "uploaded_at", "uploaded_by",
+            ):
+                if item.get(key) != metadata.get(key):
+                    raise ValueError(
+                        f"{item_path}.{key} does not match immutable metadata"
+                    )
+            enriched.append(dict(metadata))
+
+        output = dict(content)
+        output["files"] = enriched
+        if include_deleted:
+            tombstone_prefix = (
+                f"user_input/widgets/{expected_widget}/tombstones/"
+            )
+            deleted: Dict[str, Dict[str, Any]] = {}
+            for relative in _s3_relative_listing(s3, canonical):
+                if not relative.startswith(tombstone_prefix):
+                    continue
+                parts = relative[len(tombstone_prefix):].split("/")
+                if len(parts) != 2 or not parts[1].endswith(".json"):
+                    continue
+                file_id = _validate_user_input_uuid(
+                    parts[0], f"{canonical}/{relative} file id",
+                )
+                if file_id in active_ids:
+                    continue
+                tombstone_path = f"{canonical}/{relative}"
+                tombstone = _decode_json_object(
+                    bytes(s3.get(tombstone_path)), tombstone_path,
+                )
+                metadata_path = (
+                    f"{canonical}/user_input/widgets/{expected_widget}/"
+                    f"files/{file_id}/metadata.json"
+                )
+                metadata = (
+                    _decode_json_object(
+                        bytes(s3.get(metadata_path)), metadata_path,
+                    )
+                    if s3.exists(metadata_path) else None
+                )
+                bucket = deleted.setdefault(file_id, {
+                    "file_id": file_id,
+                    "metadata": metadata,
+                    "tombstones": [],
+                })
+                bucket["tombstones"].append(tombstone)
+            output["deleted_files"] = [
+                deleted[key] for key in sorted(deleted)
+            ]
+        return output
+
+    states: Dict[str, Dict[str, Any]] = {}
+    for expected_widget, pointer_path in pointer_paths:
+        pointer = _decode_json_object(
+            bytes(s3.get(pointer_path)), pointer_path,
+        )
+        _require_identity(pointer, pointer_path, expected_widget)
+        mode = pointer.get("mode")
+        if mode not in VALID_USER_INPUT_MODES_SET:
+            raise ValueError(f"{pointer_path}.mode is invalid: {mode!r}")
+        revision_id = _validate_user_input_uuid(
+            pointer.get("revision_id"), f"{pointer_path}.revision_id",
+        )
+        expected_revision_path = (
+            f"{canonical}/user_input/widgets/{expected_widget}/"
+            f"revisions/{revision_id}.json"
+        )
+        if pointer.get("revision_key") != expected_revision_path:
+            raise ValueError(
+                f"{pointer_path}.revision_key must equal "
+                f"{expected_revision_path!r}"
+            )
+        if not s3.exists(expected_revision_path):
+            raise ValueError(
+                f"{pointer_path} references missing revision "
+                f"{expected_revision_path}"
+            )
+        revision = _decode_json_object(
+            bytes(s3.get(expected_revision_path)),
+            expected_revision_path,
+        )
+        _require_identity(revision, expected_revision_path, expected_widget)
+        if revision.get("revision_id") != revision_id:
+            raise ValueError(
+                f"{expected_revision_path}.revision_id mismatch"
+            )
+        if revision.get("mode") != mode:
+            raise ValueError(
+                f"{expected_revision_path}.mode does not match pointer"
+            )
+        parent = revision.get("parent_revision_id")
+        if parent is not None:
+            _validate_user_input_uuid(
+                parent, f"{expected_revision_path}.parent_revision_id",
+            )
+        content = revision.get("content")
+        if not isinstance(content, dict):
+            raise ValueError(
+                f"{expected_revision_path}.content must be an object"
+            )
+        content_hash = _user_input_content_sha256(content)
+        if (
+            revision.get("content_sha256") != content_hash
+            or pointer.get("content_sha256") != content_hash
+        ):
+            raise ValueError(
+                f"{expected_revision_path} content SHA-256 mismatch"
+            )
+        trusted_content = (
+            _active_files(content, expected_revision_path, expected_widget)
+            if mode == "files" else content
+        )
+        states[expected_widget] = {
+            "widget_id": expected_widget,
+            "mode": mode,
+            "source": "persisted",
+            "revision_id": revision_id,
+            "parent_revision_id": parent,
+            "updated_at": revision.get("created_at"),
+            "updated_by": revision.get("created_by"),
+            "content_sha256": content_hash,
+            "content": trusted_content,
+        }
+
+    if widget_id is not None:
+        return states.get(widget_id, {})
+    return states
+
+
 def _canonical_json_bytes(value: Dict[str, Any]) -> bytes:
     return json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8")
 
@@ -17407,9 +17827,11 @@ def describe_dashboard(
 
     Unlike :func:`inspect_dashboard`, this omits telemetry, findings graph,
     and file inventories. The ``text`` field is safe to paraphrase to the
-    user (no paths or SHAs). The returned dict still carries
-    ``manifest_template_sha256`` and ``versioning.current_version_id`` so
-    it can be passed directly to :func:`apply_manifest_operations`.
+    user (no paths or SHAs). ``widgets`` carries compact identity, placement,
+    mapping, named-color, and user-input-mode summaries for surgical edits.
+    The returned dict still carries ``manifest_template_sha256`` and
+    ``versioning.current_version_id`` so it can be passed directly to
+    :func:`apply_manifest_operations`.
     """
     if mode != "layout":
         raise ValueError(
@@ -17442,10 +17864,44 @@ def describe_dashboard(
     ]
     locations = _widget_locations(template)
     widget_kind_counts: Dict[str, int] = {}
+    widget_nodes: List[Dict[str, Any]] = []
     for location in locations:
-        kind = location["widget"].get("widget")
+        widget = location["widget"]
+        kind = widget.get("widget")
         if isinstance(kind, str):
             widget_kind_counts[kind] = widget_kind_counts.get(kind, 0) + 1
+        spec = widget.get("spec") \
+            if isinstance(widget.get("spec"), dict) else {}
+        mapping = spec.get("mapping") \
+            if isinstance(spec.get("mapping"), dict) else {}
+        series_colors = spec.get("series_colors") \
+            if isinstance(spec.get("series_colors"), dict) else {}
+        widget_nodes.append({
+            "id": widget.get("id"),
+            "kind": kind,
+            "title": widget.get("title"),
+            "mode": widget.get("mode"),
+            "tab_id": (
+                location["tab"].get("id")
+                if isinstance(location.get("tab"), dict) else None
+            ),
+            "tab_index": location.get("tab_index"),
+            "row": location["row_index"],
+            "index": location["widget_index"],
+            "chart_type": spec.get("chart_type"),
+            "dataset": spec.get("dataset"),
+            "mapping_summary": dict(sorted(mapping.items())),
+            "series_colors": {
+                name: dict(colors) if isinstance(colors, dict) else colors
+                for name, colors in sorted(series_colors.items())
+            },
+        })
+    widget_nodes.sort(
+        key=lambda item: (
+            item["tab_index"] if item["tab_index"] is not None else -1,
+            item["row"], item["index"], item["id"] or "",
+        )
+    )
     filters = template.get("filters") \
         if isinstance(template.get("filters"), list) else []
     datasets = template.get("datasets") \
@@ -17582,6 +18038,14 @@ def describe_dashboard(
             "dashboard_id": dashboard_id,
         },
         "tabs": tabs,
+        "widgets": {
+            "ordered": widget_nodes,
+            "by_id": {
+                widget["id"]: widget
+                for widget in widget_nodes
+                if isinstance(widget.get("id"), str)
+            },
+        },
         "layout_text": layout_text,
         "filters_text": filters_text,
         "counts": counts,
@@ -21270,6 +21734,7 @@ __all__ = [
     "review_dashboard", "acknowledge_dashboard_review",
     "launch_clean_refresh",
     "audit_dashboard_layout",
+    "read_dashboard_user_input",
     "OPEN_PRESENCE_INDEX_KEY", "OPEN_PRESENCE_TTL_SECONDS",
     "apply_manifest_operations", "apply_persisted_script_operations",
     "inspect_dashboard",
@@ -21284,6 +21749,7 @@ __all__ = [
     "VALID_BRUSH_TYPES", "VALID_TABLE_FORMATS",
     "VALID_REFRESH_FREQUENCIES", "VALID_DATA_DOMAIN_FREQS",
     "VALID_NOTE_KINDS",
+    "VALID_USER_INPUT_MODES",
     "VALID_KPI_AGGREGATORS",
     "DATASET_ROWS_WARN", "DATASET_ROWS_ERROR",
     "DATASET_BYTES_WARN", "DATASET_BYTES_ERROR",

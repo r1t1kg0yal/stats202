@@ -1,7 +1,7 @@
 # Widget catalog
 
 - **Context ID:** `echarts.widgets`
-- **Owns:** `widget.catalog`, `widget.kpi`, `widget.table`, `widget.narrative`
+- **Owns:** `widget.catalog`, `widget.kpi`, `widget.table`, `widget.narrative`, `widget.user_input`
 - **Fetch when:** Routed by `dashboards.md`.
 - **Depends on:** [dashboards_hub.md](../dashboards_hub.md#manifest-skeleton) and [template_crud.md](template_crud.md#widget-operations) for edits.
 
@@ -9,7 +9,7 @@
 
 The closed widget enum is:
 
-`chart`, `kpi`, `table`, `data_grid`, `pivot`, `stat_grid`, `tool`, `note`, `markdown`, `image`, `divider`
+`chart`, `kpi`, `table`, `data_grid`, `pivot`, `stat_grid`, `tool`, `user_input`, `note`, `markdown`, `image`, `divider`
 
 | Widget | Purpose |
 |---|---|
@@ -20,6 +20,7 @@ The closed widget enum is:
 | `pivot` | Viewer-configurable multidimensional aggregation |
 | `stat_grid` | Compact grid of dataset-bound statistics |
 | `tool` | Interactive calculator; see [widget_tool.md](widget_tool.md#tool-definition) |
+| `user_input` | Dashboard-shared text, checklist, or uploaded knowledge files |
 | `markdown` | Plain Markdown narrative or semantic callout |
 | `note` | Semantic callout alias |
 | `image` | Image by `src` or `url` |
@@ -304,6 +305,74 @@ Values stated as facts must trace to refreshed data or identified sources. Use:
 - `fact` for sourced evidence;
 - `insight` for interpretation;
 - `context` for framing/methodology.
+
+## Persisted user input
+
+Use `user_input` when the dashboard needs shared manual state rather than authored narrative. The dashboard owner can write; every authorized dashboard viewer can read. Its stable widget `id` is the persistence identity, so preserve both `id` and `mode` after users begin saving.
+
+```python
+[
+    {
+        "widget": "user_input",
+        "id": "desk_notes",
+        "mode": "text",
+        "w": 4,
+        "title": "Desk notes",
+        "description": "Shared notes for the next handoff.",
+        "placeholder": "Add the current handoff...",
+        "rows": 8,
+        "seed": {"text": ""},
+    },
+    {
+        "widget": "user_input",
+        "id": "close_checklist",
+        "mode": "checklist",
+        "w": 4,
+        "title": "Close checklist",
+        "seed": {
+            "items": [
+                {"id": "send-wrap", "text": "Send market wrap", "checked": False},
+            ],
+        },
+    },
+    {
+        "widget": "user_input",
+        "id": "research_files",
+        "mode": "files",
+        "w": 4,
+        "title": "Research files",
+        "seed": {"files": []},
+    },
+]
+```
+
+| Field | Contract |
+|---|---|
+| `mode` | Required: `text`, `checklist`, or `files` |
+| `title`, `description` | Optional strings |
+| `placeholder` | Text mode only; at most 500 characters |
+| `rows` | Text mode only; integer 3–30, default 8 |
+| text `seed` | Exactly `{"text": <string>}`; at most 250,000 UTF-8 bytes |
+| checklist `seed` | Exactly `{"items": [...]}`; at most 500 unique stable items, each exactly `id`, non-empty `text`, and boolean `checked` |
+| files `seed` | Omit or use exactly `{"files": []}`; file paths cannot be pre-seeded |
+
+Seed content is the first-render default only. After the first successful save, persisted state wins across rebuilds and refreshes. Browser saves never modify the manifest, datasets, or compiled HTML. Uploaded files accept PDF, DOCX/XLSX/PPTX, UTF-8 text/Markdown/CSV/JSON, and common raster images up to 25 MB; active or content-mismatched files are rejected.
+
+Read saved state for analysis through the public helper:
+
+```python
+from dashboards import read_dashboard_user_input
+
+notes = read_dashboard_user_input(FOLDER, "desk_notes")
+all_saved = read_dashboard_user_input(FOLDER)
+file_history = read_dashboard_user_input(
+    FOLDER, "research_files", include_deleted=True,
+)
+```
+
+One widget id returns its persisted state or `{}` before the first save. Omitting `widget_id` returns a mapping of every widget that has persisted state. Files mode returns verified metadata and server-authoritative object keys; use those returned keys rather than constructing paths. `include_deleted=True` adds tombstoned file history.
+
+Use guarded `update_widget` operations for presentation fields such as title, description, placeholder, rows, or seed before first save. Do not place saved text, checklist state, or uploaded-file keys in a manifest patch.
 
 ## Image and divider
 

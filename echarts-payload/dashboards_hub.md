@@ -118,6 +118,7 @@ from dashboards import (
     launch_clean_refresh,
     record_open_presence,
     list_open_dashboards,
+    read_dashboard_user_input,
     synchronize_refresh_frequency,
     sync_refresh_frequency,
     compile_dashboard,
@@ -140,19 +141,20 @@ from dashboards import (
 | `run_pull(folder, pull_name)` | Execute one named `PULLS` entry and persist its side effects |
 | `review_dashboard(folder, version_id=None)` | Compile current persisted data with the working recipe or one exact saved definition, without publishing, and return the gate's `DashboardReview` |
 | `acknowledge_dashboard_review(folder, expected_review_signature=..., rationale=..., version_id=None)` | Recompute and immutably acknowledge one exact non-`BLOCK` working or saved-definition review; the rationale must explain why the candidate is acceptable |
-| `publish_dashboard(folder, rationale=None, expected_current_version_id=None)` | Preferred publish path: review → refuse `BLOCK` → acknowledge exact signature when needed → `build_dashboard`. Omit `rationale` when already publish-ready; require a substantive rationale when a new ack is written |
+| `publish_dashboard(folder, rationale=None, expected_current_version_id=None)` | Preferred publish path: review → refuse `BLOCK` → acknowledge exact signature when needed → `build_dashboard`. Returns `review`, `acknowledgment`, and populated `manifest`; omit `rationale` when already publish-ready |
 | `build_dashboard(folder, expected_current_version_id=None)` | Recompute the review, require its exact acknowledgment, then write outputs and record a changed recipe; pass the current version id for a changed existing recipe, while unchanged refreshes and the first baseline need none |
 | `build_dashboard_data_only(folder)` | Reload CSVs + transforms into live `manifest.json` datasets/time only; never compile or rewrite HTML |
 | `refresh_dashboard(folder)` | Run all pulls, then `build_dashboard` (full / cold HTML); there is no universal per-pull refresh timeout |
 | `light_refresh(folder)` | Run all pulls, then `build_dashboard_data_only` (Refresh button / open-tab path) |
 | `launch_clean_refresh(folder, mode="full")` | Launch the isolated runner (`--mode full\|light`); own S3 logs/status/completion; return terminal `success` or `review_required`; raise on failure |
 | `record_open_presence(folder, viewer)` / `list_open_dashboards()` | Open-tab heartbeat index (`secondary/dashboard_open_presence/index.json`, TTL 90s) |
+| `read_dashboard_user_input(folder, widget_id=None, include_deleted=False)` | Read verified persisted `user_input` state; one id returns `{}` before first save, while omitted id returns all saved widgets. Files include trusted object keys; `include_deleted=True` adds tombstoned file history |
 | `audit_dashboard_layout(folder)` | Require the five canonical paths; return `True` |
-| `describe_dashboard(folder, mode="layout")` | Compact product floorplan: `text` / `layout_text` / `filters_text`, counts, review publish-ready flags, plus concurrency guards (`manifest_template_sha256`, `versioning.current_version_id`) for typed edits. Prefer this for ordinary edit sync; it is not a screenshot |
+| `describe_dashboard(folder, mode="layout")` | Compact product floorplan: text, counts, review/guards, plus `widgets.ordered/by_id` summaries with placement, mapping, named colors, and user-input mode. Prefer this for ordinary edit sync; it is not a screenshot |
 | `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, script hashes, definition-version, review/acknowledgment state, graph, refresh, registry, telemetry, and finding report. Use for heal/triage, not ordinary layout sync |
 | `list_dashboard_versions(folder, limit=20, timezone_name="UTC")` | Return recent immutable definition versions with UTC/local timestamps, local calendar date, product summaries, and current/previous markers; pass the user’s IANA timezone for relative-date requests |
 | `restore_dashboard_version(folder, version_id, expected_current_version_id=...)` | Restore one exact listed definition only after its current-data review is acknowledged; compile it with current persisted data and preserve every other version |
-| `apply_manifest_operations(folder_or_state, operations, recompile=True, ...)` | Ordered typed template transaction; a describe/inspect state supplies both guards directly. Nested dict patches deep-merge; lists/scalars replace; `None` clears |
+| `apply_manifest_operations(folder_or_state, operations, recompile=True, ...)` | Ordered typed template transaction; a describe/inspect state supplies both guards. Returns exact post-edit `manifest_template` plus populated `compiled_manifest` on direct recompile success; dicts deep-merge, lists/scalars replace, `None` clears |
 | `apply_persisted_script_operations(folder_or_state, script, operations, ...)` | Typed fragment transaction for `pull_data`/`build`: hash gate, syntax/pipeline check, atomic write, strict compile, exact rollback |
 | `synchronize_refresh_frequency(folder, value, expected_sha256=None, expected_current_version_id=None)` | Atomically align template metadata and the matching registry entry; existing versioned dashboards require the inspected current version id; `sync_refresh_frequency` is the alias |
 | `validate_manifest(manifest)` | Structural validation only |

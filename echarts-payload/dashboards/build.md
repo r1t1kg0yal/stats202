@@ -122,7 +122,14 @@ SESSION_PATH = "users/{kerberos}/dashboards/{dashboard_id}"
 TRANSFORMS = []
 ```
 
-Its template uses `datasets = {}` and contains only data-independent widgets such as `widget: "tool"` plus narrative/divider widgets. Call `build_dashboard` directly in Tool 2; do not call `run_pull` when `PULLS` is empty and do not create a placeholder CSV. If any tool input uses `rows_from` or any sibling widget reads a dataset, the dashboard is not tool-only and must provide that dataset through the normal pull/transform path.
+Its template uses `datasets = {}` and contains only data-independent widgets
+such as `widget: "tool"`, `widget: "user_input"`, and narrative/divider
+widgets. Call `build_dashboard` directly in Tool 2; do not call `run_pull`
+when `PULLS` is empty and do not create a placeholder CSV. Persisted
+`user_input` state remains outside the manifest and does not make the build
+data-bound. If any tool input uses `rows_from` or any sibling widget reads a
+dataset, the dashboard is not tool-only and must provide that dataset through
+the normal pull/transform path.
 
 ## Tool 2: template, transforms, compile
 

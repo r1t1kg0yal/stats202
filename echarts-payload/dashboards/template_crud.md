@@ -23,7 +23,7 @@ before = describe_dashboard(FOLDER)
 print(before["text"])  # product floorplan — sync with the user
 
 try:
-    apply_manifest_operations(
+    result = apply_manifest_operations(
         before,
         operations=[...],
         recompile=True,
@@ -34,7 +34,7 @@ except DashboardReviewRequired:
     for panel in review.panels:
         if panel.status != "CLEAR":
             print(review.panel(panel.panel_id).to_text())
-    publish_dashboard(
+    published = publish_dashboard(
         FOLDER,
         rationale=(
             "Reviewed <panel ids or CLEAR index>; accepted "
@@ -56,6 +56,13 @@ guards unless you are targeting the folder string alone.
 Operations execute in list order against one working copy, so later operations see earlier results. The engine stamps canonical `metadata.kerberos` and `metadata.dashboard_id`, validates persistence metadata, writes the template, synchronizes refresh cadence when changed, and optionally calls `build_dashboard`. A successful changed build automatically records the template plus both persisted scripts as one immutable definition version; `recompile=False` remains dirty until a later successful build.
 
 When the pre-edit review is already publish-ready and the edit does not change the review signature, `recompile=True` builds inside the transaction — no separate publish call is required. When `recompile=True` raises `DashboardReviewRequired`, the candidate template is kept; complete the publish path with a substantive rationale.
+
+On direct success, `result["manifest_template"]` is the exact post-edit
+data-free definition and `result["compiled_manifest"]` is its populated
+manifest when `recompile=True`. On the review-required branch,
+`published["manifest"]` is the populated post-publish manifest. Use these
+structured returns to verify the target and unchanged siblings; the final
+`describe_dashboard` verifies the persisted hash and visible floorplan.
 
 ## Patch merge semantics
 
@@ -167,6 +174,8 @@ Destinations place a widget:
 
 `remove_widget` deletes the widget and cleans dependent filter targets, link membership, and `show_when` clauses that named it. Empty rows left behind are removed.
 
+For `user_input`, manifest operations change only the widget definition. Preserve its stable `id` and `mode` after first save; persisted text, checklist state, and uploaded files are separate and must not appear in a manifest patch.
+
 ## Tab operations
 
 Tab layouts only. `add_tab.tab` must include `id`, `label`, and `rows` (use `[]` for an empty tab). `update_tab` may change metadata such as `label`; it cannot replace `rows` wholesale — use widget operations. `remove_tab` removes the tab and cleans relationships for every widget it contained. `move_tab.index` is the final zero-based position.
@@ -223,7 +232,15 @@ It then applies operations in order, stamps identity, validates, writes, synchro
 
 Any write, cadence, validation, or recompile failure restores all snapshotted keys to their prior existence and bytes — except `DashboardReviewRequired`, which keeps the candidate definition for the publish path. The raised error states whether rollback completed or names rollback failures. Treat a rolled-back list as uncommitted; describe/inspect again before retrying.
 
-On success, the serialized result includes `pre_sha256`, `post_sha256`, and `rollback_sha256`; `rollback_sha256` equals the exact pre-transaction template hash retained for restoration. Verify `pre_sha256` matches the pre-edit state's template SHA, `post_sha256 == describe_dashboard(FOLDER)["manifest_template_sha256"]`, and `rollback_sha256 == pre_sha256`.
+On success, the serialized result includes `pre_sha256`, `post_sha256`,
+`rollback_sha256`, `manifest_template`, and `compiled_manifest`
+(`compiled_manifest` is `None` when `recompile=False`). `rollback_sha256`
+equals the exact pre-transaction template hash retained for restoration.
+Verify `pre_sha256` matches the pre-edit state's template SHA,
+`post_sha256 == describe_dashboard(FOLDER)["manifest_template_sha256"]`,
+and `rollback_sha256 == pre_sha256`. Verify exact field-level postconditions
+against `manifest_template` / `compiled_manifest`; after a review hold, use
+`publish_dashboard(... )["manifest"]`.
 
 Never suppress the concurrency guard by reusing stale state. On mismatch: describe/inspect again, rebase the operations, retry with the fresh state.
 
@@ -236,6 +253,74 @@ Never suppress the concurrency guard by reusing stale state. On mismatch: descri
 After the final operation batch, run the clean refresh path and `describe_dashboard` again.
 
 ## Concise patterns
+
+### Change one series color
+
+Deep-merge the named color without copying the rest of the chart:
+
+```python
+{
+    "op": "update_widget",
+    "selector": {"id": "curve"},
+    "patch": {
+        "spec": {
+            "series_colors": {
+                "us_10y": {"light": "#002F6C", "dark": "#74C0E3"},
+            },
+        },
+    },
+}
+```
+
+The key must match an emitted series name or raw wide-form column. Supply both
+theme colors; sibling mappings and named colors are preserved. Capture the
+pre-edit map from
+`before["widgets"]["by_id"]["curve"]["series_colors"]`, then verify the target
+colors, complete mapping, and every pre-existing named-color entry against the
+returned `manifest_template` and populated manifest (or the published manifest
+after a review hold).
+
+### Add one line from an existing dataset
+
+`mapping.y` is a list, so replace it with the complete intended list:
+
+```python
+current_y = list(
+    before["widgets"]["by_id"]["curve"]["mapping_summary"]["y"]
+)
+updated_y = [*current_y, "us_30y"]
+
+{
+    "op": "update_widget",
+    "selector": {"id": "curve"},
+    "patch": {"spec": {"mapping": {"y": updated_y}}},
+}
+```
+
+The dataset must already contain the new column and the final list may contain
+at most four line series. If the column is absent, update and run its persisted
+producer before this manifest operation. Never guess an inherited list: read it
+from `before["widgets"]["by_id"][id]["mapping_summary"]["y"]`. Verify the
+complete final list in the returned populated manifest (or the published
+manifest after a review hold).
+
+### Change user-input presentation only
+
+Deep-merge presentation fields without replacing the widget or its saved state:
+
+```python
+{
+    "op": "update_widget",
+    "selector": {"id": "desk_notes"},
+    "patch": {
+        "title": "Monday handoff",
+        "description": "Shared owner-authored notes for the desk.",
+        "rows": 10,
+    },
+}
+```
+
+Keep `id` and `mode` unchanged. Saved content is read with `read_dashboard_user_input`, not copied into this patch.
 
 ### Add a widget and retarget a filter
 

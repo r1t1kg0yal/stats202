@@ -227,6 +227,9 @@ These decisions describe the Python compiler's default-filter state. Browser int
 
 Line, `multi_line`, and `area` have a hard cap of four visible y-series in both wide and long form. If five or more series are all load-bearing, preserve every series in explicit small multiples: create separate chart widgets with at most four series each, use the same x field/range, and place them in 2-up or 3-up rows. Do not request one over-cap chart and do not silently drop series.
 
+For an existing wide-form chart, add a line through the complete-list
+`update_widget` pattern in [template_crud.md](template_crud.md#add-one-line-from-an-existing-dataset).
+
 ### Multi-axis
 
 For two units use `dual_axis_series`. For a small number of independently scaled series:
@@ -295,6 +298,8 @@ must pass contrast for its mode. Dark-mode PNG exports retain the dark
 background; PDF/print intentionally switches to the light print contract,
 mounts charts from every tab, opens collapsed layout groups, and prints every
 filtered `data_grid` row up to `max_rows`.
+Use the surgical [named-color edit](template_crud.md#change-one-series-color)
+for an existing chart.
 
 Filters faithfully rebuild wide and grouped line/bar/area/scatter, stacked bar/area, pie/donut, heatmap, `geo_map`, `scatter_studio`, and `correlation_matrix`. A `dateRange` in default `mode: "view"` may also target supported data-zoom time-series charts such as candlesticks without rebuilding their series. A filter targeting any other chart shape is an explicit `filter_chart_rebuild_unsupported` error; never ship a static chart beside changing KPIs or tables.
 

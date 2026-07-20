@@ -64,7 +64,7 @@ Classify the request, then issue the smallest applicable `list_ai_repo(file_path
 | Read-only diagnosis | `dashboards/diagnose.md` only |
 | Revert or heal reached during an active turn | `dashboards/diagnose.md` first; fetch repair context only after inspection identifies its owner |
 | Chart authoring | `dashboards/charts.md` |
-| KPI/table/pivot/stat/image/markdown/divider | `dashboards/widgets.md` |
+| KPI/table/pivot/stat/image/markdown/divider or persisted text/checklist/file input | `dashboards/widgets.md` |
 | `widget: tool` with stat, table, or stat_grid outputs and no sibling/dashboard chart | `dashboards/widget_tool.md`, `dashboards/widgets.md` |
 | `widget: tool` with a sibling/dashboard chart or chart/series output requiring chart specs | `dashboards/widget_tool.md`, `dashboards/widgets.md`, `dashboards/charts.md` |
 | Filters, zoom, click-to-filter, sync, brush | `dashboards/filters.md` |
@@ -129,7 +129,7 @@ The router is the only fetch menu. The production context inventory is:
 | `dashboards/pipelines.md` | Persisted pull/build script edits and data-flow integrity |
 | `dashboards/recipes.md` | Data archetypes and transform patterns |
 | `dashboards/charts.md` | Chart catalog, mappings, annotations, computed columns |
-| `dashboards/widgets.md` | Non-tool widget catalog, popups, provenance, markdown |
+| `dashboards/widgets.md` | Non-tool widget catalog, persisted input, popups, provenance, markdown |
 | `dashboards/widget_tool.md` | Form-driven compute widgets |
 | `dashboards/filters.md` | Filter catalog, linking, zoom, sync, brush |
 

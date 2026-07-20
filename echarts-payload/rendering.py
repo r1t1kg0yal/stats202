@@ -10,8 +10,10 @@ Three concerns merged into one module:
     2. Dashboard HTML            (render_dashboard_html)
        GS-branded self-contained dashboard: cards, tabs, grid, global filters,
        brush cross-filter, echarts.connect() link groups. Used by
-       compile_dashboard(). Share fetch/ACL client lives in
-       dashboard_share.SHARE_CONTROLLER_JS (injected into DASHBOARD_APP_JS).
+       compile_dashboard(). Share and persisted-input clients live in
+       dashboard_share.SHARE_CONTROLLER_JS and
+       dashboard_user_input.USER_INPUT_CONTROLLER_JS (injected into
+       DASHBOARD_APP_JS).
 
     3. PNG export                (save_chart_png, save_dashboard_pngs,
                                    save_dashboard_html_png, find_chrome)
@@ -65,6 +67,7 @@ from config import (
 )
 
 from dashboard_share import SHARE_CONTROLLER_JS
+from dashboard_user_input import USER_INPUT_CONTROLLER_JS
 
 
 # =============================================================================
@@ -4020,6 +4023,173 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
   background: var(--surface, #1f242e);
   color: var(--text-secondary, #aaa);
   border-color: var(--border, #2a2f3a);
+}
+
+/* persisted user input widget */
+.user-input-tile .tile-header {
+  padding: 14px 18px 8px 18px;
+}
+.user-input-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 18px 16px 18px;
+}
+.user-input-description {
+  color: var(--text-dim);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  padding: 0 18px 4px 18px;
+}
+.user-input-access {
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.user-input-status {
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-faint);
+  font-size: 0.76rem;
+}
+.user-input-tile[data-user-input-state="dirty"] .user-input-status {
+  color: #8A5A00;
+}
+.user-input-tile[data-user-input-state="saving"] .user-input-status {
+  color: var(--gs-navy);
+}
+.user-input-tile[data-user-input-state="saved"] .user-input-status {
+  color: var(--pos);
+}
+.user-input-tile[data-user-input-state="conflict"] .user-input-status,
+.user-input-tile[data-user-input-state="unavailable"] .user-input-status {
+  color: var(--neg);
+}
+.user-input-textarea {
+  width: 100%;
+  min-height: 110px;
+  resize: vertical;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  line-height: 1.45;
+}
+.user-input-textarea:focus,
+.user-input-checklist-text:focus,
+.user-input-file-picker:focus {
+  outline: none;
+  border-color: var(--gs-navy);
+  box-shadow: 0 0 0 2px rgba(0,47,108,0.12);
+}
+.user-input-textarea:disabled,
+.user-input-checklist-text:disabled {
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.user-input-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.user-input-button,
+.user-input-link-button {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.user-input-button:hover,
+.user-input-link-button:hover {
+  background: var(--surface-2);
+}
+.user-input-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.user-input-button.user-input-primary {
+  background: var(--gs-navy);
+  border-color: var(--gs-navy);
+  color: #FFFFFF;
+}
+.user-input-button.user-input-compact {
+  padding: 4px 7px;
+  font-size: 0.7rem;
+}
+.user-input-link-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-decoration: underline;
+}
+.user-input-checklist,
+.user-input-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.user-input-checklist-row,
+.user-input-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.user-input-checklist-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.user-input-file-row {
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.user-input-file-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.user-input-file-name {
+  color: var(--gs-navy);
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+.user-input-file-meta,
+.user-input-empty {
+  color: var(--text-faint);
+  font-size: 0.74rem;
+}
+.user-input-file-picker {
+  flex: 1 1 260px;
+  min-width: 0;
+  color: var(--text-dim);
+  font-size: 0.78rem;
+}
+:root[data-theme="dark"] .user-input-button.user-input-primary {
+  background: var(--gs-sky);
+  border-color: var(--gs-sky);
+  color: #081526;
 }
 
 /* motion preferences */
@@ -13650,6 +13820,7 @@ DASHBOARD_APP_JS = r"""
   }
 
 __SHARE_CONTROLLER__
+__USER_INPUT_CONTROLLER__
 
   // ----- init -----
   window.addEventListener('load', function(){
@@ -13684,6 +13855,7 @@ __SHARE_CONTROLLER__
     if (typeof _initInitialState === 'function') _initInitialState();
     if (typeof _restoreUrlState === 'function') _restoreUrlState();
     if (typeof initTools === 'function') initTools();
+    if (typeof initUserInputs === 'function') initUserInputs();
     window.addEventListener('resize', function(){
       Object.keys(CHARTS).forEach(function(k){
         try { CHARTS[k].inst.resize(); } catch(e){}
@@ -14533,11 +14705,16 @@ __SHARE_CONTROLLER__
                         pivotState: PIVOT_STATE,
                         specs: SPECS,
                         tools: TOOLS, toolState: TOOL_STATE,
-                        toolCharts: TOOL_CHARTS };
+                        toolCharts: TOOL_CHARTS,
+                        userInputs: USER_INPUTS,
+                        userInputState: USER_INPUT_STATE };
 })();
 """
 DASHBOARD_APP_JS = DASHBOARD_APP_JS.replace(
     "__SHARE_CONTROLLER__", SHARE_CONTROLLER_JS
+)
+DASHBOARD_APP_JS = DASHBOARD_APP_JS.replace(
+    "__USER_INPUT_CONTROLLER__", USER_INPUT_CONTROLLER_JS
 )
 
 
@@ -15443,6 +15620,37 @@ def _render_image_widget(w: Dict[str, Any], cols: int,
     )
 
 
+def _render_user_input_widget(w: Dict[str, Any], cols: int,
+                              wid: str, style: str) -> str:
+    mode = str(w.get("mode") or "")
+    description = w.get("description")
+    description_html = (
+        f'<div class="user-input-description">'
+        f'{_html_escape(str(description))}</div>'
+        if description else ""
+    )
+    cls = _tile_class(w, "tile user-input-tile")
+    return (
+        f'<div class="{cls}" data-tile-id="{_html_escape(wid)}" '
+        f'data-user-input-id="{_html_escape(wid)}" '
+        f'data-user-input-mode="{_html_escape(mode)}" '
+        f'data-user-input-state="idle" style="{style}">'
+        f'  <div class="tile-header">'
+        f'    {_tile_title_html(w)}'
+        f'    <span class="user-input-access" '
+        f'data-user-input-access hidden></span>'
+        f'  </div>'
+        f'  {description_html}'
+        f'  <div class="user-input-body">'
+        f'    <div data-user-input-content></div>'
+        f'    <div class="user-input-status" '
+        f'data-user-input-status aria-live="polite">Not loaded</div>'
+        f'  </div>'
+        f'  {_tile_footer_html(w)}'
+        f'</div>'
+    )
+
+
 # Render dispatch table. Keys MUST match ``echart_dashboard.VALID_WIDGETS``;
 # the validator-side registry (``echart_dashboard.WIDGETS``) is the
 # canonical source for "what widget kinds exist". This mirror is the
@@ -15459,6 +15667,7 @@ _RENDERERS: Dict[str, Any] = {
     "divider":   _render_divider_widget,
     "stat_grid": _render_stat_grid_widget,
     "image":     _render_image_widget,
+    "user_input": _render_user_input_widget,
     # `tool` is registered later in this module after _render_tool_widget
     # is defined; see the explicit assignment below the
     # _render_tool_widget definition.
@@ -16500,6 +16709,36 @@ def render_dashboard_html(
     else:
         _collect_tools(layout.get("rows") or [])
 
+    user_inputs_payload: Dict[str, Any] = {}
+    def _collect_user_inputs(rows):
+        if not isinstance(rows, list):
+            return
+        for row in rows:
+            if not isinstance(row, list):
+                continue
+            for w in row:
+                if not isinstance(w, dict) or w.get("widget") != "user_input":
+                    continue
+                wid = w.get("id")
+                if not wid:
+                    continue
+                entry = {
+                    "widget_id": wid,
+                    "mode": w.get("mode"),
+                    "seed": w.get("seed"),
+                }
+                if "placeholder" in w:
+                    entry["placeholder"] = w.get("placeholder")
+                if "rows" in w:
+                    entry["rows"] = w.get("rows")
+                user_inputs_payload[wid] = entry
+
+    if kind == "tabs":
+        for t in layout.get("tabs", []) or []:
+            _collect_user_inputs(t.get("rows") or [])
+    else:
+        _collect_user_inputs(layout.get("rows") or [])
+
     payload = {
         "manifest": manifest_for_payload,
         "specs": specs,
@@ -16514,6 +16753,7 @@ def render_dashboard_html(
                       for n, p in PALETTES.items()},
         "widgetShowWhen": widget_show_when,
         "tools": tools_payload,
+        "userInputs": user_inputs_payload,
     }
     payload_js = ("var PAYLOAD = "
                    + json.dumps(payload, default=_json_default)

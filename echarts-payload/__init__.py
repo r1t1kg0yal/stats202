@@ -34,6 +34,7 @@ Public surface PRISM imports:
         synchronize_refresh_frequency,
         list_dashboard_versions,   # timestamped definition summaries
         restore_dashboard_version, # older definition + current data
+        read_dashboard_user_input, # read persisted notes/checklists/files
     )
 
     # Compile primitives and retained builder compatibility surface.
@@ -77,6 +78,9 @@ public surface):
     dashboard_share.py   in-browser share fetch/ACL client
                           (``SHARE_CONTROLLER_JS``); CSS/HTML chrome
                           stays in ``rendering.py``
+    dashboard_user_input.py
+                          in-browser persisted-input API client
+                          (``USER_INPUT_CONTROLLER_JS``)
 
 Design: the manifest.json is the source of truth. ``compile_dashboard``
 takes that JSON (dict, path, or JSON string), validates, lowers each
@@ -150,6 +154,7 @@ from dashboards.echart_dashboard import (  # noqa: E402,F401
     describe_dashboard,
     list_dashboard_versions,
     restore_dashboard_version,
+    read_dashboard_user_input,
     # Python builder sugar retained for installed-call-site compatibility.
     Dashboard,
     Tab,
@@ -230,6 +235,7 @@ __all__ = [
     "describe_dashboard",
     "list_dashboard_versions",
     "restore_dashboard_version",
+    "read_dashboard_user_input",
     # Python builder sugar.
     "Dashboard",
     "Tab",
