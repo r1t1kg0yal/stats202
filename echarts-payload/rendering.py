@@ -12707,6 +12707,29 @@ DASHBOARD_APP_JS = r"""
                                        ? window.PRISM_TEMPLATE_HASH : null;
   var LAST_KNOWN_REFRESHED = (MD.time && MD.time.refresh_cycle_at)
                                  || MD.data_as_of || MD.generated_at || null;
+  var PENDING_STRUCTURAL_RELOAD_HASH = null;
+
+  function _composerStreamIsActive(){
+    return window.__prismComposerStreaming === true;
+  }
+
+  function _flushPendingStructuralReload(){
+    if (!PENDING_STRUCTURAL_RELOAD_HASH || _composerStreamIsActive()) return;
+
+    var pendingHash = PENDING_STRUCTURAL_RELOAD_HASH;
+    PENDING_STRUCTURAL_RELOAD_HASH = null;
+    console.log(
+      '[live] composer stream finished; reloading for deferred template change',
+      pendingHash
+    );
+    location.reload();
+  }
+
+  window.addEventListener('prism:composer-streaming-change', function(event){
+    if (event.detail && event.detail.active === false){
+      _flushPendingStructuralReload();
+    }
+  });
 
   function _liveFlashPill(){
     // Flash the refresh pill specifically -- it's the one whose
@@ -12727,11 +12750,18 @@ DASHBOARD_APP_JS = r"""
 
     // Structural-change short-circuit: template hash drift means a
     // widget / tab / filter was added or removed, which we can't
-    // reconcile in place. One clean reload, then live-refresh resumes
-    // against the new structure.
+    // reconcile in place. Defer the clean reload while Composer is
+    // streaming so navigation cannot interrupt an inline response.
     if (LAST_KNOWN_TEMPLATE_HASH &&
         payload.manifest_template_hash &&
         payload.manifest_template_hash !== LAST_KNOWN_TEMPLATE_HASH){
+      if (_composerStreamIsActive()){
+        PENDING_STRUCTURAL_RELOAD_HASH = payload.manifest_template_hash;
+        console.log(
+          '[live] template hash changed; deferring reload until composer finishes'
+        );
+        return;
+      }
       console.log('[live] template hash changed; reloading for new structure');
       location.reload();
       return;
