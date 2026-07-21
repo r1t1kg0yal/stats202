@@ -318,7 +318,6 @@ Use `user_input` when the dashboard needs shared manual state rather than author
         "mode": "text",
         "w": 4,
         "title": "Desk notes",
-        "description": "Shared notes for the next handoff.",
         "placeholder": "Add the current handoff...",
         "rows": 8,
         "seed": {"text": ""},
@@ -349,14 +348,14 @@ Use `user_input` when the dashboard needs shared manual state rather than author
 | Field | Contract |
 |---|---|
 | `mode` | Required: `text`, `checklist`, or `files` |
-| `title`, `description` | Optional strings |
+| `title` | Optional visible heading |
 | `placeholder` | Text mode only; at most 500 characters |
 | `rows` | Text mode only; integer 3–30, default 8 |
 | text `seed` | Exactly `{"text": <string>}`; at most 250,000 UTF-8 bytes |
 | checklist `seed` | Exactly `{"items": [...]}`; at most 500 unique stable items, each exactly `id`, non-empty `text`, and boolean `checked` |
 | files `seed` | Omit or use exactly `{"files": []}`; file paths cannot be pre-seeded |
 
-Seed content is the first-render default only. After the first successful save, persisted state wins across rebuilds and refreshes. Browser saves never modify the manifest, datasets, or compiled HTML. Uploaded files accept PDF, DOCX/XLSX/PPTX, UTF-8 text/Markdown/CSV/JSON, and common raster images up to 25 MB; active or content-mismatched files are rejected.
+Seed content is the first-render default only. After the first successful save, persisted state wins across rebuilds and refreshes. Browser saves never modify the manifest, datasets, or compiled HTML. Uploaded files accept PDF, DOCX/XLSX/PPTX, Outlook MSG, UTF-8 text/Markdown/CSV/JSON, and common raster images up to 25 MB; active or content-mismatched files are rejected.
 
 Read saved state for analysis through the public helper:
 
@@ -372,7 +371,7 @@ file_history = read_dashboard_user_input(
 
 One widget id returns its persisted state or `{}` before the first save. Omitting `widget_id` returns a mapping of every widget that has persisted state. Files mode returns verified metadata and server-authoritative object keys; use those returned keys rather than constructing paths. `include_deleted=True` adds tombstoned file history.
 
-Use guarded `update_widget` operations for presentation fields such as title, description, placeholder, rows, or seed before first save. Do not place saved text, checklist state, or uploaded-file keys in a manifest patch.
+Use guarded `update_widget` operations for presentation fields such as title, placeholder, rows, or seed before first save. Do not place saved text, checklist state, or uploaded-file keys in a manifest patch.
 
 ## Image and divider
 

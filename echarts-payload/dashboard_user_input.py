@@ -30,6 +30,7 @@ USER_INPUT_SAVE_API: Final[str] = "/api/dashboard/user-input/save/"
 USER_INPUT_UPLOAD_API: Final[str] = "/api/dashboard/user-input/upload/"
 USER_INPUT_DOWNLOAD_API: Final[str] = "/api/dashboard/user-input/download/"
 USER_INPUT_MAX_FILE_BYTES: Final[int] = 25_000_000
+USER_INPUT_MAX_FILES: Final[int] = 100
 
 
 _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
@@ -43,6 +44,16 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
   var USER_INPUT_SAVE_API = '__USER_INPUT_SAVE_API__';
   var USER_INPUT_UPLOAD_API = '__USER_INPUT_UPLOAD_API__';
   var USER_INPUT_MAX_FILE_BYTES = __USER_INPUT_MAX_FILE_BYTES__;
+  var USER_INPUT_MAX_FILES = __USER_INPUT_MAX_FILES__;
+  var USER_INPUT_FILE_DROP_GUARD_INSTALLED = false;
+  var USER_INPUT_DATE_FORMATTER = new Intl.DateTimeFormat(undefined, {
+    weekday: 'short',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
 
   function _uiClone(value){
     return JSON.parse(JSON.stringify(value));
@@ -53,6 +64,65 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
     if (className) node.className = className;
     if (text !== undefined && text !== null) node.textContent = String(text);
     return node;
+  }
+
+  function _uiFormatTimestamp(value){
+    return USER_INPUT_DATE_FORMATTER.format(new Date(value));
+  }
+
+  function _uiSavedLabel(state){
+    return state.updatedAt
+      ? 'Saved ' + _uiFormatTimestamp(state.updatedAt)
+      : 'Ready';
+  }
+
+  function _uiFormatBytes(value){
+    var bytes = Number(value || 0);
+    if (bytes < 1000) return bytes + ' B';
+    var units = ['KB', 'MB', 'GB'];
+    var amount = bytes;
+    var unit = '';
+    for (var i = 0; i < units.length && amount >= 1000; i += 1){
+      amount /= 1000;
+      unit = units[i];
+    }
+    return (amount >= 10 ? amount.toFixed(0) : amount.toFixed(1))
+      + ' ' + unit;
+  }
+
+  function _uiFileType(filename){
+    var match = String(filename || '').match(/\.([^.]+)$/);
+    return match ? match[1].slice(0, 5).toUpperCase() : 'FILE';
+  }
+
+  function _uiHasFileDrag(event){
+    var transfer = event && event.dataTransfer;
+    if (!transfer || !transfer.types) return false;
+    return Array.prototype.indexOf.call(transfer.types, 'Files') !== -1;
+  }
+
+  function _uiDroppedFiles(transfer){
+    var files = Array.prototype.slice.call(
+      transfer && transfer.files ? transfer.files : []
+    );
+    if (files.length) return files;
+    return Array.prototype.slice.call(
+      transfer && transfer.items ? transfer.items : []
+    ).filter(function(item){
+      return item && item.kind === 'file';
+    }).map(function(item){
+      return item.getAsFile();
+    }).filter(Boolean);
+  }
+
+  function _uiInstallFileDropGuard(){
+    if (USER_INPUT_FILE_DROP_GUARD_INSTALLED) return;
+    USER_INPUT_FILE_DROP_GUARD_INSTALLED = true;
+    ['dragover', 'drop'].forEach(function(eventName){
+      window.addEventListener(eventName, function(event){
+        if (_uiHasFileDrag(event)) event.preventDefault();
+      });
+    });
   }
 
   function _uiTile(widgetId){
@@ -97,10 +167,21 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
   }
 
   function _uiSetPhase(state, phase, message, errorDetails){
+    if (state.savedTimer && phase !== 'saved'){
+      window.clearTimeout(state.savedTimer);
+      state.savedTimer = null;
+    }
     state.phase = phase;
     var tile = _uiTile(state.widgetId);
     if (!tile) return;
     tile.setAttribute('data-user-input-state', phase);
+    var dropzone = tile.querySelector('[data-user-input-dropzone]');
+    if (dropzone){
+      dropzone.setAttribute(
+        'aria-disabled',
+        phase === 'saving' || state.uploading ? 'true' : 'false'
+      );
+    }
     var status = tile.querySelector('[data-user-input-status]');
     if (!status) return;
     while (status.firstChild) status.removeChild(status.firstChild);
@@ -130,6 +211,18 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
       retry.addEventListener('click', function(){ _uiLoadAll(); });
       status.appendChild(retry);
     }
+  }
+
+  function _uiAcknowledgeSaved(state){
+    var label = _uiSavedLabel(state);
+    if (state.savedTimer) window.clearTimeout(state.savedTimer);
+    _uiSetPhase(state, 'saved', label);
+    state.savedTimer = window.setTimeout(function(){
+      state.savedTimer = null;
+      if (!state.dirty && state.phase === 'saved'){
+        _uiSetPhase(state, 'ready', label);
+      }
+    }, 1800);
   }
 
   function _uiRequestJson(url, options){
@@ -231,7 +324,7 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
       content: content
     }).then(function(response){
       _uiApplyServerWidget(state, response.widget, response.can_write);
-      _uiSetPhase(state, 'saved', 'Saved');
+      _uiAcknowledgeSaved(state);
     }).catch(function(error){
       _uiHandleMutationError(state, error);
     });
@@ -364,14 +457,7 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
     _uiSaveContent(state, {active_file_ids: activeFileIds});
   }
 
-  function _uiUploadFile(state, file){
-    if (!state.canWrite || !file || state.phase === 'saving') return;
-    if (file.size > USER_INPUT_MAX_FILE_BYTES){
-      _uiSetPhase(
-        state, 'unavailable', 'The selected file exceeds 25 MB.'
-      );
-      return;
-    }
+  function _uiUploadFile(state, file, index, total){
     var identity = _uiIdentity();
     var form = new FormData();
     form.append('owner', identity.owner);
@@ -384,15 +470,61 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
     );
     form.append('file', file, file.name);
 
-    _uiSetPhase(state, 'saving', 'Uploading');
-    _uiRequestJson(USER_INPUT_UPLOAD_API, {
+    _uiSetPhase(
+      state,
+      'saving',
+      total > 1
+        ? 'Uploading ' + index + ' of ' + total + ': ' + file.name
+        : 'Uploading ' + file.name
+    );
+    return _uiRequestJson(USER_INPUT_UPLOAD_API, {
       method: 'POST',
       headers: {'X-CSRFToken': _uiCsrfToken()},
       body: form
     }).then(function(response){
       _uiApplyServerWidget(state, response.widget, response.can_write);
-      _uiSetPhase(state, 'saved', 'Uploaded');
+      return response;
+    });
+  }
+
+  function _uiUploadFiles(state, fileList){
+    if (!state.canWrite || state.uploading) return;
+    var files = Array.prototype.slice.call(fileList || []).filter(Boolean);
+    if (!files.length) return;
+
+    var activeFiles = state.content && Array.isArray(state.content.files)
+      ? state.content.files.length : 0;
+    if (activeFiles + files.length > USER_INPUT_MAX_FILES){
+      _uiSetPhase(
+        state,
+        'unavailable',
+        'This widget can contain up to ' + USER_INPUT_MAX_FILES + ' files.'
+      );
+      return;
+    }
+    for (var i = 0; i < files.length; i += 1){
+      if (files[i].size > USER_INPUT_MAX_FILE_BYTES){
+        _uiSetPhase(
+          state,
+          'unavailable',
+          files[i].name + ' exceeds the 25 MB file limit.'
+        );
+        return;
+      }
+    }
+
+    state.uploading = true;
+    var chain = Promise.resolve();
+    files.forEach(function(file, fileIndex){
+      chain = chain.then(function(){
+        return _uiUploadFile(state, file, fileIndex + 1, files.length);
+      });
+    });
+    chain.then(function(){
+      state.uploading = false;
+      _uiAcknowledgeSaved(state);
     }).catch(function(error){
+      state.uploading = false;
       _uiHandleMutationError(state, error);
     });
   }
@@ -401,16 +533,103 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
     var files = state.content && Array.isArray(state.content.files)
       ? state.content.files : [];
     state.content = {files: files};
-    var list = _uiElement('div', 'user-input-file-list');
 
-    if (!files.length){
-      list.appendChild(_uiElement(
-        'div', 'user-input-empty', 'No files uploaded.'
+    if (state.canWrite){
+      var picker = document.createElement('input');
+      picker.type = 'file';
+      picker.className = 'user-input-file-picker';
+      picker.accept = (
+        '.pdf,.docx,.xlsx,.pptx,.msg,.txt,.md,.csv,.json,.png,.jpg,'
+        + '.jpeg,.gif,.webp,.bmp,.tif,.tiff'
+      );
+      picker.multiple = true;
+      picker.hidden = true;
+
+      var dropzone = _uiElement('div', 'user-input-dropzone');
+      dropzone.tabIndex = 0;
+      dropzone.setAttribute('role', 'button');
+      dropzone.setAttribute('data-user-input-dropzone', '');
+      dropzone.setAttribute(
+        'aria-label',
+        'Drop files here or choose files to upload'
+      );
+      dropzone.setAttribute(
+        'aria-disabled',
+        state.uploading ? 'true' : 'false'
+      );
+      dropzone.appendChild(_uiElement(
+        'span',
+        'user-input-drop-title',
+        'Drop files here or choose files'
       ));
+      dropzone.appendChild(_uiElement(
+        'span',
+        'user-input-drop-hint',
+        'PDF, Office, Outlook .msg, text and images · 25 MB each'
+      ));
+      dropzone.appendChild(picker);
+
+      function chooseFiles(selected){
+        _uiUploadFiles(state, selected);
+        picker.value = '';
+      }
+
+      dropzone.addEventListener('click', function(){
+        if (!state.uploading) picker.click();
+      });
+      dropzone.addEventListener('keydown', function(event){
+        if (
+          !state.uploading
+          && (event.key === 'Enter' || event.key === ' ')
+        ){
+          event.preventDefault();
+          picker.click();
+        }
+      });
+      picker.addEventListener('change', function(){
+        chooseFiles(picker.files);
+      });
+
+      var dragDepth = 0;
+      dropzone.addEventListener('dragenter', function(event){
+        if (!_uiHasFileDrag(event) || state.uploading) return;
+        event.preventDefault();
+        dragDepth += 1;
+        dropzone.classList.add('is-dragover');
+      });
+      dropzone.addEventListener('dragover', function(event){
+        if (!_uiHasFileDrag(event) || state.uploading) return;
+        event.preventDefault();
+        event.stopPropagation();
+        event.dataTransfer.dropEffect = 'copy';
+      });
+      dropzone.addEventListener('dragleave', function(event){
+        if (!_uiHasFileDrag(event)) return;
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (dragDepth === 0) dropzone.classList.remove('is-dragover');
+      });
+      dropzone.addEventListener('drop', function(event){
+        if (!_uiHasFileDrag(event) || state.uploading) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dragDepth = 0;
+        dropzone.classList.remove('is-dragover');
+        chooseFiles(_uiDroppedFiles(event.dataTransfer));
+      });
+      host.appendChild(dropzone);
     }
 
+    var list = _uiElement('div', 'user-input-file-list');
     files.forEach(function(file){
       var row = _uiElement('div', 'user-input-file-row');
+      var identity = _uiElement('div', 'user-input-file-identity');
+      identity.appendChild(_uiElement(
+        'span',
+        'user-input-file-type',
+        _uiFileType(
+          file.normalized_filename || file.original_filename || file.file_id
+        )
+      ));
       var main = _uiElement('div', 'user-input-file-main');
       var name = _uiElement(
         file.download_url ? 'a' : 'span',
@@ -425,13 +644,16 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
       var meta = _uiElement(
         'span',
         'user-input-file-meta',
-        String(file.size_bytes || 0) + ' bytes'
+        _uiFormatBytes(file.size_bytes)
       );
       main.appendChild(meta);
-      row.appendChild(main);
+      identity.appendChild(main);
+      row.appendChild(identity);
 
       if (state.canWrite){
-        var remove = _uiActionButton('Remove', 'user-input-compact');
+        var remove = _uiActionButton(
+          'Remove', 'user-input-compact user-input-danger'
+        );
         remove.addEventListener('click', function(){
           var remaining = files.filter(function(candidate){
             return candidate.file_id !== file.file_id;
@@ -442,24 +664,12 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
       }
       list.appendChild(row);
     });
-    host.appendChild(list);
-
-    if (state.canWrite){
-      var actions = _uiElement('div', 'user-input-actions');
-      var picker = document.createElement('input');
-      picker.type = 'file';
-      picker.className = 'user-input-file-picker';
-      picker.accept = (
-        '.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.png,.jpg,.jpeg,'
-        + '.gif,.webp,.bmp,.tif,.tiff'
-      );
-      actions.appendChild(picker);
-      var upload = _uiActionButton('Upload', 'user-input-primary');
-      upload.addEventListener('click', function(){
-        _uiUploadFile(state, picker.files && picker.files[0]);
-      });
-      actions.appendChild(upload);
-      host.appendChild(actions);
+    if (files.length){
+      host.appendChild(list);
+    } else if (!state.canWrite){
+      host.appendChild(_uiElement(
+        'div', 'user-input-empty', 'No files have been added.'
+      ));
     }
   }
 
@@ -507,9 +717,7 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
     _uiSetPhase(
       state,
       'ready',
-      state.canWrite
-        ? (state.updatedAt ? 'Saved ' + state.updatedAt : 'Ready')
-        : 'Read only'
+      state.canWrite ? _uiSavedLabel(state) : 'Read only'
     );
   }
 
@@ -570,6 +778,11 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
   function initUserInputs(){
     if (USER_INPUT_INITIALIZED) return;
     USER_INPUT_INITIALIZED = true;
+    if (Object.keys(USER_INPUTS).some(function(widgetId){
+      return USER_INPUTS[widgetId].mode === 'files';
+    })){
+      _uiInstallFileDropGuard();
+    }
     Object.keys(USER_INPUTS).forEach(function(widgetId){
       var entry = USER_INPUTS[widgetId];
       USER_INPUT_STATE[widgetId] = {
@@ -585,7 +798,9 @@ _USER_INPUT_CONTROLLER_JS_TEMPLATE = r"""
         dirty: false,
         phase: 'idle',
         updatedAt: null,
-        updatedBy: null
+        updatedBy: null,
+        uploading: false,
+        savedTimer: null
       };
       _uiRenderState(USER_INPUT_STATE[widgetId]);
       _uiSetPhase(USER_INPUT_STATE[widgetId], 'idle', 'Not loaded');
@@ -609,6 +824,10 @@ def _assemble_user_input_controller_js() -> str:
             "__USER_INPUT_MAX_FILE_BYTES__",
             str(USER_INPUT_MAX_FILE_BYTES),
         )
+        .replace(
+            "__USER_INPUT_MAX_FILES__",
+            str(USER_INPUT_MAX_FILES),
+        )
     )
 
 
@@ -623,5 +842,6 @@ __all__ = [
     "USER_INPUT_UPLOAD_API",
     "USER_INPUT_DOWNLOAD_API",
     "USER_INPUT_MAX_FILE_BYTES",
+    "USER_INPUT_MAX_FILES",
     "USER_INPUT_CONTROLLER_JS",
 ]

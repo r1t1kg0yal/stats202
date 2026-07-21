@@ -4026,20 +4026,24 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
 }
 
 /* persisted user input widget */
+.user-input-tile {
+  overflow: hidden;
+}
 .user-input-tile .tile-header {
-  padding: 14px 18px 8px 18px;
+  padding: 14px 16px 10px;
+  border-bottom: 0;
 }
 .user-input-body {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 8px 18px 16px 18px;
+  gap: 12px;
+  padding: 2px 16px 14px;
 }
-.user-input-description {
-  color: var(--text-dim);
-  font-size: 0.82rem;
-  line-height: 1.4;
-  padding: 0 18px 4px 18px;
+[data-user-input-content] {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 .user-input-access {
   color: var(--text-faint);
@@ -4049,12 +4053,28 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
   text-transform: uppercase;
 }
 .user-input-status {
-  min-height: 20px;
+  min-height: 18px;
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--text-faint);
-  font-size: 0.76rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+.user-input-status-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.user-input-status-text::before {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+  opacity: 0.75;
 }
 .user-input-tile[data-user-input-state="dirty"] .user-input-status {
   color: #8A5A00;
@@ -4074,20 +4094,20 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
   min-height: 110px;
   resize: vertical;
   box-sizing: border-box;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface);
+  padding: 11px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface-2);
   color: var(--text);
   font: inherit;
   line-height: 1.45;
 }
 .user-input-textarea:focus,
-.user-input-checklist-text:focus,
-.user-input-file-picker:focus {
+.user-input-checklist-text:focus {
   outline: none;
-  border-color: var(--gs-navy);
-  box-shadow: 0 0 0 2px rgba(0,47,108,0.12);
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 2px var(--accent-ring);
 }
 .user-input-textarea:disabled,
 .user-input-checklist-text:disabled {
@@ -4100,37 +4120,59 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+  min-height: 30px;
 }
 .user-input-button,
 .user-input-link-button {
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 3px;
   background: var(--surface);
   color: var(--text);
-  padding: 6px 10px;
+  min-height: 30px;
+  padding: 6px 11px;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: 0.74rem;
+  font-weight: 600;
   cursor: pointer;
+  transition: background-color 0.12s var(--ease),
+              border-color 0.12s var(--ease),
+              color 0.12s var(--ease);
 }
 .user-input-button:hover,
 .user-input-link-button:hover {
-  background: var(--surface-2);
+  background: var(--surface-hover);
+  border-color: var(--accent-2);
+  color: var(--accent);
 }
 .user-input-button:disabled {
   cursor: default;
   opacity: 0.45;
 }
 .user-input-button.user-input-primary {
-  background: var(--gs-navy);
-  border-color: var(--gs-navy);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #FFFFFF;
+  padding-inline: 14px;
+}
+.user-input-button.user-input-primary:hover {
+  background: var(--gs-navy-deep);
+  border-color: var(--gs-navy-deep);
   color: #FFFFFF;
 }
 .user-input-button.user-input-compact {
+  min-height: 26px;
   padding: 4px 7px;
-  font-size: 0.7rem;
+  font-size: 0.66rem;
+  font-weight: 500;
+}
+.user-input-button.user-input-danger:hover {
+  border-color: var(--neg);
+  background: var(--neg-soft);
+  color: var(--neg);
 }
 .user-input-link-button {
   border: 0;
+  min-height: auto;
   padding: 0;
   background: transparent;
   color: inherit;
@@ -4140,7 +4182,7 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
 .user-input-file-list {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 6px;
 }
 .user-input-checklist-row,
 .user-input-file-row {
@@ -4149,20 +4191,55 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
   gap: 8px;
   min-width: 0;
 }
+.user-input-checklist-row {
+  padding: 5px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
+}
+.user-input-checklist-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0 2px;
+  accent-color: var(--accent);
+}
 .user-input-checklist-text {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 7px 9px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--surface);
+  padding: 6px 7px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
   color: var(--text);
   font: inherit;
 }
 .user-input-file-row {
   justify-content: space-between;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface);
+}
+.user-input-file-identity {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.user-input-file-type {
+  width: 34px;
+  height: 30px;
+  flex: 0 0 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 .user-input-file-main {
   min-width: 0;
@@ -4171,25 +4248,73 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
   gap: 2px;
 }
 .user-input-file-name {
-  color: var(--gs-navy);
-  font-size: 0.84rem;
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-decoration: none;
   overflow-wrap: anywhere;
+}
+.user-input-file-name:hover {
+  text-decoration: underline;
 }
 .user-input-file-meta,
 .user-input-empty {
   color: var(--text-faint);
-  font-size: 0.74rem;
+  font-size: 0.68rem;
 }
 .user-input-file-picker {
-  flex: 1 1 260px;
-  min-width: 0;
+  display: none;
+}
+.user-input-dropzone {
+  min-height: 82px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 14px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 3px;
+  background: var(--surface-2);
   color: var(--text-dim);
+  text-align: center;
+  cursor: pointer;
+  transition: background-color 0.12s var(--ease),
+              border-color 0.12s var(--ease),
+              box-shadow 0.12s var(--ease);
+}
+.user-input-dropzone:hover,
+.user-input-dropzone:focus,
+.user-input-dropzone.is-dragover {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+.user-input-dropzone[aria-disabled="true"] {
+  cursor: wait;
+  opacity: 0.58;
+}
+.user-input-drop-title {
+  color: var(--text);
   font-size: 0.78rem;
+  font-weight: 600;
+}
+.user-input-drop-hint {
+  color: var(--text-faint);
+  font-size: 0.66rem;
+  line-height: 1.35;
 }
 :root[data-theme="dark"] .user-input-button.user-input-primary {
   background: var(--gs-sky);
   border-color: var(--gs-sky);
   color: #081526;
+}
+:root[data-theme="dark"] .user-input-button.user-input-primary:hover {
+  background: #9CB8DB;
+  border-color: #9CB8DB;
 }
 
 /* motion preferences */
@@ -16794,12 +16919,6 @@ def _render_image_widget(w: Dict[str, Any], cols: int,
 def _render_user_input_widget(w: Dict[str, Any], cols: int,
                               wid: str, style: str) -> str:
     mode = str(w.get("mode") or "")
-    description = w.get("description")
-    description_html = (
-        f'<div class="user-input-description">'
-        f'{_html_escape(str(description))}</div>'
-        if description else ""
-    )
     cls = _tile_class(w, "tile user-input-tile")
     return (
         f'<div class="{cls}" data-tile-id="{_html_escape(wid)}" '
@@ -16811,7 +16930,6 @@ def _render_user_input_widget(w: Dict[str, Any], cols: int,
         f'    <span class="user-input-access" '
         f'data-user-input-access hidden></span>'
         f'  </div>'
-        f'  {description_html}'
         f'  <div class="user-input-body">'
         f'    <div data-user-input-content></div>'
         f'    <div class="user-input-status" '
