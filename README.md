@@ -75,88 +75,36 @@ PRISM right now.
 │                                       context rewrite awaits promote. │
 │                                       Test surface: ~100 API-only     │
 │                                       tests + targeted galleries.     │
-│  echarts      ████████████████████  mature + GARBAGE GATE +       │
-│                                       SPLIT ARCHITECTURE VERIFIED  │
-│                                       (2026-07-19): 10 Python      │
-│                                       files staged; 8 installed   │
-│                                       (7 prism-core + 1 parent);  │
-│                                       context =                    │
-│                                       registered router +         │
-│                                       list_ai_repo kernel +       │
-│                                       9 spokes; 8 test prompts    │
-│                                       remain staging-only. Local  │
-│                                       publish now requires a       │
-│                                       one-line-per-panel review,   │
-│                                       flagged-panel drill-down,    │
-│                                       exact rationale ack, then    │
-│                                       guarded build. BLOCK cannot  │
-│                                       be acknowledged; stable raw  │
-│                                       refresh buckets carry ack.   │
-│                                       harness uses core /         │
-│                                       dashboards / jobs /         │
-│                                       prism_mcp / prism_meta / web│
-│                                       directly; old               │
-│                                       ai_development mirror       │
-│                                       archived and inactive.      │
-│                                       INVENTORY CLOSED; BYTE      │
-│                                       PARITY OPEN: checked-out    │
-│                                       core is ahead of the parent │
-│                                       gitlink; all prompt-baseline│
-│                                       rows differ.                │
-│                                       UPLIFT LANDED (2026-05-12);   │
-│                                       COMPILE ⇔ REFRESH-ATTACH      │
-│                                       INVARIANT + HEAL DOCTRINE     │
-│                                       LANDED (2026-05-12):          │
-│                                       NEW echart_dashboard.         │
-│                                       _audit_refresh_attachment +   │
-│                                       RefreshAttachmentError;       │
-│                                       wired into build_dashboard    │
-│                                       end (strict=False; Tool-2     │
-│                                       carve-out) + refresh_         │
-│                                       dashboard start (strict=True; │
-│                                       fail-fast); catches the 15    │
-│                                       canonical drift patterns      │
-│                                       (registry orphan, refresh_    │
-│                                       frequency mismatch, silent-   │
-│                                       stale dataset, unparseable    │
-│                                       script, missing metadata,     │
-│                                       ...) via static-parse helpers │
-│                                       (_infer_pull_stems_from_      │
-│                                       source / _infer_transform_    │
-│                                       keys_from_source); dashboards │
-│                                       .md skill gained §H Heal      │
-│                                       recipe (~95 lines); 31 new    │
-│                                       unit tests pass; gallery at   │
-│                                       dev/_gallery_refresh_         │
-│                                       attachment_audit.py renders   │
-│                                       compliant baseline + 7 drift  │
-│                                       scenarios. Pre-this-edit:     │
-│                                       new dashboards_time.py        │
-│                                       canonical helpers (parse_iso  │
-│                                       / format_iso / freq_delta /   │
-│                                       is_stale / format_pill);      │
-│                                       build_dashboard stamps        │
-│                                       metadata.time.* four-times    │
-│                                       schema + server-bakes         │
-│                                       pill_text (no JS date math);  │
-│                                       chrome JS pollLiveData loop   │
-│                                       swaps datasets in-place every │
-│                                       60s (ETag-gated); 2x          │
-│                                       location.reload() in refresh  │
-│                                       button replaced with in-place │
-│                                       swap; stat_grid HYBRID        │
-│                                       client-render; resolve_chart_ │
-│                                       specs public alias; new dev/  │
-│                                       live_refresh_harness.py       │
-│                                       mimics views.py endpoints for │
-│                                       local validation; PRISM-side  │
-│                                       prompt paste-ready at         │
-│                                       staging/prompts/open/         │
-│                                       2026-05-11_views_py_time_     │
-│                                       refresh_uplift.md; deferred   │
-│                                       follow-up: pull-helper        │
-│                                       sidecar pull_completed_at     │
-│                                       stamping (own prompt)         │
+│  echarts      ████████████████████  mature + GARBAGE GATE +         │
+│                                       SPLIT ARCHITECTURE. Canonical  │
+│                                       payload: 10 Python files +    │
+│                                       registered router, kernel,    │
+│                                       9 spokes; 8 test prompts stay │
+│                                       staging-only. Local publish   │
+│                                       requires panel receipts,      │
+│                                       flagged drill-down, exact     │
+│                                       rationale ack, guarded build. │
+│                                       2026-07-21 LIVE: Composer is  │
+│                                       response-only on canonical    │
+│                                       user dashboards; drag         │
+│                                       allowlists all 12 kinds but   │
+│                                       still sends 7 scalar fields.  │
+│                                       Note/semantic-markdown header │
+│                                       lookup is mismatched and no   │
+│                                       headerless grips exist.       │
+│                                       getWidgetSnapshot exists but  │
+│                                       is uncalled; no snapshot      │
+│                                       validator/merger or prod      │
+│                                       tests exist. Persisted input  │
+│                                       GET/save/upload/download is   │
+│                                       live; conditional writes use  │
+│                                       raw boto3 and can degrade to  │
+│                                       a non-atomic plain PUT. BYTE  │
+│                                       PARITY OPEN: checked-out core │
+│                                       bf4bcd12 is ahead of parent   │
+│                                       gitlink 1e6d3955; all four    │
+│                                       measured Composer/input files │
+│                                       differ from candidate.        │
 │  apis         ████████████████████  5 PRISM-shape (treasury,         │
 │                                       treasury_direct, bis, + Canada: │
 │                                       statcan + bank_of_canada,       │
@@ -222,7 +170,7 @@ PRISM right now.
 | Project | Maturity | Repo path (canonical) | Payload source | PRISM destination | Rule | prism/ refs | Active endeavor / spec |
 |---------|----------|-----------------------|----------------|-------------------|------|-------------|------------------------|
 | altair | mature engine + markdown-table ban + lean registered router/core and 6 on-demand spokes; engine Python prod-verified, context rewrite pending promotion | `projects/altair/` | `projects/altair/altair-payload/` | `prism-core/prism_mcp/utils/{chart_functions,chart_functions_studio}.py` + `prism-core/context/modules/static/tools/chart_context.md` (registered router/core) + `prism-core/context/modules/static/tools/charts/chart_context_{annotations,dual_axis,composites,tables,grids,colors}.md` | `.cursor/rules/viz-platforms.mdc` | `code-sandbox.md`, `mcp-utils.md`, `vision-qc.md`, `mcp-tools.md` §3+§5 | Context split implemented locally; constrained RBR + next PRISM promotion verify routing |
-| echarts | mature; reliability-first compiler with a documented Dashboard Garbage Gate (panel receipt → flagged drill-down → exact rationale acknowledgment → guarded build), data-quality, helper-aware producer graph, targeted manifest edits, persisted dashboard input, interaction, theme, and curated-primitives roadmap; split-package architecture re-verified 2026-07-11; destination inventory is closed but installed-byte parity remains open because the checked-out submodule does not match the parent gitlink | `projects/echarts/` | `projects/echarts/echarts-payload/` (10 Python files incl. `dashboard_share.py` + `dashboard_user_input.py` + 11 context files: registered router, on-demand kernel, 9 spokes; 8-file/63-prompt `test_prompts/` remains staging-only) | 9 modules in `prism-core/dashboards/` after next promote (adds `dashboard_share.py` and `dashboard_user_input.py`) + parent-tree `jobs/hourly/refresh_dashboards.py` + `prism-core/context/modules/static/tools/{dashboards,dashboards_hub}.md` + `tools/dashboards/*.md`; local runtime mirrors the split checkout through `core/`, `dashboards/`, `jobs/`, `prism_mcp/`, `prism_meta/`, and `web/` | `.cursor/rules/viz-platforms.mdc` | `codebase-tree.md` §0+§5, `code-sandbox.md` §2.4+§8, `mcp-tools.md` §5, `dashboard-refresh.md`, `dashboards-portal.md` | `projects/echarts/dev/specs/dashboard_user_input.md` (PRISM Django/S3 implementation contract); `staging/prompts/open/2026-07-11_dashboard_architecture_validation.md` (CDN reachability and byte parity remain open) |
+| echarts | mature reliability-first compiler with Dashboard Garbage Gate, persisted input, refresh, and hub/spoke context; 2026-07-21 live Composer state is response-only mount + all-12 allowlist + seven-field canonical-only drag, with installed snapshot producer uncalled and validator/tests absent; persisted-input routes are live; installed-byte parity remains open because checked-out core is ahead of the parent gitlink and all four measured files differ | `projects/echarts/` | `projects/echarts/echarts-payload/` (10 Python files incl. `dashboard_share.py` + `dashboard_user_input.py` + 11 context files: registered router, on-demand kernel, 9 spokes; 8-file/63-prompt `test_prompts/` remains staging-only) | 9 canonical modules target `prism-core/dashboards/` + parent-tree `jobs/hourly/refresh_dashboards.py` + `prism-core/context/modules/static/tools/{dashboards,dashboards_hub}.md` + `tools/dashboards/*.md`; live extraction confirms `dashboard_share.py` and `dashboard_user_input.py` exist but did not rerun a complete payload inventory count; local runtime mirrors the split checkout through `core/`, `dashboards/`, `jobs/`, `prism_mcp/`, `prism_meta/`, and `web/` | `.cursor/rules/viz-platforms.mdc` | `codebase-tree.md` §0+§5, `code-sandbox.md` §2.4+§8, `mcp-tools.md` §5, `dashboard-refresh.md`, `dashboards-portal.md` | `projects/echarts/dev/specs/{composer_dashboard_stack,dashboard_user_input}.md`; live extraction archived at `staging/prompts/archive/2026-07-21_composer_s3_full_stack_refresh.md` |
 | apis | 9 PRISM-shape clients (treasury / treasury_direct / bis migrated; statcan / bank_of_canada / wid / ai_buildout / ilo / imf net-new), rule codified, Session 8 in flight + net-new sources through 2026-06-14 (imf) | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `core/mcp/clients/*_client.py` (prism-main parent tree; transport at `core/mcp/gs_app_proxy_negotiate.py` — verified 2026-07-07) + `prism-core/context/modules/static/{data_guides,instruments,tools}/*.md` (guide paths not yet re-verified post-reorg) | `.cursor/rules/api-clients.mdc` | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
 | frontend | MVP RUNNING + FULL REFACTOR + UI UPLIFT IN FLIGHT | `projects/frontend/` | `projects/frontend/frontend-payload/ai_development/` | `ai_development/mysite/` + `ai_development/mysite/news/static/css/{tokens,fonts,base}.css` + settings.py PATCH (STATICFILES_DIRS) + URL-grammar unification (10 legacy URLs 301 to canonical) + filesystem reads from `ai_development/context/white_papers/` (was S3 `secondary/technical_docs/`) + frontmatter-driven `_doc_registry()` pipeline in views.py + enriched `doc_page.html` chrome (TOC, breadcrumbs, related, prev/next) + topic-chip listings + home featured-resources block | — | `dashboards-portal.md`, `architecture.md` §10 | `projects/frontend/dev/specs/ui_uplift.md` (per-surface UI uplift plan; locked 2026-05-03); `projects/frontend/dev/specs/design_system.md` (token + component SSOT); `staging/prompts/open/2026-05-02_frontend_full_context.md` (PRISM-verbatim sync prompt) |
 | whitepapers | intake VERIFIED + workshop PLAN LOCKED + frontmatter on all 5 inherited docs | `projects/whitepapers/` | `projects/whitepapers/whitepapers-payload/*.md` | `ai_development/context/white_papers/{whitepaper_data_integrations,whitepaper_user_personalization,whitepaper_world_state_and_reasoning,faq,email_usage_guide}.md` (filenames change to canonical slugs once workshop pass renames per `dev/specs/whitepaper_workshop.md` §8) | — | sourced from `projects/whitepapers/dev/scans/2026-05-02_whitepapers_intake.md` (OCR) + `2026-05-02_whitepapers_s3_verify_reply.md` (S3 verbatim verify). Plan: `projects/whitepapers/dev/specs/whitepaper_workshop.md`. | All 5 inherited docs now have YAML frontmatter (slug + title + format + topic + audience + last_updated + reading_time + summary + related + sequence + featured). Body workshop pass: collapse to 6-doc target set (3 whitepapers + 3 guides; "What is Prism" + "Getting started" are NEW). Spread across whitepapers turns 2-4 (workshop_spec §7). Dual-surface lock DEFERRED — workshop customer-facing first, L2 alignment is follow-up. |
@@ -370,18 +318,18 @@ dependencies at render time.
 
 | Aspect | Value |
 |---|---|
-| Drag-and-drop status | Split architecture and installed inventory re-verified 2026-07-11: all 8 Python payload files and all 11 context files are at the expected destinations; 8 test-prompt files are absent from production as intended. Installed-byte parity is not closed: the checked-out `prism-core` SHA differs from the commit recorded by `prism-main`, every prompt-baseline file therefore compares `DIFFERS`, and `echart_studio.py` has a real content delta. Reconcile the checkout before any zero-delta or promotion-complete claim. |
+| Drag-and-drop status | Split architecture re-extracted 2026-07-21. The live Composer/user-input inventory confirms `dashboard_share.py` and `dashboard_user_input.py` now exist at their submodule destinations, superseding the prior "8 installed, both pending" claim; this pass did not rerun a complete payload/context count. Installed-byte parity remains open: checked-out clean `prism-core` `bf4bcd12…` is ahead of parent-recorded gitlink `1e6d3955…`, and all four measured files classify `DIFFERS` — `rendering.py` `913ce12d…` vs candidate `b4d5e4c2…`, `dashboard_user_input.py` `c306c868…` vs `ea680ea6…`, `echart_dashboard.py` `9d4cf5c6…` vs `979d2a6f…`, `__init__.py` `970647c7…` vs `d6b98506…`. |
 | Canonical payload | `projects/echarts/echarts-payload/` — `__init__.py`, `config.py`, `dashboards_time.py`, `echart_dashboard.py`, `echart_studio.py`, `rendering.py`, `dashboard_share.py`, `dashboard_user_input.py`, `refresh_runner.py`, `refresh_dashboards.py`, `dashboards.md`, `dashboards_hub.md`, and `dashboards/*.md`. Python files land in `prism-core/dashboards/` except `refresh_dashboards.py`, which lands in parent-repo `jobs/hourly/`; context files land in `prism-core/context/modules/static/tools/`. `test_prompts/` is always staging-only. |
 | Local runtime mirrors | Production-shaped root packages: `core/` (filesystem-backed S3, common, user-manifest, and NY Fed client stubs), `dashboards/` (links to payload Python), `jobs/hourly/` (link to payload cron entry point), `prism_mcp/utils/` (data/log/completion stubs), `prism_meta/` (`REPO_ROOT`), and one primary asset at `web/backend_django/news/static/js/echarts.js`. The retired `ai_development/` mirror is archived under `dev/archive/` and not active. |
 | Playwright sweep | `projects/echarts/dev/inspect_dashboard.py` plus `dev/live_refresh_harness.py --verify` for live refresh and persisted text/checklist/file input |
 | Skill shape | Registered router + on-demand kernel + 9 ownership spokes. `dashboards.md` is the only `MODULE_REGISTRY` entry; it routes each phase to short-path `list_ai_repo` fetches. `dashboards_hub.md` owns cross-cutting contracts. `dashboards/{build,diagnose,template_crud,pipelines,recipes,charts,widgets,widget_tool,filters}.md` own first-build, repair, mutation, data-flow, archetype, and primitive depth. `TestContextIntegrity`, `TestContextBudgets`, and `TestSpokeDriftPrevention` pin the topology and engine/context contract. |
 | Validation gates | Strict compilation reports all structural, compute, binding, and data diagnostics in one pass; always-blocking render failures raise even with `strict=False`. The Dashboard Garbage Gate adds a bounded one-line-per-panel review, flagged-panel drill-down, exact rationale acknowledgment, signature-stable raw refreshes, and the same current-data gate for saved-definition restores. Literal date tokens and invalid gauges block; sparse/gappy/spiky lines, categorical `ALL_ZERO`/`PARTIAL` marks, narrative-table wrap risk, and browser-only tools require review. Registered producer analysis follows local writer/materializer helpers, literal propagation, and finite literal loops while separating unresolved dynamic outputs from definite stale/unattached datasets. |
-| Regression coverage | `dev/tests.py` runs 1,058 unit tests plus 11 deterministic stress scenarios. `dev/qc_runner.py` runs 72 adversarial validation fixtures across required-path, exhaustive-diagnostic, series-cap, messy-data, edit-regression, pipeline-graph, tool-JS, and empty-visual surfaces. Qualification adds subprocess, roleplay, smoke CLI, Playwright interaction, persisted-input browser flows, live-refresh, and full showcase gates. |
+| Regression coverage | `dev/tests.py` runs 1,071 unit tests plus 11 deterministic stress scenarios. `dev/qc_runner.py` runs 72 adversarial validation fixtures across required-path, exhaustive-diagnostic, series-cap, messy-data, edit-regression, pipeline-graph, tool-JS, and empty-visual surfaces. Qualification adds subprocess, roleplay, smoke CLI, Playwright interaction, persisted-input browser flows, live-refresh, and full showcase gates. |
 | Notes file | `projects/echarts/dev/notes.md` |
 | QC workflow | `workflows/dashboard_qc.md` — adversarial manifest synth + vision grading |
 | Test prompts | `echarts-payload/test_prompts/{charts,diagnose,filters,pipelines,recipes,template_crud,widget_tool,widgets}_test.md` — 8 files / 63 pure user blocks (`template_crud` has 10, `charts` has 9, `pipelines` and `widgets` have 8 each, and the other four files have 7). Chart/widget/tool/diagnosis prompts explicitly cover receipt review, panel drill-down, rationale acknowledgment, then guarded build. STAGING-ONLY; none ship to PRISM. The inventory is enforced by `TestContextIntegrity`; `build.md` is covered through create/edit prompts rather than a separate prompt file. |
 | Feedback absorption | Dashboard incidents covering manifest loss, tool-JS leakage, parameterized inputs, popup behavior, derivation coupling, helper-hidden producer outputs, and reverts are absorbed into typed manifest/script transactions, helper-aware registered call graphs, shared popup/inline controllers, pipeline contracts, and blocking validation. Matching regression prompts live under `echarts-payload/test_prompts/`; per-incident routing remains in `projects/echarts/README.md` and `dev/notes.md`. |
-| Remaining integration work | Browser-triggered refresh still does not update the user-manifest dashboard pointer; the hourly orchestrator does. Production promotion also remains blocked until the live `prism-core` checkout is reconciled to the commit recorded by `prism-main` and candidate-versus-live byte classification is rerun. Composer Stages 1–2b are landed in the PRISM working tree (2026-07-19 review): injector, six-kind owner drag, canonical inlined widget bodies, live resolver, and multi-tab/history/SSE polish. The canonical ECharts payload now adds neutral bounded `getWidgetSnapshot(widgetId)` coverage for all 12 top-level kinds; promote that payload before enabling the PRISM all-widget consumer. The exact parent-repo work — 12-kind handles, snapshot-preserving Composer state, `composer_dashboard_snapshot.py`, per-kind server merge, user-input resolution, prompt framing, errors, and tests — is specified in `projects/echarts/dev/specs/composer_dashboard_stack.md`. Remaining Composer operations are parent implementation, owned/shared smoke, `enable_inline_chat` confirmation, local-dev port/ACL cleanup, and the empty `website_dev.md` registry follow-up. The reliability roadmap's namespace, strict-mode, data-integrity, helper-aware producer analysis, transactional-script, popup/filter/layout, theme, geo/grid, and export work is complete locally. |
+| Remaining integration work | Browser-triggered refresh still does not update the user-manifest dashboard pointer; the hourly orchestrator does. Reconcile the `prism-core` gitlink/checkout and rerun byte classification before promotion. Live Composer now mounts response-only and allowlists all 12 kinds, but semantic markdown and legacy `note` render `.note-head` while the live boot looks for `.tile-header`; those two plus plain markdown, untitled image, and divider are not draggable. Its artifact remains the seven scalar fields; installed `getWidgetSnapshot(widgetId)` is uncalled, `composer.js` carries no snapshot fields, and `composer_dashboard_snapshot.py` plus production tests are absent. Finish `.note-head` binding, headerless grips, dragstart capture, state/history/POST preservation, purpose-split resolution, deterministic validation/per-kind merge, prompt framing, explicit errors, and owned/shared tests per `projects/echarts/dev/specs/composer_dashboard_stack.md`. Persisted user-input GET/save/upload/download and authoritative server resolution are already live; conditional S3 uses a raw-boto3 bypass with a non-atomic plain-put degrade on unsupported stores, and no production tests. Installed reload halves use the matched old streaming pair; candidate neutral navigation-hold naming awaits paired promotion. Preserve seven unstaged parent Composer files while implementing; `enable_inline_chat`, local-dev port/ACL cleanup, and empty `website_dev.md` remain follow-ups. |
 | v2 install status (built 2026-05-04; production re-verified 2026-07-11) | The folder workflow is installed: `run_pull` / `build_dashboard` / `refresh_dashboard`, `refresh_runner.py`, and parent-tree `jobs/hourly/refresh_dashboards.py`. The runner records phase-specific errors and refresh status; the hourly orchestrator isolates per-dashboard failures, categorizes skips, and updates each successful user's manifest pointer after the walk. Django invokes the same runner through `Popen`, but does not perform that pointer update. The active paths are `prism-core/dashboards/refresh_runner.py`, `jobs/hourly/refresh_dashboards.py`, and `web/backend_django/news/views.py`; old `ai_development/...` install prompts are historical. |
 
 ### apis — external API client platform
@@ -501,13 +449,16 @@ which is why this design exists.
 | `echarts-payload/` | Ephemeral drag-and-drop copy of `projects/echarts/echarts-payload/`. Same semantics. |
 | `frontend-payload/` | (FUTURE — not yet promoted) Will be the ephemeral drag-and-drop copy of `projects/frontend/frontend-payload/ai_development/`. Same semantics; lands when the first PRISM promotion happens after the `2026-05-02_frontend_full_context.md` reply lands. |
 | `voice_memos.md` | Raw capture space — unstructured thoughts, undated. Content is promoted to a project-side design spec or endeavor file when it matures. Low-friction exception to the "staging has a narrow purpose" rule. |
+| `specs/` + `dashboard_user_input.md` | Compatibility pointers only. The former duplicate ECharts specs were retired; maintained bodies live under `projects/echarts/dev/specs/`. |
+| `2026-07-20_composer_streaming_reload_change.md` | Existing paired prism-main/payload implementation handoff, retained because its gallery and external workflow reference this path. Its status banner distinguishes the live matched old pair from the canonical neutral candidate. |
 | `prompts/` | PRISM-facing context-extraction prompts. |
 | `prompts/open/` | Live prompts waiting to be sent, or sent but with reply not yet folded into `prism/`. One file per prompt, named `YYYY-MM-DD_<topic>.md` (unique topic slug per prompt — concurrent agents never collide on a shared slot). Frontmatter carries the session, send date, reply pointer, and fold-in plan. |
 | `prompts/archive/` | Dated archive of past prompts (`YYYY-MM-DD_<topic>.md`) with frontmatter metadata. A prompt moves here (same filename, no rename) once the PRISM reply has been folded into `prism/` and the frontmatter is finalized with `status: USED` + `reply_folded_into:` pointers. |
 
-No more `handoffs/`, `apis_endeavor.md`, `altair_composites_spec.md`,
-or `archive/` in staging/ — those moved to their projects' `dev/`
-subfolders or to `archive/` at repo root in the 2026-05-02 restructure.
+There are no active duplicate specs or general handoff directories in
+staging. Maintained project contracts live under `projects/<name>/dev/`;
+the pointer files and the path-stable Composer reload handoff listed
+above are explicit compatibility exceptions.
 
 ---
 

@@ -1,5 +1,16 @@
 # Composer streaming and dashboard reload handshake
 
+> CURRENT STATUS (verified 2026-07-21): this neutral handshake is the
+> canonical candidate, not the installed live pair. Live `composer.js`
+> publishes `window.__prismComposerStreaming` /
+> `prism:composer-streaming-change`, and installed `rendering.py` listens
+> to those same names; the live halves are internally consistent.
+> Canonical `projects/echarts/echarts-payload/rendering.py` uses the
+> neutral names below and differs from installed bytes
+> (`b4d5e4c2…` candidate vs `913ce12d…` installed). Land this as a paired
+> parent `composer.js` edit plus byte-identical payload promotion; do not
+> treat the current live old pair as a mixed runtime defect.
+
 ## Purpose
 
 Prevent the dashboard's automatic structural reload from interrupting an

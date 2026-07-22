@@ -21084,6 +21084,7 @@ class ChartSpec:
     x_title: Optional[str] = None
     y_title: Optional[str] = None
     y_title_right: Optional[str] = None
+    _caption_from_source: bool = field(default=False, init=False, repr=False)
 
     def __init__(
         self,
@@ -21116,8 +21117,11 @@ class ChartSpec:
         self.annotations = annotations
         self.layers = layers
         # source= fills an unset caption with the same uniform rule as
-        # make_chart / make_table. Explicit caption wins.
-        if source and caption is None:
+        # make_chart / make_table. Track provenance so composite layouts
+        # can compact repeated source captions without ever deleting a
+        # caller-authored caption that happens to start with "Source:".
+        self._caption_from_source = bool(source and caption is None)
+        if self._caption_from_source:
             caption = f"Source: {source}"
         self.caption = caption
         self.source = source
@@ -23604,6 +23608,149 @@ def _summarize_chart_errors(
     return scope + ":\n" + "\n".join(lines)
 
 
+def _normalized_source_attribution(
+    source: Optional[str],
+) -> Optional[Tuple[str, str]]:
+    """Return ``(display, comparison_key)`` for a source attribution.
+
+    Comparison is deliberately conservative: trim/collapse whitespace and
+    case-fold, but do not reinterpret punctuation, separators, or words such
+    as "via". The first panel's spelling remains the rendered spelling when
+    otherwise-equivalent sources compact to one footer.
+    """
+    if source is None:
+        return None
+    display = " ".join(str(source).split())
+    if not display:
+        return None
+    return display, display.casefold()
+
+
+def _resolve_composite_source_attribution(
+    charts: List[ChartSpec],
+    *,
+    caption: Union[str, Dict[str, Any], None],
+    source: Optional[str],
+) -> Tuple[
+    List[ChartSpec],
+    Union[str, Dict[str, Any], None],
+    List[str],
+]:
+    """Resolve panel and pack sources into the least repetitive layout.
+
+    Only captions auto-generated from ``ChartSpec(source=...)`` are eligible
+    for compaction. Explicit panel and pack captions are never rewritten.
+
+    Resolution policy:
+      * complete, unanimous effective sources -> one pack footer;
+      * differing effective sources -> per-panel footers, no pack footer;
+      * pack ``source`` supplies otherwise-unsourced panels when sources
+        differ;
+      * incomplete attribution without a pack source stays panel-local rather
+        than making a global attribution claim.
+
+    Shallow copies are created only for panels whose rendered caption changes,
+    so caller-owned ``ChartSpec`` objects remain reusable and untouched.
+    """
+    if caption is not None:
+        # Existing public contract: an explicit pack caption wins over
+        # pack source. It also owns the only pack-footer slot, so leave
+        # panel captions exactly as authored.
+        return charts, caption, []
+
+    pack_source = _normalized_source_attribution(source)
+    panel_sources: List[Optional[Tuple[str, str]]] = []
+    for spec in charts:
+        if getattr(spec, "_caption_from_source", False):
+            panel_sources.append(_normalized_source_attribution(spec.source))
+        else:
+            panel_sources.append(None)
+
+    effective_sources = [
+        panel_source if panel_source is not None else pack_source
+        for panel_source in panel_sources
+    ]
+    available = [item for item in effective_sources if item is not None]
+    if not available:
+        return charts, None, []
+
+    full_coverage = len(available) == len(charts)
+    distinct_keys = {item[1] for item in available}
+    audit: List[str] = []
+
+    if full_coverage and len(distinct_keys) == 1:
+        # Prefer a panel-authored spelling over the pack default. This also
+        # makes unanimous panels authoritative when a conflicting outer
+        # source was redundantly supplied.
+        canonical = next(
+            (item for item in panel_sources if item is not None),
+            available[0],
+        )
+        resolved_charts: List[ChartSpec] = []
+        compacted = 0
+        for spec, panel_source in zip(charts, panel_sources):
+            if panel_source is None:
+                resolved_charts.append(spec)
+                continue
+            resolved = copy.copy(spec)
+            resolved.caption = None
+            resolved._caption_from_source = False
+            resolved_charts.append(resolved)
+            compacted += 1
+
+        if compacted:
+            audit.append(
+                "Composite source attribution compacted "
+                f"{compacted} repeated panel footer(s) into one pack footer: "
+                f"{canonical[0]}."
+            )
+        if pack_source is not None and pack_source[1] != canonical[1]:
+            audit.append(
+                f"Pack source {pack_source[0]!r} was suppressed in favour of "
+                f"the unanimous panel source {canonical[0]!r}."
+            )
+        return resolved_charts, f"Source: {canonical[0]}", audit
+
+    # Differing or incomplete sources must stay panel-local. A pack source is
+    # inherited only by panels with a genuinely free caption slot; it is never
+    # duplicated below the whole composite.
+    resolved_charts = list(charts)
+    inherited = 0
+    if pack_source is not None:
+        for i, (spec, panel_source) in enumerate(zip(charts, panel_sources)):
+            if panel_source is not None or spec.caption is not None:
+                continue
+            resolved = copy.copy(spec)
+            resolved.source = pack_source[0]
+            resolved.caption = f"Source: {pack_source[0]}"
+            resolved._caption_from_source = True
+            resolved_charts[i] = resolved
+            inherited += 1
+
+    if len(distinct_keys) > 1:
+        audit.append(
+            "Composite kept source attribution at panel level because "
+            "effective panel sources differ; no pack source footer was emitted."
+        )
+    elif not full_coverage:
+        audit.append(
+            "Composite kept partial source attribution at panel level because "
+            "not every panel has a source; no global source footer was emitted."
+        )
+    if pack_source is not None:
+        if inherited:
+            audit.append(
+                f"Pack source {pack_source[0]!r} was inherited by "
+                f"{inherited} otherwise-unsourced panel(s)."
+            )
+        else:
+            audit.append(
+                f"Pack source {pack_source[0]!r} was suppressed because "
+                "panel-specific attribution is authoritative."
+            )
+    return resolved_charts, None, audit
+
+
 def make_composite(
     charts: List[ChartSpec],
     layout: LayoutType,
@@ -23641,20 +23788,17 @@ def make_composite(
 
     Composite-level text panels:
       ``caption`` sits below the entire pack (composite footer).
-      ``source`` fills an unset caption with ``Source: {source}``
-      (same uniform rule as ``make_chart`` / ``make_table`` /
-      ``ChartSpec``); an explicit ``caption`` always wins.
+      Source attribution compacts automatically: unanimous panel sources
+      render once at pack level; differing panel sources stay beneath their
+      panels and suppress the pack source footer. ``source`` supplies panels
+      that do not declare their own source. Explicit captions are never
+      rewritten, and an explicit pack ``caption`` always wins its slot.
       ``side_left`` / ``side_right`` flank the whole pack (also
       accepted under the legacy aliases ``narrative_left`` /
       ``narrative_right``). Each accepts a string or a style dict
       (see ``make_chart``). Sub-chart-level text panels live on each
       ``ChartSpec`` instead.
     """
-    # source= fills an unset pack-level caption (same uniform rule as
-    # make_chart / make_table / ChartSpec). Explicit caption wins.
-    if source and caption is None:
-        caption = f"Source: {source}"
-
     warnings_list: List[str] = []
     dimension_preset, narrative_left, narrative_right, alias_warnings = (
         _resolve_composite_aliases(
@@ -23723,6 +23867,12 @@ def make_composite(
             error_message=_aggregate_finding_messages(cell_type_findings),
             skin=skin,
         )
+
+    charts, caption, attribution_audit = _resolve_composite_source_attribution(
+        charts,
+        caption=caption,
+        source=source,
+    )
 
     skin_config = get_skin(skin, "explore")
     if s3_manager is None:
@@ -23842,7 +23992,8 @@ def make_composite(
             png_path=None, layout=layout, n_charts=n_charts,
             success=False,
             error_message=_aggregate_finding_messages(parts),
-            warnings=warnings_list, skin=skin, chart_errors=chart_errors,
+            warnings=warnings_list, audit_trail=attribution_audit,
+            skin=skin, chart_errors=chart_errors,
         )
 
     if not built:
@@ -23850,7 +24001,8 @@ def make_composite(
             png_path=None, layout=layout, n_charts=n_charts,
             success=False,
             error_message=_summarize_chart_errors(chart_errors, n_charts),
-            warnings=warnings_list, skin=skin, chart_errors=chart_errors,
+            warnings=warnings_list, audit_trail=attribution_audit,
+            skin=skin, chart_errors=chart_errors,
         )
 
     composite_layout: Optional[str] = layout
@@ -23872,7 +24024,8 @@ def make_composite(
                 png_path=None, layout=layout, n_charts=n_charts,
                 success=False,
                 error_message=f"Layout composition failed: {exc}",
-                warnings=warnings_list, skin=skin, chart_errors=chart_errors,
+                warnings=warnings_list, audit_trail=attribution_audit,
+                skin=skin, chart_errors=chart_errors,
             )
 
     # Top-level title. Uses the lines from the upfront-validated
@@ -24002,6 +24155,7 @@ def make_composite(
             )
         ),
         warnings=warnings_list,
+        audit_trail=attribution_audit,
         download_url=download_url,
         vegalite_json=spec_dict,
         skin=skin,
@@ -25136,10 +25290,9 @@ class Chart:
         self._subtitle = subtitle
         self._annotations: List[Annotation] = list(annotations) if annotations else []
         self._layers: List[Dict[str, Any]] = list(layers) if layers else []
-        # source= fills an unset caption with the same uniform rule as
-        # make_chart / make_table / ChartSpec. Explicit caption wins.
-        if source and caption is None:
-            caption = f"Source: {source}"
+        # Keep source structured until render/translation time. This lets
+        # render_grid compact unanimous panel sources or retain differing
+        # panel attributions without guessing from rendered caption strings.
         self._caption = caption
         self._source = source
         self._side_left = side_left
@@ -25259,6 +25412,7 @@ class Chart:
             annotations=self._annotations or None,
             layers=self._layers or None,
             caption=self._caption,
+            source=self._source,
             side_left=self._side_left,
             side_right=self._side_right,
         )
@@ -25294,6 +25448,7 @@ class Chart:
             annotations=self._annotations or None,
             layers=self._layers or None,
             caption=self._caption,
+            source=self._source,
             side_left=self._side_left,
             side_right=self._side_right,
             auto_beautify=self._auto_beautify,
@@ -25354,6 +25509,7 @@ class Chart:
             annotations=self._annotations or None,
             layers=self._layers or None,
             caption=self._caption,
+            source=self._source,
             side_left=self._side_left,
             side_right=self._side_right,
             save_as=save_as,

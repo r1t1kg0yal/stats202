@@ -73,7 +73,6 @@ result = make_2pack_horizontal(
     right,
     title="Inflation Has Converged",
     subtitle="Core measures have slowed across both regions",
-    source="BLS and Eurostat",
     save_as="charts/inflation_compare.png",
 )
 ```
@@ -92,9 +91,11 @@ Do not invent slot keywords such as `top=`, `left=`, or `chart_1=`.
 
 All helpers accept composite-level `title`, `subtitle`, `caption`, `source`,
 `side_left`, `side_right`, `skin`, `dimensions` / `dimension_preset`,
-`spacing`, `save_as`, and filename prefix/suffix. Per-cell attribution and
-text panels stay on each `ChartSpec`; pack-level `source` fills an unset
-pack-level caption.
+`spacing`, `save_as`, and filename prefix/suffix. Put attribution on each
+`ChartSpec`: identical panel sources collapse into one pack footer, while
+different sources stay beneath their panels and suppress an outer source.
+Pack-level `source` supplies otherwise-unsourced panels. Explicit captions
+are preserved.
 
 Each cell owns its mapping, colour scale, axes, and annotations. Apply chart
 colour kwargs inside the cell's `mapping` after fetching the colours spoke.

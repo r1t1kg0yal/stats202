@@ -1,15 +1,34 @@
 ---
 class: context-extraction
 topic: Composer, compiled-dashboard integration, persisted user input, and S3 full-stack current-state refresh
-status: OPEN
+status: USED
 created_at: 2026-07-21
 baseline_date: 2026-07-20
-reply_fold_in_targets:
+sent_at: 2026-07-21
+reply_received: 2026-07-21
+reply_source: cursor-chat screenshots (15 images, 20:29–20:31 ET; visible response sections 1–9 and 13–20)
+folded_on: 2026-07-21
+checkout:
+  prism_main_branch: ritik-main-23
+  prism_main_HEAD: ff86e6dd68eed6319526d39ce333373ae12e486f
+  prism_core_branch: ritik-core-23
+  prism_core_HEAD: bf4bcd1224e5554c608a953763c2bf675b160953
+  prism_main_recorded_gitlink: 1e6d3955344448551bc594f4d2af356625047fa9
+reply_folded_into:
   - projects/echarts/dev/specs/composer_dashboard_stack.md
   - projects/echarts/dev/specs/dashboard_user_input.md
   - projects/echarts/README.md
   - projects/echarts/dev/notes.md
   - staging/README.md
+  - .cursor/rules/viz-platforms.mdc
+  - .cursor/rules/prism.mdc
+  - prism/README.md
+  - prism/dashboards-portal.md
+  - prism/security.md
+  - projects/echarts/dev/handoffs/2026-07-20_prism_main_all_widget_snapshot_implementation.md
+  - projects/echarts/dev/handoffs/2026-07-18_dashboard_component_composer_drag.md
+  - projects/echarts/dev/handoffs/2026-07-18_prism_main_component_drag_explainer.md
+  - staging/2026-07-20_composer_streaming_reload_change.md
 ---
 
 # Re-extract the full Composer, dashboard, user-input, and S3 stack
