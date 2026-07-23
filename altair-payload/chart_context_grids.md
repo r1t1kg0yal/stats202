@@ -24,7 +24,7 @@ result = make_chart(
         "x": "date",
         "y": "gdp_growth",
         "facet": "country",
-        "facet_order": ["US", "UK", "EU", "JP"],
+        "facet_order": ["US", "UK", "EU", "JP", "CA", "AU", "CN", "IN"],
     },
     facet_cols=4,
     same_scale=True,
@@ -33,6 +33,9 @@ result = make_chart(
 ```
 
 Grid mode is triggered only by `mapping['facet']`.
+Only `facet` and `facet_order` go inside `mapping`; `facet_cols`,
+`same_scale`, every `share_*`, and both `edge_only_*` controls are top-level
+`make_chart(...)` kwargs.
 
 | Key | Default | Meaning |
 |---|---|---|

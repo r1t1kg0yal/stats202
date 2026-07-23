@@ -8,7 +8,7 @@ the default `gs_primary` palette is production-ready.
 This spoke is for `make_chart`. Table backgrounds and heatmap-style table
 cells belong to `chart_context_tables.md`.
 
-## 1. Four mapping kwargs
+## 1. Five mapping kwargs
 
 All colour controls live inside `mapping={}`:
 
@@ -135,7 +135,9 @@ mapping = {
 `color_range` defines early and late endpoints and wins over `color_scheme`.
 With neither override, the engine uses its red-to-blue HSV time ramp. A named
 continuous scheme such as `viridis`, `cividis`, `turbo`, or `magma` is also
-valid. `color_map` does not apply to a continuous encoding.
+valid on the same temporal/numeric `color` encoding. Author either
+`color_range` or `color_scheme`, not both; `color_map` does not apply to a
+continuous encoding.
 
 ## 7. Chart-specific restrictions
 

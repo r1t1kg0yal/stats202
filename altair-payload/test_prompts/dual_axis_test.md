@@ -6,11 +6,11 @@ Build a dual-axis chart of EUR/USD spot (left) and the US-EU 2y rate differentia
 
 ---
 
-Build a dual-axis chart of US ISM Manufacturing PMI (left, range 30-65) and US 10y yield (right, range 0-6) with the right axis inverted to align directionally. Let me know if frictions.
+Build a dual-axis chart of US ISM Manufacturing PMI (left; observed values roughly 30-65) and US 10y yield (right; observed values roughly 0-6) with the right axis inverted to align directionally. Let the engine compute both domains; do not pass `dual_axis_config`. Let me know if frictions.
 
 ---
 
-Build a dual-axis chart of equity vol (VIX, left) and credit vol (CDX IG spread, right) with annotations on BOTH the left and right axis (a VLine on the SVB date, a Band on the COVID period). Let me know if frictions.
+Build a dual-axis chart of equity vol (VIX, left) and credit spreads (CDX IG, right) with an `HLine(axis='left')` at a VIX threshold, an `HLine(axis='right')` at a CDX threshold, and an axis-agnostic `VLine` on the SVB date. Let me know if frictions.
 
 ---
 
@@ -18,7 +18,7 @@ Build a dual-axis chart of US headline CPI YoY (left) and the trade-weighted USD
 
 ---
 
-Try to build a dual-axis chart with FOUR series total (two left, two right), including a short semantic `y_title_right` for the shared right-side unit. If the API blocks this, switch to a stacked composite (`make_2pack_vertical`) showing the same four series across two panels. Let me know if frictions.
+Build a four-series dual-axis chart with an explicit `dual_axis_bind` routing two same-unit series left and two same-unit series right. Include short semantic titles for both shared units and inspect any within-axis compression warning. Let me know if frictions.
 
 ---
 

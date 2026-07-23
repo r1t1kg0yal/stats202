@@ -5,11 +5,11 @@
 - **Fetch when:** Routed by `dashboards.md`.
 - **Depends on:** [dashboards.md](dashboards.md#route-before-fetching).
 
-This is the compact cross-cutting contract. It does not own first-build steps, mutation recipes, diagnosis, data pipelines, or primitive catalogs; use the [owner index](#owner-index).
+This is the compact cross-cutting contract. It does not own first-build steps, mutation recipes, diagnosis, data pipelines, productivity compositions, or primitive catalogs; use the [owner index](#owner-index).
 
 ## Contract
 
-1. **Real, refreshable data.** Every visible number derives from a persisted pull or transform. KPI/stat literals and invented identifiers are forbidden.
+1. **Real data when data is shown.** Every visible number derives from a persisted pull or transform. KPI/stat literals and invented identifiers are forbidden. A data-free workspace using `user_input`, narrative, divider, or data-independent tool widgets is legal.
 2. **Template contains no live data.** `manifest_template.json` keeps dataset slots; `manifest.json` is populated output.
 3. **Canonical order.** Pulls produce files, transforms derive datasets, the template is populated, the receipt and flagged panels are reviewed, the exact signature is acknowledged with rationale, the guarded build writes outputs, registry metadata is aligned, then a clean subprocess refresh verifies the persisted artifact.
 4. **Canonical folder.** Persistent dashboards live only at `users/{kerberos}/dashboards/{dashboard_id}`.
@@ -330,6 +330,7 @@ Cadence examples: `"60s"`/`"5m"` for intraday, `"1h"` for frequently changing ag
 - Use plain-English persisted columns. Labels applied only to an ephemeral DataFrame do not survive refresh.
 - A destructive rebuild requires explicit product intent. Ordinary “add”, “change”, and “also show” asks are surgical edits.
 - Intraday unavailability is a data-source condition to model explicitly in the product; do not fabricate values.
+- A dashboard may primarily organize work and shared knowledge; do not force charts or datasets into a productivity request.
 
 ## Anti-patterns
 
@@ -364,6 +365,7 @@ context-registry entry.
 | Manifest operations | [template_crud.md](dashboards/template_crud.md#manifest-operations) |
 | Pull/build script edits | [pipelines.md](dashboards/pipelines.md#pipeline-reuse-decision) |
 | Archetypes and transforms | [recipes.md](dashboards/recipes.md#data-archetypes) |
+| Productivity and workflow composition | [productivity.md](dashboards/productivity.md#workspace-archetypes) |
 | Chart primitives | [charts.md](dashboards/charts.md#chart-type-catalog-31) |
 | Non-tool widgets and popups | [widgets.md](dashboards/widgets.md#widget-kinds) |
 | Tool widgets | [widget_tool.md](dashboards/widget_tool.md#tool-definition) |

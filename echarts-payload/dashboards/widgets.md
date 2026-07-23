@@ -308,7 +308,7 @@ Values stated as facts must trace to refreshed data or identified sources. Use:
 
 ## Persisted user input
 
-Use `user_input` when the dashboard needs shared manual state rather than authored narrative. The dashboard owner can write; every authorized dashboard viewer can read. Its stable widget `id` is the persistence identity, so preserve both `id` and `mode` after users begin saving.
+Use `user_input` when the dashboard needs shared manual state rather than authored narrative. It may be the primary surface of a productivity workspace; charts and datasets are not required. The dashboard owner can write; every authorized dashboard viewer can read. Its stable widget `id` is the persistence identity, so preserve both `id` and `mode` after users begin saving.
 
 ```python
 [
@@ -355,7 +355,7 @@ Use `user_input` when the dashboard needs shared manual state rather than author
 | checklist `seed` | Exactly `{"items": [...]}`; at most 500 unique stable items, each exactly `id`, non-empty `text`, and boolean `checked` |
 | files `seed` | Omit or use exactly `{"files": []}`; file paths cannot be pre-seeded |
 
-Seed content is the first-render default only. After the first successful save, persisted state wins across rebuilds and refreshes. Browser saves never modify the manifest, datasets, or compiled HTML. Uploaded files accept PDF, DOCX/XLSX/PPTX, Outlook MSG, UTF-8 text/Markdown/CSV/JSON, and common raster images up to 25 MB; active or content-mismatched files are rejected.
+Seed content is the first-render default only. After the first successful save, persisted state wins across rebuilds and refreshes. Browser saves never modify the manifest, datasets, or compiled HTML. Owners can choose files or drag operating-system files onto a files-mode drop zone. Uploaded files accept PDF, DOCX/XLSX/PPTX, Outlook `.msg`, UTF-8 text/Markdown/CSV/JSON, and common raster images up to 25 MB; active or content-mismatched files are rejected.
 
 Read saved state for analysis through the public helper:
 

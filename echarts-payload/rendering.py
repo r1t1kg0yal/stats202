@@ -12709,24 +12709,24 @@ DASHBOARD_APP_JS = r"""
                                  || MD.data_as_of || MD.generated_at || null;
   var PENDING_STRUCTURAL_RELOAD_HASH = null;
 
-  function _composerStreamIsActive(){
-    return window.__prismComposerStreaming === true;
+  function _navigationHoldIsActive(){
+    return Number(window.__prismNavigationHoldCount || 0) > 0;
   }
 
   function _flushPendingStructuralReload(){
-    if (!PENDING_STRUCTURAL_RELOAD_HASH || _composerStreamIsActive()) return;
+    if (!PENDING_STRUCTURAL_RELOAD_HASH || _navigationHoldIsActive()) return;
 
     var pendingHash = PENDING_STRUCTURAL_RELOAD_HASH;
     PENDING_STRUCTURAL_RELOAD_HASH = null;
     console.log(
-      '[live] composer stream finished; reloading for deferred template change',
+      '[live] navigation hold released; reloading for deferred template change',
       pendingHash
     );
     location.reload();
   }
 
-  window.addEventListener('prism:composer-streaming-change', function(event){
-    if (event.detail && event.detail.active === false){
+  window.addEventListener('prism:navigation-hold-change', function(event){
+    if (event.detail && event.detail.count === 0){
       _flushPendingStructuralReload();
     }
   });
@@ -12750,15 +12750,15 @@ DASHBOARD_APP_JS = r"""
 
     // Structural-change short-circuit: template hash drift means a
     // widget / tab / filter was added or removed, which we can't
-    // reconcile in place. Defer the clean reload while Composer is
-    // streaming so navigation cannot interrupt an inline response.
+    // reconcile in place. A host-level navigation hold can defer the
+    // clean reload while an interrupt-sensitive interaction is active.
     if (LAST_KNOWN_TEMPLATE_HASH &&
         payload.manifest_template_hash &&
         payload.manifest_template_hash !== LAST_KNOWN_TEMPLATE_HASH){
-      if (_composerStreamIsActive()){
+      if (_navigationHoldIsActive()){
         PENDING_STRUCTURAL_RELOAD_HASH = payload.manifest_template_hash;
         console.log(
-          '[live] template hash changed; deferring reload until composer finishes'
+          '[live] template hash changed; deferring reload while navigation is held'
         );
         return;
       }

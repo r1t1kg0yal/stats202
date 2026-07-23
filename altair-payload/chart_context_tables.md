@@ -47,6 +47,10 @@ result = make_table(
 
 ## 2. Public kwargs
 
+`make_table` has no `mapping` dictionary. Every table option below is a
+top-level `make_table(...)` kwarg; chart mapping and chart colour kwargs do
+not apply.
+
 | Kwarg | Purpose |
 |---|---|
 | `df` | DataFrame source; mutually exclusive with `rows` |
@@ -75,6 +79,10 @@ result = make_table(
 | `show_index` | Include DataFrame index; default `False` |
 | `target_html_width` | Intended display width for font normalization; default 720, use 600 for narrower email |
 | `save_as` | Stable PNG path |
+
+If a DataFrame index carries a semantic identifier such as country or ticker,
+either `reset_index()` so it becomes a named column (preferred) or set
+`show_index=True`; the default intentionally omits the index.
 
 Canvas dimensions are content-driven. Text columns wrap, every row is kept,
 and the table is never truncated. A table too wide to remain legible on a
@@ -237,7 +245,7 @@ defect it can evaluate. Common repairs are:
 - provide `columns` for tuple/list rows;
 - make header spans and row-group counts match the data;
 - keep color-mode values to `rwg`, `bw`, or `rag`;
-- put numeric RAG boundaries in `rag_thresholds`;
+- put numeric RAG boundaries in `rag_thresholds` for every `rag` column;
 - pass `heatmap_groups` as a list of dictionaries;
 - transpose, split, aggregate, or shorten an over-wide table.
 

@@ -26,4 +26,4 @@ Pull US headline CPI YoY and core CPI YoY for the last 10 years and chart both a
 
 ---
 
-Build a heatmap of FOMC implied probability distributions across the next 6 meetings: x=meeting_date, y=fed_funds_rate target, value=probability. Probabilities are continuous floats over 40+ unique values — make sure the rendered heatmap has at most 10 distinct color buckets and uses a sequential color scheme. Let me know if frictions.
+Build a heatmap of FOMC implied probability distributions across the next 6 meetings: x=meeting_date, y=fed_funds_rate target, value=probability. Probabilities are continuous floats over 40+ unique values, so preserve the quantitative ramp and use a sequential colour scheme; the 10-category cap applies only to categorical bins. Let me know if frictions.

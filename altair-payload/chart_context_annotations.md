@@ -40,8 +40,11 @@ annotations = [
 
 ## 2. Public parameter reference
 
-All labelled classes accept `label` and `label_color`. Use `stroke_dash=[...]`
-or supported `style=` values; there is no `dash=` or `line_style=`.
+Annotation coordinates and styles belong on the constructor, never inside
+`mapping`. Most labelled classes inherit `label` and `label_color`;
+`PlotText` uses `text` and `color`, while `LastValueLabel` derives its text
+from the series. Use `stroke_dash=[...]` or a documented `style=` value; there
+is no `dash=` or `line_style=`.
 
 | Class | Decision-changing parameters |
 |---|---|
@@ -49,8 +52,8 @@ or supported `style=` values; there is no `dash=` or `line_style=`.
 | `HLine` | `y`, `axis='left'|'right'`, `label`, `color`, `stroke_width`, `stroke_dash`, `style` |
 | `Segment` | `x1`, `x2`, `y1`, `y2`, `axis`, `label_position='start'|'middle'|'end'`, offsets, line styling |
 | `Band` | `x1`/`x2` for vertical or `y1`/`y2` for horizontal, `axis`, `color`, `opacity` (default 0.3) |
-| `Arrow` | `x1`, `y1`, `x2`, `y2`, `axis`, `head_size`, `head_type='triangle'|'none'`, `label_position`, offsets |
-| `PointLabel` | `x`, `y`, `axis`, `dx`, `dy`, `font_size`, `align`, `halo` |
+| `Arrow` | `x1`, `y1`, `x2`, `y2`, `axis`, `head_size`, `head_type='triangle'|'none'`, `label_position`, offsets; straight only (`curved=True` raises) |
+| `PointLabel` | `x`, `y`, `label`, `axis`, `dx`, `dy`, `font_size`, `align`, `halo` |
 | `PointHighlight` | `x`, `y`, `axis`, `color`, `size` (default 100), `opacity`, `shape`, `filled`, stroke controls |
 | `Callout` | `x`, `y`, `axis`, `background='halo'|'box'|'none'`, box/halo controls, `dx`, `dy`, typography |
 | `LastValueLabel` | `dx` (default 6), `font_size` (default 15), `font_weight` |
@@ -66,6 +69,15 @@ outside panel, not the plot. Explicit `side_right`, `caption`, or `side_left`
 wins its slot; `position='auto'` tries right, bottom, then left. Use the
 top-level text kwargs for longer prose.
 
+There are four distinct trend surfaces; choose one and do not combine them:
+
+| Need | Surface |
+|---|---|
+| One default fit on `scatter` | `mapping['trendline']=True` |
+| One fit per colour group on `scatter_multi` | `mapping['trendlines']=True` |
+| One explicitly styled fit annotation | `annotations=[Trendline(...)]` on `scatter` |
+| Lower-level regression overlay | `layers=[{'type': 'regression', 'x': ..., 'y': ...}]` |
+
 ## 3. Compatibility
 
 | Shape | Contract |
@@ -75,7 +87,7 @@ top-level text kwargs for longer prose.
 | Stacked bar | `HLine` is clamped against stacked totals |
 | Horizontal bar | `HLine` becomes a vertical value threshold |
 | Grouped bar (`stack=False`) | Annotations do not render; use title/subtitle or stack/split |
-| `multi_line` / `timeseries` | Engine auto-injects `LastValueLabel` on a single axis |
+| `multi_line` / `timeseries` | Rules, bands, segments, arrows, point classes, and callouts are supported; engine auto-injects `LastValueLabel` on a single axis |
 | Dual axis | Fetch dual-axis spoke; y-bearing annotations need the correct `axis` |
 | Facet grid | `LastValueLabel` is removed; panel headers identify facets |
 | Donut / bullet | Do not use plot annotations; rule-style classes are suppressed with a warning |
@@ -122,6 +134,22 @@ layers = [
      "data": highlight_df, "size": 180},
 ]
 ```
+
+Layer dictionaries are strict:
+
+| `type` | Required keys | Optional keys |
+|---|---|---|
+| `regression` | `x`, `y` field names | `method`, `color`, `stroke_width`, `stroke_dash` |
+| `rule` | Exactly one of `x` or `y` | `color`, `stroke_dash` |
+| `point` | `data=<DataFrame>`, `x`, `y` | `color`, `size` |
+
+Unknown layer types, misspelled keys, missing required keys, and arbitrary
+Vega-Lite dictionaries raise. Put narrative coordinates in annotation objects
+instead of reproducing them as layers.
+
+For a rule threshold, use the coordinate holding the thresholded variable:
+`x=<threshold>` when that variable is `mapping['x']`, or `y=<threshold>` when
+it is `mapping['y']`.
 
 Do not combine multiple encodings merely for decoration. If an annotation or
 layer is not essential to the analytical claim, omit it.

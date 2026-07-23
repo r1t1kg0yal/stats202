@@ -5,11 +5,11 @@
 - **Fetch when:** Always loaded when dashboard intent is present.
 - **Depends on:** None.
 
-ECharts is the only sanctioned path for persistent PRISM dashboards. PRISM authors Python plus a JSON manifest and calls the public `dashboards` APIs. Do not hand-roll HTML/CSS/JS, use another dashboard framework, or use Altair composites as dashboards.
+ECharts is the only sanctioned path for persistent PRISM dashboards, including analytical monitors and productivity/workflow workspaces. PRISM authors Python plus a JSON manifest and calls the public `dashboards` APIs. Do not hand-roll HTML/CSS/JS, use another dashboard framework, or use Altair composites as dashboards.
 
 ## L2 registration
 
-This router is the sole context-registry entry for dashboard construction (`pillar: tools`, `order: 1`). `dashboards_hub.md` and the nine `dashboards/*.md` spokes are not registry entries; fetch them only through the short-path `list_ai_repo(..., mode="full")` routes below. The registry footer explicitly forbids retrieving `chart_context.md` while building dashboards.
+This router is the sole context-registry entry for dashboard construction (`pillar: tools`, `order: 1`). `dashboards_hub.md` and the ten `dashboards/*.md` spokes are not registry entries; fetch them only through the short-path `list_ai_repo(..., mode="full")` routes below. The registry footer explicitly forbids retrieving `chart_context.md` while building dashboards.
 
 ## User-message contract
 
@@ -34,8 +34,8 @@ Before authoring a first build:
 1. Use the canonical folder `users/{kerberos}/dashboards/{dashboard_id}`.
 2. Every persisted script defines that literal as `SESSION_PATH` and explicitly imports every name it uses. Do not rely on injected names: import `pandas as pd`, `numpy as np`, `pull_nyfed_data` from `core.mcp.clients.newyorkfed_client`, `save_artifact` from `prism_mcp.utils.data_functions`, and each `core.mcp.clients` module only when the script actually uses it.
 3. Every pull writes to `f"{SESSION_PATH}/data"`; the complete emitted CSV stem must match the manifest dataset key byte-for-byte.
-4. Persist `scripts/pull_data.py`, define a module-level `PULLS` mapping, run each entry with `run_pull(folder, name)`, and require successful current-cycle production of a non-empty CSV with the expected columns. A retained pre-existing CSV is not pull success.
-5. Use real data. Never invent identifiers, visible numbers, or successful results.
+4. Persist `scripts/pull_data.py` and define a module-level `PULLS` mapping. When it is non-empty, run each entry with `run_pull(folder, name)` and require successful current-cycle production of a non-empty CSV with the expected columns. A retained pre-existing CSV is not pull success.
+5. When data is shown, use real data. Never invent identifiers, visible numbers, or successful results; a data-free workspace needs no placeholder dataset.
 6. Only CSV files become datasets. Persist NY Fed and client returns through `save_artifact` or an explicit CSV write; metadata sidecars, `df.attrs`, and JSON artifacts do not populate datasets or `field_provenance`.
 
 Pull primitives:
@@ -57,8 +57,10 @@ Classify the request, then issue the smallest applicable `list_ai_repo(file_path
 
 | Intent at the current phase | First fetch for that phase |
 |---|---|
-| First build | `dashboards_hub.md`, `dashboards/build.md`, `dashboards/pipelines.md`, then only primitive spokes required by the requested artifact |
+| Data-backed first build | `dashboards_hub.md`, `dashboards/build.md`, `dashboards/pipelines.md`, then only primitive spokes required by the requested artifact |
+| Productivity/workflow first build: chief-of-staff, task/ops, shared notes/checklists, or email/file intake | `dashboards_hub.md`, `dashboards/build.md`, `dashboards/productivity.md`, `dashboards/widgets.md`; add `dashboards/pipelines.md` and requested data-primitive spokes only when the workspace includes refreshable data |
 | Manifest/layout/widget/filter edit | `dashboards_hub.md`, `dashboards/template_crud.md`, plus the affected primitive spoke |
+| Productivity/workflow composition edit | `dashboards_hub.md`, `dashboards/template_crud.md`, `dashboards/productivity.md`, `dashboards/widgets.md` |
 | Pure pull source/column/parameter edit with no derived dataset or `TRANSFORMS` change | `dashboards_hub.md`, `dashboards/pipelines.md` only |
 | Derived dataset or `TRANSFORMS` operation: rolling/window, lag, normalization, join/pivot/reshape, or any other derived shape | `dashboards_hub.md`, `dashboards/pipelines.md`, `dashboards/recipes.md` |
 | Read-only diagnosis | `dashboards/diagnose.md` only |
@@ -71,7 +73,7 @@ Classify the request, then issue the smallest applicable `list_ai_repo(file_path
 | Chart-choice archetype without a pipeline operation | `dashboards/recipes.md` |
 
 Every tool build requires the widgets companion: it owns the stat, table, and stat_grid presentation contracts. Add charts only for the charted-tool row above.
-For a first build, fetch each primitive owner required by the requested user-visible widgets before Tool 2 manifest authoring: charts require `dashboards/charts.md`, non-tool widgets require `dashboards/widgets.md`, and filters/links require `dashboards/filters.md`.
+For a first build, fetch each primitive owner required by the requested user-visible widgets before Tool 2 manifest authoring: charts require `dashboards/charts.md`, non-tool widgets require `dashboards/widgets.md`, and filters/links require `dashboards/filters.md`. A data-free productivity build does not fetch pipelines or charts unless the requested surface uses them.
 
 ### Adaptive phase rules
 
@@ -106,6 +108,7 @@ These are measured context bundles, not mandatory bulk loads:
 | Bundle | Exact fetch |
 |---|---|
 | Typical create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/charts.md", "dashboards/widgets.md"], mode="full")` |
+| Productivity create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/productivity.md", "dashboards/widgets.md"], mode="full")` |
 | Filtered create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/charts.md", "dashboards/widgets.md", "dashboards/filters.md"], mode="full")` |
 | Tool create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/widget_tool.md", "dashboards/widgets.md"], mode="full")` |
 | Charted tool create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/widget_tool.md", "dashboards/widgets.md", "dashboards/charts.md"], mode="full")` |
@@ -128,6 +131,7 @@ The router is the only fetch menu. The production context inventory is:
 | `dashboards/template_crud.md` | Typed manifest operations |
 | `dashboards/pipelines.md` | Persisted pull/build script edits and data-flow integrity |
 | `dashboards/recipes.md` | Data archetypes and transform patterns |
+| `dashboards/productivity.md` | Productivity, task/workflow, and email/file-intake compositions |
 | `dashboards/charts.md` | Chart catalog, mappings, annotations, computed columns |
 | `dashboards/widgets.md` | Non-tool widget catalog, persisted input, popups, provenance, markdown |
 | `dashboards/widget_tool.md` | Form-driven compute widgets |

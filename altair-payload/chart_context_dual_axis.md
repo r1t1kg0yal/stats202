@@ -52,7 +52,17 @@ result = make_chart(
 
 `dual_axis_series=[...]` lists the right-axis category values exactly; all
 unlisted series use the left. Wide `y=[...]` input is also accepted, and the
-right-axis names refer to the original wide column names.
+right-axis names refer to the original wide column names:
+
+```python
+mapping = {
+    "x": "date",
+    "y": ["Headline CPI YoY", "USD Index"],
+    "dual_axis_series": ["USD Index"],
+    "y_title": "CPI YoY (%)",
+    "y_title_right": "USD Index",
+}
+```
 
 For three or more lines, prefer an explicit binding:
 
@@ -71,8 +81,9 @@ mapping = {
 
 `dual_axis_bind` values accept `left` / `right` and `lhs` / `rhs`. Do not pass
 both binding forms. An all-left or all-right binding raises because it is not a
-dual-axis chart. Normalize exact series identifiers before calling; a trailing
-space is a different category.
+dual-axis chart. The engine strips surrounding whitespace from series and
+binding names, but matching remains case-sensitive; normalize identifiers
+before calling.
 
 ## 3. Scale gates and automatic recovery
 
@@ -83,22 +94,17 @@ and records the decision in `result.audit_trail`. Without that title, it raises
 and asks for explicit binding and both axis titles.
 
 Automatic recovery is not available inside a `ChartSpec` composite cell.
-Declare the binding and `y_title_right` on that `ChartSpec`.
+Declare the binding and `y_title_right` inside that cell's `mapping`.
 
 For three or more lines, the engine makes a best-effort split and may put a
 within-axis compression warning in `result.warnings`. If each shape matters,
 split or normalize instead of accepting a crowded dual axis.
 
-Optional explicit domains:
-
-```python
-mapping["dual_axis_config"] = {
-    "y_domain_left": [3500, 6000],
-    "y_domain_right": [2.5, 5.5],
-}
-```
-
-Use explicit domains only when the analytical frame requires fixed bounds.
+Both y domains are engine-computed from the bound series.
+`mapping['dual_axis_config']` is an engine-owned annotation-routing record,
+not a public domain override; passing it raises. If fixed cross-panel bounds
+are analytically necessary, use normalized single-axis panels instead of
+trying to force hidden dual-axis internals.
 
 ## 4. Inverted right axis and legends
 
