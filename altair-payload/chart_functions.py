@@ -196,11 +196,14 @@ _GROUPED_BAR_INNER_X_PADDING_OUTER = 0.14
 _GROUPED_BAR_INNER_X_PADDING_INNER = 0.02
 _FACET_LABEL_MIN_PITCH_PX = 28     # min horizontal pitch between visible facet labels
 # Vertical grouped-bar category labels are facet-header labels (one per
-# x-group), NOT regular axis tick labels, so they don't inherit the
-# skin's config.axis.labelFontSize (18). They were rendering a touch
-# small at the base axis_config size (16); bumped one px so the group
-# names read at the same weight as the bars they label.
-_GROUPED_BAR_CATEGORY_LABEL_FONT_SIZE = 17
+# x-group), NOT regular axis tick labels, so they inherit nothing from the
+# skin's ``config.axis`` block -- see ``_facet_header_label_font``. Pinned
+# to the skin's ``config.axis.labelFontSize`` (18) so group names match
+# every other tick label in the chart AND so the rendered size agrees with
+# ``calculate_optimal_label_angle``, whose collision math already sizes
+# against ``_SKIN_AXIS_LABEL_FONT_PX`` (18). Kept as a literal because this
+# constant is defined above that one.
+_GROUPED_BAR_CATEGORY_LABEL_FONT_SIZE = 18
 
 
 def _facet_label_thinning_expr(
@@ -256,6 +259,25 @@ def _facet_label_thinning_expr(
         f"indexof({js_array}, toString(datum.value)) >= 0 "
         f"? toString(datum.value) : ''"
     )
+
+
+def _facet_header_label_font(skin_config: Dict[str, Any]) -> str:
+    """Font family for facet-header labels, pinned to the skin's axis font.
+
+    Vega-Lite compiles a facet header label into a Vega group ``title``
+    carrying ``style: "guide-label"``. That style is NOT reached by
+    ``config.axis.labelFont``, so an unset header font resolves to Vega's
+    generic ``sans-serif`` while every real axis label in the same chart
+    renders in the skin stack -- two typefaces in one chart. Invisible on
+    machines without GS Sans installed, obvious in PRISM where
+    ``_render_chart_to_png`` registers the GS Sans directory.
+
+    Reading the axis ``labelFont`` (rather than ``skin_config["font_family"]``)
+    keeps header labels and tick labels tied together by construction: on a
+    grouped vertical bar the header labels ARE the x-axis tick labels.
+    """
+    return skin_config["config"]["axis"]["labelFont"]
+
 
 # Characters that break Vega-Lite field resolution (JS accessor syntax).
 # Column names containing these silently render to empty charts.
@@ -1092,18 +1114,16 @@ _LVL_SERIES_NAME_MAX_CHARS = 32
 #     plot-region-protective, not label-aware: 22+ ch labels truncate at
 #     width=700 (B04), 14+ ch labels truncate at composite width=350
 #     (D04 / E05).
-#   - Grouped bar (``color`` + ``stack=False``) inside the horizontal
-#     handler renders y-axis category labels rotated 90 deg and stacked
-#     on the same anchor, overlapping into illegible noise (F03 / F04 /
-#     F05 / H01). This is an underlying rendering bug in the column-
-#     faceted bar_horizontal path; the cap prevents the caller from ever
-#     exercising it.
-# 15 ch is the largest cap that keeps EVERY bar context (vertical /
-# horizontal / grouped / stacked / single / composite) rendering cleanly
-# without truncation or collision. Verified by the long-label audit
-# gallery at projects/altair/dev/build_long_label_audit.py (42 cards;
-# every CLEAN render has max_len <= 15; every TRUNC / COLLIDE has
-# max_len > 15).
+# The third failure mode this cap originally guarded -- grouped
+# horizontal bars stacking their row-facet header labels into illegible
+# noise (F03 / F04 / F05 / H01) -- was a header-alignment bug, fixed
+# 2026-07-25 (labelAlign left + labelFont pinned to the skin; see
+# dev/notes.md). That arm no longer justifies the cap; the two
+# truncation arms above still do, so 22 stands until someone re-measures
+# the real per-context boundary against the fixed geometry.
+# 22 ch was verified against every bar context (vertical / horizontal /
+# grouped / stacked / single / composite) by the long-label audit
+# gallery, since retired; re-run its methodology before moving the cap.
 _BAR_CATEGORY_LABEL_MAX_CHARS = 22
 
 # Minimum distinct (x, y) coordinates that fall inside the visible plot
@@ -1311,7 +1331,7 @@ def _validate_bar_category_labels(
     mapping: Dict[str, Any],
 ) -> None:
     """Validate bar chart category label lengths. Raises if any label exceeds
-    the configured cap (15 chars).
+    the configured cap.
 
     Applies to all bar chart types -- plain vertical, plain horizontal,
     grouped (``color`` + ``stack=False``), stacked (``color`` +
@@ -9622,7 +9642,7 @@ def _temporal_tick_step(interval: str, step: int) -> Dict[str, Any]:
 
 
 # Skin axis label font size assumed by tick-spacing math. Matches GS_CLEAN's
-# ``config.axis.labelFontSize`` (19). If a smaller skin is introduced, pass
+# ``config.axis.labelFontSize`` (18). If a smaller skin is introduced, pass
 # its label font size into ``_max_ticks_for_width`` so the per-label width
 # estimate matches reality.
 _DEFAULT_AXIS_LABEL_FONT_SIZE = 18
@@ -11432,7 +11452,7 @@ def apply_beautification_to_spec(
 # ---------------------------------------------------------------------------
 #
 # When a chart is rendered into a small canvas (Teams 420x210, thumbnail
-# 300x200), the skin's default font sizes (axis 16/18, title 28) overflow
+# 300x200), the skin's default font sizes (axis 18/18, title 26) overflow
 # the available space. ``_apply_typography_overrides`` patches the
 # Vega-Lite ``config`` block with smaller sizes scaled for the target
 # canvas. Only presets that actually need non-default typography are
@@ -11554,6 +11574,29 @@ def _apply_typography_overrides(spec: Dict[str, Any], preset: str) -> Dict[str, 
     if "line_strokeWidth" in overrides:
         config["line"]["strokeWidth"] = overrides["line_strokeWidth"]
 
+    # Facet-header labels (grouped-bar category labels) live on the row /
+    # column encoding, not in ``config.axis``, so the axis override above
+    # cannot reach them -- an unpatched header renders at the skin's 18px
+    # beside 8px tick labels on a 420x210 Teams canvas. Clamp instead of
+    # assign: ``_build_bar_horizontal`` may already have shrunk the header
+    # below the preset size to fit a tight row pitch (see
+    # ``_bar_horizontal_y_label_font_size``), and the preset must not
+    # enlarge it back into a collision.
+    if "axis_labelFontSize" in overrides:
+        enc = spec.get("encoding")
+        if isinstance(enc, dict):
+            capped = overrides["axis_labelFontSize"]
+            for channel in ("row", "column"):
+                channel_def = enc.get(channel)
+                if not isinstance(channel_def, dict):
+                    continue
+                header = channel_def.get("header")
+                if not isinstance(header, dict):
+                    continue
+                header["labelFontSize"] = min(
+                    header.get("labelFontSize", capped), capped,
+                )
+
     return spec
 
 
@@ -11651,7 +11694,13 @@ GS_CLEAN: Dict[str, Any] = {
             "titleFontWeight": "normal",
             "labelFontWeight": "normal",
             "labelFontSize": 18,   # axis tick labels
-            "titleFontSize": 16,   # axis title (e.g. "Yield (%)")
+            # Axis title (e.g. "Yield (%)") matches the tick-label size.
+            # A title smaller than the values it describes inverts the
+            # typographic hierarchy, which reads as a rendering mistake --
+            # most visibly on horizontal bars, where the x-axis title sits
+            # directly beneath a row of tick numbers for side-by-side
+            # comparison.
+            "titleFontSize": 18,
         },
         "legend": {
             "labelFont": "GS Sans, Liberation Sans, Arial, sans-serif",
@@ -16035,8 +16084,10 @@ def _build_bar(
             labelAngle=facet_label_angle,
             labelPadding=14,
             labelFontSize=_GROUPED_BAR_CATEGORY_LABEL_FONT_SIZE,
+            labelFont=_facet_header_label_font(skin_config),
         )
-        
+
+
         # When labels are rotated, align them so they don't overlap the chart
         if facet_label_angle != 0:
             header_kwargs["labelAlign"] = "right"
@@ -16424,16 +16475,34 @@ def _build_bar_horizontal(
         # default row-facet header orientation rotates labels 90 deg
         # (running vertically up the gutter), which is unreadable and
         # was the underlying cause of the F04 / F05 / H01 / H03 / H04
-        # collision observed in the pre-cap long-label audit. ``labelAngle=0``
-        # forces horizontal text; right-align + middle-baseline anchors
-        # the label flush against the bars to its right.
+        # collision observed in the pre-cap long-label audit.
+        # ``labelAngle=0`` forces horizontal text.
+        #
+        # ``labelAlign="left"`` is what makes the labels flush-right
+        # against the bars, and the counter-intuitive value is load-
+        # bearing. Vega lays out a left-oriented group title by placing
+        # the text box's LEFT edge at ``plotLeft - labelPadding -
+        # textWidth``, i.e. it has already reserved the width and expects
+        # the glyphs to be drawn rightward from that anchor. Vega-Lite's
+        # own default for ``orient="left"`` headers is
+        # ``align="right"``, which deducts ``textWidth`` a SECOND time --
+        # so each label ends up displaced left by exactly its own
+        # rendered width and a column of mixed-length categories reads as
+        # randomly staggered. Verified against vl-convert 1.9.0 /
+        # Vega-Lite 4: with ``align="right"`` the per-row
+        # ``right_edge + text_width`` is constant (the fingerprint of the
+        # double deduction) and right edges span ~279px; with
+        # ``align="left"`` right edges span 2px. Because ``right`` is
+        # Vega-Lite's default here, DROPPING this kwarg does not fix the
+        # stagger -- it has to be actively overridden.
         row_header_kwargs: Dict[str, Any] = dict(
             orient="left",
             labelAngle=0,
-            labelAlign="right",
+            labelAlign="left",
             labelBaseline="middle",
             labelPadding=10,
             labelFontSize=h_y_label_font_size,
+            labelFont=_facet_header_label_font(skin_config),
         )
         if row_label_expr is not None:
             row_header_kwargs["labelExpr"] = row_label_expr
