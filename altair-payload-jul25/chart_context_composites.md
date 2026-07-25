@@ -56,11 +56,11 @@ ChartSpec(
 ```
 
 The first three arguments may be positional or keyword. Metadata is
-keyword-only. `ChartSpec` accepts per-cell content only; `skin`,
-`dimension_preset`, spacing, filenames, and save paths belong on the pack
-helper. Unknown kwargs and unknown keys inside its `mapping` raise with the
-valid placement. Axis titles go inside the cell's `mapping` as `x_title`,
-`y_title`, and `y_title_right`; there is no top-level axis-title kwarg.
+keyword-only. `ChartSpec` accepts per-cell content only; `skin`, dimensions,
+spacing, filenames, and save paths belong on the pack helper. Unknown kwargs
+and unknown keys inside its `mapping` raise with the valid placement. Put
+`x_title`, `y_title`, and `y_title_right` inside the cell's `mapping`;
+top-level axis-title aliases exist only for old code and should not be authored.
 
 If a cell's date lives in a named datetime index, still set
 `mapping['x']='date'`; the engine promotes the index when that column is
@@ -94,17 +94,17 @@ Author one of the five named `make_*pack_*` helpers so the slot count and
 layout are explicit.
 
 All helpers accept composite-level `title`, `subtitle`, `caption`, `source`,
-`side_left`, `side_right`, `skin`, `dimension_preset`, `spacing`, `save_as`,
-and filename prefix/suffix. Put attribution on each
+`side_left`, `side_right`, `skin`, `dimensions` / `dimension_preset`,
+`spacing`, `save_as`, and filename prefix/suffix. Put attribution on each
 `ChartSpec`: identical panel sources collapse into one pack footer, while
 different sources stay beneath their panels and suppress an outer source.
 Pack-level `source` supplies otherwise-unsourced panels. Explicit captions
 are preserved.
 
-Use `dimension_preset='compact'` (the default for every pack except
-`make_2pack_vertical`, which defaults to `'wide'`), `'wide'`, or `'teams'`;
-`'square'` is also available for 2-, 3-, and 4-panel packs, not the 6-pack. A
-fixed `save_as` path wins over generated naming, so `filename_prefix` /
+Use `dimension_preset='compact'` (default), `'wide'`, or `'teams'`; `'square'`
+is also available for 2-, 3-, and 4-panel packs, not the 6-pack. Prefer the
+`dimension_preset` name; do not also pass its `dimensions` alias. A fixed
+`save_as` path wins over generated naming, so `filename_prefix` /
 `filename_suffix` matter only when `save_as` is omitted.
 
 Each cell owns its mapping, colour scale, axes, and annotations. Apply chart

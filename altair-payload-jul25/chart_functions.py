@@ -3,26 +3,33 @@ chart_functions.py
 ==================
 
 Vega/Altair chart engine for PRISM. Single-file consolidation of the
-``vega_charts`` package. The public surface is:
+``vega_charts`` package, exposing TWO public APIs that share one
+rendering pipeline:
 
-  * ``make_chart()`` -- the single-chart entry point.
-  * ``make_table()`` -- the static PNG table engine.
-  * The composite layout helpers ``make_2pack_horizontal``,
-    ``make_2pack_vertical``, ``make_3pack_triangle``,
-    ``make_4pack_grid``, ``make_6pack_grid``, each taking ``ChartSpec``
-    panels.
-  * ``build_charts()`` -- aggregating batch builder for scripts that
-    produce two or more artifacts.
-  * ``profile_df()`` -- pre-charting schema / coverage probe.
-  * Annotation primitives ``VLine``, ``HLine``, ``Segment``, ``Band``,
-    ``Arrow``, ``PointLabel``, ``PointHighlight``, ``Callout``,
-    ``LastValueLabel``, ``Trendline``, ``PlotText``.
-  * Result types ``ChartResult``, ``CompositeResult``, ``TableResult``,
-    ``DataProfile``.
+  * **v1 surface** (legacy / verbose, currently the canonical
+    PRISM-facing API): ``make_chart()``, the composite layout helpers
+    (``make_2pack_horizontal``, ``make_2pack_vertical``,
+    ``make_3pack_triangle``, ``make_4pack_grid``, ``make_6pack_grid``),
+    ``ChartSpec``, ``check_charts_quality``.
+  * **v2 surface** (cleaner builder API, opt-in): the ``Chart`` class
+    for both standalone and composite use, and ``render_grid`` for
+    one-call composites. Auto QC + cleanup + URL printing are
+    absorbed into the render path; flat kwargs replace the v1
+    ``mapping={...}`` dict; ``s3_manager`` / ``session_path`` resolve
+    automatically from the calling frame.
 
-``chart_context.md`` plus its ``chart_context_*.md`` spokes are the
-LLM-facing specification for this surface; keep them in step with any
-change here.
+Both surfaces produce byte-identical output for equivalent inputs --
+v2 simply translates flat kwargs into v1's mapping dict and delegates
+to ``make_chart`` / ``make_composite``. The two coexist so PRISM can
+A/B-test either skill module (``chart_context.md`` for v1,
+``chart_context_v2.md`` for v2) against the same drag-and-drop
+engine.
+
+Annotation primitives (``VLine``, ``HLine``, ``Segment``, ``Band``,
+``Arrow``, ``PointLabel``, ``PointHighlight``, ``Callout``,
+``LastValueLabel``, ``Trendline``, ``PlotText``), result types
+(``ChartResult``, ``CompositeResult``, ``DataProfile``), and
+``profile_df`` are shared between the two surfaces.
 
 PRISM-coupled helpers (S3, presigned URLs, Gemini vision QC) are
 imported from ``prism_mcp.utils.*`` -- the same paths PRISM uses in
@@ -31,18 +38,22 @@ colocated ``prism_mcp/`` stub package, which provides filesystem-backed
 / no-op equivalents sufficient for local development. This file is the
 canonical PRISM-bound payload; nothing under ``prism_mcp/`` ships with it.
 
-PRISM injects every public name into the ``execute_analysis_script``
-namespace, so scripts call them bare. The import form below is for
-local development and tests only::
+Usage (v1)::
 
-    from chart_functions import make_chart, make_table, profile_df
+    from chart_functions import make_chart, profile_df, ChartResult
     from chart_functions import VLine, HLine, Segment, Band, Arrow
     from chart_functions import PointLabel, PointHighlight, Callout
     from chart_functions import LastValueLabel, Trendline, PlotText
     from chart_functions import ChartSpec, make_2pack_horizontal
 
+Usage (v2)::
+
+    from chart_functions import Chart, render_grid
+    from chart_functions import VLine, HLine, Band, Arrow
+
 This module is built up in stages; see the section banners
-(``MODULE: ...``) for the layout.
+(``MODULE: ...``) for the layout. The v2 surface lives at the bottom,
+right before ``__all__``.
 """
 
 from __future__ import annotations
@@ -156,6 +167,7 @@ alt.data_transformers.disable_max_rows()
 # triage report. The cap is enforced HARD because the alternative
 # (silently ship an unreadable chart) is the worst outcome.
 MAX_COLOR_CARDINALITY = 10          # Max unique values in a color encoding
+MAX_FACET_CARDINALITY = 16          # Max facets in a small-multiples chart
 MAX_ROWS_INTERACTIVE = 50_000       # Above this, warn (do not block)
 
 # Hard line-count cap for a single multi_line / area / timeseries panel.
@@ -381,6 +393,42 @@ def _safe_legend_kwargs(**kwargs: Any) -> Dict[str, Any]:
     return {k: v for k, v in kwargs.items() if v is not None or k in allow_none_keys}
 
 
+def _check_chart_quality_safe(png_s3_path: str, s3_manager: Any) -> bool:
+    """Fail-open wrapper around the Gemini Flash chart-quality gate.
+
+    Pulls the chart PNG via ``s3_manager`` and forwards the bytes to
+    ``check_chart_quality``. Returns ``True`` (chart passes) when the
+    quality check succeeds and the verdict is acceptable, OR when any
+    infrastructure error occurs (fail-open). Returns ``False`` only when
+    the quality check explicitly flags the chart as bad.
+
+    Args:
+        png_s3_path: S3 path to the chart PNG file.
+        s3_manager: S3BucketManager instance for reading the PNG bytes.
+
+    Returns:
+        True if the chart should be kept, False if it should be suppressed.
+    """
+    try:
+        png_bytes = s3_manager.get(png_s3_path)
+        result = check_chart_quality(png_bytes)
+        if result.get("passed", True):
+            return True
+        reason = result.get("reason", "unknown")
+        logger.info(
+            "[QualityGate] Chart FAILED quality check: %s -- %s",
+            reason,
+            png_s3_path,
+        )
+        return False
+    except Exception as exc:  # noqa: BLE001 - explicit fail-open
+        logger.warning(
+            "[QualityGate] Quality check error (fail-open, chart passes): %s",
+            exc,
+        )
+        return True
+
+
 # ===========================================================================
 # MODULE: VALIDATORS
 # ===========================================================================
@@ -494,21 +542,21 @@ def _raise_findings(findings: List[Exception]) -> None:
 # kwargs fail before any transform can silently ignore them.
 _PUBLIC_CHART_MAPPING_KEYS: frozenset = frozenset({
     "bin_extent", "bins",
-    "color", "color_by", "color_map", "color_range",
+    "category", "color", "color_by", "color_map", "color_range",
     "color_scheme", "color_sort", "connect",
     "dual_axis_bind", "dual_axis_legend_suffix",
     "dual_axis_legend_suffix_left", "dual_axis_legend_suffix_right",
     "dual_axis_legend_tags", "dual_axis_series",
     "extent", "facet", "facet_order", "invert_right_axis",
-    "label", "legend", "marker_size", "maxbins",
+    "label", "legend", "legend_sort", "marker_size", "maxbins",
     "opacity", "opacity_map", "order", "orientation", "scale_type",
     "size", "stack", "strokeDash", "strokeDashLegend",
-    "strokeDashScale", "theta", "trendline", "trendlines",
+    "strokeDashScale", "theta", "timezone", "trendline", "trendlines",
     "type", "value", "value_sort",
     "x", "x_high", "x_low", "x_sort", "x_timezone", "x_title",
     "x_type",
     "y", "y_sort", "y_title", "y_title_right",
-    "zero_fill", "zero_fill_baseline", "zero_fill_negative",
+    "z", "zero_fill", "zero_fill_baseline", "zero_fill_negative",
     "zero_fill_positive",
 })
 
@@ -532,6 +580,7 @@ _MAKE_CHART_TOP_LEVEL_KWARGS: frozenset = frozenset({
     "output_dir", "filename_prefix", "filename_suffix",
     "session_path", "s3_manager", "save_as",
     "interactive", "auto_beautify",
+    "x_label", "y_label", "x_title", "y_title", "y_title_right",
     "user_id", "caption", "source", "side_left", "side_right",
     "facet_cols", "share_x", "share_y", "share_color", "same_scale",
     "edge_only_ticks", "edge_only_axis_titles",
@@ -552,32 +601,6 @@ _LAYER_ALLOWED_KEYS: Dict[str, frozenset] = {
 _LAYER_REGRESSION_METHODS: frozenset = frozenset({
     "linear", "log", "exp", "pow", "quad", "poly",
 })
-
-
-# Retired aliases -> canonical key. These names were accepted historically
-# and are the ones a caller is most likely to reach for from generic
-# Vega-Lite / matplotlib priors rather than from the skill file. Fuzzy
-# matching sends several of them somewhere actively wrong ('legend_sort'
-# -> 'legend', 'x_label' -> 'label'), so the exact mapping is consulted
-# first and the fuzzy pool only handles genuine typos.
-_RETIRED_KEY_CANONICAL: Dict[str, str] = {
-    "category": "color",
-    "legend_sort": "color_sort",
-    "timezone": "x_timezone",
-    "x_label": "x_title",
-    "y_label": "y_title",
-    "z": "value",
-}
-
-
-def _retired_key_hint(key: str) -> Optional[str]:
-    """Exact 'use this instead' guidance for a retired alias, else None."""
-    canonical = _RETIRED_KEY_CANONICAL.get(key)
-    if canonical is None:
-        return None
-    return (
-        f" {key!r} was retired; use mapping[{canonical!r}] instead."
-    )
 
 
 def _collect_chart_mapping_findings(
@@ -618,20 +641,25 @@ def _collect_chart_mapping_findings(
             ))
             continue
         if key in _MAKE_CHART_TOP_LEVEL_KWARGS:
-            findings.append(ValidationError(
-                f"{surface} mapping key {key!r} belongs on the "
-                f"make_chart(...) call, not inside mapping={{...}}. "
-                f"Move it to make_chart({key}=...)."
-            ))
+            if key in {"x_label", "y_label"}:
+                canonical = "x_title" if key == "x_label" else "y_title"
+                findings.append(ValidationError(
+                    f"{surface} mapping key {key!r} is a legacy top-level "
+                    f"alias, not a mapping key. Author the canonical "
+                    f"mapping[{canonical!r}] instead."
+                ))
+            else:
+                findings.append(ValidationError(
+                    f"{surface} mapping key {key!r} belongs on the "
+                    f"make_chart(...) call, not inside mapping={{...}}. "
+                    f"Move it to make_chart({key}=...)."
+                ))
             continue
 
-        retired = _retired_key_hint(key)
         suggestion = difflib.get_close_matches(
             key, suggestion_pool, n=1, cutoff=0.58,
         )
-        if retired:
-            hint = retired
-        elif suggestion:
+        if suggestion:
             candidate = suggestion[0]
             if candidate in _PUBLIC_CHART_MAPPING_KEYS:
                 hint = f" Did you mean mapping[{candidate!r}]?"
@@ -665,13 +693,10 @@ def _collect_make_chart_extra_findings(
                 f"inside mapping={{...}} as mapping[{key!r}]."
             ))
             continue
-        retired = _retired_key_hint(key)
         suggestion = difflib.get_close_matches(
             key, suggestion_pool, n=1, cutoff=0.58,
         )
-        if retired:
-            hint = retired
-        elif suggestion:
+        if suggestion:
             candidate = suggestion[0]
             if candidate in _PUBLIC_CHART_MAPPING_KEYS:
                 hint = f" Did you mean mapping[{candidate!r}]?"
@@ -1184,7 +1209,7 @@ _OSCILLATION_MIN_POINTS = 12
 # x-grid. Set deliberately high (clearly-degenerate / near-empty) so that
 # legitimately sparse-but-readable series (40-80% missing, points spread
 # across the range) still render -- those are warned about in
-# the warnings channel, not blocked.
+# validate_plot_ready_df, not blocked.
 _MAX_LINE_SERIES_MISSING_FRAC = 0.90
 
 def _axis_label_px_per_char(label_font_size: int) -> float:
@@ -1235,9 +1260,10 @@ def _validate_dual_axis_right_title(mapping: Dict[str, Any]) -> str:
     if not isinstance(raw_title, str) or not raw_title.strip():
         raise ValidationError(
             "DUAL-AXIS RIGHT TITLE REQUIRED: every dual-axis chart must pass "
-            "a non-empty semantic `mapping['y_title_right']` naming the "
-            "right-side metric and unit. The engine will not invent a generic "
-            "label. Example: mapping={..., 'y_title_right': '10Y Yield (%)'}"
+            "a non-empty semantic `y_title_right` naming the right-side metric "
+            "and unit (inside mapping or as a top-level kwarg). The engine "
+            "will not invent a generic label. Example: "
+            "`y_title_right='10Y Yield (%)'`."
         )
 
     title = _dedup_axis_title(raw_title.strip())
@@ -1259,10 +1285,10 @@ def _validate_dual_axis_right_title(mapping: Dict[str, Any]) -> str:
     ):
         raise ValidationError(
             "DUAL-AXIS RIGHT TITLE PLACEHOLDER: "
-            f"`mapping['y_title_right']={raw_title!r}` is positional, not "
-            "semantic. Name the right-side metric and unit instead (for "
-            "example '10Y Yield (%)'). Generic labels such as 'Right Axis', "
-            "'RHS', and 'Value' are rejected."
+            f"`y_title_right={raw_title!r}` is positional, not semantic. "
+            "Name the right-side metric and unit instead (for example "
+            "`y_title_right='10Y Yield (%)'`). Generic labels such as "
+            "'Right Axis', 'RHS', and 'Value' are rejected."
         )
 
     _validate_y_axis_label(title, mapping)
@@ -1496,11 +1522,11 @@ def _extract_fields(mapping: Dict[str, Any]) -> List[str]:
     """Collect every column name referenced by an encoding key in mapping.
 
     Walks the standard encoding keys (``x``, ``y``, ``color``, ``size``,
-    ``facet``, ``theta``, ``value``) and returns the union of column
+    ``facet``, ``theta``, ``value``, ``z``) and returns the union of column
     names they reference. List-valued ``y`` (auto-melt shortcut) is expanded.
     """
     fields: List[str] = []
-    for key in ("x", "y", "color", "size", "facet", "theta", "value"):
+    for key in ("x", "y", "color", "size", "facet", "theta", "value", "z"):
         if key not in mapping:
             continue
         val = mapping[key]
@@ -1555,7 +1581,7 @@ def _sanitize_column_names(
 
     mapping = dict(mapping)
     for key in (
-        "y", "x", "color", "size", "facet", "theta", "value",
+        "y", "x", "color", "size", "facet", "theta", "value", "z",
         "x_low", "x_high", "color_by", "label",
     ):
         if key in mapping:
@@ -1609,7 +1635,7 @@ def _resolve_x_timezone(mapping: Dict[str, Any]) -> str:
     (``ET``, ``UTC``, ``LON``, ...). PRISM sets ``mapping['x_timezone']``
     when the user asks for a non-ET clock.
     """
-    raw = mapping.get("x_timezone")
+    raw = mapping.get("x_timezone") or mapping.get("timezone")
     if not raw:
         return _DEFAULT_INTRADAY_TZ
     key = str(raw).strip()
@@ -2456,8 +2482,8 @@ def _collect_plot_ready_findings(
       columns, no columns, wrong dtypes. Content checks on broken
       structure are noise, so callers raise these BEFORE looking at
       tier 1.
-    * **Tier 1 (content):** color cardinality, line-series cap,
-      donut gates -- independent editorial-shape gates that
+    * **Tier 1 (content):** color cardinality, line-series cap, facet
+      cardinality, donut gates -- independent editorial-shape gates that
       aggregate with the integrity findings.
     * **Warnings:** non-fatal accumulations (row count, missingness,
       heatmap grid size).
@@ -2466,14 +2492,16 @@ def _collect_plot_ready_findings(
       (``_collect_encoding_findings``) never report the same column twice
       with two differently-worded messages.
 
+    ``validate_plot_ready_df`` is the raising wrapper that preserves the
+    original serial fail-fast surface for external callers.
     """
-    logger.debug("[_collect_plot_ready_findings] START: chart_type=%s", chart_type)
+    logger.debug("[validate_plot_ready_df] START: chart_type=%s", chart_type)
     logger.debug(
-        "[_collect_plot_ready_findings] df.shape=%s, columns=%s",
+        "[validate_plot_ready_df] df.shape=%s, columns=%s",
         df.shape,
         list(df.columns),
     )
-    logger.debug("[_collect_plot_ready_findings] mapping=%s", mapping)
+    logger.debug("[validate_plot_ready_df] mapping=%s", mapping)
 
     tier0: List[ValidationError] = []
     tier1: List[ValidationError] = []
@@ -2483,20 +2511,20 @@ def _collect_plot_ready_findings(
     # ---- empty DataFrame ----------------------------------------------------
     # Terminal: every downstream check is noise on an empty frame.
     if len(df) == 0:
-        logger.error("[_collect_plot_ready_findings] EMPTY DATAFRAME!")
+        logger.error("[validate_plot_ready_df] EMPTY DATAFRAME!")
         tier0.append(ValidationError(
             "DataFrame is empty. Cannot create chart from empty data."
         ))
         return tier0, tier1, warnings, flagged_fields
 
     fields_to_check = _extract_fields(mapping)
-    logger.debug("[_collect_plot_ready_findings] Fields to check: %s", fields_to_check)
+    logger.debug("[validate_plot_ready_df] Fields to check: %s", fields_to_check)
 
     # ---- missing columns ----------------------------------------------------
     missing_cols = [f for f in fields_to_check if f not in df.columns]
     if missing_cols:
-        logger.error("[_collect_plot_ready_findings] MISSING COLUMNS: %s", missing_cols)
-        logger.error("[_collect_plot_ready_findings] Available columns: %s", list(df.columns))
+        logger.error("[validate_plot_ready_df] MISSING COLUMNS: %s", missing_cols)
+        logger.error("[validate_plot_ready_df] Available columns: %s", list(df.columns))
 
         # Detect the specific reset_index/melt ordering bug. Common LLM
         # error: melt was called BEFORE renaming columns, so the original
@@ -2636,27 +2664,13 @@ def _collect_plot_ready_findings(
         if not is_gradient_color:
             cardinality = color_series.nunique()
             if cardinality > MAX_COLOR_CARDINALITY:
-                # Rank by the y magnitude when there is a single numeric y to
-                # rank by; otherwise fall back to row counts so the suggested
-                # snippet is always runnable as printed.
-                _y = _get_field(mapping, "y")
-                _rank = (
-                    f"[{_y!r}].sum()"
-                    if _y and _y in df.columns
-                    and pd.api.types.is_numeric_dtype(df[_y])
-                    else ".size()"
-                )
                 tier1.append(ValidationError(
                     f"Color column '{color_field}' has {cardinality} unique values, "
                     f"exceeding MAX_COLOR_CARDINALITY={MAX_COLOR_CARDINALITY}. "
                     f"The GS palette only has {MAX_COLOR_CARDINALITY} colors; "
                     f"beyond this point series repeat hues and become indistinguishable. "
-                    f"Keep the top {MAX_COLOR_CARDINALITY} categories and "
-                    f"aggregate the rest, e.g. "
-                    f"`keep = df.groupby({color_field!r}){_rank}"
-                    f".nlargest({MAX_COLOR_CARDINALITY}).index; "
-                    f"df.loc[~df[{color_field!r}].isin(keep), {color_field!r}] "
-                    f"= 'Other'`, or facet into panels instead."
+                    f"Filter to top-{MAX_COLOR_CARDINALITY} categories first, e.g. "
+                    f"`df = top_k_categories(df, '{color_field}', k={MAX_COLOR_CARDINALITY})`."
                 ))
     # Donut: same cap, but enforced separately below in the chart-specific
     # block so the suggested fix points at the right column.
@@ -2705,6 +2719,16 @@ def _collect_plot_ready_findings(
                     f"important <= {MAX_LINE_SERIES} series, aggregating the "
                     f"rest into an 'Other' line or a separate panel."
                 ))
+
+    facet_field = _get_field(mapping, "facet")
+    if facet_field and facet_field in df.columns:
+        cardinality = df[facet_field].nunique()
+        if cardinality > MAX_FACET_CARDINALITY:
+            tier1.append(ValidationError(
+                f"Facet column '{facet_field}' has {cardinality} unique values "
+                f"(max allowed: {MAX_FACET_CARDINALITY}). "
+                f"Filter to fewer categories before plotting."
+            ))
 
     # ---- soft warnings -----------------------------------------------------
     if len(df) > MAX_ROWS_INTERACTIVE:
@@ -2757,28 +2781,66 @@ def _collect_plot_ready_findings(
         if color_field_donut and color_field_donut in df.columns:
             slice_card = df[color_field_donut].nunique()
             if slice_card > MAX_COLOR_CARDINALITY:
-                _rank = (
-                    f"[{theta_field!r}].sum()"
-                    if theta_field and theta_field in df.columns
-                    else ".size()"
-                )
                 tier1.append(ValidationError(
                     f"Donut has {slice_card} slices, exceeding "
                     f"MAX_COLOR_CARDINALITY={MAX_COLOR_CARDINALITY}. "
                     f"With more slices than colors, hues repeat and adjacent "
                     f"slices become visually indistinguishable. "
                     f"Aggregate the smallest slices into 'Other' first, e.g. "
-                    f"`keep = df.groupby({color_field_donut!r}){_rank}"
-                    f".nlargest({MAX_COLOR_CARDINALITY - 1}).index; "
-                    f"df.loc[~df[{color_field_donut!r}].isin(keep), "
-                    f"{color_field_donut!r}] = 'Other'`."
+                    f"`df = top_k_categories(df, '{color_field_donut}', "
+                    f"k={MAX_COLOR_CARDINALITY - 1}, value_col='{theta_field}')`."
                 ))
 
     logger.debug(
-        "[_collect_plot_ready_findings] collected %d tier-0, %d tier-1 finding(s), "
+        "[validate_plot_ready_df] collected %d tier-0, %d tier-1 finding(s), "
         "%d warning(s)", len(tier0), len(tier1), len(warnings),
     )
     return tier0, tier1, warnings, flagged_fields
+
+
+def validate_plot_ready_df(
+    df: pd.DataFrame,
+    chart_type: str,
+    mapping: Dict[str, Any],
+) -> List[str]:
+    """Validate that a DataFrame is ready for plotting.
+
+    Catches the most common failure modes before they reach Vega-Lite,
+    where they would produce silently empty / mis-rendered charts:
+      - empty DataFrames
+      - missing columns referenced by the mapping
+      - all-NaN columns
+      - non-datetime x for ``timeseries`` charts
+      - non-numeric y for chart types that require it
+      - excessive cardinality on color / facet columns
+      - negative values on donut / pie charts
+
+    Raising wrapper around ``_collect_plot_ready_findings``: structural
+    (tier-0) findings raise first -- aggregated into one numbered frame
+    when 2+ fire -- then content (tier-1) findings. The chart pipeline
+    (``_make_chart`` / ``_build_single_chart``) calls the collector
+    directly so tier-1 findings aggregate with the integrity gates.
+
+    Args:
+        df: DataFrame to validate.
+        chart_type: Type of chart being created (``ChartType``).
+        mapping: Column mapping for the chart.
+
+    Returns:
+        A list of warning messages (non-fatal issues) accumulated during
+        validation.
+
+    Raises:
+        ValidationError: If the DataFrame has a fatal issue that would
+            prevent the chart from rendering.
+    """
+    tier0, tier1, warnings, _flagged = _collect_plot_ready_findings(
+        df, chart_type, mapping,
+    )
+    _raise_findings(tier0)
+    _raise_findings(tier1)
+    logger.debug("[validate_plot_ready_df] PASSED with %d warnings", len(warnings))
+    return warnings
 
 
 def _collect_encoding_findings(
@@ -11762,6 +11824,14 @@ def get_skin(name: str, intent: str = "explore") -> Dict[str, Any]:
     return skin
 
 
+def list_skins() -> List[Dict[str, str]]:
+    """List all available skins with one-line descriptions."""
+    return [
+        {"name": name, "description": skin["description"]}
+        for name, skin in AVAILABLE_SKINS.items()
+    ]
+
+
 def _get_color_scale(skin_config: Dict[str, Any]) -> alt.Scale:
     """Build an ``alt.Scale`` from the skin's color scheme."""
     scheme = skin_config.get("color_scheme", GS_CLEAN["color_scheme"])
@@ -12380,7 +12450,7 @@ def _validate_opacity_map_kwarg(
     if opacity_map is None:
         return
 
-    color_field = mapping.get("color")
+    color_field = mapping.get("color") or mapping.get("category")
     _categorical_opacity_types = {
         "multi_line", "timeseries", "scatter", "scatter_multi",
         "bar", "bar_horizontal", "area", "boxplot", "donut",
@@ -12710,7 +12780,8 @@ def _resolve_color_sort(
     """Pick a sensible legend / color sort order.
 
     Priority:
-      1. Explicit ``mapping['color_sort']`` if the caller passed one.
+      1. Explicit ``mapping['color_sort']`` / ``mapping['legend_sort']`` if
+         the caller passed one.
       2. Tenor-style labels (1M, 3M, 1Y, 10Y...) -> canonical ladder.
       3. Relative-time labels (Today, 3M ago, ...) -> chronological.
       4. Otherwise preserve the DataFrame's first-seen order.
@@ -12992,7 +13063,7 @@ def _build_tooltip(
             alt.Tooltip("count()", title="Count", format=","),
         ]
     elif chart_type == "heatmap":
-        value_field = _get_field(mapping, "value")
+        value_field = _get_field(mapping, "value") or _get_field(mapping, "z")
         if value_field and value_field in df.columns:
             if pd.api.types.is_numeric_dtype(df[value_field]):
                 tooltips.append(
@@ -13011,7 +13082,7 @@ def _build_tooltip(
             or _get_field(mapping, "value")
             or _get_field(mapping, "y")
         )
-        category_field = _get_field(mapping, "color")
+        category_field = _get_field(mapping, "color") or _get_field(mapping, "category")
         tooltips = []
         if category_field and category_field in df.columns:
             tooltips.append(alt.Tooltip(category_field, type="nominal", title="Category"))
@@ -13640,7 +13711,7 @@ def _build_timeseries(
             df, color_field, base_legend_config, chart_width=width,
         )
         color_sort = _resolve_color_sort(
-            df, color_field, mapping.get("color_sort"),
+            df, color_field, mapping.get("color_sort") or mapping.get("legend_sort"),
         )
         chart = _encode_categorical_color_and_opacity(
             chart,
@@ -14045,7 +14116,7 @@ def _dual_axis_legend_sort(
     base_sort = _resolve_color_sort(
         df,
         color_field,
-        mapping.get("color_sort"),
+        mapping.get("color_sort") or mapping.get("legend_sort"),
     )
     right_set = {str(s).strip() for s in dual_axis_series}
     if base_sort is None:
@@ -14525,7 +14596,7 @@ def _build_profile_line(
             chart_width=width,
         )
         color_sort = _resolve_color_sort(
-            df, color_field, mapping.get("color_sort"),
+            df, color_field, mapping.get("color_sort") or mapping.get("legend_sort"),
         )
         chart = _encode_categorical_color_and_opacity(
             chart,
@@ -15537,8 +15608,8 @@ def _build_bar(
             logger.warning(
                 "[_build_bar] grouped bar configuration may be unusable: "
                 "%d x-categories x %d color groups = %d facet cells. "
-                "Consider stack=True (stacked) or reducing category "
-                "cardinality.",
+                "Consider stack=True (stacked) or top_k_categories() "
+                "to reduce cardinality.",
                 n_x_categories, n_color_categories,
                 n_x_categories * n_color_categories,
             )
@@ -17009,7 +17080,7 @@ def _build_heatmap(
 ) -> alt.Chart:
     """2-D heatmap.
 
-    ``mapping['value']`` names the column whose
+    ``mapping['value']`` (or ``mapping['z']``) names the column whose
     magnitude is encoded by cell color. Uses ``mark_rect`` with explicit
     ``stroke=None`` and grid-suppressed axes (Issue #5 fix) to prevent
     white-line artifacts through cells.
@@ -17034,7 +17105,7 @@ def _build_heatmap(
 
     x_field = _get_field(mapping, "x")
     y_field = _get_field(mapping, "y")
-    value_field = _get_field(mapping, "value")
+    value_field = _get_field(mapping, "value") or _get_field(mapping, "z")
 
     # Common LLM mistake: 'color' instead of 'value'.
     if value_field is None:
@@ -17046,7 +17117,7 @@ def _build_heatmap(
                 f"{{'x': {x_field!r}, 'y': {y_field!r}, 'value': {color_field!r}}}"
             )
         raise ValidationError(
-            "Heatmap requires a 'value' key in mapping for the cell "
+            "Heatmap requires a 'value' (or 'z') key in mapping for the cell "
             "intensity field. Example: "
             "mapping={'x': 'var1', 'y': 'var2', 'value': 'correlation'}"
         )
@@ -17771,9 +17842,9 @@ def _build_donut(
     """Donut / pie chart.
 
     ``mapping['theta']`` (or ``value``/``y``) is the magnitude column;
-    ``mapping['color']`` is the slice category.
+    ``mapping['color']`` (or ``category``) is the slice category.
     Uses ``mark_arc`` with skin-controlled inner/outer radii and pad
-    angle. Negative values rejected by the plot-ready gates
+    angle. Negative values rejected by ``validate_plot_ready_df``
     upstream (donuts only make sense on non-negative magnitudes).
     """
     logger.debug("[_build_donut] START: df.shape=%s, mapping=%s", df.shape, mapping)
@@ -17788,7 +17859,7 @@ def _build_donut(
         or _get_field(mapping, "value")
         or _get_field(mapping, "y")
     )
-    category_field = _get_field(mapping, "color")
+    category_field = _get_field(mapping, "color") or _get_field(mapping, "category")
 
     if not theta_field or theta_field not in df.columns:
         raise ValidationError(
@@ -18842,7 +18913,7 @@ def _auto_reshape_heatmap(
     """
     x_field = _get_field(mapping, "x")
     y_field = _get_field(mapping, "y")
-    value_field = _get_field(mapping, "value")
+    value_field = _get_field(mapping, "value") or _get_field(mapping, "z")
 
     # Both axis names must be supplied for the engine to know what to call
     # the melted columns. Missing axis keys fall through to _build_heatmap's
@@ -18868,6 +18939,7 @@ def _auto_reshape_heatmap(
             if value_field and value_field != leftover[0]:
                 df = df.rename(columns={leftover[0]: value_field})
             new_mapping["value"] = new_value_name
+            new_mapping.pop("z", None)
             return df, new_mapping
         if not leftover:
             raise ValidationError(
@@ -18927,6 +18999,7 @@ def _auto_reshape_heatmap(
         new_mapping["x"] = x_field
         new_mapping["y"] = y_field
         new_mapping["value"] = value_name
+        new_mapping.pop("z", None)
         if X:
             # id is the x axis; headers became the y categories.
             new_mapping.setdefault("x_sort", id_order)
@@ -18997,6 +19070,7 @@ def _auto_reshape_heatmap(
         new_mapping["x"] = x_field
         new_mapping["y"] = y_col
         new_mapping["value"] = value_name
+        new_mapping.pop("z", None)
         new_mapping.setdefault("x_sort", header_order)
         new_mapping.setdefault("y_sort", row_keys)
         _blank_heatmap_placeholder_titles(new_mapping, x_field, y_col)
@@ -19033,6 +19107,7 @@ def _auto_reshape_heatmap(
     new_mapping = dict(mapping)
     new_mapping["x"] = x_field
     new_mapping["y"] = y_field
+    new_mapping.pop("z", None)
     if X:
         new_mapping.setdefault("y_sort", index_order)
     else:
@@ -19193,6 +19268,437 @@ def _auto_downsample_timeseries(
 
     except Exception as exc:  # noqa: BLE001
         return df, None
+
+
+# ===========================================================================
+# MODULE: UTILS (data prep + scale diagnostics + label utilities)
+# ===========================================================================
+
+def prepare_timeseries_df(
+    df: pd.DataFrame,
+    date_col: str,
+    value_cols: List[str],
+    *,
+    freq: Optional[str] = None,
+    fill_method: Optional[str] = None,
+    aggregate: str = "mean",
+) -> pd.DataFrame:
+    """Prepare a DataFrame for time-series plotting.
+
+    Handles the standard time-series prep steps in a single call:
+
+      1. Coerce the date column to datetime.
+      2. Melt to long format if multiple value columns are supplied
+         (output columns: ``date``, ``value``, ``series``).
+      3. Optionally resample to a target frequency, grouping by series.
+      4. Optionally fill missing values (``ffill`` / ``bfill`` /
+         ``interpolate``).
+
+    Args:
+        df: Input DataFrame.
+        date_col: Name of the date column.
+        value_cols: List of value column names. A single column produces
+            a single-series long frame (``series=col_name``).
+        freq: Target frequency for resampling (``'D'``, ``'W'``, ``'M'``).
+        fill_method: ``'ffill'``, ``'bfill'``, ``'interpolate'``, or None.
+        aggregate: Aggregation method for resampling
+            (``'mean'``, ``'sum'``, ``'last'``).
+
+    Returns:
+        Plot-ready long-format DataFrame with columns
+        ``date``, ``value``, ``series``.
+    """
+    result = df.copy()
+    if not pd.api.types.is_datetime64_any_dtype(result[date_col]):
+        result[date_col] = pd.to_datetime(result[date_col])
+
+    if len(value_cols) > 1:
+        result = pd.melt(
+            result,
+            id_vars=[date_col],
+            value_vars=value_cols,
+            var_name="series",
+            value_name="value",
+        )
+        result = result.rename(columns={date_col: "date"})
+    else:
+        result = result[[date_col, value_cols[0]]].copy()
+        result.columns = ["date", "value"]
+        result["series"] = value_cols[0]
+
+    if freq:
+        result = (
+            result.set_index("date")
+            .groupby("series")
+            .resample(freq)
+            .agg({"value": aggregate})
+            .reset_index()
+        )
+
+    if fill_method:
+        if fill_method == "interpolate":
+            result["value"] = result.groupby("series")["value"].transform(
+                lambda x: x.interpolate()
+            )
+        else:
+            result["value"] = result.groupby("series")["value"].transform(
+                lambda x: getattr(x, fill_method)()
+            )
+
+    return result
+
+
+def process_data(
+    df: pd.DataFrame,
+    date_col: str,
+    value_cols: List[str],
+    *,
+    freq: Optional[str] = None,
+    fill_method: Optional[str] = None,
+    aggregate: str = "mean",
+) -> pd.DataFrame:
+    """Alias for ``prepare_timeseries_df`` -- preserved for PRISM
+    compatibility (some downstream code imports the older name)."""
+    return prepare_timeseries_df(
+        df, date_col, value_cols,
+        freq=freq, fill_method=fill_method, aggregate=aggregate,
+    )
+
+
+def top_k_categories(
+    df: pd.DataFrame,
+    category_col: str,
+    value_col: str,
+    k: int = 10,
+    other_label: str = "Other",
+    method: str = "sum",
+) -> pd.DataFrame:
+    """Reduce a categorical column to the top-k categories plus 'Other'.
+
+    Useful for capping color/facet cardinality before plotting. The
+    long-tail categories are aggregated into a single ``other_label``
+    bucket, ranked by ``method`` applied to ``value_col``.
+
+    Args:
+        df: Input DataFrame.
+        category_col: Column containing category labels.
+        value_col: Column to aggregate for ranking.
+        k: Number of top categories to keep.
+        other_label: Label for the aggregated remainder.
+        method: Aggregation method (``'sum'``, ``'mean'``, ``'count'``).
+
+    Returns:
+        DataFrame with an additional ``{category_col}_reduced`` column
+        containing the top-k labels or ``other_label``.
+    """
+    category_ranks = (
+        df.groupby(category_col)[value_col].agg(method).sort_values(ascending=False)
+    )
+    top_categories = set(category_ranks.head(k).index)
+
+    result = df.copy()
+    result[f"{category_col}_reduced"] = result[category_col].apply(
+        lambda x: x if x in top_categories else other_label
+    )
+    return result
+
+
+def detect_scale_issues(
+    df: pd.DataFrame,
+    y_cols: List[str],
+) -> Dict[str, Any]:
+    """Detect potential scaling issues across multiple y series.
+
+    Identifies when series have very different ranges that would cause
+    visual flattening if plotted on a shared axis (e.g. equity index
+    in the thousands vs. policy rate in single digits). Returns a
+    diagnostic dict with a ``recommendation`` string suggesting
+    dual-axis or faceted layouts when the heuristic flags an issue.
+
+    Heuristic:
+      - ``range_ratio = max(range) / min(range) > 5`` flags an issue.
+      - ``mean_ratio = max(|mean|) / min(|mean|) > 10`` flags an issue.
+    """
+    if len(y_cols) < 2:
+        return {"issue": False}
+
+    ranges: Dict[str, Dict[str, float]] = {}
+    for col in y_cols:
+        if pd.api.types.is_numeric_dtype(df[col]):
+            col_min = float(df[col].min())
+            col_max = float(df[col].max())
+            ranges[col] = {
+                "min": col_min,
+                "max": col_max,
+                "range": col_max - col_min,
+                "mean": float(df[col].mean()),
+            }
+
+    if len(ranges) < 2:
+        return {"issue": False}
+
+    all_ranges = [r["range"] for r in ranges.values() if r["range"] > 0]
+    if not all_ranges:
+        return {"issue": False}
+
+    range_ratio = max(all_ranges) / min(all_ranges) if min(all_ranges) > 0 else 1.0
+    all_means = [abs(r["mean"]) for r in ranges.values() if r["mean"] != 0]
+    mean_ratio = (
+        max(all_means) / min(all_means)
+        if all_means and min(all_means) > 0
+        else 1.0
+    )
+
+    has_issue = range_ratio > 5 or mean_ratio > 10
+    return {
+        "issue": has_issue,
+        "range_ratio": range_ratio,
+        "mean_ratio": mean_ratio,
+        "recommendation": (
+            "Use dual y-axis or faceted charts" if has_issue else None
+        ),
+        "details": ranges,
+    }
+
+
+def smart_label_format(value: float, context: str = "general") -> str:
+    """Format a numeric value for display, choosing a sensible style for
+    the data context.
+
+    Contexts:
+      - ``percent``: ``"12.3%"``
+      - ``currency``: ``"$1.2B"``, ``"$3.4M"``, ``"$5.6K"``, ``"$78"``
+      - ``large``: same magnitude suffixes without the dollar sign
+      - ``general``: scientific notation for very small magnitudes,
+        otherwise sensible decimal precision
+
+    Returns the empty string for NaN.
+    """
+    if pd.isna(value):
+        return ""
+
+    if context == "percent":
+        return f"{value:.1f}%"
+
+    if context == "currency":
+        if abs(value) >= 1e9:
+            return f"${value / 1e9:.1f}B"
+        if abs(value) >= 1e6:
+            return f"${value / 1e6:.1f}M"
+        if abs(value) >= 1e3:
+            return f"${value / 1e3:.1f}K"
+        return f"${value:.0f}"
+
+    if context == "large" or abs(value) >= 1e6:
+        if abs(value) >= 1e9:
+            return f"{value / 1e9:.1f}B"
+        if abs(value) >= 1e6:
+            return f"{value / 1e6:.1f}M"
+        if abs(value) >= 1e3:
+            return f"{value / 1e3:.1f}K"
+        return str(value)
+
+    if abs(value) < 0.01:
+        return f"{value:.2e}"
+    if abs(value) < 1:
+        return f"{value:.3f}"
+    if abs(value) < 100:
+        return f"{value:.2f}"
+    return f"{value:.0f}"
+
+
+def calculate_safe_axis_range(
+    data: pd.Series,
+    padding_pct: float = 0.05,
+    handle_outliers: bool = True,
+) -> Tuple[float, float]:
+    """Calculate a sensible axis range for a numeric series.
+
+    Variant of ``calculate_y_axis_domain`` that uses 2.5*IQR outlier
+    clipping (less aggressive than the standard 1.5*IQR) so a single
+    extreme value doesn't crush the visible range. Used by chart
+    types that benefit from outlier suppression (scatter, heatmap)
+    rather than the strict zero-prevention behavior of
+    ``calculate_y_axis_domain``.
+
+    Args:
+        data: Numeric series.
+        padding_pct: Fractional padding to add on both sides.
+        handle_outliers: When True, clip the range with 2.5*IQR.
+
+    Returns:
+        ``(min, max)`` tuple suitable for ``alt.Scale(domain=...)``.
+    """
+    clean_data = data.dropna()
+    if len(clean_data) == 0:
+        return (0.0, 1.0)
+
+    if handle_outliers and len(clean_data) > 10:
+        q1 = clean_data.quantile(0.25)
+        q3 = clean_data.quantile(0.75)
+        iqr = q3 - q1
+        lower = max(float(clean_data.min()), float(q1 - 2.5 * iqr))
+        upper = min(float(clean_data.max()), float(q3 + 2.5 * iqr))
+    else:
+        lower = float(clean_data.min())
+        upper = float(clean_data.max())
+
+    range_size = upper - lower
+    if range_size == 0:
+        range_size = abs(lower) * 0.1 if lower != 0 else 1.0
+
+    padding = range_size * padding_pct
+    return (lower - padding, upper + padding)
+
+
+def generate_chart_filename(
+    chart_type: str,
+    title: Optional[str] = None,
+    timestamp: bool = True,
+) -> str:
+    """Generate a descriptive chart filename slug (no extension).
+
+    Pattern: ``<chart_type>_<slug-of-title>_<YYYYMMDD_HHMMSS>``
+
+    The title is slugified (alphanumerics + spaces -> underscores)
+    and truncated to 30 characters. The timestamp can be suppressed
+    for stable / dashboard paths via ``timestamp=False``.
+    """
+    parts = [chart_type]
+    if title:
+        clean_title = re.sub(r"[^\w\s]", "", title.lower())
+        clean_title = re.sub(r"\s+", "_", clean_title)[:30]
+        if clean_title:
+            parts.append(clean_title)
+    if timestamp:
+        parts.append(datetime.now().strftime("%Y%m%d_%H%M%S"))
+    return "_".join(parts)
+
+
+def check_for_outliers(
+    df: pd.DataFrame,
+    column: str,
+    threshold_iqr: float = 3.0,
+) -> Dict[str, Any]:
+    """Detect outliers in a numeric column using the IQR method.
+
+    Used by the charting layer to decide on axis-scaling strategies
+    (clip vs. expand) when a series has a few extreme values that would
+    otherwise crush the visible range.
+
+    Returns a dict with::
+
+        {
+            "has_outliers": bool,
+            "lower_bound": float,
+            "upper_bound": float,
+            "n_outliers_low": int,
+            "n_outliers_high": int,
+            "outlier_pct": float,
+            "suggested_y_min": float,
+            "suggested_y_max": float,
+        }
+
+    Returns ``{"has_outliers": False, "reason": ...}`` for non-numeric
+    columns or insufficient data (<4 points).
+    """
+    if column not in df.columns or not pd.api.types.is_numeric_dtype(df[column]):
+        return {"has_outliers": False, "reason": "not_numeric"}
+
+    data = df[column].dropna()
+    if len(data) < 4:
+        return {"has_outliers": False, "reason": "insufficient_data"}
+
+    q1 = data.quantile(0.25)
+    q3 = data.quantile(0.75)
+    iqr = q3 - q1
+    lower_bound = float(q1 - threshold_iqr * iqr)
+    upper_bound = float(q3 + threshold_iqr * iqr)
+
+    outliers_low = data[data < lower_bound]
+    outliers_high = data[data > upper_bound]
+    has_outliers = len(outliers_low) > 0 or len(outliers_high) > 0
+
+    return {
+        "has_outliers": has_outliers,
+        "lower_bound": lower_bound,
+        "upper_bound": upper_bound,
+        "n_outliers_low": int(len(outliers_low)),
+        "n_outliers_high": int(len(outliers_high)),
+        "outlier_pct": (
+            (len(outliers_low) + len(outliers_high)) / len(data) * 100
+            if len(data) > 0
+            else 0.0
+        ),
+        "suggested_y_min": (
+            max(lower_bound, float(data.min())) if has_outliers else float(data.min())
+        ),
+        "suggested_y_max": (
+            min(upper_bound, float(data.max())) if has_outliers else float(data.max())
+        ),
+    }
+
+
+def suggest_chart_type(df: pd.DataFrame, mapping: Dict[str, Any]) -> str:
+    """Suggest an appropriate chart type based on data characteristics.
+
+    Used by the LLM as a fallback when the user's intent isn't explicit
+    enough to pick a chart type. Heuristics:
+
+      - No x: histogram (single-variable distribution).
+      - Datetime x + numeric y: ``multi_line``.
+      - Numeric x + numeric y: ``scatter``.
+      - Categorical x + numeric y: ``bar``.
+      - Otherwise: ``scatter`` (safe default).
+    """
+    x_field = _get_field(mapping, "x")
+    y_field = _get_field(mapping, "y")
+
+    if x_field is None:
+        return "histogram"
+
+    x_is_temporal = (
+        x_field in df.columns
+        and pd.api.types.is_datetime64_any_dtype(df[x_field])
+    )
+    x_is_numeric = (
+        x_field in df.columns
+        and not x_is_temporal
+        and pd.api.types.is_numeric_dtype(df[x_field])
+    )
+    y_is_numeric = (
+        y_field is not None
+        and y_field in df.columns
+        and pd.api.types.is_numeric_dtype(df[y_field])
+    )
+
+    if x_is_temporal and y_is_numeric:
+        return "multi_line"
+    if x_is_numeric and y_is_numeric:
+        return "scatter"
+    if not x_is_numeric and y_is_numeric:
+        return "bar"
+    return "scatter"
+
+
+def validate_data(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> None:
+    """Deep validation that the data will produce a visible chart.
+
+    This is the critical check that prevents silent empty charts.
+    Called before building the Altair spec. Mirrors
+    ``_validate_chart_data_integrity`` but is exposed as a public-ish
+    name PRISM downstream code depends on.
+
+    Raises:
+        ValidationError: If the data would produce an empty chart
+            (no valid x/y pairs, color groups with insufficient points,
+            datetime conversion failures, infinite y values).
+    """
+    _validate_chart_data_integrity(df, mapping, chart_type)
 
 
 # ===========================================================================
@@ -19450,6 +19956,13 @@ def _render_chart_to_png(
 # MODULE: make_chart() -- the public entry point
 # ===========================================================================
 
+# Chart-type -> _build_<type> dispatch table. Keeps ``make_chart`` linear
+# instead of a giant if/elif ladder. ``timeseries`` and ``multi_line``
+# share the multi_line builder; ``multi_line`` does its own dispatch
+# between single-axis, dual-axis, and profile (ordinal x) modes.
+_BUILDER_DISPATCH: Dict[str, Any] = {}  # populated below after defs.
+
+
 def _generate_filename(
     title: Optional[str],
     chart_type: str,
@@ -19483,8 +19996,8 @@ def _make_chart(
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
     intent: IntentType = "explore",
-    dimension_preset: Optional[DimensionPreset] = None,
     dimensions: Optional[DimensionPreset] = None,
+    dimension_preset: Optional[DimensionPreset] = None,
     annotations: Optional[List[Annotation]] = None,
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
@@ -19495,6 +20008,11 @@ def _make_chart(
     interactive: bool = True,
     auto_beautify: bool = True,
     layers: Optional[List[Dict[str, Any]]] = None,
+    x_label: Optional[str] = None,
+    y_label: Optional[str] = None,
+    x_title: Optional[str] = None,
+    y_title: Optional[str] = None,
+    y_title_right: Optional[str] = None,
     user_id: Optional[str] = None,
     caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
@@ -19541,6 +20059,12 @@ def _make_chart(
             (date format, label angle, y-domain, log scale recommendation).
         layers: Optional list of extra overlay layers (regression, rule,
             point) layered on top of the base chart.
+        x_label / y_label: Legacy aliases for ``mapping['x_title']`` /
+            ``mapping['y_title']``.
+        x_title / y_title / y_title_right: Compatibility aliases for the
+            canonical ``mapping['x_title']`` / ``mapping['y_title']`` /
+            ``mapping['y_title_right']`` keys. New v1 calls should author
+            axis titles inside ``mapping`` and must not mix placements.
         user_id: Optional Kerberos ID resolved from the runtime context.
         caption: Below-chart caption text (str) or style-override dict
             (``{"text": ..., "italic": True, "font_size": 10, ...}``).
@@ -19627,6 +20151,22 @@ def _make_chart(
         )
 
     mapping = dict(mapping)
+    # Top-level axis-title kwargs route into mapping. Both the
+    # ``x_label``/``y_label`` aliases (legacy) and the canonical
+    # ``x_title``/``y_title``/``y_title_right`` names are accepted at
+    # the call site for ergonomics; mapping[...] wins when both are
+    # set so a non-empty value at the more-specific call site (mapping)
+    # overrides the convenience kwarg.  ``None`` / ``""`` are missing,
+    # not intentional titles, and must not shadow a semantic top-level value.
+    for kwarg_val, mapping_key in (
+        (x_label, "x_title"),
+        (y_label, "y_title"),
+        (x_title, "x_title"),
+        (y_title, "y_title"),
+        (y_title_right, "y_title_right"),
+    ):
+        if kwarg_val is not None and not mapping.get(mapping_key):
+            mapping[mapping_key] = kwarg_val
 
     # ---- Source attribution -> caption (one uniform rule) --------------------
     # source= is a first-class, source-agnostic kwarg: the CALLER states
@@ -19651,11 +20191,10 @@ def _make_chart(
     _normalize_named_colors_in_mapping(mapping)
 
     # ---- dimension_preset= alias ------------------------------------------
-    # ``dimension_preset`` is the canonical name on every surface. The
-    # older ``dimensions`` spelling stays accepted (unadvertised) because
-    # chart_functions_studio.py and the staging galleries pass it; it only
-    # applies when ``dimension_preset`` is not set.
-    if dimension_preset is not None:
+    # The composite helpers accept ``dimension_preset``; the single-chart
+    # path historically only took ``dimensions``. Accept both here so the
+    # name carries across surfaces; ``dimensions`` wins when both are set.
+    if dimensions is None and dimension_preset is not None:
         dimensions = dimension_preset
 
     if s3_manager is None:
@@ -19913,8 +20452,8 @@ def _make_chart(
     # dimensions; the kwarg remains on the signature for staging-side
     # power-user use (demos, fixture rendering) and is private-by-
     # convention (not taught in the skill). When not passed, route
-    # through ``_auto_dimensions``. Resolved BEFORE validation: the
-    # content collectors
+    # through ``_auto_dimensions`` -- the same table the v2 ``Chart``
+    # class consults. Resolved BEFORE validation: the content collectors
     # need the canvas width for legend / grouped-bar / title budgets.
     # A defective explicit ``dimensions`` was collected as a kwarg-fact
     # finding above; fall back to the auto preset so the collectors can
@@ -20040,7 +20579,9 @@ def _make_chart(
                     session_path=session_path,
                     s3_manager=s3_manager, save_as=save_as,
                     interactive=interactive, auto_beautify=auto_beautify,
-                    layers=layers,
+                    layers=layers, x_label=x_label, y_label=y_label,
+                    x_title=x_title, y_title=y_title,
+                    y_title_right=y_title_right,
                     user_id=user_id, caption=caption,
                     side_left=side_left, side_right=side_right,
                     facet_cols=facet_cols,
@@ -20798,9 +21339,10 @@ class ChartSpec:
     sit below their own sub-chart; side panels flank that sub-chart and
     remain inside the composite frame.
 
-    Axis titles belong in ``mapping`` -- ``mapping['x_title']``,
-    ``mapping['y_title']``, ``mapping['y_title_right']``. There is no
-    top-level axis-title kwarg.
+    Axis titles canonically belong in ``mapping``. The top-level
+    ``x_title`` / ``y_title`` / ``y_title_right`` and ``x_label`` /
+    ``y_label`` forms remain compatibility aliases only; new calls must
+    not mix placements.
 
     Unknown keyword arguments raise a typed ``ValidationError`` naming the
     bad kwarg, listing the valid set, and suggesting the nearest match --
@@ -20819,6 +21361,11 @@ class ChartSpec:
     source: Optional[str] = None
     side_left: Union[str, Dict[str, Any], None] = None
     side_right: Union[str, Dict[str, Any], None] = None
+    x_label: Optional[str] = None
+    y_label: Optional[str] = None
+    x_title: Optional[str] = None
+    y_title: Optional[str] = None
+    y_title_right: Optional[str] = None
     _caption_from_source: bool = field(default=False, init=False, repr=False)
 
     def __init__(
@@ -20835,6 +21382,11 @@ class ChartSpec:
         source: Optional[str] = None,
         side_left: Union[str, Dict[str, Any], None] = None,
         side_right: Union[str, Dict[str, Any], None] = None,
+        x_label: Optional[str] = None,
+        y_label: Optional[str] = None,
+        x_title: Optional[str] = None,
+        y_title: Optional[str] = None,
+        y_title_right: Optional[str] = None,
         **extra: Any,
     ) -> None:
         if extra:
@@ -20857,6 +21409,11 @@ class ChartSpec:
         self.source = source
         self.side_left = side_left
         self.side_right = side_right
+        self.x_label = x_label
+        self.y_label = y_label
+        self.x_title = x_title
+        self.y_title = y_title
+        self.y_title_right = y_title_right
         self.__post_init__()
 
     @staticmethod
@@ -20864,16 +21421,9 @@ class ChartSpec:
         valid = [
             "df", "chart_type", "mapping", "title", "subtitle", "annotations",
             "layers", "caption", "source", "side_left", "side_right",
+            "x_label", "y_label", "x_title", "y_title", "y_title_right",
         ]
         bad = unknown[0]
-        mapping_key_hint = ""
-        misplaced = [k for k in unknown if k in _PUBLIC_CHART_MAPPING_KEYS]
-        if misplaced:
-            mapping_key_hint = (
-                f" {misplaced} are mapping keys: put them inside "
-                f"mapping={{...}} (e.g. mapping[{misplaced[0]!r}]), not on "
-                f"the ChartSpec(...) call."
-            )
         global_hint = ""
         if any(k in _CHARTSPEC_COMPOSITE_GLOBAL_KWARGS for k in unknown):
             offenders = [k for k in unknown if k in _CHARTSPEC_COMPOSITE_GLOBAL_KWARGS]
@@ -20882,20 +21432,11 @@ class ChartSpec:
                 f"make_*pack_* call (e.g. make_4pack_grid(..., "
                 f"dimension_preset='wide')), not on a ChartSpec."
             )
-        retired = _retired_key_hint(bad)
         suggestion = difflib.get_close_matches(bad, valid, n=1, cutoff=0.6)
-        if retired:
-            did_you_mean = retired
-        elif mapping_key_hint or not suggestion:
-            # A placement hint already names the exact fix; a fuzzy guess on
-            # top of it only competes with the right answer.
-            did_you_mean = ""
-        else:
-            did_you_mean = f" Did you mean '{suggestion[0]}'?"
+        did_you_mean = f" Did you mean '{suggestion[0]}'?" if suggestion else ""
         raise ValidationError(
             f"ChartSpec got unexpected keyword argument(s): {unknown}. "
-            f"Valid ChartSpec kwargs: {valid}."
-            f"{mapping_key_hint}{did_you_mean}{global_hint}"
+            f"Valid ChartSpec kwargs: {valid}.{did_you_mean}{global_hint}"
         )
 
     def __post_init__(self) -> None:
@@ -20905,7 +21446,22 @@ class ChartSpec:
         structural_findings.extend(_collect_layer_findings(self.layers))
         _raise_findings(structural_findings)
 
-        self.mapping = dict(self.mapping or {})
+        # Route top-level axis-title kwargs into ``mapping`` so the
+        # downstream renderer doesn't have to know about the
+        # convenience kwargs. Mirrors ``make_chart``'s behaviour; a
+        # non-empty mapping value wins when both are set, while ``None`` /
+        # ``""`` cannot shadow a semantic top-level title.
+        merged = dict(self.mapping or {})
+        for kwarg_val, mapping_key in (
+            (self.x_label, "x_title"),
+            (self.y_label, "y_title"),
+            (self.x_title, "x_title"),
+            (self.y_title, "y_title"),
+            (self.y_title_right, "y_title_right"),
+        ):
+            if kwarg_val is not None and not merged.get(mapping_key):
+                merged[mapping_key] = kwarg_val
+        self.mapping = merged
 
 
 @dataclass
@@ -21733,6 +22289,34 @@ def _wrap_with_text_panels(
     return alt.hconcat(*h_parts, spacing=0).resolve_scale(
         color="independent", x="independent", y="independent",
     ).resolve_legend(color="independent")
+
+
+def _wrap_composite_with_text_panels(
+    composite: alt.Chart,
+    *,
+    composite_width: int,
+    composite_height: int,
+    caption: Union[str, Dict[str, Any], None] = None,
+    narrative_left: Union[str, Dict[str, Any], None] = None,
+    narrative_right: Union[str, Dict[str, Any], None] = None,
+    skin_config: Dict[str, Any],
+) -> alt.Chart:
+    """Composite-level analogue of ``_wrap_with_text_panels``.
+
+    Same wrap order; the ``caption`` sits below ALL sub-panels and
+    ``narrative_left`` / ``narrative_right`` flank the entire pack.
+    Defaults to a wider 22% side budget against the composite's full
+    width (so a 4-pack at 1400px gets ~310px side panels).
+    """
+    return _wrap_with_text_panels(
+        composite,
+        chart_width=composite_width,
+        chart_height=composite_height,
+        caption=caption,
+        side_left=narrative_left,
+        side_right=narrative_right,
+        skin_config=skin_config,
+    )
 
 
 _BLANK_PANEL_CFG: Dict[str, Any] = {
@@ -23205,32 +23789,44 @@ def _resolve_composite_aliases(
     *,
     dimensions: Optional[str],
     dimension_preset: Optional[str],
-    default: Optional[str] = None,
-) -> Tuple[Optional[str], List[str]]:
-    """Resolve the composite canvas kwarg to a single canonical value.
+    side_left: Union[str, Dict[str, Any], None],
+    narrative_left: Union[str, Dict[str, Any], None],
+    side_right: Union[str, Dict[str, Any], None],
+    narrative_right: Union[str, Dict[str, Any], None],
+) -> Tuple[
+    Optional[str],
+    Union[str, Dict[str, Any], None],
+    Union[str, Dict[str, Any], None],
+    List[str],
+]:
+    """Resolve composite kwarg aliases to single canonical values.
 
-    ``dimension_preset`` is the canonical canvas name on every surface.
-    The older ``dimensions`` spelling stays accepted (unadvertised) so the
-    staging galleries and ``chart_functions_studio.py`` keep working;
-    ``dimension_preset`` wins when both are passed and a warning names the
-    conflict.
-
-    ``default`` is the per-layout canvas the caller falls back to. It is
-    threaded rather than baked into a signature default so that an
-    explicit ``dimensions=`` is never masked by a wrapper's own default.
+    The composite functions accept BOTH the make_chart-style canonical
+    names (``dimensions``, ``side_left``, ``side_right``) AND their
+    composite-specific legacy names (``dimension_preset``,
+    ``narrative_left``, ``narrative_right``). Canonical wins when both
+    are passed and a warning is emitted so the caller sees the conflict.
     """
     alias_warnings: List[str] = []
     if dimensions is not None and dimension_preset is not None:
         alias_warnings.append(
-            "Both `dimension_preset=` and `dimensions=` were passed; "
-            "`dimension_preset=` (canonical) wins. Drop `dimensions=`."
+            "Both `dimensions=` and `dimension_preset=` were passed; "
+            "`dimensions=` (canonical) wins. Drop `dimension_preset=`."
         )
-    resolved_dim = (
-        dimension_preset if dimension_preset is not None else dimensions
-    )
-    if resolved_dim is None:
-        resolved_dim = default
-    return resolved_dim, alias_warnings
+    if side_left is not None and narrative_left is not None:
+        alias_warnings.append(
+            "Both `side_left=` and `narrative_left=` were passed; "
+            "`side_left=` (canonical) wins. Drop `narrative_left=`."
+        )
+    if side_right is not None and narrative_right is not None:
+        alias_warnings.append(
+            "Both `side_right=` and `narrative_right=` were passed; "
+            "`side_right=` (canonical) wins. Drop `narrative_right=`."
+        )
+    resolved_dim = dimensions if dimensions is not None else dimension_preset
+    resolved_left = side_left if side_left is not None else narrative_left
+    resolved_right = side_right if side_right is not None else narrative_right
+    return resolved_dim, resolved_left, resolved_right, alias_warnings
 
 
 def _summarize_facet_panel_errors(
@@ -23461,8 +24057,7 @@ def _make_composite(
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
     dimensions: Optional[DimensionPreset] = None,
-    dimension_preset: Optional[DimensionPreset] = None,
-    default_dimension_preset: DimensionPreset = "compact",
+    dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
@@ -23475,7 +24070,9 @@ def _make_composite(
     caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
+    narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
+    narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Generic composite entry point used by all ``make_Npack_*`` wrappers.
 
@@ -23494,15 +24091,22 @@ def _make_composite(
       panels and suppress the pack source footer. ``source`` supplies panels
       that do not declare their own source. Explicit captions are never
       rewritten, and an explicit pack ``caption`` always wins its slot.
-      ``side_left`` / ``side_right`` flank the whole pack. Each accepts a
-      string or a style dict (see ``make_chart``). Sub-chart-level text
-      panels live on each ``ChartSpec`` instead.
+      ``side_left`` / ``side_right`` flank the whole pack (also
+      accepted under the legacy aliases ``narrative_left`` /
+      ``narrative_right``). Each accepts a string or a style dict
+      (see ``make_chart``). Sub-chart-level text panels live on each
+      ``ChartSpec`` instead.
     """
     warnings_list: List[str] = []
-    dimension_preset, alias_warnings = _resolve_composite_aliases(
-        dimensions=dimensions,
-        dimension_preset=dimension_preset,
-        default=default_dimension_preset,
+    dimension_preset, narrative_left, narrative_right, alias_warnings = (
+        _resolve_composite_aliases(
+            dimensions=dimensions,
+            dimension_preset=dimension_preset,
+            side_left=side_left,
+            narrative_left=narrative_left,
+            side_right=side_right,
+            narrative_right=narrative_right,
+        )
     )
     warnings_list.extend(alias_warnings)
 
@@ -23784,7 +24388,7 @@ def _make_composite(
 
     spec_dict = composite.to_dict()
 
-    # Composite-level text panels (caption / side_left / side_right).
+    # Composite-level text panels (caption / narrative_left / narrative_right).
     # Estimate the rendered composite's pixel footprint so the side
     # panels and caption sit at sensible widths. We approximate from the
     # per-sub-chart pixel size and the layout shape -- close enough for
@@ -23792,8 +24396,8 @@ def _make_composite(
     # at render time.
     if (
         caption is not None
-        or side_left is not None
-        or side_right is not None
+        or narrative_left is not None
+        or narrative_right is not None
     ):
         n_cols, n_rows = _layout_grid_shape(layout, n_charts)
         composite_w = n_cols * chart_width + (n_cols - 1) * spacing
@@ -23803,8 +24407,8 @@ def _make_composite(
                 spec_dict,
                 chart_width=composite_w, chart_height=composite_h,
                 caption=caption,
-                side_left=side_left,
-                side_right=side_right,
+                side_left=narrative_left,
+                side_right=narrative_right,
                 skin_config=skin_config,
             )
         except Exception as exc:  # noqa: BLE001
@@ -23883,7 +24487,7 @@ def make_2pack_horizontal(
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
     dimensions: Optional[DimensionPreset] = None,
-    dimension_preset: Optional[DimensionPreset] = None,
+    dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
@@ -23896,7 +24500,9 @@ def make_2pack_horizontal(
     caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
+    narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
+    narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Two charts side-by-side. ``chart1`` is left, ``chart2`` is right."""
     return _make_composite(
@@ -23904,14 +24510,14 @@ def make_2pack_horizontal(
         "2_horizontal",
         title=title, subtitle=subtitle, skin=skin,
         dimensions=dimensions, dimension_preset=dimension_preset,
-        default_dimension_preset="compact",
         output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption, source=source,
-        side_left=side_left, side_right=side_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -23924,7 +24530,7 @@ def make_2pack_vertical(
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
     dimensions: Optional[DimensionPreset] = None,
-    dimension_preset: Optional[DimensionPreset] = None,
+    dimension_preset: DimensionPreset = "wide",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
@@ -23937,7 +24543,9 @@ def make_2pack_vertical(
     caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
+    narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
+    narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Two charts stacked vertically. ``chart1`` is top, ``chart2`` is bottom."""
     return _make_composite(
@@ -23945,14 +24553,14 @@ def make_2pack_vertical(
         "2_vertical",
         title=title, subtitle=subtitle, skin=skin,
         dimensions=dimensions, dimension_preset=dimension_preset,
-        default_dimension_preset="wide",
         output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption, source=source,
-        side_left=side_left, side_right=side_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -23966,7 +24574,7 @@ def make_3pack_triangle(
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
     dimensions: Optional[DimensionPreset] = None,
-    dimension_preset: Optional[DimensionPreset] = None,
+    dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
@@ -23979,7 +24587,9 @@ def make_3pack_triangle(
     caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
+    narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
+    narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Three charts: one on top, two on bottom."""
     return _make_composite(
@@ -23987,14 +24597,14 @@ def make_3pack_triangle(
         "3_triangle",
         title=title, subtitle=subtitle, skin=skin,
         dimensions=dimensions, dimension_preset=dimension_preset,
-        default_dimension_preset="compact",
         output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption, source=source,
-        side_left=side_left, side_right=side_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -24009,7 +24619,7 @@ def make_4pack_grid(
     subtitle: Optional[str] = None,
     skin: str = "gs_clean",
     dimensions: Optional[DimensionPreset] = None,
-    dimension_preset: Optional[DimensionPreset] = None,
+    dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
@@ -24022,7 +24632,9 @@ def make_4pack_grid(
     caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
+    narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
+    narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """2x2 grid (top-left, top-right, bottom-left, bottom-right)."""
     return _make_composite(
@@ -24030,14 +24642,14 @@ def make_4pack_grid(
         "4_grid",
         title=title, subtitle=subtitle, skin=skin,
         dimensions=dimensions, dimension_preset=dimension_preset,
-        default_dimension_preset="compact",
         output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption, source=source,
-        side_left=side_left, side_right=side_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -24055,7 +24667,7 @@ def make_6pack_grid(
     specs: Optional[List[ChartSpec]] = None,
     skin: str = "gs_clean",
     dimensions: Optional[DimensionPreset] = None,
-    dimension_preset: Optional[DimensionPreset] = None,
+    dimension_preset: DimensionPreset = "compact",
     output_dir: str = "",
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
@@ -24068,7 +24680,9 @@ def make_6pack_grid(
     caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
     side_left: Union[str, Dict[str, Any], None] = None,
+    narrative_left: Union[str, Dict[str, Any], None] = None,
     side_right: Union[str, Dict[str, Any], None] = None,
+    narrative_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """3x2 grid (3 rows, 2 columns) of charts.
 
@@ -24130,14 +24744,14 @@ def make_6pack_grid(
         "6_grid",
         title=title, subtitle=subtitle, skin=skin,
         dimensions=dimensions, dimension_preset=dimension_preset,
-        default_dimension_preset="compact",
         output_dir=output_dir,
         filename_prefix=filename_prefix, filename_suffix=filename_suffix,
         spacing=spacing, interactive=interactive,
         session_path=session_path, s3_manager=s3_manager,
         save_as=save_as, user_id=user_id,
         caption=caption, source=source,
-        side_left=side_left, side_right=side_right,
+        side_left=side_left, narrative_left=narrative_left,
+        side_right=side_right, narrative_right=narrative_right,
     )
 
 
@@ -24429,12 +25043,366 @@ def check_charts_quality(
 
 
 # ===========================================================================
-# MODULE: AUTO CANVAS SELECTION
+# MODULE: STATIC SPEC HELPERS (PNG export polish)
 # ===========================================================================
 
+def get_dimensions(preset: DimensionPreset) -> Tuple[int, int]:
+    """Get the ``(width, height)`` tuple for a dimension preset name."""
+    if preset not in DIMENSION_PRESETS:
+        raise ValueError(
+            f"Unknown dimension preset: {preset!r}. "
+            f"Available: {list(DIMENSION_PRESETS.keys())}"
+        )
+    return DIMENSION_PRESETS[preset]
+
+
+def list_dimension_presets() -> List[Dict[str, Any]]:
+    """List all dimension presets with their pixel sizes."""
+    return [
+        {"name": name, "width": dims[0], "height": dims[1]}
+        for name, dims in DIMENSION_PRESETS.items()
+    ]
+
+
+def _strip_param_expressions(obj: Dict[str, Any]) -> None:
+    """Walk a Vega-Lite spec dict and remove ``{'expr': '...'}`` references
+    on mark properties / scale domains so vl-convert can render the
+    chart statically. Mutates in place.
+    """
+    if not isinstance(obj, dict):
+        return
+
+    obj.pop("params", None)
+
+    if "mark" in obj and isinstance(obj["mark"], dict):
+        mark = obj["mark"]
+        for prop in (
+            "strokeWidth", "opacity", "size", "cornerRadius",
+            "innerRadius", "outerRadius", "padAngle", "fillOpacity",
+        ):
+            if isinstance(mark.get(prop), dict) and "expr" in mark[prop]:
+                mark.pop(prop, None)
+
+    if "encoding" in obj:
+        for channel in ("x", "y", "color", "size"):
+            enc = obj["encoding"].get(channel)
+            if isinstance(enc, dict) and isinstance(enc.get("scale"), dict):
+                scale = enc["scale"]
+                for prop in ("domainMin", "domainMax"):
+                    if isinstance(scale.get(prop), dict) and "expr" in scale[prop]:
+                        scale.pop(prop, None)
+
+    for key in ("hconcat", "vconcat", "concat", "layer"):
+        if key in obj and isinstance(obj[key], list):
+            for item in obj[key]:
+                _strip_param_expressions(item)
+
+
+def create_static_spec(
+    spec: Dict[str, Any],
+    y_min: Optional[float] = None,
+    y_max: Optional[float] = None,
+    skin_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Create a static (non-interactive) version of a Vega-Lite spec for
+    PNG rendering.
+
+    Removes ``params`` definitions, replaces ``{'expr': ...}`` references
+    on mark properties and scale domains with their default values, and
+    -- when ``y_min`` / ``y_max`` are supplied -- pins the y-axis domain
+    to those values. This is needed because ``vl-convert`` cannot
+    resolve parameter expressions; without this, charts that include
+    interactive sliders would render with unbound expression strings.
+
+    Args:
+        spec: The Vega-Lite spec dict (typically ``chart.to_dict()``).
+        y_min / y_max: Optional explicit y-axis bounds to inject.
+        skin_config: Used to source mark-property defaults (currently
+            unused; kept for signature stability with PRISM's version).
+
+    Returns:
+        A new spec dict (deep-copied) with all expressions resolved.
+    """
+    static_spec = copy.deepcopy(spec)
+    _strip_param_expressions(static_spec)
+
+    if isinstance(static_spec.get("width"), dict) and "expr" in static_spec["width"]:
+        static_spec["width"] = 600
+    if isinstance(static_spec.get("height"), dict) and "expr" in static_spec["height"]:
+        static_spec["height"] = 400
+
+    # Optional: pin y-axis domain to (y_min, y_max).
+    if y_min is not None and y_max is not None:
+        def _set_y_domain(node: Dict[str, Any]) -> None:
+            if not isinstance(node, dict):
+                return
+            if "encoding" in node and isinstance(node["encoding"], dict):
+                y_enc = node["encoding"].get("y")
+                if isinstance(y_enc, dict):
+                    y_enc.setdefault("scale", {})
+                    if isinstance(y_enc["scale"], dict):
+                        y_enc["scale"]["domain"] = [y_min, y_max]
+            for key in ("layer", "hconcat", "vconcat", "concat"):
+                if key in node and isinstance(node[key], list):
+                    for item in node[key]:
+                        _set_y_domain(item)
+
+        _set_y_domain(static_spec)
+
+    return static_spec
+
+
+def _inject_y_axis_domain(spec: Dict[str, Any]) -> None:
+    """Inject Vega-Lite parameter-bound y-axis domain into a spec.
+
+    Mutates in place. Adds ``scale.domainMin`` / ``scale.domainMax``
+    expression bindings (``yDomainMin`` / ``yDomainMax`` parameter
+    names) to every y-encoding in the spec, including layered
+    sub-specs. This is the dynamic-scale-domain idiom used by the
+    chart studio's "y range" interactive slider.
+
+    The matching slider parameter is added at the top level by the
+    studio wrap layer (``chart_functions_studio.wrap_interactive_prism``).
+    """
+
+    def _update_y_encoding(obj: Dict[str, Any]) -> None:
+        if not isinstance(obj, dict):
+            return
+        if "encoding" in obj and "y" in obj["encoding"]:
+            y_enc = obj["encoding"]["y"]
+            if isinstance(y_enc, dict):
+                y_enc.setdefault("scale", {})
+                if isinstance(y_enc["scale"], dict):
+                    y_enc["scale"]["domainMin"] = {"expr": "yDomainMin"}
+                    y_enc["scale"]["domainMax"] = {"expr": "yDomainMax"}
+
+    if "layer" in spec:
+        for layer in spec["layer"]:
+            _update_y_encoding(layer)
+    else:
+        _update_y_encoding(spec)
+
+
+def clean_chart(obj: Dict[str, Any]) -> None:
+    """Recursively clean a chart-or-concat spec for static PNG export.
+
+    Mutates in place. Walks every level (``hconcat``, ``vconcat``,
+    ``concat``, ``layer``) and:
+
+      - Removes any ``params`` blocks (interactive sliders).
+      - Drops mark-property expressions (``strokeWidth``, ``opacity``,
+        ``size``, corner radii, ``innerRadius``, ``outerRadius``,
+        ``padAngle``, ``fillOpacity``).
+      - Drops scale-domain expressions (``domainMin`` / ``domainMax``).
+
+    After this pass the spec is safe to feed to ``vl-convert`` for PNG
+    rendering -- no unbound parameter expressions remain.
+    """
+    if not isinstance(obj, dict):
+        return
+
+    obj.pop("params", None)
+
+    if "mark" in obj and isinstance(obj["mark"], dict):
+        mark = obj["mark"]
+        expr_props = {
+            "strokeWidth", "opacity", "size", "cornerRadius",
+            "innerRadius", "outerRadius", "padAngle", "fillOpacity",
+        }
+        for prop in expr_props:
+            if isinstance(mark.get(prop), dict) and "expr" in mark[prop]:
+                del mark[prop]
+
+    if "encoding" in obj and isinstance(obj["encoding"], dict):
+        for channel in ("x", "y", "color", "size"):
+            enc = obj["encoding"].get(channel)
+            if isinstance(enc, dict) and isinstance(enc.get("scale"), dict):
+                scale = enc["scale"]
+                for prop in ("domainMin", "domainMax"):
+                    if isinstance(scale.get(prop), dict) and "expr" in scale[prop]:
+                        del scale[prop]
+
+    for key in ("hconcat", "vconcat", "concat", "layer"):
+        if key in obj and isinstance(obj[key], list):
+            for item in obj[key]:
+                clean_chart(item)
+
+
+def create_static_composite_spec(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a static version of a composite spec for PNG export.
+
+    Recurses into ``hconcat`` / ``vconcat`` / ``concat`` / ``layer``
+    structures to strip interactive params at every level. Uses
+    ``clean_chart`` for the recursive walk.
+    """
+    static_spec = copy.deepcopy(spec)
+    static_spec.pop("params", None)
+
+    if isinstance(static_spec.get("width"), dict) and "expr" in static_spec["width"]:
+        static_spec["width"] = 600
+    if isinstance(static_spec.get("height"), dict) and "expr" in static_spec["height"]:
+        static_spec["height"] = 400
+    if isinstance(static_spec.get("spacing"), dict) and "expr" in static_spec["spacing"]:
+        static_spec["spacing"] = 20
+
+    clean_chart(static_spec)
+    return static_spec
+
+
+# ===========================================================================
+# MODULE: V2 API SURFACE (Chart class + render_grid)
+# ===========================================================================
+#
+# Cleaner public surface that sits alongside the v1 surface
+# (``make_chart``, ``ChartSpec``, ``make_2pack_*``,
+# ``check_charts_quality``). Same rendering pipeline underneath -- the
+# v2 functions translate flat kwargs into v1's ``mapping`` dict and
+# delegate to ``make_chart`` / ``make_composite``. Chart output is
+# byte-identical between the two APIs.
+#
+# Goals (vs v1):
+#   * Single ``Chart`` class for both standalone and composite use
+#     (replaces the ``make_chart`` + ``ChartSpec`` duality).
+#   * Flat keyword arguments; no ``mapping={...}`` dict.
+#   * One ``render_grid`` for composites (replaces 5 ``make_*pack_*``
+#     wrappers).
+#   * Auto QC + cleanup + URL printing absorbed into ``Chart.render`` /
+#     ``render_grid`` -- the post-chart boilerplate disappears.
+#   * ``s3_manager`` / ``session_path`` / ``user_id`` resolved from the
+#     calling frame -- never threaded through call sites.
+#
+# Annotation primitives, ``ChartResult``, ``CompositeResult``,
+# ``DataProfile``, ``profile_df`` are shared with v1 -- no duplication.
+
+# --- Runtime context resolution -------------------------------------------
+#
+# PRISM injects ``s3_manager`` and ``SESSION_PATH`` (and optionally
+# ``user_id``) as bindings in the script's execution namespace inside
+# ``execute_analysis_script``. v1 forces the script to thread them
+# through every ``make_chart`` / ``make_composite`` call. v2 walks the
+# call stack at render time and picks them up automatically -- the
+# script never has to mention them.
+#
+# Single resolution strategy, raises loudly on miss. There is no
+# fallback chain.
+
+_V2_SESSION_PATH_KEYS: Tuple[str, ...] = ("SESSION_PATH", "session_path")
+_V2_USER_ID_KEYS: Tuple[str, ...] = ("user_id", "USER_ID")
+
+
+@dataclass(frozen=True)
+class _RuntimeContext:
+    """Bundle of PRISM-injected runtime bindings consumed by v2."""
+
+    s3_manager: Any
+    session_path: str
+    user_id: Optional[str]
+
+
+def _resolve_runtime_context(start_depth: int = 2) -> _RuntimeContext:
+    """Walk the call stack to find PRISM-injected runtime bindings.
+
+    Searches each frame's ``f_locals`` then ``f_globals`` for the
+    binding ``s3_manager``. When found, also pulls ``SESSION_PATH``
+    (or lowercase ``session_path``) and ``user_id`` from the same
+    frame so the three bindings come from the same logical scope.
+
+    PRISM-side: every script ``execute_analysis_script`` runs has
+    these injected into its exec namespace. The script's frame is
+    typically two levels up from this function.
+
+    Local-dev: demos / tests bind them in their own ``__main__`` /
+    test scope before invoking ``Chart.render`` or ``render_grid``.
+
+    Raises:
+        RuntimeError: if no frame in the stack carries an
+            ``s3_manager`` binding. The message points at the
+            normal injection sites.
+    """
+    frame = sys._getframe(start_depth)
+    while frame is not None:
+        for ns in (frame.f_locals, frame.f_globals):
+            s3 = ns.get("s3_manager")
+            if s3 is not None:
+                session_path = ""
+                for key in _V2_SESSION_PATH_KEYS:
+                    if key in ns and ns[key]:
+                        session_path = ns[key]
+                        break
+                user_id: Optional[str] = None
+                for key in _V2_USER_ID_KEYS:
+                    if key in ns and ns[key]:
+                        user_id = ns[key]
+                        break
+                return _RuntimeContext(
+                    s3_manager=s3,
+                    session_path=session_path,
+                    user_id=user_id,
+                )
+        frame = frame.f_back
+    raise RuntimeError(
+        "chart_functions (v2): could not resolve `s3_manager` from any "
+        "frame in the call stack. PRISM injects this into every "
+        "execute_analysis_script namespace; for local dev, ensure "
+        "`s3_manager = S3BucketManager(...)` is bound in the script's "
+        "globals before calling Chart.render() or render_grid()."
+    )
+
+
+# --- Translation constants ------------------------------------------------
+
+# Layout names accepted by ``render_grid``. The common geometric forms
+# ('1x2', '2x2', '3x2', 'triangle') are the canonical names; v1's
+# longer names ('2_horizontal', '4_grid', '6_grid', ...) are also
+# accepted for ergonomic interop.
+_V2_LAYOUT_ALIASES: Dict[str, str] = {
+    # canonical short names
+    "1x2": "2_horizontal",
+    "2x1": "2_vertical",
+    "2x2": "4_grid",
+    "3x2": "6_grid",
+    "triangle": "3_triangle",
+    # v1 long names (passthrough)
+    "2_horizontal": "2_horizontal",
+    "2_vertical": "2_vertical",
+    "3_triangle": "3_triangle",
+    "3_inverted": "3_inverted",
+    "3_horizontal": "3_horizontal",
+    "3_vertical": "3_vertical",
+    "4_grid": "4_grid",
+    "4_horizontal": "4_horizontal",
+    "4_vertical": "4_vertical",
+    "6_grid": "6_grid",
+}
+
+# Keys that move into v1's ``mapping`` dict. Anything else stays as a
+# top-level kwarg on ``make_chart``. The Chart class uses this to split
+# its kwargs into the right buckets at render time.
+_V2_MAPPING_KEYS: Tuple[str, ...] = (
+    "x", "y", "color", "value", "theta",
+    "x_title", "y_title", "y_title_right",
+    "x_sort", "y_sort", "x_type",
+    "dual_axis_series", "invert_right_axis",
+    "stack", "trendline", "trendlines",
+    "strokeDash", "strokeDashScale", "strokeDashLegend",
+    "x_low", "x_high", "color_by", "label",
+    "color_scheme",
+)
+
+# Sentinel for "kwarg not provided". We use this rather than ``None``
+# because some mapping values legitimately default to None (e.g.
+# ``stack`` -- ``None`` means "let the engine decide"). The Chart
+# class only puts an explicitly-provided value into the v1 mapping.
+_V2_UNSET = object()
+
+
 # Per-chart-type dimension defaults. The engine picks the right canvas
-# for each chart type so PRISM never has to think about it; consulted by
-# ``make_chart`` whenever ``dimension_preset`` is not supplied.
+# for each chart type so PRISM never has to think about it. Both v1's
+# ``make_chart`` (when ``dimensions=None``) and v2's ``Chart`` class
+# (when ``.with_dimensions()`` is not called) consult this table.
+# Override path on v1: pass an explicit ``dimensions=`` (private-by-
+# convention; not taught in the skill). Override on v2:
+# ``Chart.with_dimensions(preset)``.
 _AUTO_DIMENSIONS: Dict[str, str] = {
     "multi_line":      "wide",     # 700x350 - default standalone canvas
     "timeseries":      "wide",
@@ -24460,6 +25428,674 @@ def _auto_dimensions(chart_type: str) -> str:
     entry, matching the long-running engine default.
     """
     return _AUTO_DIMENSIONS.get(chart_type, "wide")
+
+
+def _v2_resolve_layout(layout: str, n_charts: int) -> str:
+    """Resolve a v2 layout name to v1's internal layout token.
+
+    'auto' picks based on chart count: 2 -> 1x2, 3 -> triangle,
+    4 -> 2x2, 6 -> 3x2. 1, 5, and >6 with 'auto' raise.
+    """
+    if layout == "auto":
+        auto_map = {2: "1x2", 3: "triangle", 4: "2x2", 6: "3x2"}
+        if n_charts not in auto_map:
+            raise ValueError(
+                f"render_grid(layout='auto') only resolves for "
+                f"len(charts) in (2, 3, 4, 6); got {n_charts}. "
+                f"Pass layout=... explicitly (e.g. '2x2') for "
+                f"non-canonical counts."
+            )
+        return _V2_LAYOUT_ALIASES[auto_map[n_charts]]
+    if layout in _V2_LAYOUT_ALIASES:
+        return _V2_LAYOUT_ALIASES[layout]
+    raise ValueError(
+        f"render_grid: unknown layout {layout!r}. "
+        f"Valid: {sorted(_V2_LAYOUT_ALIASES)} or 'auto'."
+    )
+
+
+# --- The Chart class ------------------------------------------------------
+
+class Chart:
+    """A single chart specification, renderable standalone or as a panel.
+
+    Replaces v1's ``make_chart`` + ``ChartSpec`` duality with one
+    class. Construction collects the spec; ``.render()`` produces a
+    PNG and returns a ``ChartResult``. ``render_grid([c1, c2, ...])``
+    consumes the same objects for composite layouts.
+
+    All fields are keyword-only after the positional ``df`` and
+    ``type``. Anything that was a key inside v1's ``mapping={...}``
+    dict is now a flat kwarg.
+
+    Quick reference (full guide in ``chart_context_v2.md``)::
+
+        c = Chart(
+            df, type='multi_line',
+            x='date', y='value', color='series',
+            y_title='CPI YoY (%)',
+            title='Inflation Has Peaked',
+            subtitle='Core CPI decelerating 6 months',
+            annotations=[VLine(x='2022-03', label='Hike start'),
+                         HLine(y=2.0, label='Fed target')],
+        )
+        result = c.render(save_as='charts/cpi.png')
+
+    Per-chart-type kwargs are accepted but only emitted into the
+    underlying v1 mapping dict when explicitly provided -- so the
+    common multi_line / scatter / bar paths stay readable even though
+    waterfall / bullet / heatmap kwargs all live on the same surface.
+    """
+
+    # The canonical set of mapping-bound kwargs (consulted by
+    # ``_to_v1_mapping``). Module-level ``_V2_MAPPING_KEYS`` is the
+    # source of truth; the class attribute exists so subclasses or
+    # power users can override.
+    _MAPPING_PARAMS = _V2_MAPPING_KEYS
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        type: ChartType,
+        *,
+        # ----- Column references --------------------------------------
+        x: Any = _V2_UNSET,
+        y: Any = _V2_UNSET,
+        color: Any = _V2_UNSET,
+        value: Any = _V2_UNSET,
+        theta: Any = _V2_UNSET,
+        # ----- Display labels -----------------------------------------
+        x_title: Any = _V2_UNSET,
+        y_title: Any = _V2_UNSET,
+        y_title_right: Any = _V2_UNSET,
+        # ----- Axis behaviour -----------------------------------------
+        x_sort: Any = _V2_UNSET,
+        y_sort: Any = _V2_UNSET,
+        x_type: Any = _V2_UNSET,
+        # ----- Dual axis ----------------------------------------------
+        dual_axis_series: Any = _V2_UNSET,
+        invert_right_axis: Any = _V2_UNSET,
+        # ----- Per-chart-type behaviour ------------------------------
+        stack: Any = _V2_UNSET,
+        trendline: Any = _V2_UNSET,
+        trendlines: Any = _V2_UNSET,
+        strokeDash: Any = _V2_UNSET,
+        strokeDashScale: Any = _V2_UNSET,
+        strokeDashLegend: Any = _V2_UNSET,
+        x_low: Any = _V2_UNSET,
+        x_high: Any = _V2_UNSET,
+        color_by: Any = _V2_UNSET,
+        label: Any = _V2_UNSET,
+        type_col: Any = _V2_UNSET,  # waterfall: column naming bar type;
+                                    # translates to mapping['type'] in v1
+        color_scheme: Any = _V2_UNSET,
+        # ----- Metadata -----------------------------------------------
+        title: Optional[str] = None,
+        subtitle: Optional[str] = None,
+        # ----- Annotations / overlays / text panels -------------------
+        annotations: Optional[List[Annotation]] = None,
+        layers: Optional[List[Dict[str, Any]]] = None,
+        caption: Union[str, Dict[str, Any], None] = None,
+        source: Optional[str] = None,
+        side_left: Union[str, Dict[str, Any], None] = None,
+        side_right: Union[str, Dict[str, Any], None] = None,
+        # ----- Style --------------------------------------------------
+        # NB: ``dimensions`` is intentionally NOT a public kwarg --
+        # the engine picks per chart_type (see ``_auto_dimensions``).
+        # Use ``Chart.with_dimensions(preset)`` if you really need to
+        # override (escape hatch, not taught in the skill).
+        skin: str = "gs_clean",
+        intent: IntentType = "explore",
+        auto_beautify: bool = True,
+        # ----- Power-user escape hatch --------------------------------
+        mapping_overrides: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        # Quick early-fail validation -- catches typos at construction
+        # rather than at render(). All other validation runs inside
+        # the v1 pipeline at render time.
+        valid_types = {
+            "multi_line", "timeseries", "scatter", "scatter_multi",
+            "bar", "bar_horizontal", "area", "heatmap", "histogram",
+            "boxplot", "donut", "bullet", "waterfall",
+        }
+        if type not in valid_types:
+            raise ValueError(
+                f"Chart: unknown type {type!r}. Valid: {sorted(valid_types)}."
+            )
+        if skin not in AVAILABLE_SKINS:
+            raise ValueError(
+                f"Chart: unknown skin {skin!r}. "
+                f"Available: {list(AVAILABLE_SKINS.keys())}"
+            )
+
+        self._df = df
+        self._type = type
+        # Mapping-bound kwargs.
+        self._x = x
+        self._y = y
+        self._color = color
+        self._value = value
+        self._theta = theta
+        self._x_title = x_title
+        self._y_title = y_title
+        self._y_title_right = y_title_right
+        self._x_sort = x_sort
+        self._y_sort = y_sort
+        self._x_type = x_type
+        self._dual_axis_series = dual_axis_series
+        self._invert_right_axis = invert_right_axis
+        self._stack = stack
+        self._trendline = trendline
+        self._trendlines = trendlines
+        self._strokeDash = strokeDash
+        self._strokeDashScale = strokeDashScale
+        self._strokeDashLegend = strokeDashLegend
+        self._x_low = x_low
+        self._x_high = x_high
+        self._color_by = color_by
+        self._label = label
+        self._type_col = type_col
+        self._color_scheme = color_scheme
+        # Top-level kwargs.
+        self._title = title
+        self._subtitle = subtitle
+        self._annotations: List[Annotation] = list(annotations) if annotations else []
+        self._layers: List[Dict[str, Any]] = list(layers) if layers else []
+        # Keep source structured until render/translation time. This lets
+        # render_grid compact unanimous panel sources or retain differing
+        # panel attributions without guessing from rendered caption strings.
+        self._caption = caption
+        self._source = source
+        self._side_left = side_left
+        self._side_right = side_right
+        self._skin = skin
+        self._intent = intent
+        # ``self._dimensions`` is the OVERRIDE slot. None means "let
+        # the engine pick per chart_type" via ``_auto_dimensions``.
+        # Set by ``.with_dimensions(preset)`` for power-user override.
+        self._dimensions: Optional[DimensionPreset] = None
+        self._auto_beautify = auto_beautify
+        self._mapping_overrides = (
+            dict(mapping_overrides) if mapping_overrides else {}
+        )
+
+    # ----- Fluent helpers ----------------------------------------------
+
+    def annotate(self, *anns: Annotation) -> "Chart":
+        """Append annotations in place, return self for chaining.
+
+        Example::
+
+            chart.annotate(VLine(x='2022-03'), HLine(y=2.0))
+        """
+        self._annotations.extend(anns)
+        return self
+
+    def layer(self, *layer_dicts: Dict[str, Any]) -> "Chart":
+        """Append overlay layers (regression / rule / point), return self."""
+        self._layers.extend(layer_dicts)
+        return self
+
+    def with_data(self, df: pd.DataFrame) -> "Chart":
+        """Return a copy with ``df`` replaced.
+
+        Useful for templates: build a Chart once, swap the data per
+        render. Annotations / titles / mapping all carry over.
+        """
+        copy_chart = self._copy()
+        copy_chart._df = df
+        return copy_chart
+
+    def with_title(
+        self,
+        title: Optional[str] = None,
+        subtitle: Optional[str] = None,
+    ) -> "Chart":
+        """Return a copy with title / subtitle replaced."""
+        copy_chart = self._copy()
+        if title is not None:
+            copy_chart._title = title
+        if subtitle is not None:
+            copy_chart._subtitle = subtitle
+        return copy_chart
+
+    def with_dimensions(self, preset: DimensionPreset) -> "Chart":
+        """Power-user escape hatch: override the engine's auto-picked dimension preset.
+
+        Not taught in the v2 skill -- the engine picks correctly per
+        chart type for ~all real workflows. Reach for this only when
+        a specific external constraint (slide aspect ratio, etc.)
+        forces a non-default canvas, or during local QC.
+        """
+        if preset not in DIMENSION_PRESETS:
+            raise ValueError(
+                f"with_dimensions: unknown preset {preset!r}. "
+                f"Available: {list(DIMENSION_PRESETS.keys())}"
+            )
+        copy_chart = self._copy()
+        copy_chart._dimensions = preset
+        return copy_chart
+
+    def _copy(self) -> "Chart":
+        """Internal: shallow-copy this Chart preserving all parameters."""
+        new = Chart.__new__(Chart)
+        new.__dict__.update(self.__dict__)
+        new._annotations = list(self._annotations)
+        new._layers = list(self._layers)
+        new._mapping_overrides = dict(self._mapping_overrides)
+        return new
+
+    # ----- Translation to v1 -------------------------------------------
+
+    def _to_v1_mapping(self) -> Dict[str, Any]:
+        """Build the v1 ``mapping`` dict from this Chart's kwargs.
+
+        Only includes keys that were explicitly provided (not _V2_UNSET).
+        Translates v2's ``type_col`` to v1's ``mapping['type']``.
+        Mapping overrides win.
+        """
+        mapping: Dict[str, Any] = {}
+        for key in self._MAPPING_PARAMS:
+            val = getattr(self, "_" + key, _V2_UNSET)
+            if val is _V2_UNSET:
+                continue
+            mapping[key] = val
+        # Waterfall: v2 ``type_col`` -> v1 ``mapping['type']``. Avoids
+        # the kwarg-name collision with the chart ``type=...`` param.
+        if self._type_col is not _V2_UNSET:
+            mapping["type"] = self._type_col
+        # Overrides take precedence.
+        mapping.update(self._mapping_overrides)
+        return mapping
+
+    def to_v1_chartspec(self) -> "ChartSpec":
+        """Build a v1 ``ChartSpec`` (used internally by ``render_grid``).
+
+        Exposed publicly so power users can interop with v1 composite
+        helpers if they need to. PRISM should not normally need this.
+        """
+        return ChartSpec(
+            df=self._df,
+            chart_type=self._type,
+            mapping=self._to_v1_mapping(),
+            title=self._title,
+            subtitle=self._subtitle,
+            annotations=self._annotations or None,
+            layers=self._layers or None,
+            caption=self._caption,
+            source=self._source,
+            side_left=self._side_left,
+            side_right=self._side_right,
+        )
+
+    # ----- Rendering ----------------------------------------------------
+
+    def _resolved_dimensions(self) -> str:
+        """Return the dimension preset to use for this chart.
+
+        Override (set via ``.with_dimensions()``) wins; otherwise the
+        engine auto-picks per chart type.
+        """
+        return self._dimensions or _auto_dimensions(self._type)
+
+    def preview(self) -> Dict[str, Any]:
+        """Return the planned Vega-Lite spec without writing PNG / S3.
+
+        Builds the chart through the v1 pipeline up to spec emission;
+        returns the dict for inspection. Useful for debugging mapping
+        translation, confirming auto-melt behaviour, or feeding the
+        spec into a custom renderer.
+        """
+        ctx = _resolve_runtime_context()
+        result = _make_chart(
+            df=self._df,
+            chart_type=self._type,
+            mapping=self._to_v1_mapping(),
+            title=self._title,
+            subtitle=self._subtitle,
+            skin=self._skin,
+            intent=self._intent,
+            dimensions=self._resolved_dimensions(),
+            annotations=self._annotations or None,
+            layers=self._layers or None,
+            caption=self._caption,
+            source=self._source,
+            side_left=self._side_left,
+            side_right=self._side_right,
+            auto_beautify=self._auto_beautify,
+            session_path=ctx.session_path,
+            s3_manager=ctx.s3_manager,
+            user_id=ctx.user_id,
+        )
+        return result.vegalite_json
+
+    def render(
+        self,
+        save_as: Optional[str] = None,
+        *,
+        verbose: bool = True,
+        filename_prefix: Optional[str] = None,
+        filename_suffix: Optional[str] = None,
+    ) -> ChartResult:
+        """Build the chart, upload PNG + editor HTML, print URLs.
+
+        This is the single I/O entry point. The boilerplate that PRISM
+        used to write per chart (URL printing, warning surfacing) is
+        absorbed here.
+
+        Quality control is intentionally NOT run inline: PRISM's
+        post-script sweep (``_check_charts_quality_injected`` in
+        ``script_exec_tools.py``) parallel-QCs every session chart
+        automatically after the script returns. Running QC inline per
+        ``render()`` blocked each chart on a serial Gemini call,
+        adding ~N x Gemini-latency to script wall time without
+        catching anything the post-exec sweep wouldn't catch.
+
+        Args:
+            save_as: Fixed S3 path (relative to ``session_path``).
+                Use for dashboard / report charts where a stable URL
+                matters. Omit for one-off chats; the engine generates
+                a timestamped slug.
+            verbose: When True (default), prints the PNG URL on
+                success; prints build-failure reason on failure.
+                Set False inside batch loops where the caller will
+                aggregate URLs itself.
+            filename_prefix / filename_suffix: Optional slug components.
+
+        Returns:
+            ``ChartResult`` -- always returned, including on render
+            failure. Check ``result.success``, ``result.error_message``,
+            ``result.warnings``.
+        """
+        ctx = _resolve_runtime_context()
+        result = _make_chart(
+            df=self._df,
+            chart_type=self._type,
+            mapping=self._to_v1_mapping(),
+            title=self._title,
+            subtitle=self._subtitle,
+            skin=self._skin,
+            intent=self._intent,
+            dimensions=self._resolved_dimensions(),
+            annotations=self._annotations or None,
+            layers=self._layers or None,
+            caption=self._caption,
+            source=self._source,
+            side_left=self._side_left,
+            side_right=self._side_right,
+            save_as=save_as,
+            filename_prefix=filename_prefix,
+            filename_suffix=filename_suffix,
+            auto_beautify=self._auto_beautify,
+            session_path=ctx.session_path,
+            s3_manager=ctx.s3_manager,
+            user_id=ctx.user_id,
+        )
+        return _v2_post_render(
+            result,
+            verbose=verbose,
+            label=self._title or self._type,
+        )
+
+    # ----- Introspection ------------------------------------------------
+
+    def __repr__(self) -> str:
+        parts = [
+            f"Chart(type={self._type!r}",
+            f"df.shape={self._df.shape if hasattr(self._df, 'shape') else None}",
+        ]
+        if self._title:
+            parts.append(f"title={self._title!r}")
+        if self._x is not _V2_UNSET and self._y is not _V2_UNSET:
+            parts.append(f"x={self._x!r}, y={self._y!r}")
+        if self._color is not _V2_UNSET:
+            parts.append(f"color={self._color!r}")
+        if self._dual_axis_series is not _V2_UNSET:
+            parts.append(f"dual_axis_series={self._dual_axis_series!r}")
+        if self._annotations:
+            kinds = ",".join(type(a).__name__ for a in self._annotations)
+            parts.append(f"annotations=[{kinds}]")
+        return ", ".join(parts) + ")"
+
+
+# --- render_grid ----------------------------------------------------------
+
+def render_grid(
+    charts: List[Chart],
+    *,
+    layout: str = "auto",
+    title: Optional[str] = None,
+    subtitle: Optional[str] = None,
+    caption: Union[str, Dict[str, Any], None] = None,
+    source: Optional[str] = None,
+    narrative_left: Union[str, Dict[str, Any], None] = None,
+    narrative_right: Union[str, Dict[str, Any], None] = None,
+    save_as: Optional[str] = None,
+    skin: str = "gs_clean",
+    spacing: int = 20,
+    filename_prefix: Optional[str] = None,
+    filename_suffix: Optional[str] = None,
+    verbose: bool = True,
+) -> CompositeResult:
+    """Compose multiple ``Chart`` objects into a single grid layout.
+
+    Replaces v1's five composite wrappers (``make_2pack_horizontal``,
+    ``make_2pack_vertical``, ``make_3pack_triangle``, ``make_4pack_grid``,
+    ``make_6pack_grid``) with one function. Layout is a string and is
+    inferred from chart count when ``layout='auto'``.
+
+    Per-panel canvas size is picked automatically by the engine
+    (``compact`` for 4- and 6-grids and triangles, ``wide`` for the
+    2x1 vertical pack). PRISM does not see a ``dimensions`` knob.
+
+    Quality control is NOT run inline; PRISM's post-script sweep
+    handles QC in parallel after the script returns (see ``Chart.render``
+    docstring).
+
+    Args:
+        charts: List of ``Chart`` objects, one per panel. The order
+            is row-major within the chosen layout.
+        layout: Layout token. Canonical: ``'auto' | '1x2' | '2x1' |
+            '2x2' | '3x2' | 'triangle'``. v1's longer names
+            (``'2_horizontal'``, ``'4_grid'``, etc.) are also
+            accepted. ``'auto'`` resolves by chart count: 2 -> 1x2,
+            3 -> triangle, 4 -> 2x2, 6 -> 3x2.
+        title / subtitle: Composite-level title and subtitle (the
+            top of the whole pack). For per-panel titles, set
+            ``title`` on each Chart.
+        caption: Below-pack caption text or style dict.
+        source: Pack-level attribution; fills an unset ``caption``
+            as ``Source: {source}`` (same uniform rule as
+            ``make_chart`` / ``make_table`` / ``ChartSpec`` /
+            ``make_*pack_*``). Explicit ``caption`` wins.
+        narrative_left / narrative_right: Side panels flanking the
+            entire pack. (For per-panel side panels, set
+            ``side_left`` / ``side_right`` on each Chart.)
+        save_as: Fixed S3 path (relative to session_path).
+        skin / spacing: Style knobs.
+        filename_prefix / filename_suffix: Optional slug components.
+        verbose: Print the PNG URL on success; print build-failure
+            reasons on failure.
+
+    Returns:
+        ``CompositeResult`` -- always returned. ``result.chart_errors``
+        carries per-panel build failures (the composite still renders
+        with surviving panels as long as 2+ succeed).
+
+    Example::
+
+        c1 = Chart(us_df, type='multi_line', x='date', y='value',
+                   color='series', y_title='CPI YoY %',
+                   title='US')
+        c2 = Chart(eu_df, type='multi_line', x='date', y='value',
+                   color='series', y_title='CPI YoY %',
+                   title='EU')
+        result = render_grid([c1, c2], layout='1x2',
+                             title='Inflation Has Peaked')
+    """
+    if not charts:
+        raise ValueError("render_grid: charts list is empty.")
+    if len(charts) == 1:
+        # Single-chart "composite" is a code smell; degrade to a plain
+        # chart render so the caller still gets a sensible result.
+        return _v2_single_as_composite(
+            charts[0],
+            save_as=save_as,
+            filename_prefix=filename_prefix,
+            filename_suffix=filename_suffix,
+            verbose=verbose,
+        )
+
+    v1_layout = _v2_resolve_layout(layout, len(charts))
+    expected = _get_expected_chart_count(v1_layout)
+    if expected != len(charts):
+        raise ValueError(
+            f"render_grid: layout {layout!r} (resolved to {v1_layout!r}) "
+            f"requires {expected} charts; got {len(charts)}."
+        )
+
+    # Per-panel default dimension. Mirrors v1's per-wrapper defaults so
+    # output is byte-identical: 2x1 vertical packs default to 'wide';
+    # the rest default to 'compact'. PRISM does not get a knob for
+    # this -- engine picks per layout shape.
+    dimension_preset: DimensionPreset = (
+        "wide" if v1_layout == "2_vertical" else "compact"
+    )
+
+    ctx = _resolve_runtime_context()
+    specs = [c.to_v1_chartspec() for c in charts]
+
+    result = _make_composite(
+        specs,
+        v1_layout,
+        title=title,
+        subtitle=subtitle,
+        skin=skin,
+        dimension_preset=dimension_preset,
+        spacing=spacing,
+        save_as=save_as,
+        filename_prefix=filename_prefix,
+        filename_suffix=filename_suffix,
+        session_path=ctx.session_path,
+        s3_manager=ctx.s3_manager,
+        user_id=ctx.user_id,
+        caption=caption,
+        source=source,
+        narrative_left=narrative_left,
+        narrative_right=narrative_right,
+    )
+    return _v2_post_render(
+        result,
+        verbose=verbose,
+        label=title or f"{v1_layout} composite",
+    )
+
+
+def _v2_single_as_composite(
+    chart: Chart,
+    *,
+    save_as: Optional[str],
+    filename_prefix: Optional[str],
+    filename_suffix: Optional[str],
+    verbose: bool,
+) -> CompositeResult:
+    """Promote ``chart.render()`` output into a ``CompositeResult`` shape.
+
+    Used when ``render_grid`` is called with a single Chart -- we
+    delegate to a regular render but return the result wrapped so the
+    caller doesn't need to branch on type.
+    """
+    cr = chart.render(
+        save_as=save_as,
+        verbose=verbose,
+        filename_prefix=filename_prefix,
+        filename_suffix=filename_suffix,
+    )
+    return CompositeResult(
+        png_path=cr.png_path,
+        layout="single",
+        n_charts=1,
+        success=cr.success,
+        error_message=cr.error_message,
+        warnings=cr.warnings,
+        download_url=cr.download_url,
+        vegalite_json=cr.vegalite_json,
+        skin=cr.skin,
+        chart_errors=[],
+        editor_html_path=cr.editor_html_path,
+        editor_download_url=cr.editor_download_url,
+    )
+
+
+# --- Post-render pipeline (URL printing only) -----------------------------
+
+def _v2_post_render(
+    result: Any,
+    *,
+    verbose: bool,
+    label: str,
+) -> Any:
+    """Run the standard post-make_chart / make_composite pipeline.
+
+    1. If render failed, print why (verbose) and return as-is.
+    2. On success, print the PNG URL and any warnings.
+
+    Quality control is NOT run here. PRISM's post-script sweep
+    (``_check_charts_quality_injected`` in ``script_exec_tools.py``)
+    parallel-QCs every session chart automatically after the script
+    returns; running QC inline per render() blocked each chart on a
+    serial Gemini round-trip and added ~N x Gemini-latency to script
+    wall time without catching anything the post-exec sweep wouldn't.
+    """
+    if not verbose:
+        return result
+    if not getattr(result, "success", False):
+        err = getattr(result, "error_message", None)
+        if err:
+            print(f"[Chart:{label}] FAIL build: {err}")
+        for w in getattr(result, "warnings", []) or []:
+            print(f"[Chart:{label}] WARN: {w}")
+        return result
+    png_url = getattr(result, "download_url", None)
+    if png_url:
+        print(f"[Chart:{label}] PNG: {png_url}")
+    for w in getattr(result, "warnings", []) or []:
+        print(f"[Chart:{label}] WARN: {w}")
+    return result
+
+
+# --- Batch helpers --------------------------------------------------------
+
+def render_all(
+    charts: List[Chart],
+    *,
+    save_prefix: Optional[str] = None,
+    verbose: bool = True,
+) -> List[ChartResult]:
+    """Render N independent charts (NOT a composite).
+
+    Use when you want N standalone PNGs, not a packed grid. Each
+    Chart renders to its own PNG via the same pipeline; URLs print
+    individually. QC happens automatically post-script (see
+    ``Chart.render``).
+
+    Args:
+        save_prefix: When set, each chart saves to
+            ``{save_prefix}/{i}_{title_slug}.png``. Omit for
+            timestamped slugs.
+    """
+    out: List[ChartResult] = []
+    for i, chart in enumerate(charts):
+        save_as = None
+        if save_prefix is not None:
+            slug = (chart._title or chart._type).lower().replace(" ", "_")
+            slug = "".join(ch for ch in slug if ch.isalnum() or ch == "_")
+            save_as = f"{save_prefix}/{i:02d}_{slug}.png"
+        out.append(chart.render(
+            save_as=save_as,
+            verbose=verbose,
+        ))
+    return out
 
 
 # ===========================================================================
@@ -26282,6 +27918,35 @@ _ENGINE_NAMESPACE_TABLES: Tuple[str, ...] = (
 )
 
 
+# v2 namespace constant -- the names PRISM should auto-inject when
+# the v2 skill (chart_context_v2.md) is loaded. See ``__all__`` for
+# the full module export list (which carries both v1 and v2 names).
+_ENGINE_NAMESPACE_V2: Tuple[str, ...] = (
+    # Builders
+    "Chart",
+    "render_grid",
+    "render_all",
+    # Result types (shared with v1)
+    "ChartResult",
+    "CompositeResult",
+    "DataProfile",
+    # Pre-charting helper (shared with v1)
+    "profile_df",
+    # Annotations (shared with v1)
+    "VLine",
+    "HLine",
+    "Segment",
+    "Band",
+    "Arrow",
+    "PointLabel",
+    "PointHighlight",
+    "Callout",
+    "LastValueLabel",
+    "Trendline",
+    "PlotText",
+)
+
+
 # ---------------------------------------------------------------------------
 # Public entry-point gating (failures bubble up instead of being swallowed)
 # ---------------------------------------------------------------------------
@@ -26312,12 +27977,12 @@ __all__ = [
     "IntentType",
     "DimensionPreset",
     "LayoutType",
-    # ---- Result / profile types -----------------------------------
+    # ---- Result / profile types (shared) --------------------------
     "ChartResult",
     "CompositeResult",
     "DataProfile",
     "ChartSpec",
-    # ---- Entry points ---------------------------------------------
+    # ---- v1 entry points ------------------------------------------
     "make_chart",
     "make_composite",
     "make_2pack_horizontal",
@@ -26328,7 +27993,11 @@ __all__ = [
     "build_charts",
     "check_charts_quality",
     "profile_df",
-    # ---- Annotations ----------------------------------------------
+    # ---- v2 entry points ------------------------------------------
+    "Chart",
+    "render_grid",
+    "render_all",
+    # ---- Annotations (shared) -------------------------------------
     "Annotation",
     "VLine",
     "HLine",
@@ -26347,6 +28016,9 @@ __all__ = [
     "DATE_FORMAT_PRESETS",
     "COMPOSITE_DIMENSIONS",
     "get_skin",
+    "get_dimensions",
+    "list_skins",
+    "list_dimension_presets",
     # ---- Validation / errors --------------------------------------
     "ValidationError",
     "YAxisLabelTooLongError",
@@ -26354,10 +28026,29 @@ __all__ = [
     "LegendLabelTooLongError",
     "HeatmapRowLabelTooLongError",
     "HeatmapColumnLabelTooLongError",
+    "validate_plot_ready_df",
+    # ---- Static spec utilities ------------------------------------
+    "create_static_spec",
+    "create_static_composite_spec",
+    "clean_chart",
+    # ---- Phase B helpers exposed to PRISM -------------------------
+    "TYPOGRAPHY_OVERRIDES",
+    # ---- Phase C utility functions --------------------------------
+    "prepare_timeseries_df",
+    "process_data",
+    "top_k_categories",
+    "detect_scale_issues",
+    "smart_label_format",
+    "calculate_safe_axis_range",
+    "generate_chart_filename",
+    "check_for_outliers",
+    "suggest_chart_type",
+    "validate_data",
     # ---- Tables (PNG static-table engine; same DIMENSION_PRESETS as charts)
     "make_table",
     "TableResult",
     # ---- Engine namespace constants (PRISM-side injection consumer)
+    "_ENGINE_NAMESPACE_V2",
     "_ENGINE_NAMESPACE_TABLES",
 ]
 

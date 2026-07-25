@@ -32,17 +32,18 @@ result = make_chart(
 )
 ```
 
-Grid mode is triggered only by `mapping['facet']`. Only `facet` and
-`facet_order` go inside `mapping`; `facet_cols`, `same_scale`, `share_color`,
-and both `edge_only_*` controls are top-level `make_chart(...)` kwargs.
+Grid mode is triggered only by `mapping['facet']`.
+Only `facet` and `facet_order` go inside `mapping`; `facet_cols`,
+`same_scale`, every `share_*`, and both `edge_only_*` controls are top-level
+`make_chart(...)` kwargs.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `mapping['facet']` | required | Panel-id column |
 | `mapping['facet_order']` | first appearance | Explicit panel order |
 | `facet_cols` | near-square layout | Number of columns; rows are derived |
-| `same_scale` | `False` | Lock the axis that matters for this chart type |
-| `share_color` | `False` | Lock the colour domain; one shared legend |
+| `same_scale` | `False` | Recommended high-level scale lock |
+| `share_x`, `share_y`, `share_color` | `False` | Lower-level locks |
 | `edge_only_ticks`, `edge_only_axis_titles` | `False` | Suppress repeated inner labels |
 
 Panel count below 7 or above 36 raises. Counts from 25 through 36 render with
@@ -65,8 +66,6 @@ within-panel grouping.
 
 ## 4. Scale synchronization
 
-`same_scale=True` locks whichever axis carries the comparison:
-
 | Type | `same_scale=True` |
 |---|---|
 | Line, area, bar | Shared y scale |
@@ -77,9 +76,9 @@ Keep the default independent scales when each panel's shape matters more than
 cross-panel level. Use `same_scale=True` when direct level/position comparison
 is the point.
 
-`share_color=True` is orthogonal — it locks the colour domain into one shared
-legend and `same_scale` never sets it. For a temporal-colour phase grid whose
-colours must compare across panels, pass both.
+`share_color=True` locks the colour domain and creates one shared legend. It is
+separate from `same_scale`. For a temporal-colour phase grid whose time colours
+must compare across panels, use both `same_scale=True` and `share_color=True`.
 
 ## 5. Time-coloured phase grids
 

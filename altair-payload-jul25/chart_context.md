@@ -124,9 +124,10 @@ result = make_chart(
 skin. `intent` is `explore` (default), `publish` (700×400), or `monitor`
 (500×300). Canvas dimensions are otherwise engine-selected.
 
-Axis titles live only in `mapping`: `mapping['x_title']`,
-`mapping['y_title']`, `mapping['y_title_right']`. There is no top-level
-axis-title kwarg. Leave `interactive`, `auto_beautify`, `dimension_preset`, and
+Author axis titles in exactly one place: `mapping['x_title']`,
+`mapping['y_title']`, and `mapping['y_title_right']`. Top-level title aliases
+remain accepted for old code but are not the v1 authoring contract; never mix
+placements. Leave `interactive`, `auto_beautify`, dimensions, and
 runtime-injected kwargs at their defaults unless an external artifact
 constraint explicitly requires otherwise.
 
@@ -138,10 +139,10 @@ surfaces:
 | Surface | What belongs there | Common wrong placement |
 |---|---|---|
 | `make_chart(...)` | `df`, `chart_type`, `mapping`; title/source/caption; `annotations`, `layers`; facet layout controls; save path | Colour, opacity, axis-title, dual-axis, and chart-encoding keys do **not** belong at top level |
-| `mapping={...}` | Data fields, axis titles, and chart-specific encoding/configuration listed in §6 or a fetched spoke | `title`, `source`, `annotations`, `layers`, `facet_cols`, `same_scale`, and save kwargs do **not** belong in `mapping` |
+| `mapping={...}` | Data fields and chart-specific encoding/configuration listed in §6 or a fetched spoke | `title`, `source`, `annotations`, `layers`, `facet_cols`, `same_scale`, and save kwargs do **not** belong in `mapping` |
 | `VLine(...)`, `Band(...)`, etc. | Only that annotation constructor's coordinates and style parameters | Annotation coordinates/style do not belong in `mapping` or at `make_chart` top level |
 | `layers=[{...}]` | Only the strict layer dictionaries in the annotations spoke | Do not pass annotation objects or arbitrary Vega-Lite dictionaries |
-| `ChartSpec(...)` | Per-panel `df`, `chart_type`, `mapping`, text, annotations, and layers | `dimension_preset`, spacing, filename, and save path belong on `make_*pack_*` |
+| `ChartSpec(...)` | Per-panel `df`, `chart_type`, `mapping`, text, annotations, and layers | Pack dimensions, spacing, filename, and save path belong on `make_*pack_*` |
 | `make_table(...)` | Table kwargs from the tables spoke; there is no `mapping` | Chart colour or chart mapping kwargs do not apply |
 
 Unknown `mapping` keys, unexpected top-level `make_chart` kwargs, malformed
@@ -255,7 +256,7 @@ with ellipses.
 | `orientation` | `bar`: force `vertical` instead of automatic horizontal routing |
 | `x_low`, `x_high`, `color_by`, `label` | Bullet range, marker colour metric, optional label |
 | `dual_axis_series`, `dual_axis_bind`, `invert_right_axis` | Fetch dual-axis spoke; `dual_axis_config` is engine-managed |
-| `facet`, `facet_order`; `facet_cols`, `same_scale`, `share_color` top-level | Fetch grids spoke |
+| `facet`, `facet_order`; `facet_cols`, `same_scale`, `share_*` top-level | Fetch grids spoke |
 | `color_scheme`, `color_range`, `color_map`, `opacity`, `opacity_map` | Fetch colours spoke |
 
 ### 6.3 Type-specific decisions
