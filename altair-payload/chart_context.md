@@ -67,6 +67,14 @@ single line: scatter with trendline, lead-lag, phase orbit, normalized
 co-movement, or a level-plus-change composite. Use a single chart when there is
 one story; two panels are the default for compare/contrast.
 
+Reach for a composite whenever the answer is an argument rather than a single
+observation, and give each panel a job the others do not do: setup then payoff,
+level then change, driver then outcome, cross-section then history, or claim
+then falsification test. Panels that restate the same series in the same shape,
+or that bundle unrelated charts onto one canvas, waste the layout—cut back to
+one chart, or replace the redundant panel with the view that answers the
+question the first panel raises.
+
 ## 3. Plot-ready data contract
 
 The engine handles structural mechanics, not economic meaning:
