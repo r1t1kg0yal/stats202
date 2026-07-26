@@ -193,12 +193,19 @@ The engine raises rather than truncating. These are ceilings, not targets.
 | Bar category label | 22 characters | Abbreviate in the DataFrame |
 | Heatmap row or column label | 20 characters | Abbreviate in the DataFrame |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
+| Series horizontal extent (`multi_line` / `timeseries` / `area` / `line`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
 | Categorical colour / donut slices | 10 categories | Filter or aggregate to `Other` |
 | Composite / facet count | Packs 2–6; facets 7–36 | Fetch the matching spoke |
 | `PlotText.text` | 10 words (aim ≤8) | Use caption/side text for longer prose |
 
 Long labels are named in the error with an actionable repair. Never pre-truncate
 with ellipses.
+
+`x` is the axis the data varies along, which for a cross-section is the strike /
+tenor / maturity / bucket, not the quote timestamp the pull happened to carry
+alongside it. Put the as-of time in the title or subtitle. Never run
+`pd.to_datetime()` on a measured quantity to make it "axis-like" — small numbers
+become nanoseconds after 1970 and the axis renders as a clock.
 
 ## 6. Chart types and core mapping
 
@@ -248,7 +255,7 @@ with ellipses.
 | `x`, `y`, `color` | Primary fields; `y` may be a list for line/area auto-melt |
 | `x_title`, `y_title`, `y_title_right` | Semantic axis title, including unit |
 | `x_sort`, `y_sort`, `color_sort`, `value_sort` | Explicit display order; use `color_sort` as the canonical legend/category order |
-| `x_type` | Force ordinal for genuine categories such as tenors; not for datetime |
+| `x_type` | Force ordinal for genuine categories such as tenors; on a datetime column the engine materialises house-style date labels on evenly spaced bands |
 | `x_timezone` | Intraday display clock; default `America/New_York` |
 | `legend` | Explicit legend override; normally leave automatic |
 | `trendline`, `trendlines` | Overall scatter fit / per-group fits |

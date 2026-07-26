@@ -429,7 +429,12 @@ class ValidationError(Exception):
         self.context = context or {}
 
 
-def _raise_on_failure(func: Callable) -> Callable:
+def _raise_on_failure(
+    func: Callable,
+    bind_findings: Optional[
+        Callable[[Tuple[Any, ...], Dict[str, Any]], List[Exception]]
+    ] = None,
+) -> Callable:
     """Wrap a public chart/table builder so a failed result *raises*.
 
     PRISM runs chart code inside ``execute_analysis_script``. That sandbox
@@ -454,6 +459,14 @@ def _raise_on_failure(func: Callable) -> Callable:
     (``make_chart``'s auto-recovery recursion, composite panel aggregation,
     ``Chart.preview`` / ``Chart.render``) call the undecorated
     implementation directly and are unaffected.
+
+    ``bind_findings`` supplies the remediation for a call that never
+    bound. The bind gate runs before the body, so a builder whose
+    signature ends in ``**extra`` silently absorbs misplaced kwargs and
+    reports only the required parameter they should have been nested
+    under -- the body's placement collectors never see the call. An
+    optional finding-builder closes that gap; when it returns findings
+    they replace ``inspect``'s message, which names no repair.
     """
     signature = inspect.signature(func)
 
@@ -462,6 +475,11 @@ def _raise_on_failure(func: Callable) -> Callable:
         try:
             signature.bind(*args, **kwargs)
         except TypeError as exc:
+            findings = list(bind_findings(args, kwargs)) if bind_findings else []
+            if findings:
+                raise ValidationError(
+                    _aggregate_finding_messages([str(f) for f in findings])
+                ) from exc
             raise ValidationError(
                 f"{getattr(func, '__name__', 'chart builder')}() argument "
                 f"error: {exc}"
@@ -560,6 +578,31 @@ _MAKE_CHART_TOP_LEVEL_KWARGS: frozenset = frozenset({
     "facet_cols", "share_x", "share_y", "share_color", "same_scale",
     "edge_only_ticks", "edge_only_axis_titles",
 })
+
+# Plausible mis-spellings of the three REQUIRED ``make_chart`` parameters,
+# drawn from generic plotting priors (plotly's ``kind=``, seaborn's
+# ``data=``, Vega-Lite's ``encoding=``) rather than from the skill file.
+# Consulted only when the named parameter is unbound, so they never widen
+# the accepted surface -- they only sharpen the error. ``type`` is
+# deliberately absent: it is a real waterfall mapping key, so a top-level
+# ``type=`` reads as a flattened encoding, not as ``chart_type``.
+_MAKE_CHART_PARAM_ALIASES: Dict[str, str] = {
+    "chart": "chart_type",
+    "data": "df",
+    "dataframe": "df",
+    "encoding": "mapping",
+    "encodings": "mapping",
+    "fields": "mapping",
+    "frame": "df",
+    "kind": "chart_type",
+    "mappings": "mapping",
+}
+
+_MAKE_CHART_PARAM_NOUNS: Dict[str, str] = {
+    "chart_type": "the chart type",
+    "df": "the DataFrame",
+    "mapping": "the encoding dict",
+}
 
 _LAYER_ALLOWED_KEYS: Dict[str, frozenset] = {
     "regression": frozenset({
@@ -706,6 +749,92 @@ def _collect_make_chart_extra_findings(
         findings.append(ValidationError(
             f"make_chart() got unexpected top-level kwarg {key!r}.{hint}"
         ))
+    return findings
+
+
+def _make_chart_bind_findings(
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+) -> List[ValidationError]:
+    """Rebuild the placement guidance for a call that never bound.
+
+    ``_make_chart`` ends in ``**extra``, so a flattened
+    ``make_chart(df=..., chart_type=..., x=..., y=...)`` reaches the
+    signature gate looking plausible -- the encoding keys land in the
+    catch-all and only ``mapping`` reports missing. The collectors that
+    own that remediation run inside the body, one layer below the bind,
+    so without this the caller gets ``inspect``'s bare ``missing a
+    required argument: 'mapping'``, which names neither the canonical
+    shape nor which supplied kwargs to move.
+
+    Returns an empty list when the bind failed for any reason other than
+    an unbound required parameter (too many positionals, duplicate
+    values), leaving the original message in place.
+    """
+    required = ("df", "chart_type", "mapping")
+    supplied = set(required[:len(args)]) | set(kwargs)
+    missing = [name for name in required if name not in supplied]
+    if not missing:
+        return []
+
+    findings: List[ValidationError] = []
+    unrecognized = {
+        key: value for key, value in kwargs.items()
+        if key not in _MAKE_CHART_TOP_LEVEL_KWARGS
+    }
+    # A flattened encoding explains an unbound ``mapping`` better than any
+    # alias would, so it is resolved first and its keys are consumed.
+    flattened = (
+        [k for k in unrecognized if k in _PUBLIC_CHART_MAPPING_KEYS]
+        if "mapping" in missing
+        else []
+    )
+    if flattened:
+        rebuilt = {key: kwargs[key] for key in flattened}
+        dropped = ", ".join(f"{key}=" for key in flattened)
+        findings.append(ValidationError(
+            f"make_chart() names its encoding inside mapping={{...}}; "
+            f"{len(flattened)} encoding key(s) arrived at top level instead. "
+            f"Pass mapping={rebuilt!r} and drop the top-level {dropped}."
+        ))
+        for key in flattened:
+            unrecognized.pop(key, None)
+
+    for name in missing:
+        if name == "mapping" and flattened:
+            continue
+        aliases = [
+            key for key in unrecognized
+            if _MAKE_CHART_PARAM_ALIASES.get(key) == name
+        ]
+        if aliases:
+            spelling = aliases[0]
+            value = kwargs[spelling]
+            rebuilt = (
+                f" Pass {name}={value!r}."
+                if name == "mapping" and isinstance(value, dict)
+                else ""
+            )
+            findings.append(ValidationError(
+                f"make_chart() has no {spelling!r} parameter; "
+                f"{_MAKE_CHART_PARAM_NOUNS[name]} parameter is named "
+                f"{name!r}.{rebuilt}"
+            ))
+            for key in aliases:
+                unrecognized.pop(key, None)
+        elif name == "mapping":
+            findings.append(ValidationError(
+                "make_chart() is missing required argument 'mapping'. Every "
+                "chart names its fields there, e.g. mapping={'x': 'date', "
+                "'y': 'value', 'color': 'series'}; see chart_context.md §6.1 "
+                "for the keys each chart_type requires."
+            ))
+        else:
+            findings.append(ValidationError(
+                f"make_chart() is missing required argument {name!r}."
+            ))
+
+    findings.extend(_collect_make_chart_extra_findings(unrecognized))
     return findings
 
 
@@ -1208,6 +1337,24 @@ _OSCILLATION_MIN_POINTS = 12
 # across the range) still render -- those are warned about in
 # the warnings channel, not blocked.
 _MAX_LINE_SERIES_MISSING_FRAC = 0.90
+
+# Horizontal twin of ``_MIN_SERIES_VERTICAL_SHARE``. Minimum fraction of
+# the visible x domain a single series in a multi-series line-shaped chart
+# must span to draw as a line rather than a vertical sliver. Enforced by
+# ``_validate_x_extent``.
+#
+# Canonical failure mode (reported from PRISM 2026-07-26): a CROSS-SECTION
+# -- vol vs strike, vol vs tenor, curve vs maturity -- arrives in a frame
+# that also carries the quote timestamp from the data pull, x gets bound to
+# that timestamp instead of to the analytical axis, and every row inside a
+# series shares one x. Each series collapses to a zero-width vertical line
+# over an empty plot body, and the axis is formatted as an intraday clock
+# because a 3-stamp snapshot is indistinguishable from a real intraday tape
+# by the cadence heuristic in ``_determine_date_format_raw`` alone. The
+# y-side battery (flatness, level disparity, coverage, jaggedness,
+# oscillation) cannot see this: every y value is present and well spread.
+_MIN_SERIES_HORIZONTAL_SHARE = 0.10
+
 
 def _axis_label_px_per_char(label_font_size: int) -> float:
     """Average horizontal pixels per character for axis tick labels."""
@@ -1744,8 +1891,16 @@ def _normalize_intraday_x_column(
       - tz-naive timestamps -> assumed US/Eastern wall clock
       - ISO / slash / space-separated strings -> datetime, then ET
       - unix-epoch integers (ms or s)
-      - common column aliases when ``mapping['x']`` is missing: ``date``,
-        ``timestamp``, ``datetime``, ``time``
+      - common column aliases when the mapping carries NO x at all:
+        ``date``, ``timestamp``, ``datetime``, ``time``
+
+    The alias table is deliberately reachable only when ``mapping['x']`` is
+    absent from the MAPPING. A named-but-missing x column falls straight
+    through untouched so the tier-0 missing-column gate reports it: quietly
+    charting a timestamp under the caller's requested name (asked for
+    ``strike``, got ``time``) produces a chart of a different variable that
+    looks plausible and reports ``success=True``, which is strictly worse
+    than failing.
 
     Skipped when ``mapping['x_type'] == 'ordinal'`` -- caller owns labels.
     """
@@ -1753,7 +1908,9 @@ def _normalize_intraday_x_column(
         return df
 
     x_field = _get_field(mapping, "x")
-    if not x_field or x_field not in df.columns:
+    if x_field and x_field not in df.columns:
+        return df
+    if not x_field:
         for alias in ("date", "timestamp", "datetime", "time", "Date", "TIME"):
             if alias in df.columns and (
                 pd.api.types.is_datetime64_any_dtype(df[alias])
@@ -1856,9 +2013,42 @@ def _parse_heatmap_string_to_timestamp(
     *,
     default_year: Optional[int] = None,
 ) -> Optional[pd.Timestamp]:
-    """Parse PRISM-style pre-formatted heatmap x labels (MM/YY, Dec-24, Mar 27)."""
+    """Parse PRISM-style pre-formatted heatmap x labels.
+
+    Covers the monthly spellings macro pulls actually emit --
+    ``2025-01`` (``strftime('%Y-%m')``), ``202501`` (``'%Y%m'``),
+    ``01-2025`` (``'%m-%Y'``), ``01/25``, ``Dec-24``, ``Dec 24``,
+    ``Jan 2025``, ``January 2025`` -- plus ``27 Mar 24`` and ``Mar 27``.
+
+    Recognising a label here is what lets ``_normalize_heatmap_x_column``
+    sort the axis chronologically and lets ``_heatmap_calendar_tick_subset``
+    anchor ticks to calendar boundaries. An unrecognised label still
+    renders, but its axis order falls back to lexicographic (wrong across
+    year boundaries for ``%m-%Y``) and its ticks lose calendar meaning.
+    """
     text = s.strip()
     if not text:
+        return None
+    m = re.match(r"^(\d{4})-(\d{1,2})$", text)
+    if m:
+        year, mo = int(m.group(1)), int(m.group(2))
+        if 1 <= mo <= 12:
+            return pd.Timestamp(year=year, month=mo, day=1)
+        return None
+    m = re.match(r"^(\d{4})(\d{2})$", text)
+    if m:
+        year, mo = int(m.group(1)), int(m.group(2))
+        if (
+            _HEATMAP_CALENDAR_YEAR_MIN <= year <= _HEATMAP_CALENDAR_YEAR_MAX
+            and 1 <= mo <= 12
+        ):
+            return pd.Timestamp(year=year, month=mo, day=1)
+        return None
+    m = re.match(r"^(\d{1,2})-(\d{4})$", text)
+    if m:
+        mo, year = int(m.group(1)), int(m.group(2))
+        if 1 <= mo <= 12:
+            return pd.Timestamp(year=year, month=mo, day=1)
         return None
     m = re.match(r"^(\d{2})/(\d{2})$", text)
     if m:
@@ -1878,6 +2068,14 @@ def _parse_heatmap_string_to_timestamp(
             return pd.to_datetime(f"{m.group(1)} {m.group(2)}", format="%b %y")
         except (ValueError, TypeError):
             pass
+    m = re.match(r"^([A-Za-z]{3,9})\s+(\d{4})$", text)
+    if m:
+        for fmt in ("%b %Y", "%B %Y"):
+            try:
+                return pd.to_datetime(f"{m.group(1)} {m.group(2)}", format=fmt)
+            except (ValueError, TypeError):
+                continue
+        return None
     m = re.match(r"^(\d{1,2})\s+(\w{3})\s+(\d{2})$", text)
     if m:
         try:
@@ -2126,91 +2324,118 @@ def _parse_heatmap_display_label_to_timestamp(
     return None
 
 
-def _heatmap_calendar_anchor_indices(
-    ts_list: List[Optional[pd.Timestamp]],
+def _heatmap_nice_column_step(
     cadence: str,
+    n_cols: int,
+    k_max: int,
+    min_step: int,
+) -> Optional[int]:
+    """Smallest conventional calendar step (in COLUMNS) fitting ``k_max`` ticks.
+
+    One heatmap column is one period, so the house month / year step
+    ladders convert straight into column strides: at monthly cadence a
+    3-column step is a quarter, at quarterly cadence a 4-column step is a
+    year. Reusing the same ladders the temporal axis walks
+    (``_NICE_MONTH_STEPS`` / ``_NICE_YEAR_STEPS``) keeps a heatmap's column
+    interval as conventional as a line chart's tick interval.
+
+    Daily and intraday cadences are deliberately absent. A 7-column step
+    is a clean week only on calendar-day data -- on business-day columns
+    it drifts a day per tick -- so those cadences take the plain
+    equal-stride path instead of pretending to be calendar-aligned.
+
+    Returns ``None`` when no rung of the ladder fits, leaving the caller to
+    use the plain minimum-fitting stride.
+    """
+    if cadence == "M":
+        ladder: Tuple[int, ...] = _NICE_MONTH_STEPS
+    elif cadence == "Q":
+        ladder = tuple(s // 3 for s in _NICE_MONTH_STEPS if s % 3 == 0)
+    elif cadence == "A":
+        ladder = _NICE_YEAR_STEPS
+    else:
+        return None
+    for step in ladder:
+        if step < min_step:
+            continue
+        if (n_cols - 1) // step + 1 <= k_max:
+            return step
+    return None
+
+
+def _uniform_step_indices(
+    n: int,
+    k_max: int,
+    *,
+    min_step: int = 1,
 ) -> List[int]:
-    """Indices of calendar-aligned anchor ticks in display order."""
-    n = len(ts_list)
+    """Pick indices from ``0 .. n-1`` at one CONSTANT step, anchored to ``n-1``.
+
+    Nominal (band-scale) axes have to hand Vega-Lite an explicit
+    ``axis.values`` list, so the engine picks every tick itself. Those
+    ticks are chosen STEP-FIRST -- mirroring what ``_temporal_tick_step``
+    does for temporal axes, where an ``{interval, step}`` pair makes even
+    spacing automatic.
+
+    Choosing a tick COUNT first cannot work: pinning both endpoints forces
+    the ``k-1`` gaps to sum to exactly ``n-1``, which is only uniformly
+    satisfiable when ``(n - 1) % (k - 1) == 0``. Otherwise the remainder
+    has to land somewhere, and interpolating indices scatters it through
+    the interior (18 monthly columns at 6 ticks gave gaps of 3, 3, 4, 3, 4).
+
+    Deriving the count from a step instead makes every gap equal by
+    construction. The sequence is anchored to the LAST index so the most
+    recent period always carries a label -- on a macro time grid the
+    newest column matters more than the oldest -- and any shortfall is
+    absorbed by leaving leading columns unlabelled.
+
+    ``step`` is the smallest value that fits within ``k_max`` ticks, so the
+    axis stays as dense as the caller's budget allows: with
+    ``step = (n - 1) // k_max + 1`` the tick count
+    ``(n - 1) // step + 1`` is always ``<= k_max``, and one step smaller
+    always exceeds it. ``min_step`` raises the floor when a caller has a
+    pixel-pitch constraint of its own.
+    """
+    if n <= 0:
+        return []
+    if k_max <= 1:
+        return [n - 1]
+    step = max(1, min_step)
+    if k_max < n:
+        step = max(step, (n - 1) // k_max + 1)
+    if step <= 1:
+        return list(range(n))
+    return list(range(n - 1, -1, -step))[::-1]
+
+
+def _heatmap_calendar_tick_subset(
+    ordered_vals: List[Any],
+    k: int,
+    *,
+    min_step: int = 1,
+) -> List[Any]:
+    """Pick up to ``k`` tick labels at a CONSTANT column interval.
+
+    When the labels parse as temporal, the stride comes from the house
+    calendar ladder via ``_heatmap_nice_column_step`` -- so an 18-month
+    grid ticks every quarter and a 4-year monthly grid ticks every six
+    months, the same conventional intervals a line chart's temporal axis
+    uses. Otherwise the stride is just the smallest one that fits the tick
+    budget. Either way every emitted gap is identical, and the sequence is
+    anchored to the last column so the newest period stays labelled.
+
+    ``min_step`` is the caller's minimum column-index gap (from band-scale
+    pixel pitch). It is honoured while choosing the stride rather than by
+    filtering ticks out afterwards, because post-filtering an evenly spaced
+    set reintroduces the ragged spacing this function exists to prevent.
+    """
+    n = len(ordered_vals)
     if n == 0:
         return []
-    anchors: List[int] = []
-    if cadence == "T":
-        for i, t in enumerate(ts_list):
-            if t is not None and t.hour == 0 and t.minute == 0:
-                anchors.append(i)
-        six_hour = [
-            i for i, t in enumerate(ts_list)
-            if t is not None and t.minute == 0 and t.hour % 6 == 0
-        ]
-        if six_hour:
-            anchors = sorted(set(anchors + six_hour))
-        if len(anchors) < 3:
-            anchors = six_hour or anchors
-    elif cadence == "D":
-        seen_month: set = set()
-        for i, t in enumerate(ts_list):
-            if t is None:
-                continue
-            key = (t.year, t.month)
-            if key not in seen_month:
-                seen_month.add(key)
-                anchors.append(i)
-    elif cadence == "M":
-        for i, t in enumerate(ts_list):
-            if t is not None and t.month == 1:
-                anchors.append(i)
-        if not anchors:
-            seen_year: set = set()
-            for i, t in enumerate(ts_list):
-                if t is not None and t.year not in seen_year:
-                    seen_year.add(t.year)
-                    anchors.append(i)
-    elif cadence == "Q":
-        for i, t in enumerate(ts_list):
-            if t is None:
-                continue
-            if (t.month - 1) // 3 + 1 == 1:
-                anchors.append(i)
-    elif cadence == "A":
-        seen_year_a: set = set()
-        for i, t in enumerate(ts_list):
-            if t is not None and t.year not in seen_year_a:
-                seen_year_a.add(t.year)
-                anchors.append(i)
-    else:
-        return list(range(n))
-    if not anchors:
-        return [0, n - 1] if n > 1 else [0]
-    if 0 not in anchors:
-        anchors = [0] + anchors
-    # Intraday: never force the terminal bar — it is rarely a round hour
-    # and collides with the preceding midnight/6h anchor.
-    if cadence != "T" and (n - 1) not in anchors:
-        anchors.append(n - 1)
-    return sorted(set(anchors))
-
-
-def _evenly_spaced_indices(n: int, k: int) -> List[int]:
-    """Pick ``k`` evenly-spaced indices from ``0 .. n-1`` (first + last kept).
-
-    Uses integer floor spacing so rounding never skips interior anchors
-    (e.g. Q1 21 between Q1 20 and Q1 22 on dense quarter grids).
-    """
-    if k >= n:
-        return list(range(n))
-    if k <= 1:
-        return [0]
-    return sorted({(i * (n - 1)) // (k - 1) for i in range(k)})
-
-
-def _heatmap_calendar_tick_subset(ordered_vals: List[Any], k: int) -> List[Any]:
-    """Pick up to ``k`` tick labels aligned to calendar boundaries."""
-    n = len(ordered_vals)
-    if k >= n:
+    if k >= n and min_step <= 1:
         return list(ordered_vals)
     if k <= 1:
-        return [ordered_vals[0]]
+        return [ordered_vals[-1]]
 
     default_year: Optional[int] = None
     ts_list: List[Optional[pd.Timestamp]] = []
@@ -2224,45 +2449,15 @@ def _heatmap_calendar_tick_subset(ordered_vals: List[Any], k: int) -> List[Any]:
             default_year = int(ts.year)
         ts_list.append(ts)
 
+    step = min_step
     parsed_ts = [t for t in ts_list if t is not None]
-    if len(parsed_ts) < max(1, int(n * 0.9)):
-        return _evenly_spaced_subset(ordered_vals, k)
+    if len(parsed_ts) >= max(1, int(n * 0.9)):
+        cadence = _infer_heatmap_period_frequency(parsed_ts)
+        nice = _heatmap_nice_column_step(cadence, n, k, min_step)
+        if nice is not None:
+            step = nice
 
-    cadence = _infer_heatmap_period_frequency(parsed_ts)
-    anchors = _heatmap_calendar_anchor_indices(ts_list, cadence)
-
-    # Daily grids: month-start anchors leave huge gaps on 30–60 col strips.
-    if cadence == "D":
-        return _evenly_spaced_subset(ordered_vals, k)
-    # Short monthly grids: same — even spacing beats January-only anchors.
-    if cadence == "M" and n <= 24:
-        return _evenly_spaced_subset(ordered_vals, k)
-    # Intraday short grids: midnight-only anchors are too sparse.
-    min_useful_anchors = max(3, k // 2)
-    if cadence == "T" and n <= 24 and len(anchors) < min_useful_anchors:
-        return _evenly_spaced_subset(ordered_vals, k)
-
-    if len(anchors) <= k:
-        pick_idx = anchors
-    else:
-        # Forced terminal anchors (last column) are deprioritized when
-        # periodic calendar anchors already fill the tick budget — avoids
-        # dropping a year marker (e.g. Q1 21) to make room for Q4 25.
-        terminal_idx = n - 1
-        if cadence != "T" and terminal_idx in anchors:
-            core = [a for a in anchors if a != terminal_idx]
-            if len(core) <= k:
-                pick_idx = core
-            else:
-                pick_idx = [
-                    core[i] for i in _evenly_spaced_indices(len(core), k)
-                ]
-        else:
-            pick_idx = [
-                anchors[i] for i in _evenly_spaced_indices(len(anchors), k)
-            ]
-
-    return [ordered_vals[i] for i in sorted(pick_idx)]
+    return _uniform_step_subset(ordered_vals, k, min_step=step)
 
 
 def _normalize_heatmap_x_column(
@@ -2465,6 +2660,81 @@ def _coerce_string_x_to_datetime(
     return df
 
 
+def _materialize_ordinal_datetime_x(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> pd.DataFrame:
+    """Turn a datetime x column into readable labels when the caller forced
+    ``mapping['x_type'] = 'ordinal'``.
+
+    An ordinal / nominal encoding puts x on a BAND scale, where tick values
+    are category indices rather than dates. The axis plan is chosen from the
+    column's dtype (``get_axis_beautification``), so a datetime column used
+    to collect the temporal ``labelExpr`` -- ``timeFormat()`` over
+    band-scale values -- and printed literal ``NaN:NaN`` tick labels. The
+    alternative failure, dropping the labelExpr, prints raw ISO machine
+    tokens (``2026-07-26T07:30:00``).
+
+    Both are wrapper-absorbable (Principle #7): materialise house-style
+    display labels and publish the chronological order through
+    ``mapping['x_sort']``, exactly as ``_normalize_heatmap_x_column`` does
+    for the nominal-x heatmap path. The caller gets the evenly-spaced
+    categorical date axis they asked for, with dates on it.
+
+    Skipped for heatmaps (``_normalize_heatmap_x_column`` owns that path).
+    """
+    if mapping.get("x_type") != "ordinal" or chart_type == "heatmap":
+        return df
+
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        return df
+    if not pd.api.types.is_datetime64_any_dtype(df[x_field]):
+        return df
+
+    stamps = df[x_field].dropna()
+    if stamps.empty:
+        return df
+
+    chronological = sorted(pd.Series(stamps.unique()))
+    ordered = pd.Series(chronological)
+    # House format first; step down to finer spellings only if labels
+    # collide (two stamps in one session both reading "27 Mar" would
+    # silently merge two categories into one band).
+    labels: List[str] = []
+    for fmt in (
+        _temporal_house_strftime(ordered),
+        "%d %b %H:%M",
+        "%d %b %y %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+    ):
+        labels = [pd.Timestamp(ts).strftime(fmt) for ts in chronological]
+        if len(set(labels)) == len(labels):
+            break
+
+    label_by_stamp = dict(zip(chronological, labels))
+    df = df.copy()
+    df[x_field] = df[x_field].map(label_by_stamp)
+
+    explicit_sort = mapping.get("x_sort")
+    if explicit_sort is None:
+        mapping["x_sort"] = labels
+    else:
+        # Re-map a caller-supplied order through the same label table so
+        # raw timestamps in x_sort still line up with the new values.
+        mapping["x_sort"] = [
+            label_by_stamp.get(item, item) for item in explicit_sort
+        ]
+
+    logger.info(
+        "[chart_functions] Materialized ordinal datetime x_field=%r to %d "
+        "display labels (chart_type=%s).",
+        x_field, len(labels), chart_type,
+    )
+    return df
+
+
 def _collect_plot_ready_findings(
     df: pd.DataFrame,
     chart_type: str,
@@ -2566,9 +2836,29 @@ def _collect_plot_ready_findings(
                 f"  2. Use mapping={{'y': ['col1', 'col2']}} to auto-melt wide-format data."
             ))
         else:
+            # Name the near-misses. The common shape is a rename / suffix
+            # drift (asked for 'strike', frame carries 'strike_pct'), and
+            # the engine used to paper over exactly that for x by
+            # substituting a date-like column instead -- see
+            # ``_normalize_intraday_x_column``.
+            close: List[str] = []
+            for miss in missing_cols:
+                close.extend(
+                    difflib.get_close_matches(
+                        str(miss),
+                        [str(c) for c in df.columns],
+                        n=2,
+                        cutoff=0.6,
+                    )
+                )
+            hint = (
+                f" Closest matches: "
+                f"{', '.join(repr(c) for c in dict.fromkeys(close))}."
+                if close else ""
+            )
             tier0.append(ValidationError(
                 f"Missing columns in DataFrame: {missing_cols}. "
-                f"Available columns: {list(df.columns)}"
+                f"Available columns: {list(df.columns)}.{hint}"
             ))
 
     # ---- all-NaN columns / sparse columns ----------------------------------
@@ -2910,6 +3200,9 @@ def _collect_integrity_findings(
 
       - coverage failure (empty body) -> skip the y-scale gates (they
         assume there is readable data to assess)
+      - x-extent failure (no horizontal extent) -> skip the y-scale gates
+        AND the line-profile gates (alignment, jaggedness, oscillation):
+        all of them describe the shape of a line that cannot be drawn
       - flatness failure -> skip level disparity (alternative diagnoses
         of the same shape problem; at most one fires, matching the
         serial behavior)
@@ -3002,11 +3295,30 @@ def _collect_integrity_findings(
         coverage_failed = True
         findings.append(exc)
 
+    # Validation 4c: horizontal extent. The x-side twin of Validation 5 --
+    # a cross-section bound to a constant timestamp draws each series as a
+    # zero-width vertical sliver, which no y-side gate can see.
+    x_extent_failed = False
+    try:
+        _validate_x_extent(df, mapping, chart_type)
+    except ValidationError as exc:
+        x_extent_failed = True
+        findings.append(exc)
+
+    # Validation 4d: temporal-x plausibility (epoch-converted numbers).
+    # Independent of extent -- an epoch-converted column has full extent
+    # across its own three-nanosecond domain.
+    try:
+        _validate_temporal_x_plausibility(df, mapping, chart_type)
+    except ValidationError as exc:
+        findings.append(exc)
+
     # Validations 5 + 6: y-scale gates (flatness, then level disparity).
-    # Skipped when coverage failed -- they assume readable data. Mutually
-    # exclusive with each other: both diagnose the same single-axis shape
-    # problem, so at most one fires (matching the serial behavior).
-    if not coverage_failed:
+    # Skipped when coverage / x-extent failed -- they assume readable data.
+    # Mutually exclusive with each other: both diagnose the same
+    # single-axis shape problem, so at most one fires (matching the serial
+    # behavior).
+    if not (coverage_failed or x_extent_failed):
         flatness_failed = False
         try:
             _validate_y_scale_homogeneity(df, mapping, chart_type)
@@ -3019,30 +3331,35 @@ def _collect_integrity_findings(
             except ValidationError as exc:
                 findings.append(exc)
 
-    # Validation 7: stacked-area series alignment ("shattered" stacks).
-    alignment_failed = False
-    try:
-        _validate_series_alignment(df, mapping, chart_type)
-    except ValidationError as exc:
-        alignment_failed = True
-        findings.append(exc)
-
-    # Validation 8: seasonal jaggedness. Skipped when alignment failed --
-    # misalignment is the dominant defect for stacked areas and the
-    # jaggedness verdict on misaligned data is noise.
-    if not alignment_failed:
+    # Validations 7-9 profile the SHAPE of the drawn lines (stack
+    # alignment, seasonal sawteeth, interleaved oscillation). All three are
+    # noise once x has no extent -- there is no shape to profile -- so a
+    # degenerate x suppresses them.
+    if not x_extent_failed:
+        # Validation 7: stacked-area series alignment ("shattered" stacks).
+        alignment_failed = False
         try:
-            _validate_seasonal_jaggedness(df, mapping, chart_type)
+            _validate_series_alignment(df, mapping, chart_type)
         except ValidationError as exc:
+            alignment_failed = True
             findings.append(exc)
 
-    # Validation 9: interleaved-series oscillation. Distinct from
-    # Validation 8 -- seasonal sawteeth reverse slowly; interleaved
-    # merges reverse on nearly every step with large vertical jumps.
-    try:
-        _validate_series_oscillation(df, mapping, chart_type)
-    except ValidationError as exc:
-        findings.append(exc)
+        # Validation 8: seasonal jaggedness. Skipped when alignment failed
+        # -- misalignment is the dominant defect for stacked areas and the
+        # jaggedness verdict on misaligned data is noise.
+        if not alignment_failed:
+            try:
+                _validate_seasonal_jaggedness(df, mapping, chart_type)
+            except ValidationError as exc:
+                findings.append(exc)
+
+        # Validation 9: interleaved-series oscillation. Distinct from
+        # Validation 8 -- seasonal sawteeth reverse slowly; interleaved
+        # merges reverse on nearly every step with large vertical jumps.
+        try:
+            _validate_series_oscillation(df, mapping, chart_type)
+        except ValidationError as exc:
+            findings.append(exc)
 
     return findings
 
@@ -3359,6 +3676,299 @@ def _validate_line_coverage(
         f"  (c) If only a few discrete observations exist per series, use "
         f"`chart_type='scatter'` (or add point markers) so the individual "
         f"observations are visible rather than interpolated into emptiness."
+    )
+
+
+def _ordered_axis_span(values: pd.Series) -> Optional[float]:
+    """Total ordered extent of ``values`` (seconds for datetimes), else None.
+
+    ``None`` means the column has no ordered metric -- categorical /
+    string x -- and callers should fall back to distinct-value counting.
+    """
+    clean = values.dropna()
+    if clean.empty:
+        return None
+    if pd.api.types.is_datetime64_any_dtype(clean):
+        return float((clean.max() - clean.min()).total_seconds())
+    if pd.api.types.is_numeric_dtype(clean):
+        return float(clean.max() - clean.min())
+    return None
+
+
+def _plotted_row_groups(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+) -> List[Tuple[str, pd.Index]]:
+    """``(series label, row index)`` for every line the chart will draw.
+
+    Handles the three shapes the line builders accept: long format (one
+    group per ``color`` value), wide auto-melt (one group per listed ``y``
+    column), and single-series. Rows whose y is null are dropped -- they
+    contribute no drawn geometry -- so the caller measures the extent of
+    what actually renders.
+    """
+    y_field = _get_field(mapping, "y")
+    color_field = _get_field(mapping, "color")
+
+    groups: List[Tuple[str, pd.Index]] = []
+    if color_field and color_field in df.columns:
+        for name, g in df.groupby(color_field, sort=False):
+            if y_field and y_field in g.columns:
+                g = g[g[y_field].notna()]
+            groups.append((str(name), g.index))
+    elif isinstance(mapping.get("y"), list):
+        for col in mapping["y"]:
+            if isinstance(col, str) and col in df.columns:
+                groups.append((col, df.index[df[col].notna()]))
+    elif y_field and y_field in df.columns:
+        groups.append((str(y_field), df.index[df[y_field].notna()]))
+    else:
+        groups.append(("series", df.index))
+    return groups
+
+
+def _x_axis_candidate_columns(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    groups: List[Tuple[str, pd.Index]],
+    limit: int = 3,
+) -> List[str]:
+    """Columns that vary WITHIN every plotted series -- plausible x axes.
+
+    When a chart's x is degenerate the intended axis is almost always
+    another column already sitting in the frame (``strike`` next to a
+    constant ``quote_time``). Naming it turns the rejection into a
+    one-edit fix instead of a guessing game.
+    """
+    reserved = {
+        _get_field(mapping, "x"),
+        _get_field(mapping, "y"),
+        _get_field(mapping, "color"),
+        mapping.get("facet"),
+    }
+    if isinstance(mapping.get("y"), list):
+        reserved.update(c for c in mapping["y"] if isinstance(c, str))
+
+    out: List[str] = []
+    for col in df.columns:
+        if not isinstance(col, str) or col in reserved:
+            continue
+        try:
+            varies = all(
+                int(df.loc[idx, col].nunique(dropna=True)) >= 2
+                for _label, idx in groups
+            )
+        except (TypeError, ValueError):
+            continue
+        if varies:
+            out.append(col)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _validate_x_extent(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> None:
+    """Reject line-shaped charts with no horizontal extent to draw across.
+
+    The horizontal twin of ``_validate_y_scale_homogeneity``. That gate
+    catches a series compressed below ``_MIN_SERIES_VERTICAL_SHARE`` of the
+    y axis (flat rails); this one catches a series compressed below
+    ``_MIN_SERIES_HORIZONTAL_SHARE`` of the x axis (vertical slivers).
+
+    Canonical failure mode (PRISM, 2026-07-26): a 4-pack whose two
+    cross-sectional panels (vol vs strike) had x bound to the quote
+    timestamp the data pull carried alongside the strikes. Every row inside
+    a series shared one timestamp, so each series drew as a zero-width
+    vertical line over an empty plot body, under an axis formatted as an
+    intraday clock -- the cadence test in ``_determine_date_format_raw``
+    cannot tell a 3-stamp snapshot from a real intraday tape. No y-side
+    gate can see this: every y value is present and well spread.
+
+    Two rejections, in order of severity:
+      1. **Chart-wide**: fewer than 2 distinct x values in the whole frame
+         -- there is no axis to draw along at all.
+      2. **Per-series**: a series with fewer than 2 distinct x values, or
+         spanning less than ``_MIN_SERIES_HORIZONTAL_SHARE`` of the chart's
+         x domain. Only assessed for 2+ series, mirroring the vertical
+         gate (one series defines its own domain).
+
+    Scope:
+      - ``multi_line`` / ``timeseries`` / ``area`` / ``line``: the marks
+        that interpolate between x positions and therefore need two of
+        them. ``scatter`` is exempt (it draws discrete points, already
+        gated by ``_MIN_SCATTER_VISIBLE_DOTS``); ``bar`` / ``boxplot`` /
+        ``heatmap`` are exempt because one x per category is their normal
+        shape.
+      - NOT skipped for ``dual_axis_series``: splitting the y axes does
+        nothing for a degenerate x, which both sides share.
+      - Ordered (datetime / numeric) x measures span share; categorical x
+        measures distinct-category share.
+    """
+    if chart_type not in {"multi_line", "timeseries", "area", "line"}:
+        return
+
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        return
+
+    x_all = df[x_field].dropna()
+    if x_all.empty:
+        return  # The tier-0 all-NaN column gate owns this.
+
+    n_distinct_all = int(x_all.nunique())
+    groups = _plotted_row_groups(df, mapping)
+    candidates = _x_axis_candidate_columns(df, mapping, groups)
+    candidate_hint = (
+        f" Columns that vary within every series here: "
+        f"{', '.join(repr(c) for c in candidates)}."
+        if candidates else ""
+    )
+    rebind_example = (
+        f"mapping={{'x': {candidates[0]!r}, "
+        f"'y': {_get_field(mapping, 'y')!r}"
+        + (
+            f", 'color': {_get_field(mapping, 'color')!r}"
+            if _get_field(mapping, "color") else ""
+        )
+        + "}"
+        if candidates else "mapping={'x': '<the column the data varies along>', ...}"
+    )
+
+    # ---- 1. Chart-wide: one x value means no axis at all ----------------
+    if n_distinct_all < 2:
+        raise ValidationError(
+            f"X-AXIS HAS NO EXTENT: every row shares a single x value "
+            f"(x={x_field!r} = {x_all.iloc[0]}), so the chart has zero "
+            f"horizontal extent. A line mark connects x positions; with one "
+            f"position there is nothing to connect, and the panel renders as "
+            f"axes + title + labels over an empty plot body.\n"
+            f"The usual cause is that mapping['x'] is bound to a snapshot / "
+            f"quote timestamp that is constant across the whole pull, while "
+            f"the axis the data actually varies along is a different column."
+            f"{candidate_hint}\n"
+            f"  (a) Bind x to that axis instead -- for a cross-section (vol "
+            f"vs strike, yield vs tenor, spread vs maturity) the timestamp "
+            f"belongs in the title or subtitle, not on the x axis: "
+            f"`{rebind_example}`.\n"
+            f"  (b) If you meant one observation per category, a line is the "
+            f"wrong mark: use `chart_type='bar'` (one bar per category) or "
+            f"`chart_type='scatter'` (visible discrete points).\n"
+            f"  (c) If this really is a time series, the frame is too thin -- "
+            f"widen the pull's date range so x carries >= 2 timestamps."
+        )
+
+    # ---- 2. Per-series horizontal share --------------------------------
+    if len(groups) < 2:
+        return
+
+    chart_span = _ordered_axis_span(x_all)
+    offenders: List[Tuple[str, int, float]] = []
+    for label, idx in groups:
+        xs = df.loc[idx, x_field].dropna()
+        n_distinct = int(xs.nunique())
+        if chart_span and chart_span > 0:
+            share = (_ordered_axis_span(xs) or 0.0) / chart_span
+        else:
+            share = n_distinct / n_distinct_all
+        if n_distinct < 2 or share < _MIN_SERIES_HORIZONTAL_SHARE:
+            offenders.append((label, n_distinct, share))
+
+    if not offenders:
+        return
+
+    offenders.sort(key=lambda t: t[2])
+    threshold_pct = int(_MIN_SERIES_HORIZONTAL_SHARE * 100)
+    detail = "; ".join(
+        f"{label!r} {n} distinct x value{'' if n == 1 else 's'} "
+        f"({share * 100:.1f}% of the x span)"
+        for label, n, share in offenders
+    )
+    unit = "distinct categories" if chart_span is None else "distinct values"
+
+    raise ValidationError(
+        f"X-AXIS DEGENERACY: {len(offenders)} of {len(groups)} series span "
+        f"less than {threshold_pct}% of the visible x axis, so each one draws "
+        f"as a vertical sliver (or a single invisible point) over an empty "
+        f"plot body -- the axes, title, and end-of-line labels paint but no "
+        f"readable line appears. Degenerate: {detail}. x={x_field!r} has "
+        f"{n_distinct_all} {unit} chart-wide.\n"
+        f"A line needs at least two x positions per series to have anything "
+        f"to connect. The usual cause is that mapping['x'] is bound to a "
+        f"snapshot / quote timestamp that is constant within each series, "
+        f"while the axis the data actually varies along is a different "
+        f"column.{candidate_hint}\n"
+        f"  (a) Bind x to that axis instead -- for a cross-section (vol vs "
+        f"strike, yield vs tenor, spread vs maturity) the timestamp belongs "
+        f"in the title or subtitle, not on the x axis: `{rebind_example}`.\n"
+        f"  (b) If you meant to compare one observation per series, a line is "
+        f"the wrong mark: use `chart_type='bar'` (one bar per series) or "
+        f"`chart_type='scatter'` (visible discrete points).\n"
+        f"  (c) If this really is a time series, each series needs >= 2 "
+        f"timestamps -- widen the pull's date range, or drop the series split "
+        f"so the timestamps form one line."
+    )
+
+
+def _validate_temporal_x_plausibility(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+) -> None:
+    """Reject a datetime x axis that is really epoch-converted numbers.
+
+    ``pd.to_datetime()`` on a small numeric column (strike 4.40, tenor 10,
+    moneyness 0.95) silently reads the values as NANOSECONDS since the Unix
+    epoch, so the whole axis lands microseconds into 1970-01-01. The
+    resulting chart is a clock face over a sub-second span -- structurally
+    valid, semantically meaningless, and invisible to every other gate.
+
+    Real market data never sits inside the first day of the epoch, so
+    ``max(x) < 1970-01-02`` is a safe signature.
+    """
+    if chart_type not in {
+        "multi_line", "timeseries", "area", "line", "scatter", "scatter_multi",
+    }:
+        return
+
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        return
+    if not pd.api.types.is_datetime64_any_dtype(df[x_field]):
+        return
+
+    stamps = df[x_field].dropna()
+    if stamps.empty:
+        return
+    x_max = stamps.max()
+    if pd.Timestamp(x_max).tz is not None:
+        x_max = pd.Timestamp(x_max).tz_convert(None)
+    if pd.Timestamp(x_max) >= pd.Timestamp("1970-01-02"):
+        return
+
+    x_min = pd.Timestamp(stamps.min())
+    if x_min.tz is not None:
+        x_min = x_min.tz_convert(None)
+    span_ns = int((pd.Timestamp(x_max) - x_min).value)
+
+    raise ValidationError(
+        f"EPOCH-CONVERTED X AXIS: every value in x={x_field!r} falls inside "
+        f"the first day of the Unix epoch (min={x_min}, max={x_max}, span="
+        f"{span_ns} nanoseconds). That is the signature of pd.to_datetime() "
+        f"applied to a numeric measurement: the value 4.40 becomes 4.40 "
+        f"nanoseconds after 1970-01-01, not a date. The axis renders as a "
+        f"clock face over a sub-second span.\n"
+        f"  (a) If the column is a measured quantity (strike, tenor in years, "
+        f"yield, moneyness, price), do NOT convert it -- pass the numeric "
+        f"column straight through as mapping['x'] and the engine builds a "
+        f"quantitative axis with the real values on it.\n"
+        f"  (b) If the column really is a unix timestamp, name the unit: "
+        f"`pd.to_datetime(col, unit='s')` for seconds since the epoch, or "
+        f"`unit='ms'` for milliseconds. The engine also accepts the raw "
+        f"epoch integers and infers the unit itself."
     )
 
 
@@ -9841,9 +10451,10 @@ def calculate_optimal_label_angle(
 # Profile (ordinal-x) tick-label collision avoidance. House rule for
 # yield curves / forward curves / vol smiles / cross-sectional profiles:
 # tick labels are NEVER vertical -- only horizontal (0) or diagonal (-45).
-# When even -45 would collide, the visible tick labels are thinned to an
-# evenly-spaced subset (the plotted line keeps every knot point; only the
-# label frequency drops).
+# When even -45 would collide, the visible tick labels are thinned to a
+# constant-stride subset anchored to the last category (the plotted line
+# keeps every knot point; only the label frequency drops). Anchoring to the
+# last category keeps the long end of a curve labelled.
 _PROFILE_LABEL_CHAR_PX = 11         # real per-char width at the 18px skin label font (was 8)
 _PROFILE_LABEL_PAD_PX = 12          # inter-label padding when horizontal
 _PROFILE_MIN_PITCH_45_PX = 22       # min horizontal pitch for non-overlapping -45 labels
@@ -9859,14 +10470,26 @@ _HEATMAP_CALENDAR_YEAR_MAX = 2200
 _HEATMAP_COLUMN_PITCH_MARGIN = 1.12
 
 
-def _evenly_spaced_subset(values: List[Any], k: int) -> List[Any]:
-    """Pick ``k`` evenly-spaced items from ``values`` (first + last kept)."""
+def _uniform_step_subset(
+    values: List[Any],
+    k: int,
+    *,
+    min_step: int = 1,
+) -> List[Any]:
+    """Pick at most ``k`` items from ``values`` at one constant stride.
+
+    Thin wrapper over ``_uniform_step_indices``; see that docstring for why
+    tick selection on a nominal axis is step-first and anchored to the last
+    item rather than count-first with both endpoints pinned.
+    """
     n = len(values)
-    if k >= n:
+    if n == 0:
+        return []
+    if k >= n and min_step <= 1:
         return list(values)
     if k <= 1:
-        return [values[0]]
-    return [values[i] for i in _evenly_spaced_indices(n, k)]
+        return [values[-1]]
+    return [values[i] for i in _uniform_step_indices(n, k, min_step=min_step)]
 
 
 def _resolve_profile_x_order(
@@ -9900,7 +10523,7 @@ def _profile_ordinal_axis_plan(
     """Decide ``(label_angle, tick_values)`` for a profile/yield-curve ordinal x.
 
     House rule: labels are NEVER vertical -- only horizontal (``0``) or
-    diagonal (``-45``). Frequency is reduced (an evenly-spaced subset of
+    diagonal (``-45``). Frequency is reduced (a constant-stride subset of
     tick labels is shown) only when labels would otherwise collide.
 
     Ladder:
@@ -9925,10 +10548,10 @@ def _profile_ordinal_axis_plan(
     if horiz_capacity >= n:
         return 0, None
     if horiz_capacity >= _PROFILE_MIN_HORIZONTAL_TICKS:
-        return 0, _evenly_spaced_subset(ordered_vals, horiz_capacity)
+        return 0, _uniform_step_subset(ordered_vals, horiz_capacity)
     if diag_capacity >= n:
         return -45, None
-    return -45, _evenly_spaced_subset(ordered_vals, diag_capacity)
+    return -45, _uniform_step_subset(ordered_vals, diag_capacity)
 
 
 def detect_label_collision(
@@ -11469,7 +12092,17 @@ def get_axis_beautification(
     x_field = mapping.get("x") if isinstance(mapping.get("x"), str) else None
     if x_field and x_field in df.columns:
         x_data = df[x_field]
-        if pd.api.types.is_datetime64_any_dtype(x_data):
+        # A datetime column the caller forced to ``ordinal`` is on a BAND
+        # scale, where the temporal plan's ``labelExpr`` / ``format`` /
+        # temporal ``tickCount`` all misfire (``timeFormat()`` over category
+        # indices prints ``NaN:NaN``). ``_materialize_ordinal_datetime_x``
+        # normally converts those columns to display labels upstream; this
+        # keeps the categorical branch authoritative for any path that
+        # bypasses it.
+        if (
+            pd.api.types.is_datetime64_any_dtype(x_data)
+            and mapping.get("x_type") != "ordinal"
+        ):
             date_config = determine_date_format(x_data, chart_width)
             is_intraday = _is_intraday_datetime_series(x_data)
             configs["x"] = AxisConfig(
@@ -17209,32 +17842,6 @@ def _heatmap_max_ticks_for_column_pitch(
     return max(1, math.ceil(n_cols / min_index_gap))
 
 
-def _heatmap_filter_tick_indices(indices: List[int], min_gap: int) -> List[int]:
-    """Drop tick indices closer than ``min_gap`` columns (first wins)."""
-    if min_gap <= 1:
-        return sorted(indices)
-    out: List[int] = []
-    for i in sorted(indices):
-        if not out or i - out[-1] >= min_gap:
-            out.append(i)
-    return out
-
-
-def _heatmap_apply_column_pitch_cap(
-    ordered_vals: List[Any],
-    ticks: Optional[List[Any]],
-    *,
-    min_index_gap: int,
-) -> Optional[List[Any]]:
-    """Enforce minimum column-index spacing on a tick subset."""
-    if ticks is None or min_index_gap <= 1:
-        return ticks
-    idx_by_val = {v: i for i, v in enumerate(ordered_vals)}
-    indices = [idx_by_val[v] for v in ticks if v in idx_by_val]
-    filtered = _heatmap_filter_tick_indices(indices, min_index_gap)
-    return [ordered_vals[i] for i in filtered]
-
-
 def _heatmap_x_axis_plan(
     ordered_vals: List[Any],
     chart_width: int,
@@ -17245,8 +17852,10 @@ def _heatmap_x_axis_plan(
     Vertical (90 deg) labels are forbidden on heatmaps. Uses the skin's
     real axis-label font size for pitch math (post-normalization labels),
     and calendar-aware thinning (Q1 anchors, month starts, midnights) when
-    tick labels parse as temporal. Band-scale column pitch caps tick count
-    so adjacent column labels never collide. Every cell still renders.
+    tick labels parse as temporal. Band-scale column pitch feeds the
+    thinner as a minimum step so adjacent column labels never collide.
+    Emitted ticks always sit at one constant column interval. Every cell
+    still renders.
     """
     vals = [str(v) for v in ordered_vals]
     n = len(vals)
@@ -17274,10 +17883,9 @@ def _heatmap_x_axis_plan(
     )
 
     def _thin(k: int, min_gap: int) -> List[Any]:
-        subset = _heatmap_calendar_tick_subset(ordered_vals, k)
-        return _heatmap_apply_column_pitch_cap(
-            ordered_vals, subset, min_index_gap=min_gap,
-        ) or subset
+        return _heatmap_calendar_tick_subset(
+            ordered_vals, k, min_step=min_gap,
+        )
 
     col_pitch = chart_width / n
     max_span_h = max(
@@ -20288,6 +20896,7 @@ def _make_chart(
     if chart_type != "heatmap":
         df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
+    df = _materialize_ordinal_datetime_x(df, mapping, chart_type)
 
     # ---- Heatmap auto-reshape -------------------------------------------
     # PRISM passes the intended x / y / value names and whatever shape the
@@ -21549,6 +22158,7 @@ def _build_single_chart(
     df, mapping = _sanitize_column_names(df, mapping)
     df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
+    df = _materialize_ordinal_datetime_x(df, mapping, chart_type)
 
     # Validation (single-pass aggregation, mirroring ``_make_chart``):
     # tier-0 structural findings gate tier-1; every independent tier-1
@@ -26879,7 +27489,7 @@ _ENGINE_NAMESPACE_TABLES: Tuple[str, ...] = (
 # See ``_raise_on_failure`` for the routing rationale.
 _make_chart.__name__ = "make_chart"
 _make_chart.__qualname__ = "make_chart"
-make_chart = _raise_on_failure(_make_chart)
+make_chart = _raise_on_failure(_make_chart, _make_chart_bind_findings)
 
 _make_composite.__name__ = "make_composite"
 _make_composite.__qualname__ = "make_composite"
