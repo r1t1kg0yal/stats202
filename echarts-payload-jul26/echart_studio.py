@@ -3838,139 +3838,6 @@ def _resolve_heatmap_label_block(
     return label_block
 
 
-# Hatch geometry for the missing-cell series. dashArrayX [1, 0] draws a
-# continuous line along the stroke; dashArrayY [3, 4] spaces the stripes.
-# The -45 degree rotation reads as "not data" rather than as a texture
-# belonging to the colour scale.
-_HATCH_ROTATION = -0.7853981633974483  # -pi/4
-_HATCH_LINE_COLORS = {
-    "light": "rgba(74, 85, 104, 0.55)",
-    "dark":  "rgba(203, 213, 224, 0.45)",
-}
-
-
-def _heatmap_hatch_missing_enabled(mapping: Dict[str, Any]) -> bool:
-    """Resolve ``mapping.hatch_missing`` (default True).
-
-    Strict bool: a string / int spelling is a typo worth surfacing, not a
-    dialect to absorb, because the wrong resolution silently reverts the
-    missing-vs-zero distinction the hatch exists to draw.
-    """
-    if "hatch_missing" not in mapping:
-        return True
-    raw = mapping["hatch_missing"]
-    if not isinstance(raw, bool):
-        raise ValueError(
-            f"heatmap: mapping.hatch_missing must be a bool (got "
-            f"{type(raw).__name__} {raw!r})"
-        )
-    return raw
-
-
-def _heatmap_hatch_template(
-    ctx: BuilderContext,
-    *,
-    name: str,
-    tooltip_formatter: Optional[str] = None,
-) -> Dict[str, Any]:
-    """The empty decal-hatched series a heatmap uses for missing cells.
-
-    Split out from ``_heatmap_missing_series`` so the correlation
-    runtime can ship the template in its sidecar and rebuild the hatch
-    client-side after a Window / Transform change moves which pairs fall
-    below ``min_periods`` -- including the case where first paint had no
-    missing cells at all and therefore no series to clone.
-
-    ``_hatch`` marks the series for the JS side; matching on the name
-    would break the moment a caller renames it.
-    """
-    theme = resolve_theme(ctx.theme_name)
-    semantic = theme["semantic"]
-    series: Dict[str, Any] = {
-        "name": name,
-        "type": "heatmap",
-        "_hatch": True,
-        "data": [],
-        "label": {"show": False},
-        "itemStyle": {
-            "color": semantic["surface"],
-            "borderColor": semantic["border"],
-            "borderWidth": 1,
-            "decal": {
-                "symbol": "line",
-                "color": _HATCH_LINE_COLORS[theme["mode"]],
-                "dashArrayX": [1, 0],
-                "dashArrayY": [3, 4],
-                "rotation": _HATCH_ROTATION,
-            },
-        },
-        "emphasis": {"disabled": True},
-        # Keep the hatch under the value cells so a rounding overlap can
-        # never bleed texture over real data.
-        "z": 1,
-    }
-    if tooltip_formatter:
-        series["tooltip"] = {"formatter": tooltip_formatter}
-    return series
-
-
-def _heatmap_missing_series(
-    x_count: int,
-    y_count: int,
-    present: set,
-    ctx: BuilderContext,
-    *,
-    name: str,
-    tooltip_formatter: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Build the decal-hatched series covering cells with no value.
-
-    ``present`` holds the ``(x_idx, y_idx)`` pairs that carry a finite
-    value; every other cell in the ``x_count`` x ``y_count`` grid is
-    absent from the data and gets hatched. Without this an absent cell
-    renders as bare background, which on a sequential scale is
-    indistinguishable from the low end and on a diverging scale is
-    indistinguishable from a real zero.
-
-    Returns None when the grid is fully populated so a dense heatmap's
-    option stays byte-identical to what it was before hatching existed.
-
-    The caller must pin ``visualMap.seriesIndex`` to the value series --
-    otherwise the colour scale drives this series too and paints over
-    the hatch. Cell values are 0 rather than null because ECharts draws
-    no rect for a null heatmap item; the value is never read (labels are
-    off and the tooltip is overridden).
-    """
-    missing = [
-        [xi, yi]
-        for yi in range(y_count)
-        for xi in range(x_count)
-        if (xi, yi) not in present
-    ]
-    if not missing:
-        return None
-    series = _heatmap_hatch_template(
-        ctx, name=name, tooltip_formatter=tooltip_formatter)
-    series["data"] = [{"value": [xi, yi, 0]} for xi, yi in missing]
-    return series
-
-
-def _heatmap_missing_tooltip(x_cats: Sequence[Any], y_cats: Sequence[Any],
-                             label: str) -> str:
-    """JS formatter for hatched cells: name the pair, then say no data.
-
-    The value series' tooltip would report the placeholder 0, which is
-    the exact misreading the hatch removes.
-    """
-    return (
-        "function(p){var v=(p.data && p.data.value) || p.data || []; "
-        "var xs=" + json.dumps([str(c) for c in x_cats]) + "; "
-        "var ys=" + json.dumps([str(c) for c in y_cats]) + "; "
-        "var xn = xs[v[0]] || ''; var yn = ys[v[1]] || ''; "
-        "return yn + ' / ' + xn + ': " + label + "'; }"
-    )
-
-
 def build_heatmap(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str, Any]:
     """Render a categorical heatmap from a long-form DataFrame.
 
@@ -4011,15 +3878,12 @@ def build_heatmap(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str,
 
     cells: List[List[Any]] = []
     vals: List[Any] = []
-    present: set = set()
     for xv, yv, z in zip(_col_to_list(df, x), _col_to_list(df, y), _col_to_list(df, val)):
         if xv is None or yv is None:
             continue
         cells.append([x_idx[xv], y_idx[yv], z])
         if z is not None:
             vals.append(z)
-        if _is_finite(z):
-            present.add((x_idx[xv], y_idx[yv]))
 
     opt["xAxis"] = {"type": "category", "data": list(x_cats), "splitArea": {"show": True}}
     opt["yAxis"] = {"type": "category", "data": list(y_cats), "splitArea": {"show": True}}
@@ -4097,29 +3961,6 @@ def build_heatmap(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str,
         "label": label_block,
         "emphasis": {"itemStyle": {"shadowBlur": 6, "shadowColor": "rgba(0,0,0,0.3)"}},
     }]
-
-    # Hatch the (x, y) pairs the data never covers so a gap in a sparse
-    # long-form frame can't be read as a low value.
-    if _heatmap_hatch_missing_enabled(mapping):
-        hatch = _heatmap_missing_series(
-            len(x_cats), len(y_cats), present, ctx,
-            name="No data",
-            tooltip_formatter=_heatmap_missing_tooltip(
-                x_cats, y_cats, "no data"),
-        )
-        if hatch is not None:
-            opt["series"].append(hatch)
-            opt["visualMap"][0]["seriesIndex"] = 0
-        # Sidecar for the dashboard filter-rewire path, which rebuilds
-        # the category axes from the filtered rows: index positions move,
-        # so the hatch and its tooltip have to be rebuilt rather than
-        # carried over. Shipped even when first paint has no gaps --
-        # filtering can open them.
-        opt["_hatch_runtime"] = {
-            "template": _heatmap_hatch_template(ctx, name="No data"),
-            "label": "no data",
-        }
-
     # Long y-category labels would push the heatmap matrix far to the
     # right; truncation keeps the plot area stable.
     _layout_long_category_axis(opt, "yAxis")
@@ -4614,31 +4455,6 @@ def build_correlation_matrix(df, mapping: Dict[str, Any],
         },
     }]
 
-    # Cells below ``min_periods`` overlap carry no correlation. On a
-    # diverging [-1, 1] scale the unpainted cell sits at the palette
-    # midpoint, so "we couldn't measure this pair" is indistinguishable
-    # from "these two are uncorrelated" -- the hatch separates them.
-    hatch_template: Optional[Dict[str, Any]] = None
-    if _heatmap_hatch_missing_enabled(mapping):
-        hatch_template = _heatmap_hatch_template(
-            ctx,
-            name="insufficient overlap",
-            tooltip_formatter=_heatmap_missing_tooltip(
-                cat_x, cat_y, "insufficient overlap"),
-        )
-        corr_present = {
-            (c[0], c[1]) for c in cells if _is_finite(c[2])
-        }
-        hatch = _heatmap_missing_series(
-            len(cat_x), len(cat_y), corr_present, ctx,
-            name="insufficient overlap",
-            tooltip_formatter=_heatmap_missing_tooltip(
-                cat_x, cat_y, "insufficient overlap"),
-        )
-        if hatch is not None:
-            opt["series"].append(hatch)
-            opt["visualMap"][0]["seriesIndex"] = 0
-
     # Tooltip: "{rowName} x {colName}: r=0.xx" for clarity.
     opt["tooltip"]["formatter"] = (
         "function(p){var v=(p.data && p.data.value) || p.data || []; "
@@ -4680,12 +4496,6 @@ def build_correlation_matrix(df, mapping: Dict[str, Any],
         "window_options":     list(window_options),
         "as_of":              as_of_iso,
         "subtitle_author":    ctx.subtitle or "",
-        # Template for the missing-cell hatch. Shipped even when first
-        # paint has no gaps: narrowing the Window pushes pairs below
-        # min_periods, and the runtime needs the styled series to add
-        # rather than a colour scheme to re-derive. None when the author
-        # set hatch_missing=false.
-        "hatch":              hatch_template,
     }
 
     _layout_long_category_axis(opt, "yAxis")

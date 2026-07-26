@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -715,14 +714,8 @@ APP_JS = r"""
       return (+v).toFixed(dec);
     };
   }
-  // The missing-cell hatch is a heatmap series too, but it carries a
-  // placeholder value and no label; the label / contrast / border knobs
-  // must leave it alone or a hatched gap starts printing "0".
-  function heatmapValueSeries(){
-    return seriesOfType('heatmap').filter(function(s){ return !s._hatch; });
-  }
-  APPLY.setHeatmapShowLabels = function(v){ heatmapValueSeries().forEach(function(s){ s.label = s.label || {}; s.label.show = !!v; }); };
-  APPLY.setHeatmapAutoContrast = function(v){ heatmapValueSeries().forEach(function(s){
+  APPLY.setHeatmapShowLabels = function(v){ seriesOfType('heatmap').forEach(function(s){ s.label = s.label || {}; s.label.show = !!v; }); };
+  APPLY.setHeatmapAutoContrast = function(v){ seriesOfType('heatmap').forEach(function(s){
     s.label = s.label || {};
     var fontSize = +(s.label.fontSize || 11);
     var dec = _heatmapValueDecimalsFor(s);
@@ -739,7 +732,7 @@ APP_JS = r"""
       delete s.label.rich;
     }
   }); };
-  APPLY.setHeatmapBorderWidth = function(v){ heatmapValueSeries().forEach(function(s){ s.itemStyle = s.itemStyle || {}; s.itemStyle.borderWidth = v; }); };
+  APPLY.setHeatmapBorderWidth = function(v){ seriesOfType('heatmap').forEach(function(s){ s.itemStyle = s.itemStyle || {}; s.itemStyle.borderWidth = v; }); };
 
   // Pie
   APPLY.setPieInnerRadius = function(v){ seriesOfType('pie').forEach(function(s){ var r = s.radius || ['0%','75%']; if (!Array.isArray(r)) r = ['0%', r]; r[0] = v; s.radius = r; }); };
@@ -2542,13 +2535,6 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
                                       color: var(--neg); }
 .tile-badge[data-color="muted"]   { background: var(--surface-2);
                                       color: var(--text-dim); }
-/* `warn` and `info` complete the row_highlight tone vocabulary, so a
-   bound badge can use the same five words as a row rule. Colours are
-   the ones .row-hl-warn / .row-hl-info already establish. */
-.tile-badge[data-color="warn"]    { background: rgba(221, 107, 32, 0.14);
-                                      color: #b45309; }
-.tile-badge[data-color="info"]    { background: rgba(49, 130, 206, 0.14);
-                                      color: var(--accent); }
 .tile-actions { display: flex; gap: 2px; flex: 0 0 auto; }
 .tile-btn, a.tile-btn {
   background: none; border: 1px solid transparent;
@@ -2579,17 +2565,6 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
   font-family: var(--gs-font-sans); border-top: 1px dashed var(--border);
   background: var(--surface);
   line-height: 1.45;
-  display: flex; align-items: baseline; gap: 10px;
-}
-.tile-foot-text { flex: 1 1 auto; min-width: 0; }
-/* Vintage stamp pins right and never wraps, so scanning a column of
-   tiles for the stale one is a straight vertical read. */
-.tile-vintage {
-  flex: 0 0 auto; margin-left: auto;
-  font-variant-numeric: tabular-nums;
-  font-size: 10px; letter-spacing: 0.02em;
-  color: var(--text-dim); white-space: nowrap;
-  cursor: help;
 }
 .tile-emphasis {
   border-color: var(--gs-navy);
@@ -3086,19 +3061,6 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
   margin: 12px 0; border: none;
   border-top: 1px solid var(--border);
 }
-/* Data-bound value inside prose. Tabular figures keep a number from
-   shifting the sentence when a refresh changes its width; the dotted
-   underline marks it as bound-to-data rather than typed, and pairs
-   with the title attribute the runtime sets to the source expr. */
-.md-ref {
-  font-variant-numeric: tabular-nums;
-  border-bottom: 1px dotted var(--border-strong, var(--border));
-  cursor: help;
-}
-.md-ref[data-md-unresolved] {
-  color: var(--neg);
-  border-bottom-style: solid;
-}
 .markdown-tile del, .markdown-body del {
   color: var(--text-faint);
   text-decoration-thickness: 1.5px;
@@ -3302,77 +3264,6 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
 }
 .data-table tr.row-hl-muted td { background: var(--gs-grey-05);
                                    color: var(--text-dim); }
-
-/* Diagnostics panel. Deliberately plain: this is the surface a reader
-   consults when they doubt a number, so it reads as a record rather
-   than as more dashboard. */
-.dx-summary {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 12px; margin-bottom: 4px;
-}
-.dx-dot { color: var(--text-faint); }
-.dx-ok { color: var(--pos); font-weight: 600; }
-.dx-section { margin-top: 18px; }
-.dx-section h4 {
-  margin: 0 0 6px; font-size: 10px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-dim);
-  border-bottom: 1px solid var(--border); padding-bottom: 4px;
-}
-.dx-table {
-  border-collapse: collapse; width: 100%; font-size: 11px;
-  font-family: var(--gs-font-sans);
-}
-.dx-table th {
-  text-align: left; padding: 4px 8px; font-size: 9px;
-  text-transform: uppercase; letter-spacing: 0.06em;
-  color: var(--text-dim); border-bottom: 1px solid var(--border);
-  font-weight: 700;
-}
-.dx-table td {
-  padding: 5px 8px; border-bottom: 1px solid var(--border);
-  vertical-align: top; color: var(--text);
-}
-.dx-table code {
-  font-family: var(--gs-font-mono, ui-monospace, monospace);
-  font-size: 10px; background: var(--gs-grey-05);
-  padding: 1px 4px; border-radius: 2px;
-}
-.dx-hash { word-break: break-all; }
-.dx-path { color: var(--text-dim); }
-.dx-msg { max-width: 520px; line-height: 1.45; }
-.dx-fix {
-  margin-top: 3px; color: var(--text-dim); font-style: italic;
-}
-.dx-muted { color: var(--text-faint); }
-.dx-empty, .dx-note {
-  font-size: 11px; color: var(--text-dim); padding: 6px 0;
-}
-.dx-sev {
-  display: inline-block; font-size: 9px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.06em;
-  padding: 1px 5px; border-radius: 2px; white-space: nowrap;
-}
-.dx-sev-error   { background: var(--neg-soft); color: var(--neg); }
-.dx-sev-warning { background: rgba(221, 107, 32, 0.12); color: #b95f10; }
-.dx-sev-info    { background: var(--gs-grey-05); color: var(--text-dim); }
-
-/* Totals row. Sticky to the bottom edge so the total stays on screen
-   while a virtualized data_grid is scrolled -- the mirror of the
-   sticky thead above. Hover is suppressed because the row is a
-   summary, not a record, and must not read as clickable in a table
-   that has row_click wired. */
-.data-table tfoot {
-  position: sticky; bottom: 0;
-  background: var(--gs-grey-05);
-  border-top: 2px solid var(--gs-navy);
-}
-.data-table tfoot td {
-  font-weight: 700; color: var(--gs-ink);
-  border-bottom: none;
-}
-.data-table tfoot tr:hover td { background: var(--gs-grey-05); }
-.data-table.compact tfoot td { padding: 5px 8px; font-size: 11px; }
 
 .table-toolbar {
   display: flex; align-items: center; gap: 12px;
@@ -4446,10 +4337,6 @@ footer.app-footer .gs-mark .gs-wordmark { font-size: 12px; }
                 title="View dashboard methodology" style="display:none">
           Methodology
         </button>
-        <button class="icon-btn" id="diagnostics-btn"
-                title="Data lineage, freshness and compile findings for this dashboard">
-          <span id="diagnostics-btn-label">Diagnostics</span>
-        </button>
         <button class="icon-btn" id="refresh-btn"
                 title="Refresh dashboard data" style="display:none">
           <span id="refresh-btn-label">Refresh</span>
@@ -5145,8 +5032,6 @@ DASHBOARD_APP_JS = r"""
     }
     if (typeof renderTables === 'function') renderTables();
     if (typeof renderKpis === 'function') renderKpis();
-    if (typeof renderMarkdownRefs === 'function') renderMarkdownRefs();
-    if (typeof renderTileBadges === 'function') renderTileBadges();
   }
   window._initInitialState = _initInitialState;
 
@@ -7643,43 +7528,6 @@ DASHBOARD_APP_JS = r"""
     return parts.join(' \u00B7 ');
   }
 
-  // Keep the missing-cell hatch in step with a recomputed matrix.
-  // Narrowing the Window or switching Transform moves which pairs clear
-  // ``min_periods``, so the hatch has to be rebuilt from the new cells
-  // rather than carried over from first paint. ``cfg.hatch`` carries the
-  // styled template (see build_correlation_matrix) because first paint
-  // may have had no gaps and therefore no series to clone.
-  function _ccSyncHeatmapHatch(opt, cells, template){
-    var series = opt.series || [];
-    var valueIdx = -1, hatchIdx = -1;
-    for (var i = 0; i < series.length; i++){
-      if (series[i] && series[i]._hatch) hatchIdx = i;
-      else if (valueIdx < 0) valueIdx = i;
-    }
-    if (valueIdx < 0) return;
-    var missing = [];
-    for (var c = 0; c < cells.length; c++){
-      var v = (cells[c] && cells[c].value) || cells[c] || [];
-      if (v[2] == null || isNaN(+v[2])) missing.push([v[0], v[1]]);
-    }
-    var vm = Array.isArray(opt.visualMap) ? opt.visualMap[0] : opt.visualMap;
-    if (!missing.length || !template){
-      if (hatchIdx >= 0) series.splice(hatchIdx, 1);
-      // Unpin so a later full-grid render keeps the scale on every
-      // series (the pin only exists to keep it off the hatch).
-      if (vm) delete vm.seriesIndex;
-      return;
-    }
-    var hatch = (hatchIdx >= 0)
-      ? series[hatchIdx]
-      : JSON.parse(JSON.stringify(template));
-    hatch.data = missing.map(function(p){
-      return {value: [p[0], p[1], 0]};
-    });
-    if (hatchIdx < 0) series.push(hatch);
-    if (vm) vm.seriesIndex = valueIdx;
-  }
-
   function _ccApplyCorrelationMatrix(cid, opt, state){
     var cfg = _ccCorrCfg(cid);
     if (!cfg || !opt || !opt.series || !opt.series[0]){
@@ -7723,7 +7571,6 @@ DASHBOARD_APP_JS = r"""
       }
     }
     opt.series[0].data = cells;
-    _ccSyncHeatmapHatch(opt, cells, cfg.hatch);
 
     // Visual-map color scale (existing diverging/sequential toggle).
     if (state.heatmapScale){
@@ -9054,11 +8901,7 @@ DASHBOARD_APP_JS = r"""
       // Fallback to the chart's live option series .data
       var rec = CHARTS[cid];
       var liveOpt = rec && rec.inst && rec.inst.getOption();
-      // Drop the missing-cell hatch: its cells carry a placeholder 0 that
-      // would export as a real reading.
-      var srs = ((liveOpt && liveOpt.series) || []).filter(function(s){
-        return !(s && s._hatch);
-      });
+      var srs = (liveOpt && liveOpt.series) || [];
       if (!srs.length){
         showModal('No data', '<p>No data available for this chart.</p>');
         return;
@@ -9268,37 +9111,6 @@ DASHBOARD_APP_JS = r"""
     return (typeof name === 'string') ? header.indexOf(name) : -1;
   }
 
-  // Rebuild the missing-cell hatch for a heatmap whose category axes were
-  // just rebuilt from filtered rows. Index positions move with the filter,
-  // so the compile-time hatch (and the category names baked into its
-  // tooltip) can't be carried over. Returns null when the filtered grid is
-  // fully populated.
-  function _hatchMissingSeries(runtime, xs, ys, cells){
-    if (!runtime || !runtime.template) return null;
-    var present = {};
-    cells.forEach(function(c){
-      var v = (c && c.value) || c || [];
-      if (v[2] != null && !isNaN(+v[2])) present[v[0] + ':' + v[1]] = 1;
-    });
-    var missing = [];
-    for (var yi = 0; yi < ys.length; yi++){
-      for (var xi = 0; xi < xs.length; xi++){
-        if (!present[xi + ':' + yi]) missing.push({value: [xi, yi, 0]});
-      }
-    }
-    if (!missing.length) return null;
-    var hatch = JSON.parse(JSON.stringify(runtime.template));
-    hatch.data = missing;
-    var label = runtime.label || 'no data';
-    var xNames = xs.map(String); var yNames = ys.map(String);
-    hatch.tooltip = {formatter: function(p){
-      var v = (p.data && p.data.value) || p.data || [];
-      return (yNames[v[1]] || '') + ' / ' + (xNames[v[0]] || '')
-        + ': ' + label;
-    }};
-    return hatch;
-  }
-
   function _rebuildFilteredChartOption(opt, chartType, mapping, source){
     var header = source[0] || [];
     var body = source.slice(1);
@@ -9338,13 +9150,6 @@ DASHBOARD_APP_JS = r"""
       var vm = Array.isArray(opt.visualMap) ? opt.visualMap[0] : opt.visualMap;
       if (vm && vals.length){
         vm.min = Math.min.apply(null, vals); vm.max = Math.max.apply(null, vals);
-      }
-      var hmHatch = _hatchMissingSeries(opt._hatch_runtime, xs, ys, cells);
-      if (hmHatch){
-        opt.series.push(hmHatch);
-        if (vm) vm.seriesIndex = 0;
-      } else if (vm){
-        delete vm.seriesIndex;
       }
       delete opt.dataset;
       return true;
@@ -10382,94 +10187,6 @@ DASHBOARD_APP_JS = r"""
     return resolveAgg(parts[0], parts[1], parts.slice(2).join('.'));
   }
 
-  // Narrative value references. The server wraps every
-  // {dataset.agg.column[:fmt[:dec]]}-shaped token in markdown / note
-  // prose as <span class="md-ref" data-md-src data-md-raw ...>, because
-  // at render time it has no dataset context to tell a reference from
-  // ordinary braced prose.
-  //
-  // This is where that admission is decided: a token whose dataset is
-  // not loaded was never a reference, so it gets its literal braces
-  // back. Everything else resolves through the same resolveSource /
-  // formatNumber pair the KPI tiles use, which is the point -- a
-  // sentence and the tile beside it cannot quote different numbers,
-  // and a light refresh moves both.
-  function renderMarkdownRefs(){
-    // Select on the data attribute, not the class: the literal-prose
-    // branch below strips the class, and these nodes must still be
-    // reconsidered if a later refresh introduces the dataset.
-    var nodes = document.querySelectorAll('span[data-md-src]');
-    Array.prototype.forEach.call(nodes, function(el){
-      var src = el.getAttribute('data-md-src') || '';
-      var raw = el.getAttribute('data-md-raw') || '';
-      if (!currentDatasets[src.split('.')[0]]){
-        // Never was a reference. Restore the literal braces AND drop
-        // the class, so ordinary prose does not keep the dotted
-        // underline the server optimistically applied.
-        el.textContent = raw;
-        el.classList.remove('md-ref');
-        el.removeAttribute('title');
-        return;
-      }
-      el.classList.add('md-ref');
-      // Hovering a number in prose reveals what it is bound to, so a
-      // reader can trace a claim without opening the manifest.
-      el.title = src;
-      var v = resolveSource(src);
-      if (v == null){
-        el.textContent = '\u2014';
-        el.setAttribute('data-md-unresolved', '1');
-        return;
-      }
-      el.removeAttribute('data-md-unresolved');
-      var dec = el.getAttribute('data-md-dec');
-      el.textContent = formatNumber(v, {
-        format: el.getAttribute('data-md-fmt') || 'auto',
-        decimals: (dec == null || dec === '') ? null : Number(dec)
-      });
-    });
-  }
-  window.renderMarkdownRefs = renderMarkdownRefs;
-
-  // Data-bound tile badges. Twin of the Python ``_pick_badge_state``:
-  // states are ordered, first match wins, and a state carrying no
-  // `value` matches everything (so a trailing bare state is the
-  // catch-all). Comparison goes through the same `cmpOp` that filter
-  // rules and row highlights use, so there is one operator vocabulary
-  // in the runtime rather than a badge-specific one.
-  function _pickBadgeState(v, states){
-    if (v == null) return null;
-    for (var i = 0; i < (states || []).length; i++){
-      var st = states[i];
-      if (!st || typeof st !== 'object') continue;
-      if (!('value' in st)) return st;
-      if (cmpOp(st.op || '==', v, st.value)) return st;
-    }
-    return null;
-  }
-  function renderTileBadges(){
-    var nodes = document.querySelectorAll('[data-badge-src]');
-    Array.prototype.forEach.call(nodes, function(el){
-      var src = el.getAttribute('data-badge-src') || '';
-      var states;
-      try { states = JSON.parse(el.getAttribute('data-badge-states') || '[]'); }
-      catch(e){ states = []; }
-      var v = resolveSource(src);
-      var st = _pickBadgeState(v, states);
-      if (!st){
-        // No match means the condition is simply not met, so the pill
-        // stays away rather than showing a neutral placeholder.
-        el.hidden = true;
-        return;
-      }
-      el.textContent = st.label == null ? '' : String(st.label);
-      el.setAttribute('data-color', st.tone || 'muted');
-      el.title = src + ' = ' + (v == null ? '\u2014' : v);
-      el.hidden = false;
-    });
-  }
-  window.renderTileBadges = renderTileBadges;
-
   // Compare-period delta: scan the sparkline-backed series for the
   // most recent value, then look back N days (or to first day of
   // year for 'ytd', or one row earlier for 'prev'). Returns
@@ -10826,13 +10543,8 @@ DASHBOARD_APP_JS = r"""
   }
 
   function _aggReduce(values, agg){
-    // Blank and whitespace-only cells are missing data, not zero.
-    // `isNaN('')` is false and `Number('') === 0`, so without the
-    // emptiness test every blank would enter as a real zero -- which
-    // leaves `sum` untouched but drags `mean` toward zero, inflates
-    // `count`, and makes `min` report a 0 that is nowhere in the data.
     var nums = values.filter(function(v){
-      return v != null && String(v).trim() !== '' && !isNaN(v);
+      return v != null && !isNaN(v);
     }).map(Number);
     if (!nums.length) return null;
     if (agg === 'mean') return nums.reduce(function(a, b){ return a + b; }, 0) / nums.length;
@@ -11308,18 +11020,10 @@ DASHBOARD_APP_JS = r"""
               (rowClickActive ? ' clickable' : '') +
               '"><thead><tr>';
 
-      // Header, body and totals cells must agree on alignment, so the
-      // rule lives in one place.
-      function _colAlign(c){
-        if (c.align) return c.align;
-        return (c.format && /^(number|integer|percent|currency|bps|signed|delta)/.test(c.format))
-          ? 'right' : 'left';
-      }
-
       cols.forEach(function(c, vi){
         var ci = visIdxMap[vi]; // index into allCols (drawer-stable)
         var lbl = c.label != null ? c.label : c.field;
-        var align = _colAlign(c);
+        var align = c.align || (c.format && /^(number|integer|percent|currency|bps|signed|delta)/.test(c.format) ? 'right' : 'left');
         var tip = c.tooltip ? ' title="' + _he(c.tooltip) + '"' : '';
         var sortable = c.sortable !== false && w.sortable !== false;
         var arrow = '';
@@ -11496,7 +11200,8 @@ DASHBOARD_APP_JS = r"""
           var hi = colIndexes[vi];
           var v = hi >= 0 ? row[hi] : null;
           var txt = formatValue(v, _applyDecOverride(c.format));
-          var styleParts = ['text-align:' + _colAlign(c)];
+          var align = c.align || (c.format && /^(number|integer|percent|currency|bps|signed|delta)/.test(c.format) ? 'right' : 'left');
+          var styleParts = ['text-align:' + align];
           // Conditional formatting
           var cs = conditionalStyle(v, c.conditional);
           if (cs){
@@ -11540,51 +11245,7 @@ DASHBOARD_APP_JS = r"""
         });
         html += '</tr>';
       });
-      html += '</tbody>';
-
-      // Totals row: an explicit {field: reducer} map, so a column is
-      // never reduced by inference -- summing a yield or a percent
-      // column is meaningless, and only the author knows which is
-      // which. Reduced over the filtered/searched rows capped at
-      // maxRows, i.e. exactly the row set the virtual-scroll status
-      // line claims the table represents, so the footer can never
-      // disagree with the row count shown beside it.
-      var totalsSpec = w.totals_row;
-      if (totalsSpec && typeof totalsSpec === 'object'){
-        var totalRows = allBody.slice(0, maxRows);
-        var labelPlaced = false;
-        var footCells = '';
-        cols.forEach(function(c, vi){
-          var agg = totalsSpec[c.field];
-          var align = _colAlign(c);
-          if (!agg || agg === 'none'){
-            // The first column with no reducer carries the row label.
-            var lbl = labelPlaced
-              ? ''
-              : _he(totalsSpec._label == null ? 'Total' : totalsSpec._label);
-            labelPlaced = true;
-            footCells += '<td style="text-align:' + align + '">' + lbl + '</td>';
-            return;
-          }
-          var hi = colIndexes[vi];
-          var vals = [];
-          if (hi >= 0){
-            for (var tri = 0; tri < totalRows.length; tri++){
-              vals.push(totalRows[tri][hi]);
-            }
-          }
-          var tot = _aggReduce(vals, agg);
-          // A count is a row tally, not a value in the column's own
-          // unit, so it never inherits that column's format.
-          var fmt = (agg === 'count') ? 'integer' : _applyDecOverride(c.format);
-          footCells += '<td style="text-align:' + align + '" title="' +
-            _he(agg) + ' over ' + totalRows.length + ' row(s)">' +
-            (tot == null ? '--' : formatValue(tot, fmt)) + '</td>';
-        });
-        html += '<tfoot><tr class="table-totals">' + footCells +
-          '</tr></tfoot>';
-      }
-      html += '</table>';
+      html += '</tbody></table>';
       if (virtualized){
         html += '<div class="table-virtual-status">' +
           (allRowsShown
@@ -12909,7 +12570,6 @@ DASHBOARD_APP_JS = r"""
   //
   //   #now-pill      "12 May 2026  02:03:47 ET"   (live; ticks every 1s)
   //   #refresh-pill  "Refreshed 02:00:35 ET"      (static until next poll)
-  //                  "Built 02:00:35 ET"          (no refresh cycle yet)
   //
   // JS owns the rendering here intentionally:
   //   - The live clock CAN'T be server-baked (it ticks every second);
@@ -12921,9 +12581,6 @@ DASHBOARD_APP_JS = r"""
   //     (canonical ISO emit; `+00:00` since the Phase 3 staging-side
   //     refactor; `parse_iso` accepts legacy Z-suffix entries too).
   //     applyLiveData() updates it on every successful poll.
-  //   - A one-shot compile has no refresh cycle, so the pill falls back
-  //     to the build clock and says "Built" instead. Only a scheduler
-  //     (or a live poll) may put the word "Refreshed" on a dashboard.
   //
   // ET is hardcoded (trading-floor convention). If a non-NY user
   // friction shows up later, parametrize via metadata.display_tz.
@@ -12957,9 +12614,8 @@ DASHBOARD_APP_JS = r"""
             + p.hour + ':' + p.minute + ':' + p.second + ' ET';
   }
 
-  function _formatRefreshPill(refreshAtISO, now, label){
+  function _formatRefreshPill(refreshAtISO, now){
     if (!refreshAtISO) return null;
-    var lbl = label || 'Refreshed';
     // parse_iso parity in JS: handle Z / +00:00 / naive transparently.
     // new Date() accepts both Z and +00:00; naive is ambiguous but
     // rare on this path (all our emit sites are aware).
@@ -12971,12 +12627,12 @@ DASHBOARD_APP_JS = r"""
     var sameDay  = r.year === n.year && r.month === n.month && r.day === n.day;
     var sameYear = r.year === n.year;
     if (sameDay){
-      return lbl + ' ' + r.hour + ':' + r.minute + ':' + r.second + ' ET';
+      return 'Refreshed ' + r.hour + ':' + r.minute + ':' + r.second + ' ET';
     }
     if (sameYear){
-      return lbl + ' ' + r.day + ' ' + r.month + '  ' + r.hour + ':' + r.minute + ' ET';
+      return 'Refreshed ' + r.day + ' ' + r.month + '  ' + r.hour + ':' + r.minute + ' ET';
     }
-    return lbl + ' ' + r.day + ' ' + r.month + ' ' + r.year
+    return 'Refreshed ' + r.day + ' ' + r.month + ' ' + r.year
             + '  ' + r.hour + ':' + r.minute + ' ET';
   }
 
@@ -12994,15 +12650,12 @@ DASHBOARD_APP_JS = r"""
     var el  = document.getElementById('refresh-pill');
     var val = document.getElementById('refresh-pill-val');
     if (!el || !val) return;
-    var iso   = refreshAtISO || (MD.time && MD.time.refresh_cycle_at) || null;
-    var label = 'Refreshed';
-    if (!iso){
-      iso   = (MD.time && MD.time.build_completed_at)
+    var iso = refreshAtISO
+              || (MD.time && MD.time.refresh_cycle_at)
+              || (MD.time && MD.time.build_completed_at)
               || MD.generated_at
               || null;
-      label = 'Built';
-    }
-    var s = _formatRefreshPill(iso, new Date(), label);
+    var s = _formatRefreshPill(iso, new Date());
     if (!s){ el.style.display = 'none'; return; }
     val.textContent = s;
     el.style.display = 'inline-flex';
@@ -13162,8 +12815,6 @@ DASHBOARD_APP_JS = r"""
     try { if (typeof renderTables    === 'function') renderTables(); } catch(e){}
     try { if (typeof renderPivots    === 'function') renderPivots(); } catch(e){}
     try { if (typeof renderStatGrids === 'function') renderStatGrids(); } catch(e){}
-    try { if (typeof renderMarkdownRefs === 'function') renderMarkdownRefs(); } catch(e){}
-    try { if (typeof renderTileBadges === 'function') renderTileBadges(); } catch(e){}
     try { if (typeof _applyShowWhen  === 'function') _applyShowWhen(); } catch(e){}
 
     // 5. Update header chrome from the new metadata block. The
@@ -13338,169 +12989,6 @@ DASHBOARD_APP_JS = r"""
     btn.style.display = 'inline-flex';
     btn.addEventListener('click', function(){
       showModal(title, _mdInlinePopup(body));
-    });
-  })();
-
-  // ----- diagnostics panel -----
-  //
-  // Part of the runtime, not a manifest feature: the button is always
-  // present, because a dashboard that can hide its own findings is
-  // exactly the dashboard whose findings you want to read. Everything
-  // shown is baked in at compile time by build_diagnostics_report().
-  (function(){
-    var btn = document.getElementById('diagnostics-btn');
-    if (!btn) return;
-    var DX = PAYLOAD.diagnostics || {};
-
-    function _n(v){ return (v == null) ? '\u2014' : String(v); }
-
-    function _sevBadge(sev){
-      return '<span class="dx-sev dx-sev-' + _he(sev || 'info') + '">' +
-        _he(sev || 'info') + '</span>';
-    }
-
-    function _countsLine(){
-      var c = DX.counts || {};
-      var order = ['error', 'warning', 'info'];
-      var parts = [];
-      order.forEach(function(s){
-        if (c[s]) parts.push(_sevBadge(s) + ' ' + c[s]);
-      });
-      if (!parts.length) parts.push('<span class="dx-ok">No findings</span>');
-      return parts.join('<span class="dx-dot">&middot;</span>');
-    }
-
-    function _table(headers, rows, emptyMsg){
-      if (!rows.length){
-        return '<div class="dx-empty">' + _he(emptyMsg) + '</div>';
-      }
-      var h = headers.map(function(x){
-        return '<th>' + _he(x) + '</th>';
-      }).join('');
-      var b = rows.map(function(r){
-        return '<tr>' + r.map(function(c){
-          return '<td>' + c + '</td>';
-        }).join('') + '</tr>';
-      }).join('');
-      return '<table class="dx-table"><thead><tr>' + h +
-        '</tr></thead><tbody>' + b + '</tbody></table>';
-    }
-
-    function _section(title, inner){
-      return '<div class="dx-section"><h4>' + _he(title) + '</h4>' +
-        inner + '</div>';
-    }
-
-    function _findingsHtml(){
-      var rows = (DX.findings || []).map(function(f){
-        var fix = (f.context && f.context.fix_hint) || f.fix_hint;
-        return [
-          _sevBadge(f.severity),
-          '<code>' + _he(_n(f.code)) + '</code>',
-          _he(_n(f.widget_id)),
-          '<div class="dx-msg">' + _he(_n(f.message)) +
-            (fix ? '<div class="dx-fix">' + _he(fix) + '</div>' : '') +
-            '</div>',
-          '<code class="dx-path">' + _he(_n(f.path)) + '</code>',
-        ];
-      });
-      var html = _table(['', 'Code', 'Widget', 'Finding', 'Path'], rows,
-                         'Nothing was flagged when this dashboard was built.');
-      if (DX.findings_omitted){
-        html += '<div class="dx-note">' + DX.findings_omitted +
-          ' further finding(s) omitted from this panel; ' +
-          _n(DX.finding_total) + ' were raised in total.</div>';
-      }
-      return html;
-    }
-
-    function _datasetsHtml(){
-      // Live row counts rather than the compile-time ones: after a
-      // refresh the baked numbers would misdescribe what is on screen.
-      var rows = (DX.datasets || []).map(function(d){
-        var live = currentDatasets[d.name];
-        var liveRows = (live && live.length) ? (live.length - 1) : null;
-        return [
-          '<code>' + _he(_n(d.name)) + '</code>',
-          _n(liveRows == null ? d.rows : liveRows),
-          _n(d.columns),
-          '<div class="dx-msg">' + _he(_n(d.description)) + '</div>',
-        ];
-      });
-      return _table(['Dataset', 'Rows', 'Cols', 'Description'], rows,
-                     'This dashboard declares no datasets.');
-    }
-
-    function _widgetsHtml(){
-      var rows = (DX.widgets || []).map(function(w){
-        return [
-          '<code>' + _he(_n(w.id)) + '</code>',
-          _he(_n(w.kind)),
-          _he(_n(w.title)),
-          (w.datasets && w.datasets.length)
-            ? w.datasets.map(function(d){
-                return '<code>' + _he(d) + '</code>';
-              }).join(' ')
-            : '<span class="dx-muted">none</span>',
-          _he(_n(w.vintage_label)),
-        ];
-      });
-      return _table(['Widget', 'Kind', 'Title', 'Reads', 'Data as of'],
-                     rows, 'This dashboard has no widgets.');
-    }
-
-    function _filtersHtml(){
-      var rows = (DX.filters || []).map(function(f){
-        return [
-          '<code>' + _he(_n(f.id)) + '</code>',
-          _he(_n(f.type)),
-          _he(_n(f.label)),
-          (f.targets && f.targets.length)
-            ? f.targets.map(function(t){
-                return '<code>' + _he(t) + '</code>';
-              }).join(' ')
-            : '<span class="dx-muted">all</span>',
-        ];
-      });
-      return _table(['Filter', 'Type', 'Label', 'Targets'], rows,
-                     'This dashboard has no filters.');
-    }
-
-    function _provenanceHtml(){
-      var r = DX.refresh || {};
-      var rows = [
-        ['Dashboard id', '<code>' + _he(_n(DX.dashboard_id)) + '</code>'],
-        ['Renderer', _he(_n(DX.renderer_version))],
-        ['Schema version', _he(_n(DX.schema_version))],
-        ['Data as of', _he(_n(r.data_as_of))],
-        ['Built at', _he(_n(r.generated_at))],
-      ];
-      var rev = DX.review;
-      if (rev){
-        rows.push(['Review status',
-                    '<strong>' + _he(_n(rev.status)) + '</strong>']);
-        rows.push(['Definition hash',
-                    '<code class="dx-hash">' +
-                    _he(_n(rev.definition_sha256)) + '</code>']);
-        rows.push(['Review signature',
-                    '<code class="dx-hash">' +
-                    _he(_n(rev.review_signature)) + '</code>']);
-      }
-      return _table(['', ''], rows, 'No provenance recorded.');
-    }
-
-    btn.addEventListener('click', function(){
-      var body =
-        '<div class="dx-summary">' + _countsLine() + '</div>' +
-        _section('Findings', _findingsHtml()) +
-        _section('Datasets', _datasetsHtml()) +
-        _section('Widgets and what they read', _widgetsHtml()) +
-        _section('Filters', _filtersHtml()) +
-        _section('Provenance', _provenanceHtml());
-      showModal('Diagnostics', body, {
-        wide: true,
-        subtitle: _n(DX.title || (MD && MD.title)),
-      });
     });
   })();
 
@@ -14593,8 +14081,6 @@ __USER_INPUT_CONTROLLER__
       applyConnects();
     }
     renderKpis(); renderTables();
-    if (typeof renderMarkdownRefs === 'function') renderMarkdownRefs();
-    if (typeof renderTileBadges === 'function') renderTileBadges();
     if (typeof renderPivots === 'function') renderPivots();
     // Cascading filters: populate downstream options from upstream defaults
     (MANIFEST.filters || []).forEach(function(f){
@@ -16981,16 +16467,14 @@ def _tile_title_html(w: Dict[str, Any]) -> str:
                          over `info` as the modal content; `info` is
                          still used as the native hover tooltip.
       * ``badge``    -- short pill (e.g. "LIVE", "BETA"); pair with
-                         ``badge_color`` to pick the hue. May instead be
-                         ``{source, states}`` to bind the pill's label
-                         and tone to a dataset value -- see
-                         :func:`_tile_badge_html`.
+                         ``badge_color`` to pick the hue.
       * ``subtitle`` -- secondary text rendered on the line below the
                          title, italic, small.
     """
     title = _html_escape(w.get("title", ""))
     info = w.get("info")
     popup = w.get("popup")
+    badge = w.get("badge")
     subtitle = w.get("subtitle")
     parts = ['<div class="tile-title-wrap">']
     parts.append(f'<div class="tile-title">{title}')
@@ -17001,7 +16485,12 @@ def _tile_title_html(w: Dict[str, Any]) -> str:
             fallback_title=w.get("title"),
         )
         parts.append(icon_html)
-    parts.append(_tile_badge_html(w))
+    if badge:
+        color = w.get("badge_color") or "gs-navy"
+        parts.append(
+            f'<span class="tile-badge" data-color="{_html_escape(color)}">'
+            f'{_html_escape(str(badge))}</span>'
+        )
     parts.append("</div>")
     if subtitle:
         parts.append(
@@ -17009,36 +16498,6 @@ def _tile_title_html(w: Dict[str, Any]) -> str:
         )
     parts.append("</div>")
     return "".join(parts)
-
-
-def _tile_badge_html(w: Dict[str, Any]) -> str:
-    """Render the tile's badge pill, static or data-bound.
-
-    A string ``badge`` is baked straight into the HTML. An object
-    ``badge`` carries its binding in data attributes and starts hidden;
-    ``renderTileBadges`` in the runtime resolves the source, picks the
-    first matching state, and reveals the pill. Deferring to the
-    runtime is the same choice KPI tiles make, and it is what lets a
-    light refresh re-colour a badge without a recompile.
-    """
-    badge = w.get("badge")
-    if isinstance(badge, dict):
-        src = badge.get("source") or ""
-        states = badge.get("states") or []
-        return (
-            f'<span class="tile-badge" data-color="muted"'
-            f' data-badge-src="{_html_escape(str(src))}"'
-            f' data-badge-states="'
-            f'{_html_escape(json.dumps(states, default=str))}"'
-            f' hidden></span>'
-        )
-    if badge:
-        color = w.get("badge_color") or "gs-navy"
-        return (
-            f'<span class="tile-badge" data-color="{_html_escape(color)}">'
-            f'{_html_escape(str(badge))}</span>'
-        )
-    return ""
 
 
 def _popup_icon_html(info_text: Optional[str] = None,
@@ -17088,30 +16547,10 @@ def _tile_class(w: Dict[str, Any], base: str) -> str:
 
 
 def _tile_footer_html(w: Dict[str, Any]) -> str:
-    """Tile footer: author footnote plus the compiled vintage stamp.
-
-    ``vintage_label`` is written by ``_resolve_widget_vintages`` at
-    compile time, so there is nothing to resolve here. The stamp sits
-    on the right of the footer strip and answers "how old is the data
-    in this tile", which the header's refresh pill does not.
-    """
     foot = w.get("footer") or w.get("footnote")
-    vintage = w.get("vintage_label")
-    if not foot and not vintage:
+    if not foot:
         return ""
-    parts = []
-    if foot:
-        parts.append(
-            f'<span class="tile-foot-text">'
-            f'{_html_escape(str(foot))}</span>'
-        )
-    if vintage:
-        parts.append(
-            f'<span class="tile-vintage" '
-            f'title="Latest observation in this tile\'s data">'
-            f'Data as of {_html_escape(str(vintage))}</span>'
-        )
-    return f'<div class="tile-footer">{"".join(parts)}</div>'
+    return f'<div class="tile-footer">{_html_escape(str(foot))}</div>'
 
 
 # =============================================================================
@@ -17321,56 +16760,6 @@ def _render_pivot_widget(w: Dict[str, Any], cols: int,
     )
 
 
-_MD_REF_TAG_SPLIT_RE = re.compile(r"(<[^>]*>)")
-
-
-def _expand_md_refs(html: str) -> str:
-    """Wrap every ``{dataset.agg.column}`` token in the rendered prose
-    with a span the runtime can fill from live data.
-
-    Called after :func:`_render_md` rather than before it: the token
-    grammar contains no HTML-special characters, so it survives the
-    markdown pass byte-for-byte, and substituting afterwards means the
-    injected spans are never themselves escaped. Splitting on tags
-    keeps the substitution inside text nodes, so a token that lands in
-    an ``href`` (from ``[x](http://h/{a.b.c})``) is left alone instead
-    of growing a span inside an attribute value.
-
-    Admission -- is this token a reference or just prose? -- is settled
-    in the browser, not here: ``renderMarkdownRefs`` restores the
-    literal text whenever the first segment does not name a loaded
-    dataset. The renderer has no dataset context to make that call,
-    and the runtime has the authoritative set.
-    """
-    from echart_dashboard import _parse_markdown_refs
-
-    if "{" not in html:
-        return html
-    parts = _MD_REF_TAG_SPLIT_RE.split(html)
-    for i, part in enumerate(parts):
-        if part.startswith("<") or "{" not in part:
-            continue
-        refs = _parse_markdown_refs(part)
-        if not refs:
-            continue
-        for ref in refs:
-            attrs = (
-                f' data-md-src="{_html_escape(ref.source)}"'
-                f' data-md-raw="{_html_escape(ref.token)}"'
-            )
-            if ref.fmt:
-                attrs += f' data-md-fmt="{_html_escape(ref.fmt)}"'
-            if ref.decimals is not None:
-                attrs += f' data-md-dec="{int(ref.decimals)}"'
-            part = part.replace(
-                ref.token,
-                f'<span class="md-ref"{attrs}>'
-                f'{_html_escape(ref.token)}</span>',
-            )
-        parts[i] = part
-    return "".join(parts)
-
-
 def _render_markdown_widget(w: Dict[str, Any], cols: int,
                               wid: str, style: str) -> str:
     """Render a markdown widget. When ``kind`` is set, render as a
@@ -17381,7 +16770,7 @@ def _render_markdown_widget(w: Dict[str, Any], cols: int,
     ``body`` field names for the markdown text.
     """
     body_md = w.get("body") if w.get("body") is not None else w.get("content", "")
-    body_html = _expand_md_refs(_render_md(body_md or ""))
+    body_html = _render_md(body_md or "")
     kind = w.get("kind")
     if kind:
         # Semantic callout: tinted card with a coloured left-edge
@@ -18469,7 +17858,6 @@ def render_dashboard_html(
     manifest: Dict[str, Any],
     chart_specs: Dict[str, Dict[str, Any]],
     filename_base: Optional[str] = None,
-    diagnostics_report: Optional[Dict[str, Any]] = None,
 ) -> str:
     from echart_studio import __version__ as VERSION
     from datetime import datetime
@@ -18685,11 +18073,6 @@ def render_dashboard_html(
         "widgetShowWhen": widget_show_when,
         "tools": tools_payload,
         "userInputs": user_inputs_payload,
-        # Always a dict, never absent: the Diagnostics panel is part of
-        # the runtime rather than a feature a manifest can decline, so
-        # the button must have something to open even when a caller
-        # renders without a compile's findings.
-        "diagnostics": diagnostics_report or {},
     }
     payload_js = ("var PAYLOAD = "
                    + json.dumps(payload, default=_json_default)

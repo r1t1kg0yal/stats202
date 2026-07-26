@@ -127,13 +127,13 @@ The router is the only fetch menu. The production context inventory is:
 |---|---|
 | `dashboards_hub.md` | Cross-cutting manifest, public API, Dashboard Garbage Gate, layout, registry, and anti-pattern kernel |
 | `dashboards/build.md` | First-build Tools 1-4 and publish gate |
-| `dashboards/diagnose.md` | Inspect, review state, in-artifact diagnostics panel, triage, heal, and revert |
+| `dashboards/diagnose.md` | Inspect, review state, triage, heal, and revert |
 | `dashboards/template_crud.md` | Typed manifest operations |
 | `dashboards/pipelines.md` | Persisted pull/build script edits and data-flow integrity |
 | `dashboards/recipes.md` | Data archetypes and transform patterns |
 | `dashboards/productivity.md` | Productivity, task/workflow, and email/file-intake compositions |
 | `dashboards/charts.md` | Chart catalog, mappings, annotations, computed columns |
-| `dashboards/widgets.md` | Non-tool widget catalog, persisted input, popups, provenance, markdown, tile chrome (badge, vintage, description) |
+| `dashboards/widgets.md` | Non-tool widget catalog, persisted input, popups, provenance, markdown |
 | `dashboards/widget_tool.md` | Form-driven compute widgets |
 | `dashboards/filters.md` | Filter catalog, linking, zoom, sync, brush |
 

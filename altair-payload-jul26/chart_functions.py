@@ -66,7 +66,7 @@ import re
 import sys
 import traceback
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
 
@@ -90,8 +90,6 @@ from prism_mcp.utils.unit_helper_functions import guess_units_from_name
 from prism_mcp.utils.vision_functions import check_chart_quality
 from prism_mcp.utils.chart_functions_studio import (
     GS_PRIMARY, MONO_BLUE, MONO_GREY, VIVID, TABLEAU, OKABE_ITO, PASTEL,
-    DIMENSION_PRESETS as _STUDIO_DIMENSION_PRESETS,
-    _compute_chart_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -19545,89 +19543,6 @@ def _generate_filename(
     return "_".join(p for p in parts if p)
 
 
-# Session subfolder holding the reopen artifacts written beside every
-# emitted PNG. Shares the folder the studio already writes its own
-# ``{session_path}/charts/{name}_editor.html`` into.
-_CHART_SPEC_PREFIX = "charts"
-_CHART_MANIFEST_NAME = "chart_manifest.json"
-
-
-def _persist_editable_spec(
-    spec: Dict[str, Any],
-    *,
-    png_path: str,
-    session_path: str,
-    s3_manager: Any,
-    chart_type: str,
-    title: Optional[str],
-    dimensions: Optional[str],
-) -> str:
-    """Write the editable Vega-Lite spec beside an emitted chart PNG.
-
-    The rendered PNG is the only artifact that reaches a chat answer; the
-    spec that produced it is otherwise discarded when the result returns.
-    Persisting it under a content-addressed id is what makes the chart
-    reopenable in the studio later::
-
-        {session_path}/charts/{chart_id}.spec.json   editable Vega-Lite
-        {session_path}/charts/{chart_id}.meta.json   studio open arguments
-        {session_path}/charts/chart_manifest.json    png_path -> chart_id
-
-    ``chart_id`` comes from the studio's own ``_compute_chart_id``, so an
-    id resolved out of the manifest is the same id the studio derives from
-    the same spec. Re-emitting an identical chart rewrites identical bytes.
-
-    ``chart_type`` must be a name ``wrap_interactive_prism`` accepts, since
-    the meta sidecar is literally its argument record.
-
-    Returns the ``chart_id``.
-    """
-    chart_id = _compute_chart_id(spec)
-    prefix = f"{session_path.rstrip('/')}/{_CHART_SPEC_PREFIX}"
-    spec_key = f"{prefix}/{chart_id}.spec.json"
-    manifest_key = f"{prefix}/{_CHART_MANIFEST_NAME}"
-    stamp = datetime.now(timezone.utc).isoformat()
-
-    # ``page_grid`` is a chart_functions-only sentinel -- its panel dims
-    # are derived from the facet grid shape at render time, so the studio's
-    # preset table has no entry for it. Record ``custom`` instead, which
-    # keeps whatever width/height the persisted spec already carries.
-    studio_dimensions = (
-        dimensions if dimensions in _STUDIO_DIMENSION_PRESETS else "custom"
-    )
-
-    meta = {
-        "schema_version": 1,
-        "chart_id": chart_id,
-        "chart_type": chart_type,
-        "title": title,
-        "dimensions": studio_dimensions,
-        "png_path": png_path,
-        "spec_path": spec_key,
-        "created_at": stamp,
-    }
-
-    s3_manager.put(json.dumps(spec, default=str).encode("utf-8"), spec_key)
-    s3_manager.put(
-        json.dumps(meta, indent=2, default=str).encode("utf-8"),
-        f"{prefix}/{chart_id}.meta.json",
-    )
-
-    try:
-        manifest = json.loads(s3_manager.get(manifest_key).decode("utf-8"))
-    except Exception:  # noqa: BLE001 - absent until the session's first chart
-        manifest = {"schema_version": 1, "charts": {}}
-    manifest.setdefault("charts", {})[png_path] = chart_id
-    manifest["updated_at"] = stamp
-    s3_manager.put(json.dumps(manifest, indent=2).encode("utf-8"), manifest_key)
-
-    logger.info(
-        "[_persist_editable_spec] chart_id=%s spec=%s png=%s",
-        chart_id, spec_key, png_path,
-    )
-    return chart_id
-
-
 def _make_chart(
     df: pd.DataFrame,
     chart_type: ChartType,
@@ -20733,24 +20648,6 @@ def _make_chart(
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Failed to generate PNG download URL: {exc}")
 
-    # ---- Reopenable spec sidecar ----------------------------------------
-    # Session runs only: standalone / output_dir runs have no session
-    # folder to register the chart against.
-    editor_chart_id: Optional[str] = None
-    if session_path and png_path and not png_save_failed:
-        try:
-            editor_chart_id = _persist_editable_spec(
-                spec,
-                png_path=png_path,
-                session_path=session_path,
-                s3_manager=s3_manager,
-                chart_type=chart_type,
-                title=title,
-                dimensions=dimensions,
-            )
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"Editable-spec persistence failed: {exc}")
-
     return ChartResult(
         png_path=png_path,
         download_url=download_url,
@@ -20764,7 +20661,6 @@ def _make_chart(
         warnings=warnings,
         audit_trail=audit_trail,
         interactive=interactive,
-        editor_chart_id=editor_chart_id,
     )
 
 
@@ -21104,7 +21000,6 @@ class CompositeResult:
     chart_errors: List[Dict[str, Any]] = field(default_factory=list)
     editor_html_path: Optional[str] = None
     editor_download_url: Optional[str] = None
-    editor_chart_id: Optional[str] = None
 
     def __repr__(self) -> str:
         parts = [f"CompositeResult(success={self.success}, layout={self.layout}"]
@@ -21115,23 +21010,6 @@ class CompositeResult:
         if self.error_message:
             parts.append(f"error={self.error_message}")
         return ", ".join(parts) + ")"
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "png_path": self.png_path,
-            "download_url": self.download_url,
-            "layout": self.layout,
-            "n_charts": self.n_charts,
-            "skin": self.skin,
-            "success": self.success,
-            "error_message": self.error_message,
-            "warnings": self.warnings,
-            "audit_trail": self.audit_trail,
-            "chart_errors": self.chart_errors,
-            "editor_html_path": self.editor_html_path,
-            "editor_download_url": self.editor_download_url,
-            "editor_chart_id": self.editor_chart_id,
-        }
 
 
 def _build_single_chart(
@@ -23376,31 +23254,11 @@ def _render_facet_grid(
         except Exception as exc:  # noqa: BLE001
             warnings_list.append(f"Failed to generate PNG download URL: {exc}")
 
-    # ---- Reopenable spec sidecar ----------------------------------------
-    # The recorded chart_type is the BASE type, not ``{chart_type}_facet``:
-    # the studio's knob map only accepts the base names, and the grid
-    # layout is already visible in the persisted spec's concat structure.
-    editor_chart_id: Optional[str] = None
-    if session_path and png_path and not png_save_failed:
-        try:
-            editor_chart_id = _persist_editable_spec(
-                composite_spec,
-                png_path=png_path,
-                session_path=session_path,
-                s3_manager=s3_manager,
-                chart_type=chart_type,
-                title=title,
-                dimensions=dimensions,
-            )
-        except Exception as exc:  # noqa: BLE001
-            warnings_list.append(f"Editable-spec persistence failed: {exc}")
-
     return ChartResult(
         png_path=png_path,
         download_url=download_url,
         vegalite_json=composite_spec,
         chart_type=f"{chart_type}_facet",
-        editor_chart_id=editor_chart_id,
         skin=skin,
         success=not png_save_failed,
         error_message=(
@@ -24058,29 +23916,10 @@ def _make_composite(
         except Exception as exc:  # noqa: BLE001
             warnings_list.append(f"Composite presigned URL failed: {exc}")
 
-    # ---- Reopenable spec sidecar ----------------------------------------
-    # ``{layout}_composite`` is the name the studio's composite branch
-    # recognises, which bypasses its single-mark knob whitelist.
-    editor_chart_id: Optional[str] = None
-    if session_path and png_path and not png_save_failed:
-        try:
-            editor_chart_id = _persist_editable_spec(
-                spec_dict,
-                png_path=png_path,
-                session_path=session_path,
-                s3_manager=s3_manager,
-                chart_type=f"{layout}_composite",
-                title=title,
-                dimensions=dimension_preset,
-            )
-        except Exception as exc:  # noqa: BLE001
-            warnings_list.append(f"Editable-spec persistence failed: {exc}")
-
     return CompositeResult(
         png_path=png_path,
         layout=layout,
         n_charts=n_charts,
-        editor_chart_id=editor_chart_id,
         success=not png_save_failed and not chart_errors,
         error_message=(
             f"PNG export unavailable: {png_error_message}"

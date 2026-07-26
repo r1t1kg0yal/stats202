@@ -305,24 +305,11 @@ Filters faithfully rebuild wide and grouped line/bar/area/scatter, stacked bar/a
 
 Heatmap-style controls include:
 
-`show_values`, `value_decimals`, `value_formatter`, `value_label_color`, `value_label_size`, `colors`, `color_palette`, `color_scale`, `value_min`, `value_max`, `hatch_missing`
+`show_values`, `value_decimals`, `value_formatter`, `value_label_color`, `value_label_size`, `colors`, `color_palette`, `color_scale`, `value_min`, `value_max`
 
 `colors` is an ordered list of at least two CSS colors and overrides `color_palette`. For a centered discrete-diverging 15-step heatmap, supply exactly 15 low→high stops with the neutral color at index 7, set `color_scale: "diverging"`, and pin symmetric `value_min = -M`, `value_max = M`, where `M = max(abs(requested lower bound), abs(requested upper bound))`. A canonical 15-step ramp is `["#67001F","#8A1538","#B2182B","#D6604D","#F4A582","#F7C6B6","#FDE0DD","#F7F7F7","#DDEBF7","#BDD7EE","#92C5DE","#67A9CF","#4393C3","#2166AC","#053061"]`.
 
 Pin value range when refresh-to-refresh color comparability matters.
-
-### Missing cells
-
-Cells with no data are hatched with diagonal stripes and read "no data" on
-hover, so a gap is never mistaken for a low value on a sequential ramp or a
-real zero on a diverging one. This is automatic for `heatmap` (any `x`/`y`
-pair absent from the frame or carrying a null `value`) and for
-`correlation_matrix` (any pair whose overlapping observations fall below
-`min_periods`, the diagonal included). The hatch tracks filters and drawer
-recalculations, and hatched cells stay out of CSV and XLSX exports.
-
-Set `hatch_missing: false` only when blank cells are the intended design
-(e.g. a deliberately masked region). The value must be a real boolean.
 
 ## Manifest computed columns
 

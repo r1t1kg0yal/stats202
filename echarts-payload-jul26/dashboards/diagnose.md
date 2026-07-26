@@ -160,20 +160,6 @@ eagerly and html2canvas loads on first PNG action from jsDelivr. If charts
 render but one of those actions fails with a resource/CSP event, classify
 the incident as environment/network evidence before mutating the dashboard.
 
-## In-artifact diagnostics panel
-
-Every compiled dashboard ships a `Diagnostics` header button. Where `inspect_dashboard` is the author-facing surface reached from a session, this is the reader-facing one: it travels with the HTML, so a viewer who doubts a number can trace it without access to the folder or to PRISM.
-
-The button is unconditional. A dashboard able to hide its own findings is exactly the dashboard whose findings matter, so no manifest field suppresses it.
-
-The panel shows compile findings with severity and fix hint, declared datasets with live row counts, every widget with the datasets it reads and its vintage stamp, filters with their targets, and provenance (renderer version, data-as-of, review status, definition and review signatures). Dataset row counts are read from live state rather than the compile, so a refreshed dashboard does not describe itself with stale shapes.
-
-Provenance never needs to be authored. Compile stamps `metadata.generated_at` from the build clock and `metadata.data_as_of` from the newest observation across the materialized frames, so an ad-hoc compile reports its own build time instead of an unknown one. Either field is left alone when already set, since a persisted recipe stamps both from the pull before compile runs and that is the more authoritative record. Both fields are excluded from the definition and review signatures, so recompiling an unchanged dashboard does not read as a new definition. `metadata.time.refresh_cycle_at` stays unset on a direct compile — a one-shot build has no refresh cycle to claim, and the header pill reads `Built <time>` rather than `Refreshed <time>` whenever it is reporting a build clock instead of a scheduler cycle or a live poll.
-
-The same object is returned as `result.diagnostics_report` from `compile_dashboard` and `render_dashboard`. Read it rather than re-deriving a summary, so what PRISM reasons about and what the reader sees cannot diverge. It carries `findings`, `datasets`, `widgets`, `filters`, `graph` (widget-to-dataset edges), `refresh`, `counts`, and `review`. Findings are capped at 250 with errors ordered first, and `findings_omitted` records any remainder.
-
-`description` coverage is reported here and only here — never as a compile diagnostic, so a blank metadata field cannot force a review acknowledgment on a dashboard whose numbers are all correct.
-
 ## Triage order
 
 1. **Identity and required files.** Confirm canonical folder identity and address every `files.missing` finding before mutation.

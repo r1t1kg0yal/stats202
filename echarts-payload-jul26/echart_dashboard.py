@@ -103,7 +103,7 @@ import re
 import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 
 _here = Path(__file__).resolve().parent
@@ -366,537 +366,6 @@ def _chart_filter_rewire_supported(
 VALID_KPI_AGGREGATORS = {
     "latest", "first", "sum", "mean", "min", "max", "count", "prev",
 }
-
-# Column-reducing aggregators -- the set the JS ``_aggReduce`` helper
-# implements. Distinct from ``VALID_KPI_AGGREGATORS`` because these
-# collapse a whole column to one number (so ``median`` makes sense and
-# the positional ``latest`` / ``first`` / ``prev`` do not). Shared by
-# the pivot widget's ``agg_options`` and a table's ``totals_row``, both
-# of which route through that one JS function. Order is the pivot
-# dropdown's presentation order, so keep it a sequence.
-AGG_REDUCER_ORDER = ("mean", "sum", "median", "min", "max", "count")
-VALID_AGG_REDUCERS = frozenset(AGG_REDUCER_ORDER)
-
-
-# =============================================================================
-# NARRATIVE VALUE REFERENCES  (used by widget: markdown / note)
-# =============================================================================
-#
-# A markdown body may embed live dataset values with the same source
-# grammar KPI and stat_grid already use:
-#
-#     {<dataset>.<aggregator>.<column>}
-#     {<dataset>.<aggregator>.<column>:<format>}
-#     {<dataset>.<aggregator>.<column>:<format>:<decimals>}
-#
-# Detection is deliberately loose (any ``{a.b.c}``-shaped token) and
-# admission is gated on the FIRST SEGMENT NAMING A DECLARED DATASET.
-# That single rule buys both properties we need:
-#
-#   * no false positives -- ``{config.json.path}`` in prose or a code
-#     fence is left verbatim because ``config`` is not a dataset;
-#   * no silent typos -- ``{rates.lastest.us_10y}`` IS claimed (``rates``
-#     is declared) and therefore fails validation with the aggregator
-#     list, instead of shipping as literal braces in the prose.
-#
-# Values resolve in the browser through the same ``resolveSource`` /
-# ``formatNumber`` pair KPI uses, so a light refresh updates narrative
-# and tiles together. The compile-time resolution is the seed text
-# (so ``file://`` opens and email-embedded copies read correctly) and
-# the receipt string the Garbage Gate reviews.
-_MD_REF_RE = re.compile(
-    r"\{"
-    r"([A-Za-z_][A-Za-z0-9_]*)"          # 1: dataset
-    r"\.([A-Za-z0-9_]+)"                  # 2: aggregator
-    r"\.([A-Za-z0-9_][A-Za-z0-9_.]*?)"    # 3: column (may contain dots)
-    r"(?::([A-Za-z]+)(?::(\d+))?)?"       # 4: format token, 5: decimals
-    r"\}"
-)
-
-# The format vocabulary is ``formatNumber``'s mode set -- the same one
-# KPI and stat_grid use -- because a reference resolves to a scalar
-# through the same ``resolveSource`` call a KPI makes. Nothing new for
-# an author to learn, and the browser formats narrative and tiles with
-# one function.
-#
-# There is deliberately no ``prefix`` / ``suffix`` slot in the token
-# grammar: prose already has one on either side of the braces. Write
-# ``${notional.latest.usd:compact}`` or
-# ``{spreads.latest.oas:comma:0} bps`` rather than growing the syntax.
-VALID_MD_REF_FORMATS = {"auto", "raw", "percent", "comma", "compact"}
-
-
-class MarkdownValueRef(NamedTuple):
-    """One ``{dataset.agg.column[:format[:decimals]]}`` token found in a
-    markdown body. ``token`` is the exact source text so the renderer can
-    substitute it back out of the rendered HTML.
-
-    Distinct from the ``MarkdownRef`` builder dataclass further down,
-    which is a whole markdown widget rather than a value inside one.
-    """
-    token: str
-    dataset: str
-    agg: str
-    column: str
-    fmt: Optional[str]
-    decimals: Optional[int]
-
-    @property
-    def source(self) -> str:
-        """The ``<dataset>.<aggregator>.<column>`` expression, in the
-        exact shape ``_resolve_kpi_value`` / JS ``resolveSource`` want."""
-        return f"{self.dataset}.{self.agg}.{self.column}"
-
-
-def _parse_markdown_refs(text: Any) -> List[MarkdownValueRef]:
-    """Extract every value-reference token from a markdown body.
-
-    Returns tokens in source order, including duplicates -- callers that
-    need uniqueness should dedupe on ``.token``. Detection only; the
-    dataset / aggregator / format admission checks live in
-    :func:`_validate_markdown_widget`.
-    """
-    if not isinstance(text, str) or "{" not in text:
-        return []
-    out: List[MarkdownValueRef] = []
-    for m in _MD_REF_RE.finditer(text):
-        dec_raw = m.group(5)
-        out.append(MarkdownValueRef(
-            token=m.group(0),
-            dataset=m.group(1),
-            agg=m.group(2),
-            column=m.group(3),
-            fmt=m.group(4),
-            decimals=int(dec_raw) if dec_raw is not None else None,
-        ))
-    return out
-
-
-# =============================================================================
-# DATA-BOUND TILE BADGE  (generic widget knob)
-# =============================================================================
-#
-# ``badge`` on any tile has two shapes. The historical one is a static
-# pill -- ``badge: "LIVE"`` plus an optional ``badge_color``. The bound
-# one reads a dataset value and picks its own label and colour:
-#
-#     "badge": {
-#       "source": "curve.latest.spread_2s10s",
-#       "states": [
-#         {"op": "<=", "value": 0,  "label": "INVERTED", "tone": "neg"},
-#         {"op": "<=", "value": 50, "label": "FLAT",     "tone": "warn"},
-#         {"label": "STEEP", "tone": "pos"}
-#       ]
-#     }
-#
-# States are ordered and FIRST MATCH WINS, so the list reads top-to-
-# bottom like the thresholds an analyst would say out loud. A state
-# with no ``op`` / ``value`` is the catch-all; it is optional (a badge
-# that only appears when something is true is a legitimate design) but
-# it may only appear last, because any state after it is unreachable.
-#
-# Both the comparison shape ``{op, value}`` and the operator vocabulary
-# are the ones filters, ``show_when``, and ``row_highlight`` already
-# use, evaluated by the existing ``_compare_op`` / JS ``cmpOp`` twins.
-# One comparison language in the engine, not two.
-#
-# Tones are likewise the ``row_highlight`` vocabulary -- the same five
-# words mean the same five things wherever the engine colours something
-# by a rule.
-VALID_BADGE_TONES = {"pos", "neg", "warn", "info", "muted"}
-
-
-def _pick_badge_state(value: Optional[float],
-                        states: Sequence[Any]) -> Optional[Dict[str, Any]]:
-    """First state whose comparison holds for ``value``, else None.
-
-    Python twin of the JS ``_pickBadgeState``. A state carrying no
-    ``value`` key always matches, which is what makes a trailing bare
-    state the catch-all.
-    """
-    if value is None:
-        return None
-    for st in states or ():
-        if not isinstance(st, dict):
-            continue
-        if "value" not in st:
-            return st
-        if _compare_op(value, st.get("op", "=="), st.get("value")):
-            return st
-    return None
-
-
-DESCRIPTION_MAX_CHARS = 600
-
-
-def _validate_description(entry: Dict[str, Any], base: str,
-                            errs: List[str],
-                            title: Any = None) -> None:
-    """Shape-check a ``description`` on a widget, filter or dataset.
-
-    ``description`` is intent, not chrome: it is never rendered, and
-    exists so a later editing pass can tell what a tile was FOR rather
-    than only what it draws. Presence is a warning rather than an error
-    (see ``_check_descriptions``); this function only enforces that a
-    supplied one is usable.
-
-    A description echoing the title is rejected outright. It costs the
-    same bytes as a real one, satisfies any presence check, and tells a
-    later reader nothing -- so accepting it would make the whole field
-    untrustworthy.
-    """
-    desc = entry.get("description")
-    if desc is None:
-        return
-    if not isinstance(desc, str):
-        errs.append(_err(
-            f"{base}.description",
-            f"must be a string, got {type(desc).__name__}",
-        ))
-        return
-    if not desc.strip():
-        errs.append(_err(
-            f"{base}.description",
-            "must not be blank",
-            "Either write what this entry is for, or omit the key "
-            "entirely -- a blank string claims a description exists.",
-        ))
-        return
-    if len(desc) > DESCRIPTION_MAX_CHARS:
-        errs.append(_err(
-            f"{base}.description",
-            f"must be at most {DESCRIPTION_MAX_CHARS} characters, "
-            f"got {len(desc)}",
-            "A description is a sentence or two of intent, not "
-            "documentation; long prose belongs in a markdown widget "
-            "where the reader can actually see it.",
-        ))
-    if isinstance(title, str) and title.strip() \
-            and desc.strip().lower() == title.strip().lower():
-        errs.append(_err(
-            f"{base}.description",
-            "must not merely repeat the title",
-            "Say what the entry is for or how to read it, e.g. title "
-            "'2s10s' -> description 'Curve slope used as the "
-            "recession-timing input; inverted since Jul 2025.'",
-        ))
-
-
-def _validate_tile_badge(w: Dict[str, Any], wbase: str, errs: List[str],
-                           dataset_names: Any) -> None:
-    """Validate the data-bound ``badge`` object on any tile.
-
-    A plain string badge is the legacy static form and needs no checks
-    beyond what the renderer already does.
-    """
-    badge = w.get("badge")
-    if not isinstance(badge, dict):
-        return
-
-    unknown = sorted(set(badge) - {"source", "states"})
-    if unknown:
-        errs.append(_err(
-            f"{wbase}.badge",
-            f"unknown key(s) {unknown}; valid: ['source', 'states']"))
-
-    src = badge.get("source")
-    if not isinstance(src, str) or not src:
-        errs.append(_err(
-            f"{wbase}.badge.source",
-            "bound badge requires 'source' = "
-            "\"<dataset>.<aggregator>.<col>\"; use a plain string "
-            "badge instead if the pill is not data-bound"))
-    else:
-        ds_name, agg, _col, parse_err = _parse_kpi_source(src, "value")
-        if parse_err is not None:
-            errs.append(_err(
-                f"{wbase}.badge.source",
-                f"malformed: {parse_err}",
-                "Rewrite as 'dataset.aggregator.column'."))
-        else:
-            if agg not in VALID_KPI_AGGREGATORS:
-                suggestions = _did_you_mean(
-                    str(agg), sorted(VALID_KPI_AGGREGATORS))
-                hint = (
-                    f"Did you mean "
-                    f"{' | '.join(repr(s) for s in suggestions)}?"
-                    if suggestions else
-                    f"Aggregator must be one of "
-                    f"{sorted(VALID_KPI_AGGREGATORS)}.")
-                errs.append(_err(
-                    f"{wbase}.badge.source",
-                    f"aggregator {agg!r} is unsupported", hint))
-            if ds_name not in dataset_names:
-                suggestions = _did_you_mean(
-                    str(ds_name), sorted(dataset_names))
-                hint = (
-                    f"Did you mean "
-                    f"{' | '.join(repr(s) for s in suggestions)}?"
-                    if suggestions else
-                    f"Declare the dataset or pick from "
-                    f"{sorted(dataset_names)}.")
-                errs.append(_err(
-                    f"{wbase}.badge.source",
-                    f"dataset {ds_name!r} is not declared", hint))
-
-    states = badge.get("states")
-    if not isinstance(states, list) or not states:
-        errs.append(_err(
-            f"{wbase}.badge.states",
-            "bound badge requires a non-empty 'states' list; each "
-            "entry is {'op': str, 'value': number, 'label': str, "
-            "'tone': str} and the first match wins"))
-        return
-
-    catch_all_at = None
-    for si, st in enumerate(states):
-        sbase = f"{wbase}.badge.states[{si}]"
-        if not isinstance(st, dict):
-            errs.append(_err(sbase, "must be a dict"))
-            continue
-        unknown = sorted(set(st) - {"op", "value", "label", "tone"})
-        if unknown:
-            errs.append(_err(
-                sbase,
-                f"unknown key(s) {unknown}; valid: "
-                f"['label', 'op', 'tone', 'value']"))
-        has_cmp = "value" in st
-        if has_cmp:
-            op = st.get("op", "==")
-            if op not in VALID_FILTER_OPS:
-                suggestions = _did_you_mean(
-                    str(op), sorted(VALID_FILTER_OPS))
-                hint = (
-                    f"Did you mean "
-                    f"{' | '.join(repr(s) for s in suggestions)}?"
-                    if suggestions else
-                    f"Operator must be one of "
-                    f"{sorted(VALID_FILTER_OPS)}.")
-                errs.append(_err(f"{sbase}.op",
-                                   f"{op!r} is unsupported", hint))
-            if (not isinstance(st["value"], (int, float))
-                    or isinstance(st["value"], bool)):
-                errs.append(_err(
-                    f"{sbase}.value",
-                    "must be a number; a badge compares against a "
-                    "resolved numeric source"))
-        elif "op" in st:
-            errs.append(_err(
-                f"{sbase}.value",
-                "state declares 'op' but no 'value' to compare against",
-                "Add 'value', or drop 'op' to make this the "
-                "catch-all state."))
-        if not has_cmp:
-            if catch_all_at is None:
-                catch_all_at = si
-        elif catch_all_at is not None:
-            errs.append(_err(
-                sbase,
-                f"unreachable: states[{catch_all_at}] has no comparison "
-                f"and therefore matches everything",
-                "A bare catch-all state may only be the last entry."))
-        label = st.get("label")
-        if not isinstance(label, str) or not label.strip():
-            errs.append(_err(
-                f"{sbase}.label", "required non-empty string"))
-        tone = st.get("tone")
-        if tone is not None and tone not in VALID_BADGE_TONES:
-            suggestions = _did_you_mean(
-                str(tone), sorted(VALID_BADGE_TONES))
-            hint = (
-                f"Did you mean "
-                f"{' | '.join(repr(s) for s in suggestions)}?"
-                if suggestions else
-                f"Tone must be one of {sorted(VALID_BADGE_TONES)}.")
-            errs.append(_err(f"{sbase}.tone",
-                               f"{tone!r} is unsupported", hint))
-
-
-# =============================================================================
-# PER-WIDGET VINTAGE STAMP  (generic widget knob)
-# =============================================================================
-#
-# The header pills answer "when did the dashboard last run". They do
-# not answer "how old is the data in THIS tile", which is a different
-# question and usually the more important one -- a refresh that ran
-# five minutes ago still shows CPI from last month.
-#
-#     "vintage": true                 -- the widget's own dataset
-#     "vintage": "rates"              -- named dataset, all date columns
-#     "vintage": "rates.date"         -- named dataset and column
-#
-# The stamp is resolved at COMPILE time into ``vintage_label`` and baked
-# into the tile chrome. That is deliberate: anti-pattern #4 says date
-# math in the browser is the bug, and unlike a KPI value the vintage
-# cannot change without a rebuild. ``vintage_label`` is compiler-owned
-# and rewritten on every compile, so a stale stamp cannot survive a
-# refresh.
-#
-# Cadence-aware wording comes from ``_derive_domain_freq`` so a monthly
-# series reads "Mar 2026" rather than a spuriously precise
-# "31 Mar 2026" -- the reader should not infer daily observations from a
-# monthly print.
-_VINTAGE_LABEL_FORMATS = {
-    "daily":     "%-d %b %Y",
-    "weekly":    "%-d %b %Y",
-    "monthly":   "%b %Y",
-    "quarterly": None,      # rendered as "Q<n> YYYY"
-    "annual":    "%Y",
-}
-
-
-def _format_vintage_label(ts: Any, freq: str) -> str:
-    """Render a resolved vintage timestamp at its natural precision.
-
-    Weekly gets a ``w/e`` prefix so a mid-week date is not misread as
-    an observation date.
-    """
-    if freq == "quarterly":
-        return f"Q{(ts.month - 1) // 3 + 1} {ts.year}"
-    fmt = _VINTAGE_LABEL_FORMATS.get(freq) or "%-d %b %Y"
-    try:
-        body = ts.strftime(fmt)
-    except ValueError:
-        # %-d is glibc/BSD; fall back to the portable form and trim.
-        body = ts.strftime(fmt.replace("%-d", "%d")).lstrip("0")
-    return f"w/e {body}" if freq == "weekly" else body
-
-
-def _resolve_widget_vintage(
-    w: Dict[str, Any], dfs: Dict[str, Any],
-) -> Tuple[Optional[str], Optional[str]]:
-    """Resolve a widget's ``vintage`` declaration to a display string.
-
-    Returns ``(label, None)`` on success or ``(None, reason)`` when the
-    declaration cannot be resolved.
-    """
-    import pandas as pd
-
-    decl = w.get("vintage")
-    if decl is None or decl is False:
-        return None, None
-
-    if decl is True:
-        refs = sorted(_widget_dataset_refs(w))
-        if not refs:
-            return None, ("vintage=true but the widget declares no "
-                            "dataset; name one explicitly")
-        if len(refs) > 1:
-            return None, (f"vintage=true is ambiguous: the widget reads "
-                            f"{refs}; name the dataset explicitly")
-        ds_name, col = refs[0], None
-    elif isinstance(decl, str):
-        if decl in dfs:
-            ds_name, col = decl, None
-        else:
-            ds_name, _, col = decl.partition(".")
-            col = col or None
-            if not col:
-                return None, f"dataset {decl!r} is not declared"
-    else:
-        return None, (f"must be true or a "
-                        f"\"<dataset>[.<column>]\" string, got "
-                        f"{type(decl).__name__}")
-
-    df = dfs.get(ds_name)
-    if df is None:
-        return None, f"dataset {ds_name!r} is not declared"
-    if col is not None and col not in df.columns:
-        return None, (f"column {col!r} is not in dataset {ds_name!r}")
-
-    scoped = df[[col]] if col is not None else df
-    end = _derive_domain_end({ds_name: scoped})
-    if end is None:
-        where = f"{ds_name}.{col}" if col else ds_name
-        return None, (f"{where} carries no usable date column "
-                        f"(need a datetime dtype or a column named "
-                        f"'date')")
-    freq = _derive_domain_freq({ds_name: scoped})
-    return _format_vintage_label(pd.Timestamp(end), freq), None
-
-
-def _resolve_widget_vintages(manifest: Dict[str, Any],
-                               dfs: Dict[str, Any]) -> None:
-    """Bake every declared ``vintage`` into ``vintage_label`` in place.
-
-    Always recomputes rather than skipping already-stamped widgets: the
-    label exists to tell the truth about data age, so surviving a
-    refresh unchanged is the one thing it must never do. Failures leave
-    the label absent and are reported by :func:`_check_tile_vintage`.
-    """
-    for loc in _widget_locations(manifest):
-        w = loc["widget"]
-        if w.get("vintage") is None or w.get("vintage") is False:
-            w.pop("vintage_label", None)
-            continue
-        label, _reason = _resolve_widget_vintage(w, dfs)
-        if label is None:
-            w.pop("vintage_label", None)
-        else:
-            w["vintage_label"] = label
-
-
-def _validate_tile_vintage(w: Dict[str, Any], wbase: str,
-                             errs: List[str], dataset_names: Any) -> None:
-    """Shape-check the ``vintage`` knob. Whether it actually resolves
-    needs the materialised frames and is checked by
-    :func:`_check_tile_vintage`."""
-    decl = w.get("vintage")
-    if decl is None or isinstance(decl, bool):
-        return
-    if not isinstance(decl, str) or not decl:
-        errs.append(_err(
-            f"{wbase}.vintage",
-            f"must be true or a \"<dataset>[.<column>]\" string, got "
-            f"{type(decl).__name__}"))
-        return
-    ds_name = decl if decl in dataset_names else decl.split(".", 1)[0]
-    if ds_name not in dataset_names:
-        suggestions = _did_you_mean(ds_name, sorted(dataset_names))
-        hint = (
-            f"Did you mean {' | '.join(repr(s) for s in suggestions)}?"
-            if suggestions else
-            f"Declare the dataset or pick from {sorted(dataset_names)}.")
-        errs.append(_err(
-            f"{wbase}.vintage",
-            f"dataset {ds_name!r} is not declared", hint))
-
-
-def _check_tile_vintage(w: Dict[str, Any], path: str,
-                          dfs: Dict[str, Any]) -> List[Diagnostic]:
-    """Report a declared vintage that cannot be resolved.
-
-    This is an error rather than a warning: the author asked for a
-    provenance stamp, and silently shipping the tile without one leaves
-    the reader believing the number is as fresh as the header pill.
-    """
-    if w.get("vintage") is None or w.get("vintage") is False:
-        return []
-    label, reason = _resolve_widget_vintage(w, dfs)
-    if label is not None:
-        return [Diagnostic(
-            severity="info", code="vintage_receipt",
-            widget_id=w.get("id"), path=f"{path}.vintage",
-            message=(f"widget '{w.get('id')}' vintage -> {label}"),
-            context={"vintage": w.get("vintage"), "label": label})]
-    return [Diagnostic(
-        severity="error", code="vintage_unresolved",
-        widget_id=w.get("id"), path=f"{path}.vintage",
-        message=(f"widget '{w.get('id')}' vintage="
-                 f"{w.get('vintage')!r} did not resolve: {reason}. The "
-                 f"tile would ship with no stamp, implying its data is "
-                 f"as fresh as the header pill."),
-        context={"vintage": w.get("vintage"), "reason": reason,
-                   "available_datasets": sorted(dfs.keys())})]
-
-
-def _markdown_body_of(w: Dict[str, Any]) -> str:
-    """The markdown source of a markdown / note widget, honouring the
-    legacy ``body`` alias. Mirrors ``_render_markdown_widget``."""
-    body = w.get("body")
-    if body is None:
-        body = w.get("content", "")
-    return body if isinstance(body, str) else ""
 
 
 # =============================================================================
@@ -2440,80 +1909,6 @@ def _validate_kpi_widget(w: Dict[str, Any], wbase: str,
             ))
 
 
-TOTALS_LABEL_KEY = "_label"
-
-
-def _validate_totals_row(w: Dict[str, Any], wbase: str,
-                          errs: List[str]) -> None:
-    """Validate a table/data_grid ``totals_row`` map.
-
-    Shape is ``{<field>: <reducer>}`` plus the optional reserved
-    ``_label`` key -- deliberately NOT a boolean "total everything
-    numeric" flag. Which columns are meaningfully reducible is a
-    judgement only the author can make (summing a yield column is
-    nonsense while summing notional is the point), so the manifest
-    states it explicitly and the renderer never infers.
-
-    ``none`` is accepted as a value so a field can be explicitly
-    marked as carrying no total, which is how a caller documents "I
-    considered this column and it should stay blank."
-    """
-    spec = w.get("totals_row")
-    if spec is None:
-        return
-    if not isinstance(spec, dict):
-        errs.append(_err(
-            f"{wbase}.totals_row",
-            f"must be a dict mapping column field -> reducer, got "
-            f"{type(spec).__name__}",
-            f"Use {{\"<field>\": \"sum\"}}. Reducers: "
-            f"{sorted(VALID_AGG_REDUCERS)} or 'none'. There is no "
-            f"boolean form -- name the columns to reduce.",
-        ))
-        return
-    label = spec.get(TOTALS_LABEL_KEY)
-    if label is not None and not isinstance(label, str):
-        errs.append(_err(
-            f"{wbase}.totals_row.{TOTALS_LABEL_KEY}",
-            f"must be a string, got {type(label).__name__}",
-            "This is the caption shown in the totals row's first "
-            "un-reduced column; omit it to get 'Total'.",
-        ))
-    # Declared column fields, when the widget declares them at all. A
-    # table with no `columns` auto-generates them from the dataset
-    # header at render time, so field names can only be checked in the
-    # post-materialise pass for that case.
-    cols_def = w.get("columns")
-    declared = None
-    if isinstance(cols_def, list) and cols_def:
-        declared = [
-            c.get("field") for c in cols_def
-            if isinstance(c, dict) and c.get("field")
-        ]
-    allowed = sorted(VALID_AGG_REDUCERS | {"none"})
-    for field, agg in spec.items():
-        if field == TOTALS_LABEL_KEY:
-            continue
-        fbase = f"{wbase}.totals_row.{field}"
-        if not isinstance(agg, str) or agg not in allowed:
-            errs.append(_err(
-                fbase,
-                f"reducer must be one of {allowed}, got {agg!r}",
-                "These are the reducers the runtime implements "
-                "(shared with the pivot widget's agg_options).",
-            ))
-        if declared is not None and field not in declared:
-            errs.append(_err(
-                fbase,
-                f"'{field}' is not a declared column on this widget "
-                f"(columns: {declared})",
-                "A totals entry for an undeclared column renders "
-                "nothing at all, so this is almost always a typo. "
-                "Match an existing columns[].field, or add the "
-                "column.",
-            ))
-
-
 def _validate_table_widget(w: Dict[str, Any], wbase: str,
                             errs: List[str], dataset_names: Any) -> None:
     """Validate a ``widget: table`` entry."""
@@ -2617,7 +2012,6 @@ def _validate_table_widget(w: Dict[str, Any], wbase: str,
                                 f"{cbase}.row_key",
                                 "in_cell=sparkline requires 'row_key' "
                                 "(column on this row used to look up history)"))
-    _validate_totals_row(w, wbase, errs)
     if "virtualized" in w and not isinstance(w.get("virtualized"), bool):
         errs.append(_err(f"{wbase}.virtualized", "must be a boolean"))
     page_size = w.get("page_size")
@@ -2700,18 +2094,11 @@ def _validate_pivot_widget(w: Dict[str, Any], wbase: str,
             errs.append(_err(
                 f"{wbase}.{k}",
                 "must be a non-empty list of column names"))
-    agg_opts = w.get("agg_options", list(AGG_REDUCER_ORDER))
+    agg_opts = w.get("agg_options",
+                       ["mean", "sum", "median", "min", "max", "count"])
     if not isinstance(agg_opts, list):
         errs.append(_err(f"{wbase}.agg_options",
                           "must be a list of agg names"))
-    else:
-        bad = [a for a in agg_opts if a not in VALID_AGG_REDUCERS]
-        if bad:
-            errs.append(_err(
-                f"{wbase}.agg_options",
-                f"unsupported aggregator(s) {sorted(bad)}",
-                f"Pick from {sorted(VALID_AGG_REDUCERS)} -- these are "
-                f"the reducers the runtime implements."))
     if "show_totals" in w and not isinstance(w["show_totals"], bool):
         errs.append(_err(
             f"{wbase}.show_totals",
@@ -2854,12 +2241,6 @@ def _validate_markdown_widget(w: Dict[str, Any], wbase: str,
         prose; omit ``kind`` for inline narrative.
       * Optional ``title`` / ``icon`` -- only meaningful when ``kind``
         is set (rendered in the note head bar).
-
-    The markdown text may embed live values as
-    ``{<dataset>.<aggregator>.<column>[:<format>[:<decimals>]]}``. A
-    token is only claimed as a reference when its first segment names a
-    declared dataset -- see :func:`_parse_markdown_refs` for why that
-    rule is the admission gate.
     """
     if "content" not in w and "body" not in w:
         errs.append(_err(
@@ -2873,68 +2254,6 @@ def _validate_markdown_widget(w: Dict[str, Any], wbase: str,
             f"{wbase}.kind",
             f"'{kind}' not in {sorted(VALID_NOTE_KINDS)}"
         ))
-    _validate_markdown_refs(
-        _markdown_body_of(w), f"{wbase}.content", errs, dataset_names,
-    )
-
-
-def _validate_markdown_refs(body: str, base: str, errs: List[str],
-                             dataset_names: Any) -> None:
-    """Admit or reject every ``{dataset.agg.column}`` token in a
-    markdown body.
-
-    Tokens whose first segment is not a declared dataset are prose, not
-    references, and are left alone. Once a token IS claimed, every part
-    of it must be valid -- a claimed token that fails here would
-    otherwise ship to the reader as literal braces in the middle of a
-    sentence.
-    """
-    known = set(dataset_names or ())
-    for ref in _parse_markdown_refs(body):
-        if ref.dataset not in known:
-            continue
-        if ref.agg not in VALID_KPI_AGGREGATORS:
-            suggestions = _did_you_mean(
-                ref.agg, sorted(VALID_KPI_AGGREGATORS),
-            )
-            if suggestions:
-                opts = " | ".join(f"'{s}'" for s in suggestions)
-                hint = (
-                    f"Did you mean {opts}? Aggregator must be one of "
-                    f"{sorted(VALID_KPI_AGGREGATORS)}."
-                )
-            else:
-                hint = (
-                    f"Replace the aggregator with one of "
-                    f"{sorted(VALID_KPI_AGGREGATORS)}."
-                )
-            errs.append(_err(
-                base,
-                f"value reference {ref.token} names declared dataset "
-                f"{ref.dataset!r} but aggregator {ref.agg!r} is "
-                f"unsupported",
-                hint,
-            ))
-            continue
-        if ref.fmt is not None and ref.fmt not in VALID_MD_REF_FORMATS:
-            suggestions = _did_you_mean(
-                ref.fmt, sorted(VALID_MD_REF_FORMATS),
-            )
-            if suggestions:
-                opts = " | ".join(f"'{s}'" for s in suggestions)
-                hint = f"Did you mean {opts}?"
-            else:
-                hint = (
-                    f"Format must be one of "
-                    f"{sorted(VALID_MD_REF_FORMATS)}, optionally "
-                    f"followed by ':<decimals>'."
-                )
-            errs.append(_err(
-                base,
-                f"value reference {ref.token} uses unsupported format "
-                f"{ref.fmt!r}",
-                hint,
-            ))
 
 
 _USER_INPUT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -3154,8 +2473,6 @@ DATA_BOUND_WIDGETS = frozenset(
 
 RESERVED_HEADER_ACTION_IDS = frozenset({
     "methodology-btn",
-    "diagnostics-btn",
-    "diagnostics-btn-label",
     "refresh-btn",
     "refresh-btn-label",
     "refresh-err-btn",
@@ -3460,7 +2777,6 @@ def _validate_datasets(manifest: Dict[str, Any],
             continue
         if not isinstance(ds["source"], list):
             errs.append(_err(f"datasets.{name}.source", "must be a list"))
-        _validate_description(ds, f"datasets.{name}", errs, name)
 
         quality = ds.get("quality")
         if quality is not None:
@@ -3791,7 +3107,6 @@ def _validate_filters(manifest: Dict[str, Any],
             errs.append(_err(f"{base}.id", f"duplicate id '{fid}'"))
         else:
             ctx.filter_ids.add(fid)
-        _validate_description(f, base, errs, f.get("label"))
         ft = f.get("type")
         if ft not in VALID_FILTERS:
             suggestions = _did_you_mean(
@@ -4185,9 +3500,6 @@ def _validate_layout(manifest: Dict[str, Any],
                                 errs.append(_err(
                                     f"{wbase}.show_when.filter",
                                     "must be a non-empty filter id string"))
-                _validate_tile_badge(w, wbase, errs, ctx.dataset_names)
-                _validate_tile_vintage(w, wbase, errs, ctx.dataset_names)
-                _validate_description(w, wbase, errs, w.get("title"))
                 # Per-widget validation via the WIDGETS registry. Each
                 # widget kind owns one ``_validate_<kind>_widget`` function;
                 # adding a new kind = one entry in WIDGETS + one validator
@@ -5554,11 +4866,6 @@ class DashboardResult:
     # Canonical Python compile/default-state semantic view. This is not a
     # screenshot and never claims arbitrary browser-interaction parity.
     review: Optional[DashboardReview] = None
-    # The same self-describing report embedded in the HTML's Diagnostics
-    # panel -- lineage, freshness, findings, description coverage.
-    # Exposed here so PRISM reads what the dashboard's own reader sees
-    # rather than a separately-derived summary that could disagree.
-    diagnostics_report: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def quality_findings(self) -> List["Diagnostic"]:
@@ -8556,24 +7863,6 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     # semantically misleading gauge and are not acknowledgeable.
     "chart_gauge_invalid_range",
     "chart_gauge_value_out_of_range",
-    # An unresolvable narrative reference is strictly worse than a
-    # broken tile: the prose around the gap still reads as an
-    # assertion, so the reader gets a confident sentence with an
-    # em-dash where the evidence should be.
-    "markdown_ref_column_missing",
-    "markdown_ref_no_numeric_values",
-    "markdown_ref_unresolved",
-    # A bound badge that cannot resolve renders nothing rather than a
-    # neutral pill, so the reader has no way to tell the difference
-    # between "condition is false" and "the binding is broken".
-    "badge_source_unresolved",
-    # A requested vintage stamp that silently does not render leaves the
-    # reader assuming the tile is as fresh as the header pill.
-    "vintage_unresolved",
-    # A totals cell that can never reduce to a number renders '--' in a
-    # bold footer, which reads as a real total of nothing.
-    "totals_row_column_missing",
-    "totals_row_not_numeric",
 })
 
 # -----------------------------------------------------------------------------
@@ -12012,71 +11301,6 @@ def _check_chart_degeneracy(
     return out
 
 
-def _check_totals_row(w: Dict[str, Any], path: str, df: Any,
-                        ds_name: str) -> List[Diagnostic]:
-    """Confirm every ``totals_row`` reducer can actually produce a number.
-
-    A totals cell whose column is absent or holds no numeric values
-    renders ``--`` forever. That is a silently useless footer rather
-    than a visibly broken one, which is exactly the class of defect
-    this pass exists to catch before the artifact is persisted.
-    """
-    import pandas as pd
-
-    out: List[Diagnostic] = []
-    spec = w.get("totals_row")
-    if not isinstance(spec, dict):
-        return out
-    wid = w.get("id")
-    # When `columns` is declared, absent fields are already reported by
-    # `table_column_field_missing`; only auto-generated-column tables
-    # need the existence check here.
-    declared_columns = isinstance(w.get("columns"), list) and w.get("columns")
-    for field, agg in spec.items():
-        if field == TOTALS_LABEL_KEY or agg == "none":
-            continue
-        fpath = f"{path}.totals_row.{field}"
-        if field not in df.columns:
-            if declared_columns:
-                continue
-            ctx = {"missing_column": field, "dataset": ds_name,
-                    "available_columns": list(df.columns)}
-            ctx.update(_suggest_for_missing_column(field, list(df.columns)))
-            out.append(Diagnostic(
-                severity="error", code="totals_row_column_missing",
-                widget_id=wid, path=fpath,
-                message=(f"table '{wid}' totals_row targets column "
-                         f"'{field}' which is not in dataset "
-                         f"'{ds_name}'; that totals cell would render "
-                         f"'--' permanently."),
-                context=ctx))
-            continue
-        numeric = pd.to_numeric(df[field], errors="coerce").notna().sum()
-        if numeric == 0:
-            out.append(Diagnostic(
-                severity="error", code="totals_row_not_numeric",
-                widget_id=wid, path=fpath,
-                message=(f"table '{wid}' totals_row applies '{agg}' to "
-                         f"column '{field}' in dataset '{ds_name}', "
-                         f"but none of its {len(df)} values are "
-                         f"numeric; the totals cell would render "
-                         f"'--' permanently."),
-                context={
-                    "dataset": ds_name, "column": field,
-                    "aggregator": agg,
-                    "row_count": int(len(df)),
-                    "sample_values": [
-                        str(v) for v in df[field].head(3).tolist()],
-                    "fix_hint": (
-                        "Point the reducer at a numeric column, drop "
-                        "this entry, or set it to 'none' if the column "
-                        "is deliberately un-totalled. If the values "
-                        "are numbers stored as strings, coerce them in "
-                        "the dataset's TRANSFORMS step so sorting and "
-                        "charting see numbers too.")}))
-    return out
-
-
 def _check_table_widget(w: Dict[str, Any], path: str,
                           dfs: Dict[str, Any]) -> List[Diagnostic]:
     """Per-column field-existence + the all-columns-missing roll-up.
@@ -12183,8 +11407,6 @@ def _check_table_widget(w: Dict[str, Any], path: str,
             message=(f"table '{wid}' columns[{ci}].field='{fld}' is "
                      f"not a column in dataset '{ds_name}'."),
             context=ctx))
-
-    out.extend(_check_totals_row(w, path, df, ds_name))
 
     present_fields = [fld for _, fld in field_cols if fld in df.columns]
     try:
@@ -12650,179 +11872,6 @@ def _check_kpi_widget(w: Dict[str, Any], path: str,
     return out
 
 
-def _check_markdown_widget(w: Dict[str, Any], path: str,
-                             dfs: Dict[str, Any]) -> List[Diagnostic]:
-    """Value-reference diagnostics for a markdown / note body.
-
-    A reference that cannot resolve renders as an em-dash mid-sentence,
-    which is worse than a ``--`` on a KPI tile: the prose around it
-    still reads as an assertion. Every unresolvable reference is
-    therefore an error, and every resolvable one emits an ``info``
-    receipt carrying the exact string the reader will see -- the
-    Garbage Gate reviews narrative claims on the same footing as tile
-    numbers.
-    """
-    import pandas as pd
-    out: List[Diagnostic] = []
-    wid = w.get("id")
-    body = _markdown_body_of(w)
-
-    seen: set = set()
-    for ref in _parse_markdown_refs(body):
-        if ref.dataset not in dfs or ref.token in seen:
-            # Unknown first segment means the token was never claimed as
-            # a reference (see _parse_markdown_refs); it stays prose.
-            continue
-        seen.add(ref.token)
-        df = dfs[ref.dataset]
-
-        if ref.agg not in VALID_KPI_AGGREGATORS:
-            # Already surfaced by _validate_markdown_refs; skip rather
-            # than double-report the same token.
-            continue
-
-        if ref.column not in df.columns:
-            ctx: Dict[str, Any] = {
-                "reference": ref.token, "dataset": ref.dataset,
-                "missing_column": ref.column,
-                "available_columns": list(df.columns),
-            }
-            ctx.update(_suggest_for_missing_column(
-                ref.column, list(df.columns)))
-            out.append(Diagnostic(
-                severity="error", code="markdown_ref_column_missing",
-                widget_id=wid, path=f"{path}.content",
-                message=(f"markdown '{wid}' reference {ref.token} "
-                         f"names column '{ref.column}' which is not in "
-                         f"dataset '{ref.dataset}'; the sentence will "
-                         f"render an em-dash where the number "
-                         f"belongs."),
-                context=ctx))
-            continue
-
-        coerced = pd.to_numeric(df[ref.column], errors="coerce")
-        if int(coerced.notna().sum()) == 0:
-            samples = [str(v) for v in df[ref.column].head(3).tolist()]
-            out.append(Diagnostic(
-                severity="error",
-                code="markdown_ref_no_numeric_values",
-                widget_id=wid, path=f"{path}.content",
-                message=(f"markdown '{wid}' reference {ref.token} "
-                         f"column '{ref.column}' has 0 numeric values "
-                         f"(out of {len(df)} rows); the sentence will "
-                         f"render an em-dash where the number "
-                         f"belongs."),
-                context={"reference": ref.token,
-                           "dataset": ref.dataset,
-                           "column": ref.column,
-                           "row_count": len(df),
-                           "sample_values": samples,
-                           "fix_hint": (
-                               f"Repopulate the column upstream with "
-                               f"numeric values, or reference a "
-                               f"different column. Got non-numeric "
-                               f"samples: {samples}.")}))
-            continue
-
-        val, reason = _resolve_kpi_value(ref.source, dfs)
-        if val is None:
-            out.append(Diagnostic(
-                severity="error", code="markdown_ref_unresolved",
-                widget_id=wid, path=f"{path}.content",
-                message=(f"markdown '{wid}' reference {ref.token} "
-                         f"did not resolve to a number ({reason}); the "
-                         f"sentence will render an em-dash where the "
-                         f"number belongs."),
-                context={"reference": ref.token, "reason": reason,
-                           "fix_hint": (
-                               "Check the aggregator against the "
-                               "column's contents.")}))
-            continue
-
-        out.append(Diagnostic(
-            severity="info", code="markdown_ref_receipt",
-            widget_id=wid, path=f"{path}.content",
-            message=(f"markdown '{wid}' {ref.token} -> "
-                     f"{_format_md_ref(val, ref)}"),
-            context={"reference": ref.token, "resolved": val}))
-
-    return out
-
-
-def _check_tile_badge(w: Dict[str, Any], path: str,
-                        dfs: Dict[str, Any]) -> List[Diagnostic]:
-    """Data-binding diagnostics for a bound ``badge`` on any tile.
-
-    A badge that cannot resolve does not fall back to a neutral pill --
-    it renders nothing, so the failure is invisible on the page. That
-    makes an unresolvable source blocking. A source that resolves but
-    matches no state is only a warning: a badge that appears solely
-    when a condition holds is a legitimate design.
-    """
-    badge = w.get("badge")
-    if not isinstance(badge, dict):
-        return []
-    out: List[Diagnostic] = []
-    wid = w.get("id")
-    src = badge.get("source")
-    states = badge.get("states")
-    if not isinstance(src, str) or not isinstance(states, list):
-        return out
-
-    value, reason = _resolve_kpi_value(src, dfs)
-    if value is None:
-        out.append(Diagnostic(
-            severity="error", code="badge_source_unresolved",
-            widget_id=wid, path=f"{path}.badge.source",
-            message=(f"widget '{wid}' badge source {src!r} did not "
-                     f"resolve ({reason}); the badge will not render "
-                     f"at all, so the omission is invisible."),
-            context={"source": src, "reason": reason,
-                       "available_datasets": sorted(dfs.keys()),
-                       "fix_hint": (
-                           "Point the badge at a numeric column that "
-                           "pull_data.py populates.")}))
-        return out
-
-    state = _pick_badge_state(value, states)
-    if state is None:
-        out.append(Diagnostic(
-            severity="warning", code="badge_no_matching_state",
-            widget_id=wid, path=f"{path}.badge.states",
-            message=(f"widget '{wid}' badge source {src!r} resolved to "
-                     f"{value} which matches no state; the badge is "
-                     f"hidden."),
-            context={"source": src, "resolved": value,
-                       "fix_hint": (
-                           "Add a trailing state with no comparison "
-                           "key as a catch-all, or widen a bound.")}))
-        return out
-
-    out.append(Diagnostic(
-        severity="info", code="badge_receipt",
-        widget_id=wid, path=f"{path}.badge",
-        message=(f"widget '{wid}' badge {src} -> {value} -> "
-                 f"{state.get('label')!r} "
-                 f"({state.get('tone') or 'muted'})"),
-        context={"source": src, "resolved": value,
-                   "label": state.get("label"),
-                   "tone": state.get("tone")}))
-    return out
-
-
-def _format_md_ref(value: float, ref: "MarkdownValueRef") -> str:
-    """Format a resolved reference exactly as the browser will.
-
-    Routes through :func:`_format_kpi_number` so the compile receipt,
-    the seed text baked into the HTML, and the live re-render after a
-    refresh cannot disagree.
-    """
-    return _format_kpi_number(value, {
-        "format": ref.fmt or "auto",
-        "decimals": ref.decimals,
-    })
-
-
 def _coerce_number(v: Any) -> Optional[float]:
     """Try to coerce ``v`` to a finite float. Return None if it isn't
     a number (string, dict, NaN, inf, ...). Used by the sense-check
@@ -13242,18 +12291,7 @@ def _format_kpi_number(n: float, opts: Dict[str, Any]) -> str:
         return sign + ",".join(chunks)[::-1]
 
     if mode == "raw":
-        # Mirror of the JS branch ``Number(n.toFixed(rd)).toString()``:
-        # round to the capped precision, then drop the trailing zeros
-        # the way Number(...).toString() does. Emitting Python's float
-        # repr here instead would print "6.0" where the browser shows
-        # "6" -- a receipt that misquotes the page it is vouching for.
-        rd = clamp_decimals(raw_decimals, default=2)
-        s = f"{n:.{rd}f}"
-        if "." in s:
-            s = s.rstrip("0").rstrip(".")
-        if s in ("-0", "-", ""):
-            s = "0"
-        return f"{prefix}{s}{suffix}"
+        return f"{prefix}{n}{suffix}"
     if mode == "percent":
         d = 2 if decimals is None else decimals
         return f"{prefix}{(n * 100):.{d}f}%{suffix}"
@@ -14397,13 +13435,6 @@ def chart_data_diagnostics(
                     diags.extend(_check_tool_widget_runtime_boundary(
                         w, wpath, dfs,
                     ))
-                elif wt in ("markdown", "note"):
-                    diags.extend(_check_markdown_widget(w, wpath, dfs))
-                # Badge and vintage are generic knobs, so they are
-                # checked for every widget kind rather than inside one
-                # kind's checker.
-                diags.extend(_check_tile_badge(w, wpath, dfs))
-                diags.extend(_check_tile_vintage(w, wpath, dfs))
 
     if layout.get("kind") == "tabs":
         for ti, tab in enumerate(layout.get("tabs", []) or []):
@@ -14426,240 +13457,7 @@ def chart_data_diagnostics(
 
     diags.extend(_check_dataset_size(manifest, _table_dataset_refs(manifest)))
 
-    # NOTE: the description-coverage audit is deliberately NOT part of
-    # this stream. See ``_check_descriptions`` for why.
-
     return diags
-
-
-DESCRIBABLE_FAMILIES = ("widget", "filter", "dataset")
-
-
-def _describable_entries(
-    manifest: Dict[str, Any],
-) -> List[Tuple[str, str, str, Dict[str, Any]]]:
-    """Yield ``(family, name, path, entry)`` for everything describable.
-
-    One traversal shared by the audit and its tests, so the audit
-    cannot drift out of step with what the manifest actually contains.
-    """
-    out: List[Tuple[str, str, str, Dict[str, Any]]] = []
-    layout = manifest.get("layout") or {}
-
-    def _walk(rows: Any, prefix: str) -> None:
-        for ri, row in enumerate(rows or []):
-            if not isinstance(row, list):
-                continue
-            for wi, w in enumerate(row):
-                if not isinstance(w, dict):
-                    continue
-                out.append((
-                    "widget", str(w.get("id") or w.get("widget") or "?"),
-                    f"{prefix}[{ri}][{wi}]", w))
-
-    if layout.get("kind") == "tabs":
-        for ti, tab in enumerate(layout.get("tabs") or []):
-            if isinstance(tab, dict):
-                _walk(tab.get("rows"), f"layout.tabs[{ti}].rows")
-    else:
-        _walk(layout.get("rows"), "layout.rows")
-
-    for fi, f in enumerate(manifest.get("filters") or []):
-        if isinstance(f, dict):
-            out.append(("filter", str(f.get("id") or "?"),
-                         f"filters[{fi}]", f))
-    datasets = manifest.get("datasets")
-    if isinstance(datasets, dict):
-        for name, ds in datasets.items():
-            if isinstance(ds, dict):
-                out.append(("dataset", str(name),
-                             f"datasets.{name}", ds))
-    return out
-
-
-# Structural widgets carry no intent to describe -- a divider separates
-# and an image is its own caption. Requiring prose for them would train
-# the describer to emit filler, which is what makes description fields
-# worthless everywhere they exist.
-DESCRIPTION_EXEMPT_WIDGETS = frozenset({"divider", "image", "note",
-                                          "markdown"})
-
-
-def _check_descriptions(manifest: Dict[str, Any]) -> List[Diagnostic]:
-    """Audit ``description`` coverage across widgets, filters, datasets.
-
-    Emitted as ONE warning per family rather than one per entry: the
-    finding is "this dashboard is under-described", which is a single
-    decision, and N near-identical diagnostics would bury the errors
-    that actually block a compile.
-
-    Reaches the diagnostics report only, never
-    ``chart_data_diagnostics``. That stream feeds the review status,
-    and a dashboard whose numbers are all correct must not need a human
-    acknowledgment to publish because a metadata field is blank --
-    that would spend the acknowledgment gate, which exists for
-    suspect numbers, on prose.
-    """
-    missing: Dict[str, List[str]] = {f: [] for f in DESCRIBABLE_FAMILIES}
-    totals: Dict[str, int] = {f: 0 for f in DESCRIBABLE_FAMILIES}
-    for family, name, path, entry in _describable_entries(manifest):
-        if family == "widget" and \
-                entry.get("widget") in DESCRIPTION_EXEMPT_WIDGETS:
-            continue
-        totals[family] += 1
-        desc = entry.get("description")
-        if not isinstance(desc, str) or not desc.strip():
-            missing[family].append(f"{name} ({path})")
-
-    out: List[Diagnostic] = []
-    for family in DESCRIBABLE_FAMILIES:
-        if not missing[family]:
-            continue
-        out.append(Diagnostic(
-            severity="warning", code=f"{family}_description_missing",
-            widget_id=None, path=None,
-            message=(f"{len(missing[family])} of {totals[family]} "
-                     f"{family}(s) have no 'description'. A later "
-                     f"editing pass can see what each one draws but "
-                     f"not what it is for, so it cannot safely "
-                     f"rewire or retire one."),
-            context={
-                "missing": missing[family],
-                "described": totals[family] - len(missing[family]),
-                "total": totals[family],
-                "fix_hint": (
-                    "Add a one-or-two-sentence 'description' stating "
-                    "the purpose and how to read it -- not a restatement "
-                    "of the title, which is rejected. Structural "
-                    f"widgets ({sorted(DESCRIPTION_EXEMPT_WIDGETS)}) "
-                    "are exempt.")}))
-    return out
-
-
-# Findings are the point of the report, but a pathological manifest can
-# produce thousands and they all land in the HTML. Cap and record the
-# omission rather than silently shipping a partial list.
-DIAGNOSTICS_REPORT_MAX_FINDINGS = 250
-
-
-def build_diagnostics_report(
-    manifest: Dict[str, Any],
-    diagnostics: Optional[Sequence["Diagnostic"]] = None,
-    review: Optional["DashboardReview"] = None,
-) -> Dict[str, Any]:
-    """Assemble the self-describing report the dashboard ships with.
-
-    Everything here is already computed during a compile; before this
-    existed it was printed to whoever ran the compile and then thrown
-    away, so the artifact a reader opened could not answer "is this
-    number trustworthy" without going back to the author. Serialising it
-    into the HTML makes the dashboard accountable to its own reader.
-
-    Pure assembly -- no checking happens here, so calling it can never
-    change a compile's verdict.
-    """
-    from echart_studio import __version__ as RENDERER_VERSION
-
-    # The description audit lives here rather than in the compile's
-    # diagnostic stream, so it informs a reader and a later editing pass
-    # without gating publication.
-    diags = list(diagnostics or []) + _check_descriptions(manifest)
-    counts: Dict[str, int] = {}
-    for d in diags:
-        counts[d.severity] = counts.get(d.severity, 0) + 1
-
-    # Errors first so a truncated list never hides the blocking items
-    # behind a wall of info receipts.
-    order = {"error": 0, "warning": 1, "info": 2}
-    kept = sorted(diags, key=lambda d: order.get(d.severity, 3))[
-        :DIAGNOSTICS_REPORT_MAX_FINDINGS]
-
-    metadata = manifest.get("metadata") if isinstance(
-        manifest.get("metadata"), dict) else {}
-
-    datasets_out: List[Dict[str, Any]] = []
-    datasets = manifest.get("datasets")
-    if isinstance(datasets, dict):
-        for name, entry in sorted(datasets.items()):
-            src = entry.get("source") if isinstance(entry, dict) else entry
-            rows = cols = None
-            columns: List[Any] = []
-            if isinstance(src, list) and src:
-                header = src[0] if isinstance(src[0], list) else []
-                columns = [str(c) for c in header]
-                rows = max(0, len(src) - 1)
-                cols = len(columns)
-            datasets_out.append({
-                "name": str(name),
-                "rows": rows, "columns": cols,
-                "column_names": columns,
-                "description": (entry.get("description")
-                                 if isinstance(entry, dict) else None),
-            })
-
-    widgets_out: List[Dict[str, Any]] = []
-    filters_out: List[Dict[str, Any]] = []
-    # Which widget reads which dataset -- the dependency edges a reader
-    # needs to trace a suspect number back to its source.
-    edges: List[Dict[str, Any]] = []
-    for family, name, path, entry in _describable_entries(manifest):
-        if family == "widget":
-            refs = sorted(_widget_dataset_refs(entry))
-            widgets_out.append({
-                "id": name, "kind": entry.get("widget"),
-                "title": entry.get("title"), "path": path,
-                "description": entry.get("description"),
-                "datasets": refs,
-                "vintage_label": entry.get("vintage_label"),
-            })
-            for r in refs:
-                edges.append({"widget": name, "dataset": r})
-        elif family == "filter":
-            filters_out.append({
-                "id": name, "type": entry.get("type"),
-                "label": entry.get("label"), "path": path,
-                "description": entry.get("description"),
-                "targets": entry.get("targets"),
-            })
-
-    report: Dict[str, Any] = {
-        "dashboard_id": manifest.get("id"),
-        "title": manifest.get("title"),
-        "renderer_version": RENDERER_VERSION,
-        "schema_version": manifest.get("schema_version"),
-        "counts": counts,
-        "finding_total": len(diags),
-        "findings_omitted": max(0, len(diags) - len(kept)),
-        "findings": [d.to_dict() for d in kept],
-        "datasets": datasets_out,
-        "widgets": widgets_out,
-        "filters": filters_out,
-        "graph": edges,
-        "refresh": {
-            "generated_at": metadata.get("generated_at"),
-            "data_as_of": metadata.get("data_as_of"),
-            "time": metadata.get("time"),
-            "refresh_interval_sec": manifest.get("live_refresh_sec"),
-        },
-    }
-    if review is not None:
-        report["review"] = {
-            "status": review.status,
-            "review_signature": review.review_signature,
-            "definition_sha256": review.definition_sha256,
-            "quality_signature": review.quality_signature,
-            "detector_version": review.detector_version,
-            "panels": [
-                {"panel_id": p.panel_id, "kind": p.kind,
-                 "status": p.status, "data_state": p.data_state,
-                 "location": p.location, "title": p.title,
-                 "summary": p.summary, "coverage": p.coverage,
-                 "findings": list(p.findings)}
-                for p in review.panels
-            ],
-            "global_findings": list(review.global_findings),
-        }
-    return report
 
 
 # =============================================================================
@@ -14716,12 +13514,8 @@ def render_dashboard(manifest: Dict[str, Any],
             Path(output_path).parent if output_path else Path.cwd()
         )
         chart_specs = _resolve_chart_specs(manifest, base, diags=diags)
-    dx_report = build_diagnostics_report(manifest, diags)
-    html = render_dashboard_html(
-        manifest, chart_specs,
-        filename_base=manifest.get("id", "dashboard"),
-        diagnostics_report=dx_report,
-    )
+    html = render_dashboard_html(manifest, chart_specs,
+                                  filename_base=manifest.get("id", "dashboard"))
     html_path: Optional[Path] = None
     if output_path:
         html_path = Path(output_path)
@@ -14733,7 +13527,6 @@ def render_dashboard(manifest: Dict[str, Any],
         html=html, success=True,
         warnings=[str(d) for d in diags],
         diagnostics=diags,
-        diagnostics_report=dx_report,
     )
 
 
@@ -16022,8 +14815,6 @@ def compile_dashboard(
         html_path = sp / f"{dashboard_id}.html"
         base_dir = base_dir or Path(session_path)
 
-    compile_dfs = _materialize_datasets(manifest_dict)
-
     # Compile-time resolve stat_grid sources into baked ``value``s
     # BEFORE diagnostics + before manifest is persisted. stat_grid is
     # server-rendered only (the JS dashboard runtime never resolves
@@ -16031,24 +14822,9 @@ def compile_dashboard(
     # would silently render ``--`` in the browser unless we resolve
     # it here. Sources that fail to resolve are left untouched and
     # surface via ``stat_grid_source_unresolvable`` in diagnostics.
-    _resolve_stat_grid_sources(manifest_dict, compile_dfs)
-
-    # Bake per-widget vintage stamps for the same reason, and before the
-    # manifest is persisted. Unlike stat_grid this always overwrites, so
-    # a refresh can never leave a tile advertising an older vintage than
-    # the data it now shows.
-    _resolve_widget_vintages(manifest_dict, compile_dfs)
-
-    # Provenance. The recipe path stamps these from the persisted CSVs
-    # before it calls compile, but a direct compile_dashboard call (ad-hoc
-    # PRISM build, demo, gallery) had nothing stamping them -- so the
-    # Diagnostics panel reported an unknown build time for an artifact
-    # that was being built at that very moment, and the refresh pill
-    # stayed hidden. setdefault so a recipe-supplied or author-supplied
-    # value always wins. Excluded from the review definition hash (see
-    # _manifest_review_definition_sha), so stamping a wall clock here
-    # does not perturb review signatures.
-    _stamp_compile_provenance(manifest_dict, compile_dfs)
+    _resolve_stat_grid_sources(
+        manifest_dict, _materialize_datasets(manifest_dict)
+    )
 
     if manifest_path and write_json:
         save_manifest(manifest_dict, manifest_path)
@@ -16187,11 +14963,9 @@ def compile_dashboard(
     if print_receipts:
         print(review.to_text())
 
-    dx_report = build_diagnostics_report(manifest_dict, diags, review)
     html = render_dashboard_html(
         manifest_dict, chart_specs,
         filename_base=manifest_dict.get("id", "dashboard"),
-        diagnostics_report=dx_report,
     )
 
     if html_path and write_html:
@@ -16247,7 +15021,6 @@ def compile_dashboard(
         html=html, success=True, warnings=warnings,
         diagnostics=diags,
         review=review,
-        diagnostics_report=dx_report,
     )
 
 
@@ -20369,18 +19142,6 @@ def _collect_widget_dataset_refs(template: Dict[str, Any]) -> set:
             for w in row if isinstance(w, dict)
         )
 
-    def _add_source_prefix(s: Any) -> None:
-        if isinstance(s, str) and "." in s:
-            refs.add(s.split(".", 1)[0])
-
-    # Markdown value references are only references when the first
-    # segment names a declared dataset, so the declared set is needed to
-    # tell ``{rates.latest.x}`` from ``{config.json.path}``. Callers that
-    # wrap a bare widget have no datasets block; there the token is taken
-    # at face value, which only ever over-reports.
-    declared = template.get("datasets")
-    declared_names = set(declared) if isinstance(declared, dict) else None
-
     for w in widget_iter:
         wt = w.get("widget")
         if wt == "chart":
@@ -20389,27 +19150,24 @@ def _collect_widget_dataset_refs(template: Dict[str, Any]) -> set:
                 ds = spec.get("dataset")
                 if isinstance(ds, str):
                     refs.add(ds)
-            ds = w.get("dataset_ref")
-            if isinstance(ds, str):
-                refs.add(ds)
-        elif wt in ("table", "data_grid", "pivot"):
-            # ``ref`` is the shape the table validator actually requires;
-            # omitting it here let a dataset be deleted from under a
-            # table and hid it from the refresh-attachment audit.
-            ds = (w.get("dataset") or w.get("dataset_ref")
-                  or w.get("ref"))
+        elif wt in ("table", "pivot"):
+            ds = w.get("dataset") or w.get("dataset_ref")
             if isinstance(ds, str):
                 refs.add(ds)
         elif wt == "kpi":
             for src_key in ("source", "delta_source", "sparkline_source"):
-                _add_source_prefix(w.get(src_key))
+                s = w.get(src_key)
+                if isinstance(s, str) and "." in s:
+                    refs.add(s.split(".", 1)[0])
         elif wt == "stat_grid":
-            _add_source_prefix(w.get("source"))
-            # ``stats`` is the field the stat_grid validator enforces;
-            # ``items`` is the older alias.
-            for item in ((w.get("stats") or []) + (w.get("items") or [])):
+            s = w.get("source")
+            if isinstance(s, str) and "." in s:
+                refs.add(s.split(".", 1)[0])
+            for item in (w.get("items") or []):
                 if isinstance(item, dict):
-                    _add_source_prefix(item.get("source"))
+                    src = item.get("source")
+                    if isinstance(src, str) and "." in src:
+                        refs.add(src.split(".", 1)[0])
         elif wt == "tool":
             td = w.get("tool_def") or {}
             if isinstance(td, dict):
@@ -20418,19 +19176,6 @@ def _collect_widget_dataset_refs(template: Dict[str, Any]) -> set:
                         ds = io.get("dataset")
                         if isinstance(ds, str):
                             refs.add(ds)
-        elif wt in ("markdown", "note"):
-            for ref in _parse_markdown_refs(_markdown_body_of(w)):
-                if declared_names is None or ref.dataset in declared_names:
-                    refs.add(ref.dataset)
-
-        # Generic knobs bind data on any widget kind, so their datasets
-        # must be produced and must not be deleted out from under them.
-        badge = w.get("badge")
-        if isinstance(badge, dict):
-            _add_source_prefix(badge.get("source"))
-        vintage = w.get("vintage")
-        if isinstance(vintage, str) and vintage:
-            refs.add(vintage.split(".", 1)[0])
 
     return refs
 
@@ -21755,45 +20500,6 @@ def _derive_domain_freq(datasets: Dict[str, Any]) -> str:
     if median_days <= 120:
         return "quarterly"
     return "annual"
-
-
-def _stamp_compile_provenance(manifest: Dict[str, Any],
-                               dfs: Dict[str, Any]) -> None:
-    """Fill ``metadata.generated_at`` / ``data_as_of`` at compile time.
-
-    The recipe path stamps both in :func:`_materialize_recipe_datasets`
-    from the persisted CSVs, so only a direct :func:`compile_dashboard`
-    call reaches here with them absent. Every value is derived from
-    what compile already has in hand -- the wall clock and the
-    materialised frames -- so a dashboard never has to be told when it
-    was built.
-
-    ``setdefault`` throughout: a recipe stamp or an author-declared
-    value is more authoritative than anything derivable here.
-
-    ``metadata.time.refresh_cycle_at`` is deliberately left alone. A
-    one-shot compile has no refresh cycle, and inventing one would put
-    a "Refreshed" claim on the pill that no scheduler stands behind.
-    """
-    from dashboards_time import utcnow, format_iso
-
-    meta = manifest.get("metadata")
-    if not isinstance(meta, dict):
-        meta = {}
-        manifest["metadata"] = meta
-    built_at = format_iso(utcnow())
-    meta.setdefault("generated_at", built_at)
-    domain_end = _derive_domain_end(dfs)
-    if domain_end is not None:
-        meta.setdefault("data_as_of", domain_end)
-    time_block = meta.get("time")
-    if not isinstance(time_block, dict):
-        time_block = {}
-        meta["time"] = time_block
-    time_block.setdefault("build_completed_at", built_at)
-    if domain_end is not None:
-        time_block.setdefault("data_domain_end", domain_end)
-        time_block.setdefault("data_domain_freq", _derive_domain_freq(dfs))
 
 
 def _max_pull_time(folder: str, s3_manager) -> Optional[str]:

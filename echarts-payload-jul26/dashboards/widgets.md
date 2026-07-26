@@ -144,32 +144,6 @@ Column fields include:
 
 Table controls may define searchable/sortable columns, frozen first column, and visible-column defaults. Pre-aggregate or narrow tables above 1,000 rows; 5,000 rows is blocking.
 
-### Totals row
-
-`totals_row` maps a column field to a reducer. There is no boolean form: summing notional is the point while summing a yield column is meaningless, and only the author knows which column is which, so the renderer never infers.
-
-```python
-{
-    "totals_row": {
-        "_label": "Portfolio",
-        "notional": "sum",
-        "dv01": "sum",
-        "yield_pct": "mean",
-        "ticker": "none",
-    }
-}
-```
-
-The closed reducer enum is:
-
-`sum`, `mean`, `median`, `min`, `max`, `count`
-
-`none` explicitly marks a column as carrying no total, which documents that the column was considered. `_label` is the caption placed in the first column with no reducer, defaulting to `Total`. Blank and whitespace-only cells count as missing rather than zero, so they do not drag `mean` or inflate `count`.
-
-Each cell inherits its column's `format`, except `count`, which is a row tally rather than a value in the column's unit and always renders as an integer. Reduction runs over the filtered, searched rows up to `max_rows` — exactly the row set the count beside the table reports — so the footer can never disagree with the visible row count. The row is sticky to the bottom edge of a virtualized `data_grid`.
-
-Naming a column that the widget does not declare, or applying a reducer to a column with no numeric values, is blocking: the cell would render a bold `--` that reads as a real total of nothing.
-
 ### Narrative-table review
 
 A table with at most three rows and a cell of 160+ characters or 28+ words is flagged `table_narrative_wrap_risk` and makes its panel `REVIEW_REQUIRED`. The receipt's width evidence is the widget's declared `w` share of the 12-column dashboard grid together with its visible column count; it is an advisory wrap-risk estimate, not a pixel measurement. Inspect the risk-ranked rows through `review.panel(id)`. Keep a table when the cells remain genuinely comparable; otherwise use a note/markdown panel or a short summary with drill-down rather than acknowledging likely clipping blindly.
@@ -287,7 +261,7 @@ The join is clicked row `row_key` → detail `filter_field`. Missing datasets/co
 }
 ```
 
-`dataset_ref`, `row_dim_columns`, `col_dim_columns`, and `value_columns` are required. Dimension/value lists must be non-empty. `agg_options` selects from the same closed reducer enum as a table's [totals row](#totals-row) and controls the viewer's dropdown order. `color_scale` is `sequential`, `diverging`, `auto`, or `{min?, max?, palette?, kind?}`; palette names are validated and must be sequential/diverging. The same resolved theme scale is used when the dictionary omits a palette. `show_totals` is boolean and controls the supported paired row-and-column totals. Independent `row_totals` or `column_totals` keys are invalid.
+`dataset_ref`, `row_dim_columns`, `col_dim_columns`, and `value_columns` are required. Dimension/value lists must be non-empty. `color_scale` is `sequential`, `diverging`, `auto`, or `{min?, max?, palette?, kind?}`; palette names are validated and must be sequential/diverging. The same resolved theme scale is used when the dictionary omits a palette. `show_totals` is boolean and controls the supported paired row-and-column totals. Independent `row_totals` or `column_totals` keys are invalid.
 
 Use a pivot when the viewer needs to choose dimensions/aggregation. Use a table when the product has one intended comparison.
 
@@ -322,33 +296,6 @@ The closed note-kind enum is:
 `insight`, `thesis`, `watch`, `risk`, `context`, `fact`
 
 `markdown` requires `content` or `body`. When `kind` is present it renders as a semantic card. `note` accepts the same body and note kinds; use `markdown` for authored manifests.
-
-### Live values in narrative
-
-Narrative that quotes a number goes stale the moment the data refreshes. Interpolate instead of typing the figure:
-
-```python
-{
-    "widget": "markdown",
-    "id": "curve_note",
-    "w": 6,
-    "kind": "thesis",
-    "content": (
-        "2s10s sits at {rates.latest.spread_2s10s:comma:0} bps, "
-        "against a {rates.mean.spread_2s10s:comma:0} bps mean over the window."
-    ),
-}
-```
-
-The token grammar is `{<dataset>.<aggregator>.<column>[:<format>[:<decimals>]]}` using the KPI aggregator enum. Tokens resolve in the browser on every refresh, so a quoted figure and the chart beside it can never disagree.
-
-The closed format enum is:
-
-`auto`, `raw`, `percent`, `comma`, `compact`
-
-Omitting the format gives `auto`. There is no `prefix`/`suffix` slot, because prose already has one on either side of the braces: write `${aum.latest.usd:compact}` and `{spreads.latest.oas:comma:0} bps` rather than reaching for a unit token the grammar does not carry.
-
-A token naming an undeclared dataset is left as literal text — that is how `{"a": 1}` in a JSON example survives untouched. A token whose dataset is declared but whose column is missing or non-numeric is blocking, because the sentence would ship with an em-dash where its evidence belongs.
 
 Values stated as facts must trace to refreshed data or identified sources. Use:
 
@@ -444,53 +391,6 @@ Image requires `src` or `url`. Use only stable, authorized assets with useful co
 {"widget": "divider", "id": "inflation_divider", "w": 12}
 ```
 
-## Tile chrome
-
-Three knobs are available on every widget kind.
-
-### Data-bound badge
-
-A badge may be a plain string, or a rule set whose label and tone follow a live value:
-
-```python
-{
-    "badge": {
-        "source": "risk.latest.breach_count",
-        "states": [
-            {"op": ">", "value": 0, "label": "Breach", "tone": "neg"},
-            {"label": "Within limits", "tone": "pos"},
-        ],
-    }
-}
-```
-
-`source` uses the KPI source grammar; `op`/`value` use the filter-operator enum. States are evaluated in order and the first match wins, so a state with no `op` is the terminal default. The closed tone enum is the `row_highlight` vocabulary: `pos`, `neg`, `warn`, `info`, `muted`. Badges re-evaluate on every refresh. A source that cannot resolve is blocking, because a broken binding renders nothing at all and the reader cannot distinguish that from a condition being false.
-
-### Vintage stamp
-
-The header refresh pill states when the dashboard ran, which is not when a given tile's data was last observed. `vintage` stamps the tile footer with the latter:
-
-```python
-{"vintage": True}              # newest date in the widget's own dataset
-{"vintage": "cpi_monthly.date"}  # explicit dataset and time column
-```
-
-Wording follows the detected cadence, so a monthly series reads `Mar 2026` rather than implying a daily observation it does not contain: `31 Mar 2026` (daily), `w/e 31 Mar 2026` (weekly), `Mar 2026` (monthly), `Q1 2026` (quarterly), `2026` (annual).
-
-Resolved at compile time and always recomputed, so a stamp can never outlive the refresh that invalidated it. Use it wherever tiles on one dashboard have genuinely different vintages — a monthly CPI panel beside a live rates panel is the case it exists for. A declared `vintage` that fails to resolve is blocking, because a silently absent stamp implies the tile is as fresh as the header pill.
-
-### Description
-
-`description` records what an entry is FOR, as opposed to what it draws. It is never rendered. It exists so a later editing pass can rewire or retire a tile knowing its purpose, and it appears in the Diagnostics panel.
-
-```python
-{"description": "Position-level book; the totals row is the portfolio aggregate."}
-```
-
-Available on every widget, every filter, and every `datasets` entry. Repeating the title is rejected — it satisfies a presence check while conveying nothing, which would make the field untrustworthy everywhere. At most 600 characters; longer prose belongs in a markdown widget where the reader can see it.
-
-Coverage is reported in the Diagnostics panel and in `result.diagnostics_report`, never as a compile diagnostic: a dashboard whose numbers are all correct must not need a review acknowledgment because a metadata field is blank. Structural widgets (`divider`, `image`, `note`, `markdown`) are exempt.
-
 ## Conditional visibility
 
 Every widget may use `show_when`; the compile-time data forms, runtime filter form, operators, and composition rules are owned by [filters.md](filters.md#conditional-visibility).
@@ -502,6 +402,4 @@ Every widget may use `show_when`; the compile-time data forms, runtime filter fo
 - A note should change interpretation, not repeat a nearby label.
 - A table should expose only fields needed for comparison.
 - Popup join keys must exist and overlap.
-- Quote a number in narrative by interpolating it, never by typing it.
-- Stamp `vintage` when tiles on one dashboard have genuinely different data ages.
 - Preserve sibling widgets and controls during targeted edits.

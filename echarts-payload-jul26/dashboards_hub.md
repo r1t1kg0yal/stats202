@@ -89,7 +89,6 @@ manifest = {
 | `datasets` | Named slots populated from CSVs/transforms |
 | `map_assets` | Self-contained, validated GeoJSON assets used by `geo_map`; never fetched remotely |
 | `datasets.<name>.field_provenance` | Optional per-column lineage authored in the template and owned by [pipelines.md](dashboards/pipelines.md#field-provenance); never inferred from sidecars or `df.attrs` |
-| `datasets.<name>.description` | What the dataset is for; same contract as widget/filter `description` in [widgets.md](dashboards/widgets.md#description) |
 | `filters` / `links` | See [filters.md](dashboards/filters.md#filter-catalog) |
 | `layout` | Grid or tabs; every row is a list of widgets |
 
@@ -274,7 +273,7 @@ Author **`metadata.refresh_frequency`** only. The engine stamps
 tick (recommend 10s), not “always pull while open”. Opt out of the site
 daemon with `entrypoint.py site --no-open-refresh`.
 
-`header_actions[]` adds custom actions to the left of always-on Methodology, Diagnostics, Refresh, Share, Download, theme, and freshness controls. `Diagnostics` opens the in-artifact lineage/findings panel owned by [diagnose.md](dashboards/diagnose.md#in-artifact-diagnostics-panel); unlike Methodology it renders unconditionally and no manifest field suppresses it.
+`header_actions[]` adds custom actions to the left of always-on Methodology, Refresh, Share, Download, theme, and freshness controls.
 
 | Key | Rule |
 |---|---|
@@ -284,7 +283,7 @@ daemon with `entrypoint.py site --no-open-refresh`.
 | `id` | Optional unique DOM id |
 | `primary` / `icon` / `title` | Styling and tooltip |
 
-Reserved ids: `methodology-btn`, `diagnostics-btn`, `diagnostics-btn-label`, `refresh-btn`, `refresh-btn-label`, `refresh-err-btn`, `share-btn`, `share-btn-label`, `share-mode-users`, `share-mode-department`, `share-add-workspace`, `share-workspace-submenu`, `download-btn`, `download-btn-label`, `download-menu`, `export-all`, `export-dashboard`, `export-chart-data`, `export-print`, `export-excel`, `theme-toggle`, `now-pill`, `now-pill-val`, `refresh-pill`, `refresh-pill-val`, `header-actions`.
+Reserved ids: `methodology-btn`, `refresh-btn`, `refresh-btn-label`, `refresh-err-btn`, `share-btn`, `share-btn-label`, `share-mode-users`, `share-mode-department`, `share-add-workspace`, `share-workspace-submenu`, `download-btn`, `download-btn-label`, `download-menu`, `export-all`, `export-dashboard`, `export-chart-data`, `export-print`, `export-excel`, `theme-toggle`, `now-pill`, `now-pill-val`, `refresh-pill`, `refresh-pill-val`, `header-actions`.
 
 Every successful strict compile emits `export-chart-data` and `export-print`;
 their presence is part of the compiler chrome contract, not a manifest option.

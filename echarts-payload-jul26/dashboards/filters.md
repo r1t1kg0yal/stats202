@@ -26,8 +26,6 @@ The closed filter enum is:
 
 Every filter needs a unique `id`, valid `type`, and `targets` list. `field` is always one bare persisted column such as `"region"`, never a qualified string such as `"fundamentals.region"`; dataset ownership is resolved from `targets`. Targets are data-bound widget ids or patterns such as `"*"`, and the field must exist in every targeted widget dataset.
 
-Every filter also accepts a `description` stating what the control is for, under the contract in [widgets.md](widgets.md#description).
-
 The closed operator enum is:
 
 `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `startsWith`, `endsWith`, `in`, `not_in`
