@@ -284,12 +284,6 @@ UNIVERSAL_KNOBS: List[Dict[str, Any]] = [
     {"name": "subtitleWeight", "label": "Subtitle weight", "type": "select",
      "options": ["normal", "bold"], "default": "normal",
      "path": "config.title.subtitleFontWeight", "group": "Title"},
-    # The producer renders source= / caption= as a dedicated text panel
-    # concatenated below the plot, not as part of the title block, so this
-    # knob resolves that panel and rewrites its pre-wrapped mark.text.
-    {"name": "captionText", "label": "Source / caption", "type": "text",
-     "default": "",
-     "apply": "setCaptionText", "group": "Title", "essential": True},
 
     # --- Typography ---
     {"name": "fontFamily", "label": "Font family", "type": "select",
@@ -1109,30 +1103,6 @@ textarea { width: 100%; font-family: monospace; font-size: 10px; box-sizing: bor
 .meta-grid { display: grid; grid-template-columns: 180px 1fr; gap: 2px 12px; font-size: 11px; }
 .meta-grid .meta-key { color: #555; font-weight: bold; }
 .meta-grid .meta-val { font-family: monospace; word-break: break-all; }
-/* ---- In-place text editing -------------------------------------------
-   Vega marks guide text (title, subtitle, axis titles, tick labels,
-   legend text) with pointer-events="none" so clicks pass through. That
-   is a presentation attribute, which any CSS declaration outranks in the
-   cascade -- this rule is what makes those glyphs hit-testable at all.
-   ---------------------------------------------------------------------- */
-#chart svg text { pointer-events: all; }
-#chart svg text.cfs-editable { cursor: text; }
-#chart svg text.cfs-editable:hover {
-  fill: #0b62c4 !important; paint-order: stroke;
-  stroke: #d6e6fb; stroke-width: 5px; stroke-linejoin: round; }
-#chart svg text.cfs-derived { cursor: help; }
-#chart svg text.cfs-derived:hover {
-  fill: #8a6d1f !important; paint-order: stroke;
-  stroke: #fbf0cf; stroke-width: 5px; stroke-linejoin: round; }
-.cfs-inline-editor { position: absolute; z-index: 9999; padding: 1px 4px;
-  border: 2px solid #0b62c4; background: #fff; font-family: inherit;
-  box-shadow: 0 3px 12px rgba(0,0,0,0.22); }
-.cfs-toast { position: fixed; bottom: 16px; left: 50%;
-  transform: translateX(-50%); background: #22262e; color: #fff;
-  padding: 9px 16px; font-size: 12px; max-width: 620px; opacity: 0;
-  pointer-events: none; transition: opacity 0.18s; z-index: 10000; }
-.cfs-toast.on { opacity: 1; }
-.cfs-hint { font-size: 10px; color: #555; margin-left: 12px; }
 </style>
 </head>
 <body>
@@ -1162,8 +1132,6 @@ textarea { width: 100%; font-family: monospace; font-size: 10px; box-sizing: bor
       <span id="sizeSummary" class="size-summary"></span>
     </div>
     <div id="chart"></div>
-    <div class="cfs-hint">Double-click any text in the chart to edit it in
-      place. Enter commits, Esc cancels.</div>
   </div>
 
   <!-- Right sidebar: Data / Code / Metadata / Export / Raw tabs -->
@@ -1283,8 +1251,6 @@ textarea { width: 100%; font-family: monospace; font-size: 10px; box-sizing: bor
 
 </div>
 
-<div class="cfs-toast" id="cfsToast"></div>
-
 <!-- Knob cards (below chart, responsive grid) -->
 <div class="knobs-section" id="knobsSection">
   <h2>Controls</h2>
@@ -1395,234 +1361,28 @@ function walkEncoding(spec, channel, fn) {
 }
 
 /* ============================================================
-   TEXT-BEARING SPEC NAVIGATION
-
-   The producer wraps the plot in a concat as soon as a caption /
-   source / side panel exists, which moves the title off the spec
-   root and onto the data panel. Anything that reads or writes chart
-   TEXT therefore has to locate the owning node first rather than
-   assume the root.
-
-   Layouts this has to cope with (all producer-generated):
-
-     plain               spec.title
-     source=/caption=    spec.vconcat[0].title
-                         spec.vconcat[1].mark.text        <- caption
-     + side panels       spec.hconcat[1].vconcat[0].title
-                         spec.hconcat[1].vconcat[1]       <- caption
-                         spec.hconcat[0] / [2]            <- side panels
-     composite / facet   spec.title                       <- super-title
-                         spec.<c>[i].<c>[j].layer[0].title <- panel title
-   ============================================================ */
-
-function isTextPanelNode(node) {
-  // A producer text panel is a single mark_text chart whose string is
-  // baked into mark.text (caption, source, side narrative).
-  return !!(node && typeof node === "object" &&
-            node.mark && typeof node.mark === "object" &&
-            node.mark.type === "text" &&
-            typeof node.mark.text === "string");
-}
-
-function concatKeyOf(node) {
-  if (!node || typeof node !== "object") return null;
-  for (const key of ["vconcat", "hconcat", "concat"]) {
-    if (Array.isArray(node[key])) return key;
-  }
-  return null;
-}
-
-function findTitleHost(spec) {
-  // Return {node, path} for the node that owns the chart's primary title.
-  // Prefers a node that already HAS a title (so a composite's super-title
-  // wins over its panel titles); otherwise returns the primary data panel
-  // so a first-ever title lands where the producer would have put it.
-  if (!spec || typeof spec !== "object") return null;
-  if (spec.title != null) return { node: spec, path: "spec" };
-
-  const queue = [{ node: spec, path: "spec" }];
-  const dataPanels = [];
-  while (queue.length) {
-    const { node, path } = queue.shift();
-    if (node.title != null) return { node, path };
-    const ck = concatKeyOf(node);
-    if (ck) {
-      node[ck].forEach((child, i) => {
-        if (!isTextPanelNode(child)) {
-          queue.push({ node: child, path: `${path}.${ck}[${i}]` });
-        }
-      });
-      continue;
-    }
-    if (Array.isArray(node.layer)) {
-      node.layer.forEach((child, i) =>
-        queue.push({ node: child, path: `${path}.layer[${i}]` }));
-    }
-    if (node.spec) queue.push({ node: node.spec, path: `${path}.spec` });
-    dataPanels.push({ node, path });
-  }
-  // No title anywhere: the shallowest non-text panel is the data chart.
-  return dataPanels.length ? dataPanels[0] : { node: spec, path: "spec" };
-}
-
-function findTextPanels(spec) {
-  // Classify every producer text panel. Captions sit at vconcat index >= 1
-  // (below the plot); side narratives are hconcat edge children.
-  const found = [];
-  function walk(node, path) {
-    if (!node || typeof node !== "object") return;
-    if (Array.isArray(node.vconcat)) {
-      node.vconcat.forEach((child, i) => {
-        const p = `${path}.vconcat[${i}]`;
-        if (i >= 1 && isTextPanelNode(child)) {
-          found.push({ role: "caption", node: child, path: p });
-        } else {
-          walk(child, p);
-        }
-      });
-    }
-    if (Array.isArray(node.hconcat)) {
-      const last = node.hconcat.length - 1;
-      node.hconcat.forEach((child, i) => {
-        const p = `${path}.hconcat[${i}]`;
-        if (isTextPanelNode(child) && (i === 0 || i === last)) {
-          found.push({
-            role: i === 0 ? "side_left" : "side_right",
-            node: child, path: p,
-          });
-        } else {
-          walk(child, p);
-        }
-      });
-    }
-    if (Array.isArray(node.concat)) {
-      node.concat.forEach((child, i) => walk(child, `${path}.concat[${i}]`));
-    }
-    if (Array.isArray(node.layer)) {
-      node.layer.forEach((child, i) => walk(child, `${path}.layer[${i}]`));
-    }
-    if (node.spec) walk(node.spec, `${path}.spec`);
-  }
-  walk(spec, "spec");
-  return found;
-}
-
-function findCaptionPanel(spec) {
-  const panels = findTextPanels(spec);
-  return panels.find(p => p.role === "caption") || null;
-}
-
-/* ---- Text-panel re-wrap ------------------------------------
-   Producer text panels carry text pre-wrapped with literal "\n" and a
-   height derived from the resulting line count (there is no width-aware
-   autowrap in vega-lite mark_text). Editing the string therefore has to
-   re-wrap it and re-derive the height, or long text overflows the panel.
-   Mirrors chart_functions._wrap_text_to_width / _build_text_panel. ---- */
-
-function wrapTextToWidth(text, widthPx, fontSize) {
-  if (!text) return "";
-  const charW = Math.max(1.0, fontSize * 0.55);
-  const perLine = Math.max(1, Math.floor(widthPx / charW));
-  const out = [];
-  for (const paragraph of String(text).split("\n")) {
-    const tokens = [];
-    for (const raw of paragraph.split(/\s+/).filter(Boolean)) {
-      if (raw.length > perLine) {
-        for (let i = 0; i < raw.length; i += perLine) {
-          tokens.push(raw.substring(i, i + perLine));
-        }
-      } else {
-        tokens.push(raw);
-      }
-    }
-    if (!tokens.length) { out.push(""); continue; }
-    let line = tokens[0];
-    for (const word of tokens.slice(1)) {
-      if (line.length + 1 + word.length <= perLine) line = line + " " + word;
-      else { out.push(line); line = word; }
-    }
-    out.push(line);
-  }
-  return out.join("\n");
-}
-
-function padFromNode(node, fallback) {
-  // Recover the panel padding the engine used from the spec's outer padding.
-  const p = node.padding;
-  if (typeof p === "number") return p;
-  if (!p || typeof p !== "object") return fallback;
-  const edges = ["left", "right", "top", "bottom"]
-    .map(k => Number(p[k]))
-    .filter(v => Number.isFinite(v));
-  return edges.length ? Math.max(...edges) : fallback;
-}
-
-function rewrapTextPanel(panel, newText) {
-  // Rewrite a text panel's string, re-wrapped to its own content width,
-  // and grow/shrink its height to match the new line count.
-  const node = panel.node;
-  const fontSize = Number(node.mark.fontSize) || 12;
-  const width = Number(node.width) || 700;
-  // The engine sets all four outer-padding edges to the panel padding and
-  // then zeroes exactly the one edge abutting the chart, so the max over the
-  // four edges recovers the original padding -- which is also the value the
-  // engine used for the content width and the height. Reading a single named
-  // edge would read the zeroed one on left/right side panels.
-  const pad = padFromNode(node, 5);
-  const contentW = Math.max(1, width - 2 * pad);
-  const wrapped = wrapTextToWidth(newText, contentW, fontSize);
-  node.mark.text = wrapped;
-  const nLines = Math.max(1, wrapped.split("\n").length);
-  const lineHeight = Math.max(fontSize + 2, Math.floor(fontSize * 1.45));
-  node.height = nLines * lineHeight + 2 * pad;
-  return wrapped;
-}
-
-/* ============================================================
    APPLY FUNCTIONS (complex spec mutations)
    ============================================================ */
 const APPLY_FUNCTIONS = {
   setWidth: (spec, value) => walkSetSize(spec, "width", value),
   setHeight: (spec, value) => walkSetSize(spec, "height", value),
-  // Title / subtitle must be written to the node that OWNS the title, not
-  // to the spec root: any chart with a source / caption / side panel is
-  // wrapped in a concat and carries its title on the inner data panel.
-  // Writing the root there would render a second, unstyled title above the
-  // whole concat instead of editing the real one.
   setTitleText: (spec, value) => {
-    const host = findTitleHost(spec);
-    if (!host) return;
-    const node = host.node;
     if (!value) {
-      if (typeof node.title === "object" && node.title !== null) {
-        delete node.title.text;
-        if (Object.keys(node.title).length === 0) delete node.title;
+      if (typeof spec.title === "object" && spec.title !== null) {
+        delete spec.title.text;
+        if (Object.keys(spec.title).length === 0) delete spec.title;
       } else {
-        delete node.title;
+        delete spec.title;
       }
       return;
     }
-    if (typeof node.title === "string") node.title = { text: node.title };
-    if (typeof node.title !== "object" || node.title === null) node.title = {};
-    node.title.text = value;
+    if (typeof spec.title !== "object" || spec.title === null) spec.title = {};
+    spec.title.text = value;
   },
   setSubtitleText: (spec, value) => {
-    const host = findTitleHost(spec);
-    if (!host) return;
-    const node = host.node;
-    if (typeof node.title === "string") node.title = { text: node.title };
-    if (typeof node.title !== "object" || node.title === null) node.title = {};
-    if (!value) { delete node.title.subtitle; return; }
-    node.title.subtitle = value;
-  },
-  setCaptionText: (spec, value) => {
-    // Empty value = "not overridden"; leave the producer's caption alone.
-    // There is no caption panel to create from scratch here -- its width /
-    // height / padding geometry is producer-computed.
-    if (!value) return;
-    const panel = findCaptionPanel(spec);
-    if (!panel) return;
-    rewrapTextPanel(panel, value);
+    if (typeof spec.title !== "object" || spec.title === null) spec.title = {};
+    if (!value) { delete spec.title.subtitle; return; }
+    spec.title.subtitle = value;
   },
   setXAxisTitle: (spec, value) => {
     // Empty value = "user hasn't overridden" -> preserve producer titles.
@@ -2417,400 +2177,12 @@ function applyDimensionPreset(presetName, record) {
 }
 
 /* ============================================================
-   IN-PLACE TEXT EDITING
-
-   Double-click any text glyph in the chart to edit it where it sits.
-   Works because the chart renders with renderer:"svg", so every glyph is
-   a real <text> node that Vega has already stamped with enough identity
-   to resolve back to an exact vega-lite spec path. Two identity sources,
-   both emitted by Vega with no cooperation needed from the producer:
-
-   1. The CSS class chain.
-        data marks    "mark-text role-mark <vegaMarkName>"
-        guide marks   "mark-text role-{title-text|title-subtitle|
-                       axis-title|axis-label|legend-title|legend-label}"
-        owning panel  ancestor "mark-group role-scope <scopeName>_group"
-      Both name forms encode the spec path in Vega-Lite's deterministic
-      naming scheme, so they decode with one tokenizer:
-        concat_0_layer_1_layer_2_marks -> spec.vconcat[0].layer[1].layer[2]
-
-   2. node.__data__ -- the live scenegraph item, giving item.datum (which
-      data row a data-driven label came from) and, via the axis group,
-      item.orient so a dual-axis chart's two y-titles stay distinct.
-
-   Only FREE-TEXT surfaces are editable. Tick labels, legend labels and
-   numeric value labels are derived from data plus a format string, so
-   letting them be retyped would silently desync text from data; those
-   explain themselves instead. Edits are session-scoped -- they mutate
-   currentSpec (and so flow into every export) but never enter
-   `overrides`, which is a styling bundle, not chart content.
-   ============================================================ */
-
-const EDITABLE_ROLES = new Set([
-  "mark", "title-text", "title-subtitle", "axis-title", "legend-title",
-]);
-
-/* ---- vega mark / scope name -> spec node ---- */
-function decodeSpecPath(name) {
-  const toks = name.match(/(?:concat|layer|child)_\d+/g) || [];
-  let node = currentSpec, path = "spec";
-  for (const tok of toks) {
-    const sep = tok.lastIndexOf("_");
-    const kind = tok.substring(0, sep), i = parseInt(tok.substring(sep + 1), 10);
-    if (kind === "concat") {
-      const key = concatKeyOf(node);
-      if (!key || !node[key][i]) return null;
-      node = node[key][i]; path += "." + key + "[" + i + "]";
-    } else if (kind === "layer") {
-      if (!Array.isArray(node.layer) || !node.layer[i]) return null;
-      node = node.layer[i]; path += ".layer[" + i + "]";
-    } else {
-      if (!node.spec) return null;
-      node = node.spec; path += ".spec";
-    }
-  }
-  return { node: node, path: path };
-}
-
-/* A panel's title may live on the panel node or, when vega-lite hoisted it
-   out of a single-layer view (which is what composite cells are), on one of
-   its layers. Return whichever node actually carries it. */
-function findTitleOwnerAt(node, path) {
-  if (node.title != null) return { node: node, path: path };
-  if (Array.isArray(node.layer)) {
-    for (let i = 0; i < node.layer.length; i++) {
-      if (node.layer[i] && node.layer[i].title != null) {
-        return { node: node.layer[i], path: path + ".layer[" + i + "]" };
-      }
-    }
-  }
-  return { node: node, path: path };
-}
-
-/* Annotation labels are drawn twice -- a halo layer plus the real text
-   layer, carrying the identical string. Editing one alone leaves a ghost
-   of the old string behind the new one, so collect the whole set. */
-function textValueSiblings(markName, hit) {
-  const m = markName.match(/^(.*)_layer_(\d+)_marks$/);
-  const value = hit.node.encoding.text.value;
-  if (!m) return [hit.node];
-  const parent = decodeSpecPath(m[1] + "_marks");
-  if (!parent || !Array.isArray(parent.node.layer)) return [hit.node];
-  const out = [];
-  for (const sub of parent.node.layer) {
-    const e = sub && sub.encoding && sub.encoding.text;
-    if (e && !Array.isArray(e) && e.value === value) out.push(sub);
-  }
-  return out.length ? out : [hit.node];
-}
-
-/* ---- walk the ancestors of a clicked <text> ---- */
-function inspectTextNode(el) {
-  let role = null, markName = null, scopeName = null, axisOrient = null;
-  let cur = el;
-  while (cur && cur.nodeType === 1) {
-    const cls = cur.getAttribute("class");
-    if (cls) {
-      const toks = cls.split(/\s+/);
-      if (role === null) {
-        for (const t of toks) {
-          if (t.indexOf("role-") === 0) { role = t.substring(5); break; }
-        }
-      }
-      if (markName === null && toks.indexOf("role-mark") >= 0) {
-        markName = toks[toks.length - 1];
-      }
-      if (scopeName === null && toks.indexOf("role-scope") >= 0) {
-        scopeName = toks[toks.length - 1];
-      }
-    }
-    // The axis group's orientation is the only thing that distinguishes a
-    // left y-axis title from a right one, and it lives on the scenegraph
-    // item of an ancestor that carries NO class attribute -- Vega puts
-    // `class="mark-group role-axis"` on one wrapper and the bound item on
-    // the wrapper inside it. So this read is keyed off the item's own
-    // mark.role rather than off any class token.
-    if (axisOrient === null) {
-      const d = cur.__data__;
-      if (d && d.mark && d.mark.role === "axis" && d.orient) {
-        axisOrient = d.orient;
-      }
-    }
-    cur = cur.parentNode;
-  }
-  const item = el.__data__ || (el.parentNode && el.parentNode.__data__) || null;
-  return {
-    role: role, markName: markName, scopeName: scopeName,
-    axisOrient: axisOrient, item: item,
-    text: (el.textContent || "").trim(),
-  };
-}
-
-/* ---- classify into an editable (or explained) target ---- */
-function resolveTextTarget(info) {
-  const role = info.role;
-
-  // Data marks: annotation labels, direct series labels, caption / source
-  // panel, side narrative panels, value labels.
-  if (role === "mark" && info.markName) {
-    const hit = decodeSpecPath(info.markName);
-    if (!hit) return { kind: "skip" };
-    const n = hit.node;
-
-    if (isTextPanelNode(n)) {
-      const panels = findTextPanels(currentSpec);
-      const match = panels.find(p => p.node === n);
-      return {
-        kind: "panel", panel: match || { role: "caption", node: n, path: hit.path },
-        current: String(n.mark.text).split("\n").join(" ").trim(),
-        label: (match ? match.role.replace("_", " ") : "text panel") +
-               "  (" + hit.path + ")",
-      };
-    }
-
-    const enc = n.encoding && n.encoding.text;
-    if (enc && typeof enc === "object" && !Array.isArray(enc)) {
-      if (enc.value !== undefined) {
-        const nodes = textValueSiblings(info.markName, hit);
-        return {
-          kind: "literal", nodes: nodes, current: String(enc.value),
-          label: (nodes.length > 1
-                  ? "annotation label (" + nodes.length + " layers incl. halo)"
-                  : "text mark") + "  (" + hit.path + ")",
-        };
-      }
-      if (enc.field !== undefined) {
-        return {
-          kind: "derived",
-          why: "This label is generated from the data field '" + enc.field +
-               "'" + (enc.format ? " with format '" + enc.format + "'" : "") +
-               ", not typed text. Change the data or the format instead.",
-        };
-      }
-    }
-    return { kind: "skip" };
-  }
-
-  // Guide marks belong to the panel whose scope group encloses them.
-  const scope = info.scopeName ? decodeSpecPath(info.scopeName)
-                               : { node: currentSpec, path: "spec" };
-  if (!scope) return { kind: "skip" };
-
-  if (role === "title-text" || role === "title-subtitle") {
-    const key = (role === "title-text") ? "text" : "subtitle";
-    const owner = findTitleOwnerAt(scope.node, scope.path);
-    const t = owner.node.title;
-    let cur = "";
-    if (typeof t === "string") cur = (key === "text") ? t : "";
-    else if (t) cur = t[key] == null ? "" : String(t[key]);
-    return {
-      kind: "title", node: owner.node, titleKey: key, current: cur,
-      label: (key === "text" ? "title" : "subtitle") + "  (" + owner.path + ")",
-    };
-  }
-
-  if (role === "axis-title") {
-    const ch = (info.axisOrient === "left" || info.axisOrient === "right")
-      ? "y" : "x";
-    return {
-      kind: "axisTitle", node: scope.node, channel: ch,
-      orient: info.axisOrient, current: info.text,
-      label: ch.toUpperCase() + "-axis title" +
-             (info.axisOrient ? " (" + info.axisOrient + ")" : "") +
-             "  (" + scope.path + ")",
-    };
-  }
-
-  if (role === "legend-title") {
-    return {
-      kind: "legendTitle", node: scope.node, current: info.text,
-      label: "legend title  (" + scope.path + ")",
-    };
-  }
-
-  if (role === "axis-label") {
-    return { kind: "derived",
-      why: "Axis tick labels come from the data plus the axis format " +
-           "string, not typed text. Use the axis Format knob instead." };
-  }
-  if (role === "legend-label") {
-    return { kind: "derived",
-      why: "Legend labels are the colour column's own values. Rename them " +
-           "in the data rather than in the chart." };
-  }
-  return { kind: "skip" };
-}
-
-/* Producer literals may already be soft-wrapped with "\n" at a width we
-   cannot recover from the spec. Re-wrap the replacement to the widest line
-   of the original, which self-calibrates to whatever the producer chose.
-   Single-line originals are left alone. */
-function rewrapToExistingWidth(oldText, newText) {
-  const old = String(oldText == null ? "" : oldText);
-  if (old.indexOf("\n") < 0) return newText;
-  let perLine = 0;
-  for (const line of old.split("\n")) perLine = Math.max(perLine, line.length);
-  if (perLine < 1) return newText;
-  const words = String(newText).split(/\s+/).filter(Boolean);
-  if (!words.length) return newText;
-  const out = [];
-  let line = words[0];
-  for (const w of words.slice(1)) {
-    if (line.length + 1 + w.length <= perLine) line = line + " " + w;
-    else { out.push(line); line = w; }
-  }
-  out.push(line);
-  return out.join("\n");
-}
-
-function writeAxisTitleScoped(ownerNode, channel, orient, value) {
-  // Restrict to the clicked axis's own side so a dual-axis chart's left and
-  // right titles stay independent (the producer tags them axis.orient).
-  walkEncoding(ownerNode, channel, enc => {
-    if (enc.axis === null) return;
-    const encOrient = (enc.axis && typeof enc.axis === "object")
-      ? enc.axis.orient : undefined;
-    if (orient === "right" && encOrient !== "right") return;
-    if (orient !== "right" && encOrient === "right") return;
-    enc.title = value;
-    if (enc.axis && typeof enc.axis === "object") enc.axis.title = value;
-  });
-}
-
-function applyTextEdit(target, newText) {
-  if (target.kind === "panel") {
-    rewrapTextPanel(target.panel, newText);
-    syncTextKnob(target.panel.role === "caption" ? "captionText" : null, newText);
-  } else if (target.kind === "literal") {
-    for (const n of target.nodes) {
-      n.encoding.text.value =
-        rewrapToExistingWidth(n.encoding.text.value, newText);
-    }
-  } else if (target.kind === "title") {
-    const n = target.node;
-    if (typeof n.title === "string") n.title = { text: n.title };
-    if (n.title == null) n.title = {};
-    n.title[target.titleKey] =
-      rewrapToExistingWidth(n.title[target.titleKey], newText);
-    syncTextKnob(target.titleKey === "text" ? "titleText" : "subtitleText",
-                 newText);
-  } else if (target.kind === "axisTitle") {
-    writeAxisTitleScoped(target.node, target.channel, target.orient, newText);
-    syncTextKnob(target.channel === "y" ? "yAxisTitle" : "xAxisTitle", newText);
-  } else if (target.kind === "legendTitle") {
-    walkEncoding(target.node, "color", enc => {
-      enc.title = newText;
-      if (enc.legend && typeof enc.legend === "object") enc.legend.title = newText;
-    });
-    syncTextKnob("legendTitle", newText);
-  } else {
-    return;
-  }
-  renderChart();
-  updateTextAreas();
-  setStatus("edited " + target.label);
-}
-
-/* Mirror the new value into the matching knob so the Controls panel does
-   not display a stale string. Deliberately NOT recorded in `overrides`:
-   text is per-chart content, and `overrides` is what spec sheets bundle. */
-function syncTextKnob(knobName, value) {
-  if (!knobName) return;
-  currentKnobValues[knobName] = value;
-  const input = document.getElementById("knob_" + knobName);
-  if (input) input.value = value;
-}
-
-/* ---- the inline editor ---- */
-let _cfsEditor = null;
-
-function closeInlineEditor() {
-  if (_cfsEditor) { _cfsEditor.remove(); _cfsEditor = null; }
-}
-
-function beginInlineEdit(el) {
-  closeInlineEditor();
-  const target = resolveTextTarget(inspectTextNode(el));
-  if (target.kind === "derived") { cfsToast(target.why); return; }
-  if (target.kind === "skip") return;
-
-  const box = el.getBoundingClientRect();
-  const rotated = box.height > box.width * 1.5;
-  const ed = document.createElement("input");
-  ed.type = "text";
-  ed.className = "cfs-inline-editor";
-  ed.value = (target.current && target.current.length)
-    ? target.current.split("\n").join(" ")
-    : (el.textContent || "").trim();
-  ed.title = "editing " + target.label;
-  const width = Math.max(rotated ? 220 : box.width + 28, 110);
-  ed.style.width = width + "px";
-  ed.style.left = (window.scrollX +
-    (rotated ? box.left : box.left - 4)) + "px";
-  ed.style.top = (window.scrollY +
-    (rotated ? box.top + box.height / 2 - 11 : box.top - 3)) + "px";
-  const fs = window.getComputedStyle(el).fontSize;
-  if (fs) ed.style.fontSize = fs;
-  document.body.appendChild(ed);
-  _cfsEditor = ed;
-  ed.focus();
-  ed.select();
-
-  ed.addEventListener("keydown", e => {
-    if (e.key === "Enter") {
-      const v = ed.value;
-      closeInlineEditor();
-      applyTextEdit(target, v);
-    } else if (e.key === "Escape") {
-      closeInlineEditor();
-    }
-    e.stopPropagation();
-  });
-  ed.addEventListener("blur", closeInlineEditor);
-}
-
-/* Classify every glyph once per render so the cursor and hover highlight
-   advertise up front which text is editable and which only explains
-   itself. Re-run after each render because vega rebuilds the nodes. */
-function wireTextTargets() {
-  const svg = document.querySelector("#chart svg");
-  if (!svg) return;
-  const nodes = svg.querySelectorAll("text");
-  for (const el of nodes) {
-    const info = inspectTextNode(el);
-    if (!EDITABLE_ROLES.has(info.role) &&
-        info.role !== "axis-label" && info.role !== "legend-label") {
-      continue;
-    }
-    const target = resolveTextTarget(info);
-    if (target.kind === "skip") continue;
-    el.classList.add(target.kind === "derived" ? "cfs-derived" : "cfs-editable");
-    el.addEventListener("dblclick", e => {
-      e.preventDefault();
-      e.stopPropagation();
-      beginInlineEdit(el);
-    });
-  }
-}
-
-function cfsToast(msg) {
-  const el = document.getElementById("cfsToast");
-  if (!el) return;
-  el.textContent = msg;
-  el.classList.add("on");
-  clearTimeout(el._t);
-  el._t = setTimeout(() => el.classList.remove("on"), 4600);
-}
-
-/* ============================================================
    RENDER + SUMMARY
    ============================================================ */
 function renderChart() {
-  closeInlineEditor();
   vegaEmbed("#chart", currentSpec, { renderer: "svg", actions: false })
     .then(r => {
       vegaView = r.view;
-      wireTextTargets();
       // After the chart has been laid out, sync the sidebar height so the
       // info tabs never extend past the bottom of the chart panel.
       requestAnimationFrame(syncSidebarHeight);
@@ -3507,26 +2879,14 @@ function renderMetadata() {
 }
 
 function _extractTitle(spec) {
-  // Resolve through the concat wrapper the producer adds for captions /
-  // side panels, otherwise every source-bearing chart reads as untitled.
-  const host = spec ? findTitleHost(spec) : null;
-  const t = host && host.node.title;
-  if (!t) return null;
-  if (typeof t === "string") return t;
-  return t.text || null;
+  if (!spec) return null;
+  if (typeof spec.title === "string") return spec.title;
+  if (spec.title && typeof spec.title === "object") return spec.title.text || null;
+  return null;
 }
 function _extractSubtitle(spec) {
-  const host = spec ? findTitleHost(spec) : null;
-  const t = host && host.node.title;
-  if (!t || typeof t !== "object") return null;
-  return t.subtitle || null;
-}
-function _extractCaption(spec) {
-  const panel = spec ? findCaptionPanel(spec) : null;
-  if (!panel) return null;
-  // Unwrap the producer's soft line breaks so the knob shows one string;
-  // rewrapTextPanel re-derives them on write.
-  return String(panel.node.mark.text).split("\n").join(" ").trim() || null;
+  if (!spec || !spec.title || typeof spec.title !== "object") return null;
+  return spec.title.subtitle || null;
 }
 function _extractPrimaryMark(spec) {
   if (!spec) return "(none)";
@@ -3823,7 +3183,6 @@ function extractApplyKnobValue(knob) {
     case "setHeight":       return walkExtractSize(currentSpec, "height");
     case "setTitleText":    return _extractTitle(currentSpec);
     case "setSubtitleText": return _extractSubtitle(currentSpec);
-    case "setCaptionText":  return _extractCaption(currentSpec);
     case "setXAxisTitle":   return _extractEncodingProp(currentSpec, "x", "title");
     case "setYAxisTitle":   return _extractEncodingProp(currentSpec, "y", "title");
     case "setLegendTitle":  return _extractEncodingProp(currentSpec, "color", "title");
