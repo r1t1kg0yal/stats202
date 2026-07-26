@@ -215,15 +215,25 @@ def _facet_label_thinning_expr(
     """Build a Vega-Lite ``labelExpr`` that hides facet-header labels
     when the per-facet pitch drops below readability.
 
-    Column / row faceting renders one label per facet. Vega-Lite's
-    standard ``labelOverlap='greedy'`` axis trick does not apply to
-    facet headers -- they are per-facet, not per-axis. Without
-    thinning, e.g. n=17 facets in a 280px cell pack labels at ~14px
-    pitch and they collide visibly even when rotated. This helper
-    picks an evenly-spaced visible subset (target pitch
-    ``_FACET_LABEL_MIN_PITCH_PX``) and emits a Vega expression that
-    returns the value for visible labels and an empty string for
-    hidden ones.
+    COLUMN faceting only -- i.e. the VERTICAL grouped bar, whose facet
+    strip runs left-to-right so the pitch has to accommodate a rotated
+    label's rendered WIDTH. Vega-Lite's standard
+    ``labelOverlap='greedy'`` axis trick does not apply to facet headers
+    (they are per-facet, not per-axis), and without thinning e.g. n=17
+    facets in a 280px cell pack labels at ~14px pitch and collide
+    visibly even when rotated. This helper picks an evenly-spaced
+    visible subset (target pitch ``_FACET_LABEL_MIN_PITCH_PX``) and
+    emits a Vega expression returning the value for visible labels and
+    an empty string for hidden ones.
+
+    Do NOT reuse this for the row-faceted horizontal bar. There the
+    strip runs top-to-bottom and the binding constraint is line height,
+    roughly 2.4x smaller than this width budget -- so the guard fired
+    where no collision existed and deleted category names. That path
+    sizes its header font from the measured pitch
+    (``_bar_horizontal_label_font_for_pitch``) and raises via
+    ``_validate_bar_horizontal_label_pitch`` rather than hiding
+    anything.
 
     Returns ``None`` (no thinning needed) when every label fits at
     >= ``_FACET_LABEL_MIN_PITCH_PX`` of pitch, in which case the
@@ -10602,6 +10612,37 @@ _DEFAULT_AXIS_LABEL_FONT_SIZE = 18
 _BAR_HORIZONTAL_Y_LABEL_FONT_MIN = 8
 
 
+def _horizontal_label_min_pitch_px(label_font_size: int) -> float:
+    """Vertical room one horizontal text label needs, in px.
+
+    Category labels on a horizontal bar are horizontal text stacked down
+    the gutter, so the binding constraint is LINE HEIGHT: a ``1.2`` line
+    box plus a 2px inter-row gap.
+
+    Deliberately NOT ``_FACET_LABEL_MIN_PITCH_PX``, which is a rotated-
+    label WIDTH budget for the vertical (column-faceted) bar, where the
+    facet strip runs left-to-right. Applying that width constant to the
+    row-faceted horizontal bar demanded ~2.4x the room the labels
+    actually occupy and silently deleted category names from n=13 up.
+
+    Exact inverse of ``_bar_horizontal_label_font_for_pitch``, so
+    ``_horizontal_label_min_pitch_px(font_for_pitch(p)) <= p`` holds for
+    every ``p`` above the floor. The callers depend on that: it is what
+    makes "labels always fit, or we raise" decidable without a
+    tolerance fudge.
+    """
+    return label_font_size * 1.2 + 2.0
+
+
+def _bar_horizontal_label_font_for_pitch(
+    row_pitch_px: float,
+    base_font_size: int = _DEFAULT_AXIS_LABEL_FONT_SIZE,
+) -> int:
+    """Largest category-label font that fits ``row_pitch_px`` of room."""
+    fit_font = int((row_pitch_px - 2.0) / 1.2)
+    return max(_BAR_HORIZONTAL_Y_LABEL_FONT_MIN, min(base_font_size, fit_font))
+
+
 def _bar_horizontal_y_label_font_size(
     chart_height: int,
     n_categories: int,
@@ -10609,22 +10650,69 @@ def _bar_horizontal_y_label_font_size(
 ) -> int:
     """Shrink horizontal-bar y-axis tick labels when rows are packed tight.
 
-    Composite sub-charts (~280px tall) with 18-20 categories leave ~12-14
-    px per row at the default 18pt skin label size, which guarantees
-    vertical overlap. Scale font size down from ``base_font_size`` so
-    each label fits its row budget; floor at
+    Composite sub-charts (~280px tall) with 18-20 categories leave ~14 px
+    per row at the default 18pt skin label size, which guarantees
+    vertical overlap. Scale the font down from ``base_font_size`` so each
+    label fits its row budget; floor at
     ``_BAR_HORIZONTAL_Y_LABEL_FONT_MIN``.
+
+    ``chart_height`` is the Vega-Lite plot height and chrome (title, axis
+    title, tick labels) is laid out OUTSIDE it, so the per-row budget is
+    ``chart_height / n_categories`` with nothing to reserve. An earlier
+    version subtracted a 48px chrome allowance from the plot height,
+    which under-reported the budget and drove the font to its floor
+    early -- and the floor is what armed the label-dropping guards.
     """
     if n_categories <= 0:
         return base_font_size
-    # Reserve chrome: sub-chart title, x-axis title, x tick labels.
-    usable = max(int(chart_height - 48), int(chart_height * 0.78))
-    px_per_row = usable / n_categories
-    # One horizontal label row ~= font_size * 1.2 line height + 2px gap.
-    fit_font = int((px_per_row - 2) / 1.2)
-    if fit_font >= base_font_size:
-        return base_font_size
-    return max(_BAR_HORIZONTAL_Y_LABEL_FONT_MIN, fit_font)
+    return _bar_horizontal_label_font_for_pitch(
+        chart_height / n_categories, base_font_size,
+    )
+
+
+def _validate_bar_horizontal_label_pitch(
+    row_pitch_px: float,
+    n_categories: int,
+    height: int,
+    grouped: bool,
+) -> None:
+    """Raise when a horizontal bar cannot show every category name.
+
+    The engine does not thin, hide, or whitelist category labels -- a
+    horizontal bar with missing row names is unreadable in a way the
+    caller cannot detect, because the render still reports success. So the
+    contract is binary: every name fits, or this raises with the remedies
+    named.
+
+    ``row_pitch_px`` is the vertical room one category actually gets
+    (plot height / categories for a plain bar, facet height + inter-facet
+    spacing for a grouped one). The floor is the room a label needs at
+    ``_BAR_HORIZONTAL_Y_LABEL_FONT_MIN``; above it,
+    ``_bar_horizontal_label_font_for_pitch`` always returns a font that
+    fits, so no further check is needed.
+    """
+    floor_pitch = _horizontal_label_min_pitch_px(
+        _BAR_HORIZONTAL_Y_LABEL_FONT_MIN,
+    )
+    if row_pitch_px >= floor_pitch:
+        return
+
+    fits = max(1, int(height // floor_pitch))
+    grouped_hint = (
+        " Setting stack=True also frees the room grouped bars spend on "
+        "side-by-side bars."
+        if grouped else ""
+    )
+    raise ValidationError(
+        f"HORIZONTAL BAR CATEGORY-LABEL ERROR: {n_categories} categories in "
+        f"a {height}px-tall canvas leaves {row_pitch_px:.1f}px per row, below "
+        f"the {floor_pitch:.1f}px a category label needs at the minimum "
+        f"{_BAR_HORIZONTAL_Y_LABEL_FONT_MIN}px font. The engine will not "
+        f"drop category names to make the chart fit. Show at most "
+        f"{fits} categories (aggregate or take the top-N), render this "
+        f"chart standalone rather than inside a composite cell, or switch to "
+        f"a heatmap for this many rows.{grouped_hint}"
+    )
 
 
 def _max_ticks_for_width(
@@ -17250,24 +17338,28 @@ def _build_bar_horizontal(
         height, n_unique_y, label_font_size,
     )
 
-    # ---- high-cardinality y-axis thinning (horizontal bars) -------------
-    # Mirror the vertical-bar thinning: beyond ~45 rows the y-axis label
-    # column produces an unreadable wall of stacked text.
-    if df[y_field].nunique() >= 45:
-        h_y_label_overlap: Any = "greedy"
-        h_y_label_separation: Any = 4
-    elif (
-        h_y_label_font_size <= _BAR_HORIZONTAL_Y_LABEL_FONT_MIN + 1
-        and n_unique_y >= 15
-    ):
-        # Still packed after font shrink -- thin every other label.
-        h_y_label_overlap = "greedy"
-        h_y_label_separation = 2
-    else:
-        h_y_label_overlap = alt.Undefined
-        h_y_label_separation = alt.Undefined
-
+    # ---- category labels are never dropped ------------------------------
+    # A horizontal bar whose category names are missing is worse than no
+    # chart: the reader cannot tell which row is which, and nothing in the
+    # ChartResult reveals the loss. Two guards used to delete them
+    # silently -- ``labelOverlap='greedy'`` on this axis (Vega hides
+    # colliding tick labels) and a facet-header whitelist on the grouped
+    # path below. Both are gone. Standalone canvases now grow with
+    # cardinality (``_bar_horizontal_auto_height``), so the only way to
+    # arrive with a row pitch too tight for even the minimum font is an
+    # explicit small preset or a composite cell -- and that raises with
+    # the remedies named instead of quietly discarding names.
+    #
+    # Band-scale rows divide the plot height evenly on this path; the
+    # grouped path runs the same check against its measured facet pitch.
     if not color_field or stack:
+        _validate_bar_horizontal_label_pitch(
+            row_pitch_px=height / max(n_unique_y, 1),
+            n_categories=n_unique_y,
+            height=height,
+            grouped=False,
+        )
+
         chart = (
             alt.Chart(df)
             .mark_bar(
@@ -17287,8 +17379,6 @@ def _build_bar_horizontal(
                         titleFontWeight="normal", labelLimit=y_label_limit,
                         labelAngle=0,
                         labelFontSize=h_y_label_font_size,
-                        labelOverlap=h_y_label_overlap,
-                        labelSeparation=h_y_label_separation,
                     ),
                 ),
                 x=alt.X(
@@ -17423,12 +17513,31 @@ def _build_bar_horizontal(
             n_y_cats, facet_height, per_bar_px, spacing_overhead,
         )
 
-        # Row-facet header label thinning (vertical analog of the
-        # column-facet thinning in _build_bar). Drops every-Nth label
-        # when n_y_cats packs labels too tightly along the height axis.
-        row_label_expr = _facet_label_thinning_expr(
-            list(df[y_field].unique()),
-            total_strip_px=n_y_cats * facet_height + spacing_overhead,
+        # Row-facet category labels are stacked vertically, one per group,
+        # so the room each one needs is its LINE HEIGHT -- and the pitch it
+        # gets is the facet height plus the inter-facet gutter. Sizing the
+        # font from that measured pitch (rather than from a budget
+        # estimate) is what guarantees the label fits whenever the pitch
+        # clears the minimum-font floor, so the gate below is the only
+        # check required and no label ever has to be hidden.
+        #
+        # This path used to call ``_facet_label_thinning_expr``, which
+        # applies the column-facet WIDTH budget
+        # (``_FACET_LABEL_MIN_PITCH_PX`` = 28px, calibrated for rotated
+        # labels along a left-to-right strip). Against a top-to-bottom
+        # strip that demanded ~2.4x the room the labels occupy, and
+        # emitted a labelExpr whitelist that silently deleted category
+        # names from n_y_cats=13 upward -- inside a band the cell-budget
+        # gate above already keeps readable.
+        row_pitch_px = facet_height + _GROUPED_BAR_FACET_SPACING_PX
+        _validate_bar_horizontal_label_pitch(
+            row_pitch_px=row_pitch_px,
+            n_categories=n_y_cats,
+            height=height,
+            grouped=True,
+        )
+        row_label_font_size = _bar_horizontal_label_font_for_pitch(
+            row_pitch_px, label_font_size,
         )
         # Horizontal-bar category labels are NEVER rotated -- always
         # horizontal text adjacent to their row group. Vega-Lite's
@@ -17461,11 +17570,9 @@ def _build_bar_horizontal(
             labelAlign="left",
             labelBaseline="middle",
             labelPadding=10,
-            labelFontSize=h_y_label_font_size,
+            labelFontSize=row_label_font_size,
             labelFont=_facet_header_label_font(skin_config),
         )
-        if row_label_expr is not None:
-            row_header_kwargs["labelExpr"] = row_label_expr
 
         chart = (
             alt.Chart(df)
@@ -21026,9 +21133,16 @@ def _make_chart(
     # finding above; fall back to the auto preset so the collectors can
     # still run (the finding surfaces with whatever raise fires).
     skin_config = get_skin(skin, intent)
-    if dimensions is None or not dims_usable:
+    engine_picked_canvas = dimensions is None or not dims_usable
+    if engine_picked_canvas:
         dimensions = _auto_dimensions(chart_type)
     width, height = DIMENSION_PRESETS[dimensions]
+    # Horizontal bars put the CATEGORY axis on the vertical, so their
+    # height has to track cardinality rather than sit on a preset. Only
+    # when the engine picked the canvas: an explicit preset is a promise
+    # about pixels, and composite cells never reach here at all.
+    if engine_picked_canvas and chart_type == "bar_horizontal":
+        height = _bar_horizontal_auto_height(df, mapping, height)
 
     # ---- Validate plot-ready DataFrame (single-pass aggregation) --------
     # Tier 0 (structural) findings aggregate among themselves and gate
@@ -25655,6 +25769,59 @@ def _auto_dimensions(chart_type: str) -> str:
     entry, matching the long-running engine default.
     """
     return _AUTO_DIMENSIONS.get(chart_type, "wide")
+
+
+# Standalone horizontal bars size their own canvas HEIGHT from category
+# count. On a horizontal bar the category axis is the vertical one, so a
+# preset height is the wrong budget: at a fixed 350px, 24 categories leave
+# ~14px per row, which floors the label font and used to arm the label-
+# dropping guards. Each category row instead gets a fixed slice; grouped
+# charts widen that slice so every colour group keeps a visible bar. The
+# cap stops a pathological 200-category frame from emitting a 4000px PNG
+# -- that case raises through the readability gates instead.
+_BAR_HORIZONTAL_AUTO_ROW_PX = 20
+_BAR_HORIZONTAL_AUTO_PER_BAR_PX = 6
+_BAR_HORIZONTAL_AUTO_MAX_HEIGHT_PX = 1600
+
+
+def _bar_horizontal_auto_height(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    base_height: int,
+) -> int:
+    """Grow a standalone horizontal-bar canvas to fit its category count.
+
+    Returns ``base_height`` unchanged for low-cardinality frames (the
+    preset is already generous) and for any frame whose y field cannot be
+    resolved. Only ``make_chart`` calls this, and only when it picked the
+    preset itself -- an explicit ``dimension_preset`` and every composite
+    cell keep exactly the height they asked for.
+    """
+    y_field = _get_field(mapping, "y")
+    if not y_field or y_field not in df.columns:
+        return base_height
+    n_categories = int(df[y_field].nunique())
+    if n_categories <= 0:
+        return base_height
+
+    per_row = _BAR_HORIZONTAL_AUTO_ROW_PX
+    color_field = _get_field(mapping, "color")
+    if (
+        color_field
+        and color_field in df.columns
+        and not mapping.get("stack", True)
+    ):
+        # Grouped: the row is subdivided across colour groups and loses
+        # the inter-facet gutter, so it needs proportionally more room.
+        n_groups = max(1, int(df[color_field].nunique()))
+        per_row = max(
+            per_row,
+            n_groups * _BAR_HORIZONTAL_AUTO_PER_BAR_PX
+            + _GROUPED_BAR_FACET_SPACING_PX,
+        )
+
+    needed = n_categories * per_row
+    return max(base_height, min(needed, _BAR_HORIZONTAL_AUTO_MAX_HEIGHT_PX))
 
 
 # ===========================================================================
