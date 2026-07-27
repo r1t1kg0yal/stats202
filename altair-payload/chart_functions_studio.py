@@ -335,11 +335,11 @@ UNIVERSAL_KNOBS: List[Dict[str, Any]] = [
     {"name": "xTickShow", "label": "X ticks", "type": "checkbox",
      "default": True,
      "apply": "setXTickShow", "group": "X-Axis"},
-    {"name": "xDomainMin", "label": "X domain min (blank=auto)", "type": "text",
-     "default": "",
+    {"name": "xDomainMin", "label": "X domain min (number or date, blank=auto)",
+     "type": "text", "default": "",
      "apply": "setXDomainMin", "group": "X-Axis"},
-    {"name": "xDomainMax", "label": "X domain max (blank=auto)", "type": "text",
-     "default": "",
+    {"name": "xDomainMax", "label": "X domain max (number or date, blank=auto)",
+     "type": "text", "default": "",
      "apply": "setXDomainMax", "group": "X-Axis"},
     {"name": "xZeroStart", "label": "X zero-start", "type": "select",
      "options": ["auto", "force", "off"], "default": "auto",
@@ -1051,7 +1051,9 @@ h3 { font-size: 12px; margin: 8px 0 4px 0; }
 .sidebar-panel { padding: 0; min-height: 320px; overflow: hidden; display: flex; flex-direction: column; box-sizing: border-box; }
 .sidebar-panel .tab-content { padding: 12px; flex: 1 1 0; overflow: auto; max-height: none; min-height: 0; }
 .chart-panel.fullscreen { grid-column: 1 / span 2; }
-#chart { min-height: 400px; overflow: auto; }
+/* No min-height and no inner scroller: the wrapper is sized to the SVG so
+   the resize frame can trace it, and any overflow scrolls at panel level. */
+#chart { overflow: visible; }
 .knob { margin: 4px 0; display: grid; grid-template-columns: 120px 1fr 50px; gap: 6px; align-items: center; }
 .knob label { font-size: 11px; }
 .knob input[type=range] { width: 100%; }
@@ -1132,51 +1134,155 @@ textarea { width: 100%; font-family: monospace; font-size: 10px; box-sizing: bor
   padding: 9px 16px; font-size: 12px; max-width: 620px; opacity: 0;
   pointer-events: none; transition: opacity 0.18s; z-index: 10000; }
 .cfs-toast.on { opacity: 1; }
-.cfs-hint { font-size: 10px; color: #555; margin-left: 12px; }
+/* The south and south-east grips overhang the wrapper by 7px, so the gap
+   the eye sees is this margin minus that. */
+.cfs-hint { font-size: 10px; color: #555; margin-left: 12px; margin-top: 30px; }
+
+/* ---- Direct manipulation: right-click menus ---------------------------
+   Every non-text chart element (line, bar, point, axis, legend, plot
+   background) resolves to a target and opens a menu at the pointer. The
+   menu is a single reused root; it is rebuilt per open rather than
+   pre-rendered, because the items depend on what was hit.
+   ---------------------------------------------------------------------- */
+#chart svg .cfs-hit { cursor: context-menu; }
+#chart svg .cfs-hit:hover { filter: brightness(1.12) saturate(1.25); }
+.cfs-menu { position: absolute; z-index: 10001; min-width: 214px;
+  max-width: 306px; max-height: 78vh; overflow-y: auto;
+  background: #fff; border: 1px solid #b9c2cd; border-radius: 7px;
+  box-shadow: 0 8px 28px rgba(16,32,56,.20); padding: 5px 0;
+  font-family: sans-serif; font-size: 12.5px; color: #16202c;
+  display: none; user-select: none; }
+.cfs-menu.on { display: block; }
+.cfs-menu-head { padding: 6px 13px 7px; font-size: 11px; color: #6b7b8f;
+  border-bottom: 1px solid #e6ebf1; margin-bottom: 4px; }
+.cfs-menu-head b { display: block; font-size: 12.5px; color: #16202c;
+  font-weight: 650; margin-bottom: 1px; }
+.cfs-item { padding: 6px 13px; cursor: pointer; display: flex;
+  align-items: center; gap: 9px; white-space: nowrap; }
+.cfs-item:hover { background: #eaf2fb; }
+.cfs-item.cfs-disabled { color: #a3aebc; cursor: default; }
+.cfs-item.cfs-disabled:hover { background: none; }
+.cfs-item .cfs-acc { margin-left: auto; color: #8593a5; font-size: 11px;
+  font-family: ui-monospace, Menlo, monospace; padding-left: 18px; }
+.cfs-item.cfs-on .cfs-acc { color: #1d6fc4; }
+.cfs-sep { height: 1px; background: #e6ebf1; margin: 4px 0; }
+.cfs-sub { padding: 3px 13px 7px; }
+.cfs-sub-label { font-size: 10.5px; color: #7b8a9c; margin-bottom: 5px;
+  text-transform: uppercase; letter-spacing: .4px; }
+.cfs-swatches { display: grid; grid-template-columns: repeat(8, 19px);
+  gap: 5px; }
+.cfs-sw { width: 19px; height: 19px; border-radius: 4px; cursor: pointer;
+  border: 1px solid rgba(0,0,0,.22); }
+.cfs-sw:hover { transform: scale(1.16); }
+.cfs-sw.cfs-cur { box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px #1d6fc4; }
+.cfs-steps { display: flex; align-items: center; gap: 7px; }
+.cfs-steps button { font-size: 13px; width: 26px; height: 24px; padding: 0;
+  line-height: 1; border: 1px solid #c3ccd8; background: #fff;
+  border-radius: 5px; cursor: pointer; }
+.cfs-steps button:hover { background: #eaf2fb; border-color: #1d6fc4; }
+.cfs-steps .cfs-num { font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px; min-width: 44px; text-align: center; }
+.cfs-menu input[type=color] { width: 100%; height: 26px; padding: 0;
+  border: 1px solid #c3ccd8; border-radius: 5px; cursor: pointer;
+  background: #fff; }
+.cfs-dates { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.cfs-dates input { border: 1px solid #c3ccd8; border-radius: 5px; padding: 3px 5px;
+                   font: 11.5px inherit; color: #16202e; background: #fff; }
+.cfs-dates button { border: 1px solid #1d6fc4; background: #1d6fc4; color: #fff;
+                    border-radius: 5px; padding: 3px 10px; cursor: pointer;
+                    font: 600 11.5px inherit; }
+.cfs-dates button:hover { background: #175da6; }
+.cfs-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.cfs-chip { border: 1px solid #c3ccd8; background: #fff; border-radius: 5px;
+  padding: 4px 9px; font-size: 11.5px; cursor: pointer; }
+.cfs-chip:hover { background: #eaf2fb; border-color: #1d6fc4; }
+.cfs-chip.cfs-cur { background: #1d6fc4; border-color: #1d6fc4; color: #fff; }
+
+/* ---- Direct manipulation: drag-to-resize ------------------------------
+   The wrapper is sized in JS to the rendered SVG's exact box, so the
+   frame and its handles trace the chart's own circumference rather than
+   the panel's. Pinning them to the panel put the drag edge metres away
+   from the chart whenever the chart was narrower than its container --
+   which, in fullscreen, is always.
+   ---------------------------------------------------------------------- */
+.chart-panel { overflow-x: auto; }
+#chartWrap { position: relative; display: inline-block; vertical-align: top; }
+.cfs-frame { position: absolute; inset: -2px; pointer-events: none;
+  border: 1px dashed #a9bed4; border-radius: 3px;
+  opacity: 0; transition: opacity .12s; z-index: 15; }
+#chartWrap:hover .cfs-frame, body.cfs-resizing .cfs-frame { opacity: 1; }
+body.cfs-resizing .cfs-frame { border-style: solid; border-color: #1d6fc4;
+  box-shadow: 0 0 0 3px rgba(29,111,196,.13); }
+.cfs-grip { position: absolute; opacity: 0; transition: opacity .12s;
+  background: #fff; border: 1.5px solid #1d6fc4; border-radius: 2px;
+  box-shadow: 0 1px 3px rgba(16,32,56,.28); z-index: 20; }
+#chartWrap:hover .cfs-grip, .cfs-grip.cfs-live { opacity: 1; }
+.cfs-grip:hover, .cfs-grip.cfs-live { background: #1d6fc4; }
+.cfs-grip-e  { right: -6px; top: 50%; margin-top: -13px;
+  width: 9px; height: 26px; cursor: ew-resize; }
+.cfs-grip-s  { bottom: -6px; left: 50%; margin-left: -13px;
+  height: 9px; width: 26px; cursor: ns-resize; }
+.cfs-grip-se { right: -7px; bottom: -7px; width: 12px; height: 12px;
+  cursor: nwse-resize; }
+body.cfs-resizing { cursor: nwse-resize; user-select: none; }
+body.cfs-resizing #chart svg { pointer-events: none; }
+.cfs-sizetag { position: fixed; z-index: 10002; background: #22262e;
+  color: #fff; font: 11.5px/1 ui-monospace, Menlo, monospace;
+  padding: 6px 9px; border-radius: 5px; pointer-events: none; display: none; }
+.cfs-sizetag.on { display: block; }
+
+/* ---- Advanced controls disclosure ---- */
+.chart-toolbar button.primary { background: #003359; color: #fff;
+  border: 1px solid #003359; border-radius: 4px; font-weight: 650;
+  padding: 5px 14px; }
+.chart-toolbar button.primary:hover { background: #00263f; }
+.knobs-section > summary { font-size: 12.5px; font-weight: 650;
+  padding: 7px 4px; cursor: pointer; }
+.knobs-section .knobs-sub { font-weight: 400; color: #6b7b8f;
+  font-size: 11px; margin-left: 8px; }
+.knobs-section .knobs-body { padding-top: 8px;
+  border-top: 1px solid #ccc; margin-top: 4px; }
 </style>
 </head>
 <body>
 
 <h1>__TITLE__</h1>
 
-<div class="toolbar">
-  <label>Spec sheet:</label>
-  <select id="specSheetSelect" style="min-width: 160px;"></select>
-  <button onclick="overwriteCurrentSheet()">Save</button>
-  <button onclick="saveAsNewSheet()">Save as new</button>
-  <button onclick="deleteCurrentSheet()">Delete</button>
-  <button onclick="downloadSheet()">Download</button>
-  <button onclick="document.getElementById('uploadInput').click()">Upload</button>
-  <input type="file" id="uploadInput" accept=".json" style="display:none;" onchange="uploadSheet(this.files[0])" />
-  <span id="status" style="margin-left:12px; font-size:11px; color:#555;"></span>
-</div>
+<input type="file" id="uploadInput" accept=".json" style="display:none;" onchange="uploadSheet(this.files[0])" />
 
 <div class="layout" id="mainLayout">
 
   <div class="panel chart-panel" id="chartPanel">
     <div class="chart-toolbar">
-      <button onclick="resetView()" title="Reset chart view to default zoom/pan">Reset view</button>
-      <button onclick="toggleFullscreen()" title="Hide sidebar and knob cards to maximize chart" id="fullscreenBtn">Fullscreen</button>
-      <button onclick="exportPNG(2)">PNG 2x</button>
-      <button onclick="exportSVG()">SVG</button>
-      <button onclick="revertTextEdits()" title="Undo every in-place text edit made in this session, leaving styling and knob values alone">Revert text</button>
+      <button class="primary" onclick="downloadChart()" id="downloadBtn"
+        title="Download the chart exactly as it looks now, as a print-resolution PNG">Download</button>
+      <button onclick="undoLastEdit()" id="undoBtn"
+        title="Undo the last edit">Undo</button>
+      <button onclick="resetView()" title="Discard every edit and return to the chart as PRISM built it">Reset</button>
+      <button onclick="toggleFullscreen()" title="Hide the side panel to maximise the chart" id="fullscreenBtn">Fullscreen</button>
       <span id="sizeSummary" class="size-summary"></span>
+      <span id="status" style="font-size:11px; color:#555;"></span>
     </div>
-    <div id="chart"></div>
-    <div class="cfs-hint">Double-click any text in the chart to edit it in
-      place &mdash; titles, captions, annotations, axis and legend titles,
-      series labels, value labels, tick labels and legend entries. Enter
-      commits, Esc cancels.</div>
+    <div id="chartWrap">
+      <div id="chart"></div>
+      <div class="cfs-frame"></div>
+      <div class="cfs-grip cfs-grip-e"  data-grip="e"  title="Drag to change width"></div>
+      <div class="cfs-grip cfs-grip-s"  data-grip="s"  title="Drag to change height"></div>
+      <div class="cfs-grip cfs-grip-se" data-grip="se" title="Drag to resize both"></div>
+    </div>
+    <div class="cfs-hint"><strong>Double-click</strong> any text to retype it.
+      <strong>Right-click</strong> a line, bar, point, axis, legend or the
+      background for its options. <strong>Drag</strong> the chart's right or
+      bottom edge to resize.</div>
   </div>
 
-  <!-- Right sidebar: Data / Code / Metadata / Export / Raw tabs -->
+  <!-- Right sidebar: Data / Code / Metadata / Export tabs -->
   <div class="panel sidebar-panel info-tabs" id="sidebarPanel">
     <div class="tab-bar">
       <button class="tab-button active" data-tab="data" onclick="switchTab('data')">Data</button>
       <button class="tab-button" data-tab="code" onclick="switchTab('code')">Code</button>
       <button class="tab-button" data-tab="metadata" onclick="switchTab('metadata')">Metadata</button>
       <button class="tab-button" data-tab="export" onclick="switchTab('export')">Export</button>
-      <button class="tab-button" data-tab="raw" onclick="switchTab('raw')">Raw</button>
     </div>
 
     <div class="tab-content" id="tab-data">
@@ -1223,11 +1329,11 @@ textarea { width: 100%; font-family: monospace; font-size: 10px; box-sizing: bor
       <fieldset>
         <legend>Image</legend>
         <div class="row">
-          <button onclick="exportPNG(1)">PNG 1x</button>
-          <button onclick="exportPNG(2)">PNG 2x</button>
-          <button onclick="exportPNG(4)">PNG 4x</button>
-          <button onclick="exportSVG()">SVG</button>
+          <button onclick="exportPNG(2)">Download PNG</button>
+          <button onclick="exportPNG(4)">Extra large</button>
         </div>
+        <div class="note">Download matches what you see, including every edit.
+          Extra large doubles the resolution for print.</div>
       </fieldset>
       <fieldset>
         <legend>Data</legend>
@@ -1268,44 +1374,49 @@ textarea { width: 100%; font-family: monospace; font-size: 10px; box-sizing: bor
       </fieldset>
     </div>
 
-    <div class="tab-content hidden" id="tab-raw">
-      <details open>
-        <summary>Current spec (vega-lite JSON, read-only)</summary>
-        <textarea id="specText" readonly></textarea>
-      </details>
-      <details>
-        <summary>Current overrides (read-only)</summary>
-        <textarea id="overridesText" readonly></textarea>
-      </details>
-      <details>
-        <summary>Active spec sheet (read-only)</summary>
-        <textarea id="sheetText" readonly></textarea>
-      </details>
-    </div>
   </div>
 
 </div>
 
 <div class="cfs-toast" id="cfsToast"></div>
 
-<!-- Knob cards (below chart, responsive grid) -->
-<div class="knobs-section" id="knobsSection">
-  <h2>Controls</h2>
-  <input type="search" class="search-box" id="searchBox" placeholder="Search knobs (e.g. 'title', 'axis', 'color')..." oninput="filterKnobs(this.value)" />
-  <div class="knob-cards" id="knobContainer"></div>
-  <div id="annotationSection"></div>
-  <div id="perSeriesSection"></div>
-  <div style="margin-top: 10px;">
-    <fieldset class="knob-card">
-      <legend>Session preferences (localStorage)</legend>
-      <div class="row">
-        <button onclick="resetToTheme()">Reset to theme</button>
-        <button onclick="clearOverrides()">Clear overrides</button>
-      </div>
-      <div class="note">Spec sheets persist preferences across sessions. See top toolbar.</div>
-    </fieldset>
+<!-- Every control also reachable by right-clicking the chart. Collapsed by
+     default: the panel is the exhaustive fallback, not the primary surface. -->
+<details class="knobs-section" id="knobsSection">
+  <summary id="knobsSummary">Advanced controls
+    <span class="knobs-sub">every setting, including the ones with no
+      right-click equivalent</span></summary>
+  <div class="knobs-body">
+    <input type="search" class="search-box" id="searchBox" placeholder="Search all controls (e.g. 'title', 'axis', 'color')..." oninput="filterKnobs(this.value)" />
+    <div class="knob-cards" id="knobContainer"></div>
+    <div id="annotationSection"></div>
+    <div id="perSeriesSection"></div>
+    <div style="margin-top: 10px;">
+      <fieldset class="knob-card">
+        <legend>Saved looks and session preferences</legend>
+        <div class="row" style="align-items:center;">
+          <label style="font-size:11px;">Spec sheet:</label>
+          <select id="specSheetSelect" style="min-width: 150px; font-size: 11px;"></select>
+          <button onclick="overwriteCurrentSheet()">Save</button>
+          <button onclick="saveAsNewSheet()">Save as new</button>
+          <button onclick="deleteCurrentSheet()">Delete</button>
+          <button onclick="downloadSheet()">Export .json</button>
+          <button onclick="document.getElementById('uploadInput').click()">Import</button>
+        </div>
+        <div class="row">
+          <button onclick="revertTextEdits()" title="Undo every in-place text edit at once, leaving styling alone">Revert text edits</button>
+          <button onclick="resetToTheme()">Reset to theme</button>
+          <button onclick="clearOverrides()">Clear overrides</button>
+        </div>
+        <div class="note">A spec sheet is a reusable bundle of theme, palette
+          and control values. It persists across sessions in this browser.</div>
+      </fieldset>
+    </div>
   </div>
-</div>
+</details>
+
+<div class="cfs-menu" id="cfsMenu"></div>
+<div class="cfs-sizetag" id="cfsSizeTag"></div>
 
 <script>
 /* ============================================================
@@ -1682,10 +1793,10 @@ const APPLY_FUNCTIONS = {
     setBothAxisProperty(spec, "x", "axisX", "ticks", !!value),
   setYTickShow: (spec, value) =>
     setBothAxisProperty(spec, "y", "axisY", "ticks", !!value),
-  setXDomainMin: (spec, value) => setDomainBound(spec, "x", 0, value),
-  setXDomainMax: (spec, value) => setDomainBound(spec, "x", 1, value),
-  setYDomainMin: (spec, value) => setDomainBound(spec, "y", 0, value),
-  setYDomainMax: (spec, value) => setDomainBound(spec, "y", 1, value),
+  setXDomainMin: (spec, value) => setDomainBoundRepaired(spec, "x", 0, value),
+  setXDomainMax: (spec, value) => setDomainBoundRepaired(spec, "x", 1, value),
+  setYDomainMin: (spec, value) => setDomainBoundRepaired(spec, "y", 0, value),
+  setYDomainMax: (spec, value) => setDomainBoundRepaired(spec, "y", 1, value),
   setXZeroStart: (spec, value) => setZeroStart(spec, "x", value),
   setYZeroStart: (spec, value) => setZeroStart(spec, "y", value),
   setXLogScale: (spec, value) => setScaleType(spec, "x", value ? "log" : null),
@@ -2000,13 +2111,27 @@ function disableAllTooltips(spec) {
   if (spec.spec) disableAllTooltips(spec.spec);
 }
 
-function walkSetSize(node, key, value) {
+/* How a text panel should follow the plot's size depends entirely on
+   which way it is stacked against it:
+
+     vconcat (caption / source strip, sits BELOW the plot)
+        width  must match, or the concat renders ragged
+        height is the height of its text -- forcing it pads dead space
+
+     hconcat (side narrative, sits BESIDE the plot)
+        width  is its own column, independent of the plot
+        height is the height of its text, same as above
+
+   So the walk has to know its stacking context, not just the node. */
+function walkSetSize(node, key, value, stack) {
   // Set width or height everywhere it already exists in the spec tree
   // (top-level + every layer/concat panel). For layered PRISM specs,
   // size is carried by the inner layer, not the root, so a top-level-
   // only update would be ignored. Always set at the top level too so
   // single-view specs still work.
   if (!node || typeof node !== "object") return;
+  stack = stack || "root";
+  if (isTextPanelNode(node) && !(key === "width" && stack === "vstack")) return;
   // Always set at the current node (top-level or this panel).
   // For layered specs, this updates layer[0], layer[1], etc.; the layer
   // that vega-lite picks for layout will get the right value.
@@ -2019,17 +2144,27 @@ function walkSetSize(node, key, value) {
       node[key] = value;
     }
   }
-  for (const subKey of ["layer", "concat", "hconcat", "vconcat"]) {
+  // Layers share their parent's stacking context; they are drawn on top
+  // of one another, not next to one another.
+  if (Array.isArray(node.layer)) {
+    for (const child of node.layer) walkSetSize(child, key, value, stack);
+  }
+  for (const [subKey, kind] of [["vconcat", "vstack"], ["concat", "vstack"],
+                                ["hconcat", "hstack"]]) {
     if (Array.isArray(node[subKey])) {
-      for (const child of node[subKey]) walkSetSize(child, key, value);
+      for (const child of node[subKey]) walkSetSize(child, key, value, kind);
     }
   }
-  if (node.spec) walkSetSize(node.spec, key, value);
+  if (node.spec) walkSetSize(node.spec, key, value, stack);
 }
 
 function walkExtractSize(node, key) {
-  // Find the first numeric width/height anywhere in the spec tree.
+  // Find the first numeric width/height belonging to an actual plot.
+  // Text panels are skipped: a side narrative's width describes a column
+  // of prose, and reporting it as "the chart width" makes both the size
+  // readout and the drag origin wrong on every chart with side panels.
   if (!node || typeof node !== "object") return undefined;
+  if (isTextPanelNode(node)) return undefined;
   if (typeof node[key] === "number") return node[key];
   for (const subKey of ["layer", "concat", "hconcat", "vconcat"]) {
     if (Array.isArray(node[subKey])) {
@@ -2043,13 +2178,35 @@ function walkExtractSize(node, key) {
   return undefined;
 }
 
+/* Reads the bound the way the encoding it lands on will be read.
+   parseFloat on a temporal axis turned "2022-06-30" into 2022, which
+   vega reads as 2022 MILLISECONDS after the epoch -- the chart collapsed
+   into a three-millisecond window in 1970. Returns true when a temporal
+   bound was written, so the caller knows the window moved. */
 function setDomainBound(spec, channel, idx, rawValue) {
-  const num = parseFloat(rawValue);
-  const isEmpty = rawValue === "" || rawValue == null || isNaN(num);
+  const isBlank = rawValue === "" || rawValue == null;
+  let wroteTemporal = false;
   walkEncoding(spec, channel, enc => {
-    // Empty knob = "auto" semantically. Clear any explicit value at idx
-    // (returns scale.domain to producer-set or vega-lite auto).
-    if (isEmpty) {
+    // Side text panels carry an empty x encoding with no field and no
+    // type. It has no scale to bound, and parseFloat happily wrote a
+    // half-parsed year into it.
+    if (!enc.field && !enc.type && !enc.aggregate && !enc.datum) return;
+    const temporal = enc.type === "temporal";
+    let value = null;
+    if (!isBlank) {
+      if (temporal) {
+        const d = parseSpecDate(rawValue);
+        if (d) value = formatSpecDate(d, true);
+      } else {
+        const num = parseFloat(rawValue);
+        if (!isNaN(num)) value = num;
+      }
+    }
+    // Blank knob means "auto"; so does a value this encoding cannot read,
+    // because the alternative is writing a bound that silently destroys
+    // the axis. Clearing at idx returns the scale to producer-set or
+    // vega-lite auto.
+    if (value === null) {
       if (enc.scale && Array.isArray(enc.scale.domain)) {
         enc.scale.domain[idx] = null;
         if (enc.scale.domain[0] === null && enc.scale.domain[1] === null) {
@@ -2060,8 +2217,39 @@ function setDomainBound(spec, channel, idx, rawValue) {
     }
     if (!enc.scale) enc.scale = {};
     if (!Array.isArray(enc.scale.domain)) enc.scale.domain = [null, null];
-    enc.scale.domain[idx] = num;
+    enc.scale.domain[idx] = value;
+    if (temporal) wroteTemporal = true;
   });
+  return wroteTemporal;
+}
+
+/* The Advanced-controls entry point. Writing a temporal x bound is the
+   same edit the right-click menu makes, so it has to leave the chart in
+   the same state -- otherwise the panel documented as "every setting"
+   is also the one back door that produces the clamp-only breakage the
+   repair set exists to prevent. */
+function setDomainBoundRepaired(spec, channel, idx, rawValue) {
+  const wroteTemporal = setDomainBound(spec, channel, idx, rawValue);
+  const info = temporalPlotInfo(spec);
+  if (!info) return;
+  if (channel === "x") {
+    if (!wroteTemporal) return;
+    // Resolve the end the user left blank against the data, so one typed
+    // bound produces the window actually on screen rather than a
+    // half-specified domain nothing else in the file knows how to read.
+    const win = effectiveXWindow(spec, info);
+    if (win) applyTimeWindow(spec, win[0], win[1], { info: info });
+    return;
+  }
+  // A y bound moves the end-of-line labels even though the window did
+  // not, because they are spaced in pixel space against the domain.
+  if (channel === "y" && info.yField) {
+    const win = currentWindow(spec, info) || dataExtent(info);
+    const dom = currentYDomain(spec, info.yField);
+    if (win && Array.isArray(dom) && dom[0] !== null && dom[1] !== null) {
+      relocateEndlineLabels(spec, info, rowsInWindow(info, win[0], win[1]), dom);
+    }
+  }
 }
 
 function setZeroStart(spec, channel, mode) {
@@ -2082,14 +2270,539 @@ function setScaleType(spec, channel, scaleType) {
 }
 
 /* ============================================================
-   AXIS HELPERS
-   Always update encoding.{channel}.axis.{prop} (overriding any
-   producer-set value) AND config.{configKey}.{prop} (so the
-   default applies if a panel has no encoding-level override).
+   ENGINE PORTS
+
+   Time windowing cannot be expressed as "write scale.domain and
+   re-render": the producer hard-writes the y domain from the full
+   frame, picks the x tick strategy for the full span, and pins the
+   end-of-line labels at max(x). Repairing those needs the same
+   arithmetic the engine used to derive them in the first place, and
+   the studio is a static page with no Python behind it.
+
+   So three engine functions are ported here verbatim in behaviour:
+   calculate_y_axis_domain, determine_date_format (its calendar and
+   intraday ladders), and _stagger_lvl_text_y. They are pure -- no
+   DOM, no spec -- so the parity harness in dev/ can drive them
+   against their Python originals through a headless browser and
+   assert byte-equal output. Anything that changes here has to keep
+   that harness green; an approximation is not good enough, because
+   the repair rewrites label positions in place and error accumulates
+   across successive window edits.
    ============================================================ */
-function setBothAxisProperty(spec, channel, configKey, prop, value) {
-  setAxisEncodingProperty(spec, channel, prop, value);
-  setAxisConfigProperty(spec, configKey, prop, value);
+
+/* The producer embeds naive ISO strings ("2020-03-31T00:00:00"), which
+   are wall-clock instants with no zone. Two traps follow.
+
+   Date's own parser disagrees with itself: a date-only string is read
+   as UTC while a date-time string is read as local, so the two forms
+   in one dataset land an offset apart. Parse the fields explicitly.
+
+   And the fields are then loaded as UTC rather than local, which makes
+   every span DST-free. A window over 2020-01-01..2020-09-30 is 273
+   days to the engine, whose pandas timestamps are equally naive, but
+   272 days and 23 hours to a local-time Date -- and truncating that to
+   whole days drops a tick, moves a ladder rung, and puts the studio's
+   axis one stride away from the one the engine would have drawn. Every
+   accessor below is therefore a getUTC*: the whole module treats these
+   as wall-clock, exactly as the engine does. */
+function parseSpecDate(v) {
+  if (v instanceof Date) return isFinite(v.getTime()) ? v : null;
+  if (typeof v === "number") { const d = new Date(v); return isFinite(d.getTime()) ? d : null; }
+  if (typeof v !== "string") return null;
+  const m = v.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?/);
+  if (!m) { const d = new Date(v); return isFinite(d.getTime()) ? d : null; }
+  const ms = m[7] ? Math.round(parseFloat("0." + m[7]) * 1000) : 0;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3],
+                              +(m[4] || 0), +(m[5] || 0), +(m[6] || 0), ms));
+  // Date.UTC rolls out-of-range components over, so a typo'd "2022-13-45"
+  // would come back as 2023-02-14 -- a different date, silently accepted.
+  // Anything the user can type has to fail loudly instead.
+  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 ||
+      d.getUTCDate() !== +m[3]) return null;
+  return d;
+}
+
+/* Round-trip of parseSpecDate. Midnight is written date-only so a
+   window written by the studio reads the way the producer's own
+   annotation rows do. */
+function formatSpecDate(d, forceTime) {
+  const p = n => (n < 10 ? "0" : "") + n;
+  const day = d.getUTCFullYear() + "-" + p(d.getUTCMonth() + 1) + "-" + p(d.getUTCDate());
+  if (!forceTime && !d.getUTCHours() && !d.getUTCMinutes() && !d.getUTCSeconds()) return day;
+  return day + "T" + p(d.getUTCHours()) + ":" + p(d.getUTCMinutes()) +
+         ":" + p(d.getUTCSeconds());
+}
+
+function cfsMedian(arr) {
+  if (!arr.length) return null;
+  const s = arr.slice().sort((a, b) => a - b);
+  const mid = s.length >> 1;
+  return (s.length % 2) ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+function cfsNum(v) {
+  if (typeof v === "number") return isFinite(v) ? v : null;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = parseFloat(v);
+    return isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/* ---- port of calculate_y_axis_domain (engine chart_functions.py) ----
+   The snap-to-zero rule is the part that cannot be approximated. Both
+   gates have to fire: the floor must be within 20% of the data SPAN
+   (so "0.5% to 10% unemployment" pulls zero in as a useful reference)
+   and within 5% of the data TOP (so an indexed-performance series
+   running 80-735 does not, because 80 is nowhere near zero in
+   absolute terms even though it looks close relative to the range).
+   Dropping either gate produces a domain that is right at some
+   windows and wrong at others. */
+function calcYAxisDomain(values, opts) {
+  opts = opts || {};
+  const includeZero = !!opts.includeZero;
+  const preventZeroStart = opts.preventZeroStart !== false;
+  const paddingPct = (opts.paddingPct === undefined) ? 0.05 : opts.paddingPct;
+
+  let dataMin = Infinity, dataMax = -Infinity, n = 0;
+  for (const raw of values) {
+    const v = cfsNum(raw);
+    if (v === null) continue;
+    if (v < dataMin) dataMin = v;
+    if (v > dataMax) dataMax = v;
+    n++;
+  }
+  if (!n) return [0.0, 1.0];
+
+  const dataRange = dataMax - dataMin;
+  if (dataRange === 0) {
+    if (dataMax === 0) return [-1.0, 1.0];
+    const synthetic = Math.abs(dataMax) * 0.05;
+    return [dataMax - synthetic, dataMax + synthetic];
+  }
+
+  let domainMin = dataMin, domainMax = dataMax;
+  if (preventZeroStart && domainMin > 0) {
+    const relative = dataRange > 0 ? dataRange * 0.2 : Math.abs(domainMin) * 0.2;
+    const absolute = Math.abs(domainMax) * 0.05;
+    if (domainMin <= relative && domainMin <= absolute) domainMin = 0.0;
+  }
+  const padding = (domainMax - domainMin) * paddingPct;
+  domainMin -= padding;
+  domainMax += padding;
+  if (includeZero) {
+    domainMin = Math.min(domainMin, 0.0);
+    domainMax = Math.max(domainMax, 0.0);
+  }
+  return [domainMin, domainMax];
+}
+
+/* ---- port of the determine_date_format ladder ---- */
+
+const CFS_AXIS_LABEL_FONT = 18;
+const CFS_NICE_MONTH_STEPS = [1, 2, 3, 6, 12, 24, 36, 60, 120];
+const CFS_NICE_YEAR_STEPS = [1, 2, 5, 10, 20, 25, 50, 100];
+const CFS_TICK_STEP_LADDER = [
+  ["year", 10], ["year", 5], ["year", 2], ["year", 1],
+  ["month", 6], ["month", 3], ["month", 1],
+  ["week", 2], ["week", 1], ["day", 7], ["day", 3], ["day", 1],
+];
+const CFS_INTRADAY_STRIDES_S = [
+  10, 30, 60, 300, 600, 900, 1800,
+  3600, 7200, 10800, 21600, 43200, 86400, 172800,
+];
+
+function maxTicksForWidth(chartWidth, sampleLabel, labelAngle, fontSize) {
+  if (fontSize === undefined || fontSize === null) fontSize = CFS_AXIS_LABEL_FONT;
+  const n = Math.max(String(sampleLabel).length, 1);
+  const charW = fontSize * 0.6;
+  const breathing = Math.max(fontSize * 1.5, 24);
+  let per;
+  if (labelAngle === 0) per = n * charW + breathing;
+  else if (Math.abs(labelAngle) >= 90) per = fontSize + breathing * 0.5;
+  else per = n * charW * 0.7 + breathing * 0.6;
+  return Math.max(Math.floor(chartWidth / per), 2);
+}
+
+function formatForStep(interval, step) {
+  if (interval === "year") return ["%Y", "2025"];
+  if (interval === "month" && step >= 12) return ["%Y", "2025"];
+  if (interval === "month") return ["%b %y", "Mar 25"];
+  if (interval === "week" || interval === "day") return ["%d %b", "06 Mar"];
+  if (interval === "hour") return ["%H:%M", "09:30"];
+  if (interval === "minute" || interval === "second") return ["%H:%M:%S", "09:30:00"];
+  return ["%Y", "2025"];
+}
+
+/* Vega-Lite silently ignores {"interval":"month","step":N} for N >= 12
+   and falls back to default annual ticks, so month steps of a year or
+   more have to be re-expressed as year steps. */
+function temporalTickStep(interval, step) {
+  if (interval === "month" && step >= 12) {
+    return { interval: "year", step: Math.max(1, Math.round(step / 12)) };
+  }
+  return { interval: interval, step: step };
+}
+
+function coarsenMonthStepToFit(spanMonths, chartWidth, initialStep, fontSize) {
+  let last = null;
+  for (const step of CFS_NICE_MONTH_STEPS) {
+    if (step < initialStep) continue;
+    const fmt = step >= 12 ? "%Y" : "%b %y";
+    const sample = step >= 12 ? "2025" : "Mar 25";
+    const nTicks = Math.max(Math.trunc(spanMonths / step) + 1, 2);
+    last = { step: step, fmt: fmt, sample: sample, nTicks: nTicks };
+    if (nTicks <= maxTicksForWidth(chartWidth, sample, 0, fontSize)) return last;
+  }
+  if (last === null) {
+    return { step: Math.max(initialStep, 1), fmt: "%b %y", sample: "Mar 25", nTicks: 2 };
+  }
+  return last;
+}
+
+function stepForTarget(spanMonths, targetTicks) {
+  const raw = Math.max(spanMonths / Math.max(targetTicks, 1), 1.0);
+  for (const nice of CFS_NICE_MONTH_STEPS) if (raw <= nice) return nice;
+  return 120;
+}
+
+/* Vega-Lite anchors temporal ticks to the calendar, not to the data,
+   so a configuration can be arithmetically sensible and still render
+   one lonely tick. Mirror the anchoring to count what will actually
+   appear inside the range. */
+function countCalendarTicksInRange(minDate, maxDate, tickStep, tickCount) {
+  if (!tickStep) return (typeof tickCount === "number") ? tickCount : 2;
+  const interval = tickStep.interval;
+  let step = parseInt(tickStep.step, 10);
+  if (!isFinite(step) || step < 1) step = 1;
+  const lo = minDate.getTime(), hi = maxDate.getTime();
+
+  if (interval === "year") {
+    let count = 0;
+    for (let y = minDate.getUTCFullYear(); y <= maxDate.getUTCFullYear(); y++) {
+      if (y % step !== 0) continue;
+      const t = Date.UTC(y, 0, 1);
+      if (t >= lo && t <= hi) count++;
+    }
+    return count;
+  }
+  if (interval === "month") {
+    let count = 0;
+    for (let y = minDate.getUTCFullYear(); y <= maxDate.getUTCFullYear() + 1; y++) {
+      for (let mo = 1; mo <= 12; mo++) {
+        if ((mo - 1) % step !== 0) continue;
+        const t = Date.UTC(y, mo - 1, 1);
+        if (t >= lo && t <= hi) count++;
+      }
+    }
+    return count;
+  }
+  // pandas Timedelta.days truncates to whole days before the division.
+  const spanDays = Math.trunc((hi - lo) / 86400000);
+  if (interval === "week") return Math.max(Math.trunc(spanDays / (7 * step)), 1);
+  if (interval === "day") return Math.max(Math.trunc(spanDays / step) + 1, 1);
+  const spanSec = (hi - lo) / 1000;
+  if (interval === "hour") return Math.max(Math.trunc(spanSec / 3600 / step) + 1, 1);
+  if (interval === "minute") return Math.max(Math.trunc(spanSec / 60 / step) + 1, 1);
+  if (interval === "second") return Math.max(Math.trunc(spanSec / step) + 1, 1);
+  return 2;
+}
+
+function ensureMinTemporalTicks(cfg, minDate, maxDate, nSamples, minTicks) {
+  if (minTicks === undefined) minTicks = 2;
+  if (!cfg.tickStep) return cfg;
+  if (!nSamples) return cfg;
+  const effectiveMin = Math.max(1, Math.min(minTicks, nSamples));
+  if (countCalendarTicksInRange(minDate, maxDate, cfg.tickStep, cfg.tickCount) >= effectiveMin) {
+    return cfg;
+  }
+  const curInterval = cfg.tickStep.interval;
+  let curStep = parseInt(cfg.tickStep.step, 10);
+  if (!isFinite(curStep)) curStep = 1;
+  let startIdx = 0;
+  for (let i = 0; i < CFS_TICK_STEP_LADDER.length; i++) {
+    if (CFS_TICK_STEP_LADDER[i][0] === curInterval && CFS_TICK_STEP_LADDER[i][1] === curStep) {
+      startIdx = i;
+      break;
+    }
+  }
+  for (let i = startIdx + 1; i < CFS_TICK_STEP_LADDER.length; i++) {
+    const iv = CFS_TICK_STEP_LADDER[i][0], st = CFS_TICK_STEP_LADDER[i][1];
+    const candidate = { interval: iv, step: st };
+    if (countCalendarTicksInRange(minDate, maxDate, candidate, null) < effectiveMin) continue;
+    return {
+      format: formatForStep(iv, st)[0],
+      tickCount: cfg.tickCount,
+      labelAngle: 0,
+      description: "Coarsening dropped to (" + iv + " step=" + st + ") for >= " +
+                   effectiveMin + " ticks in range",
+      tickStep: candidate,
+      labelExpr: cfg.labelExpr,
+    };
+  }
+  return cfg;
+}
+
+/* Reduce a list of Date objects to everything the ladder needs. The
+   engine measures cadence on DE-DUPLICATED dates (a long-format
+   multi-line repeats each date once per series, which would drive the
+   median inter-sample gap to zero and misfire the intraday branch)
+   but counts samples on the raw rows. */
+function summarizeDates(dates) {
+  let n = 0;
+  const uniq = Object.create(null);
+  for (const d of dates) {
+    if (!d || !isFinite(d.getTime())) continue;
+    n++;
+    uniq[d.getTime()] = true;
+  }
+  const times = Object.keys(uniq).map(Number).sort((a, b) => a - b);
+  if (!times.length) return { n: 0, times: [], diffsMs: [] };
+  const diffs = [];
+  for (let i = 1; i < times.length; i++) diffs.push(times[i] - times[i - 1]);
+  return {
+    n: n,
+    times: times,
+    min: new Date(times[0]),
+    max: new Date(times[times.length - 1]),
+    diffsMs: diffs,
+  };
+}
+
+function determineDateFormatRaw(s, chartWidth, fontSize) {
+  if (!s.n) {
+    return { format: "%b %y", tickCount: 12, labelAngle: null,
+             description: "Show month and year (span 1-3 years)",
+             tickStep: null, labelExpr: null };
+  }
+  const spanMs = s.max.getTime() - s.min.getTime();
+  const spanDays = Math.trunc(spanMs / 86400000);
+  const spanHours = spanMs / 3600000;
+  const spanSeconds = spanMs / 1000;
+  const mt = (w, sample) => maxTicksForWidth(w, sample, 0, fontSize);
+
+  // ---- intraday, by inter-sample cadence rather than points-per-day ----
+  if (spanHours <= 5 * 24 && s.n >= 2) {
+    const medDiffSec = s.diffsMs.length ? cfsMedian(s.diffsMs) / 1000 : Infinity;
+    if (medDiffSec < 20 * 3600) {
+      const days = Object.create(null);
+      for (const t of s.times) {
+        const d = new Date(t);
+        days[d.getUTCFullYear() + "-" + d.getUTCMonth() + "-" + d.getUTCDate()] = true;
+      }
+      const singleSession = Object.keys(days).length === 1;
+      const labelExpr = singleSession
+        ? "(datum.index === 0) ? timeFormat(datum.value, '%d %b') " +
+          ": timeFormat(datum.value, '%H:%M')"
+        : "(hours(datum.value) === 0 && minutes(datum.value) === 0 " +
+          "&& seconds(datum.value) === 0) ? timeFormat(datum.value, '%d %b') " +
+          ": timeFormat(datum.value, '%H:%M')";
+      const sampleLabel = singleSession ? "May 27" : "Apr 28";
+      const shape = strideS => (strideS >= 86400)
+        ? { format: "%d %b", labelExpr: null, sample: "06 Mar" }
+        : { format: null, labelExpr: labelExpr, sample: sampleLabel };
+
+      let stride;
+      if (spanSeconds <= 60) stride = 10;
+      else if (spanSeconds <= 300) stride = 30;
+      else if (spanHours <= 0.5) stride = 300;
+      else if (spanHours <= 1) stride = 600;
+      else if (spanHours <= 2) stride = 900;
+      else if (spanHours <= 3) stride = 1800;
+      else if (spanHours <= 7) stride = 3600;
+      else if (spanHours <= 14) stride = 7200;
+      else if (spanHours <= 24) stride = 10800;
+      else if (spanHours <= 48) stride = 21600;
+      else if (spanHours <= 72) stride = 43200;
+      else stride = 86400;
+
+      const coarsest = CFS_INTRADAY_STRIDES_S[CFS_INTRADAY_STRIDES_S.length - 1];
+      let sh = shape(stride);
+      let nTicks = Math.max(Math.trunc(spanSeconds / stride) + 1, 2);
+      while (nTicks > mt(chartWidth, sh.sample) && stride < coarsest) {
+        let next = coarsest;
+        for (const c of CFS_INTRADAY_STRIDES_S) { if (c > stride) { next = c; break; } }
+        stride = next;
+        sh = shape(stride);
+        nTicks = Math.max(Math.trunc(spanSeconds / stride) + 1, 2);
+      }
+      let strideLabel;
+      if (stride < 60) strideLabel = stride + "s";
+      else if (stride < 3600) strideLabel = Math.trunc(stride / 60) + "min";
+      else if (stride < 86400) strideLabel = Math.trunc(stride / 3600) + "h";
+      else strideLabel = Math.trunc(stride / 86400) + "d";
+      // Intraday axes take a plain integer tickCount: an interval/step
+      // hint on this branch compiles but explodes inside vl-convert.
+      return { format: sh.format, tickCount: Math.max(nTicks, 2), labelAngle: 0,
+               description: "Intraday ticks (every " + strideLabel + ")",
+               tickStep: null, labelExpr: sh.labelExpr };
+    }
+  }
+
+  if (spanDays <= 5) {
+    let estimated = Math.max(spanDays, 1);
+    let tickStep = null;
+    if (estimated > mt(chartWidth, "06 Mar") && estimated > 2) {
+      tickStep = { interval: "day", step: 2 };
+      estimated = Math.max(Math.trunc(spanDays / 2) + 1, 2);
+    }
+    return { format: "%d %b", tickCount: tickStep === null ? estimated : null,
+             labelAngle: 0, description: "Short span <= 5 days with explicit daily ticks",
+             tickStep: tickStep, labelExpr: null };
+  }
+
+  const spanYears = spanDays / 365.25;
+  const spanMonths = spanDays / 30.44;
+
+  if (spanYears > 10) {
+    let stride = spanYears > 50 ? 10 : (spanYears > 15 ? 5 : 2);
+    const maxH = mt(chartWidth, "2025");
+    let nTicks = Math.max(Math.trunc(spanYears / stride) + 1, 2);
+    if (nTicks > maxH) {
+      for (const nice of CFS_NICE_YEAR_STEPS) {
+        if (nice > stride) {
+          stride = nice;
+          nTicks = Math.max(Math.trunc(spanYears / stride) + 1, 2);
+          if (nTicks <= maxH) break;
+        }
+      }
+    }
+    return { format: "%Y", tickCount: null, labelAngle: 0,
+             description: "Multi-year ticks (every " + stride + " years)",
+             tickStep: { interval: "year", step: stride }, labelExpr: null };
+  }
+
+  if (s.n >= 24 && s.diffsMs.length > 0) {
+    const medDiffDays = cfsMedian(s.diffsMs.map(ms => Math.trunc(ms / 86400000)));
+    if (medDiffDays >= 2 && medDiffDays <= 30 && spanYears <= 10) {
+      const c = coarsenMonthStepToFit(spanMonths, chartWidth,
+                                      stepForTarget(spanMonths, 5), fontSize);
+      return { format: c.fmt, tickCount: null, labelAngle: 0,
+               description: "Sub-annual ticks (every " + c.step + " months)",
+               tickStep: temporalTickStep("month", c.step), labelExpr: null };
+    }
+  }
+
+  if (spanYears >= 3) {
+    const initial = spanYears >= 8 ? 24 : (spanYears >= 4 ? 12 : 6);
+    const c = coarsenMonthStepToFit(spanMonths, chartWidth, initial, fontSize);
+    return { format: c.fmt, tickCount: null, labelAngle: 0,
+             description: "Year-month ticks (every " + c.step + " months)",
+             tickStep: temporalTickStep("month", c.step), labelExpr: null };
+  }
+
+  if (spanYears > 1) {
+    const initial = spanYears <= 2.5 ? 6 : 12;
+    const c = coarsenMonthStepToFit(spanMonths, chartWidth, initial, fontSize);
+    return { format: c.fmt, tickCount: null, labelAngle: 0,
+             description: "Semi-annual to annual ticks (every " + c.step + " months)",
+             tickStep: temporalTickStep("month", c.step), labelExpr: null };
+  }
+
+  if (spanMonths > 6) {
+    // Never bump to semi-annual here: a calendar-aligned 6-month step on
+    // a 9-month span lands on at most one boundary inside the range.
+    const nTicks = Math.max(Math.trunc(spanMonths / 3) + 1, 2);
+    if (nTicks > mt(chartWidth, "Mar 25")) {
+      const c = coarsenMonthStepToFit(spanMonths, chartWidth, 6, fontSize);
+      return { format: c.fmt, tickCount: null, labelAngle: 0,
+               description: "Coarsened quarterly ticks (every " + c.step + " months)",
+               tickStep: temporalTickStep("month", c.step), labelExpr: null };
+    }
+    return { format: "%b %y", tickCount: null, labelAngle: 0,
+             description: "Quarterly ticks (every 3 months)",
+             tickStep: temporalTickStep("month", 3), labelExpr: null };
+  }
+
+  if (spanMonths > 1) {
+    const c = coarsenMonthStepToFit(spanMonths, chartWidth, 1, fontSize);
+    return { format: c.fmt, tickCount: null, labelAngle: 0,
+             description: "Monthly ticks (every " + c.step + " month)",
+             tickStep: temporalTickStep("month", c.step), labelExpr: null };
+  }
+
+  if (spanDays > 14) {
+    let stepDays = 7;
+    const nTicks = Math.max(Math.trunc(spanDays / stepDays) + 1, 2);
+    if (nTicks > mt(chartWidth, "06 Mar")) stepDays = 14;
+    return { format: "%d %b", tickCount: null, labelAngle: 0,
+             description: "Weekly ticks (every " + stepDays + " days)",
+             tickStep: { interval: "week", step: Math.max(Math.trunc(stepDays / 7), 1) },
+             labelExpr: null };
+  }
+
+  const desiredMax = Math.max(Math.min(Math.trunc(spanDays), 7), 4);
+  return { format: "%d %b",
+           tickCount: Math.max(Math.min(desiredMax, mt(chartWidth, "06 Mar")), 2),
+           labelAngle: 0, description: "Short date (span < 2 weeks)",
+           tickStep: null, labelExpr: null };
+}
+
+function determineDateFormat(dates, chartWidth, fontSize) {
+  const s = summarizeDates(dates);
+  const cfg = determineDateFormatRaw(s, chartWidth, fontSize);
+  if (!s.n) return cfg;
+  return ensureMinTemporalTicks(cfg, s.min, s.max, s.n);
+}
+
+/* ---- port of _stagger_lvl_text_y ----
+   Collision detection happens in pixel space, so the gap depends on
+   the y domain and the plot height as well as the font. Using a fixed
+   data-unit gap looks right at one window and wrong at the next. */
+function staggerLvlTextY(rows, yField, fontSize, yDomain, chartHeightPx) {
+  if (!rows.length) return;
+  const yLo = Number(yDomain[0]), yHi = Number(yDomain[1]);
+  if (!(yHi > yLo)) {
+    for (const r of rows) r._y_text = cfsNum(r[yField]);
+    return;
+  }
+  const yRange = yHi - yLo;
+  const lineHeightPx = Math.max(1.0, fontSize * 1.4);
+  const lineHeightY = lineHeightPx / Math.max(chartHeightPx, 1) * yRange;
+
+  const order = rows.map((r, i) => i);
+  order.sort((a, b) => {
+    const d = (cfsNum(rows[b][yField]) || 0) - (cfsNum(rows[a][yField]) || 0);
+    return d !== 0 ? d : a - b;
+  });
+  const vals = order.map(i => cfsNum(rows[i][yField]) || 0);
+  const n = vals.length;
+
+  for (let i = 1; i < n; i++) {
+    if (vals[i - 1] - vals[i] < lineHeightY) vals[i] = vals[i - 1] - lineHeightY;
+  }
+  if (vals[n - 1] < yLo) {
+    vals[n - 1] = yLo + lineHeightY * 0.5;
+    for (let i = n - 2; i >= 0; i--) {
+      if (vals[i] - vals[i + 1] < lineHeightY) vals[i] = vals[i + 1] + lineHeightY;
+    }
+  }
+  if (vals[0] > yHi) {
+    vals[0] = yHi - lineHeightY * 0.5;
+    for (let i = 1; i < n; i++) {
+      const minGap = (i < n - 1) ? lineHeightY : lineHeightY * 0.5;
+      if (vals[i - 1] - vals[i] < minGap) vals[i] = vals[i - 1] - minGap;
+    }
+  }
+  for (let k = 0; k < n; k++) rows[order[k]]._y_text = vals[k];
+}
+
+/* ============================================================
+   AXIS HELPERS
+   Update encoding.{channel}.axis.{prop} (overriding any producer-set
+   value) AND config.{configKey}.{prop} (so the default applies if a
+   panel has no encoding-level override).
+
+   `scopeNode` narrows both halves to one panel of a composite. The
+   config half is then skipped entirely rather than narrowed, because
+   config.axisX / config.axisY are document-wide by construction --
+   writing one while the user is editing a single panel of a 6-pack
+   restyles its five siblings. Encoding-level writes outrank config,
+   so a scoped edit still wins wherever it lands.
+   ============================================================ */
+function setBothAxisProperty(spec, channel, configKey, prop, value, scopeNode) {
+  setAxisEncodingProperty(scopeNode || spec, channel, prop, value);
+  if (!scopeNode) setAxisConfigProperty(spec, configKey, prop, value);
 }
 
 function setAxisEncodingProperty(spec, channel, prop, value) {
@@ -2114,6 +2827,643 @@ function setAxisConfigProperty(spec, configKey, prop, value) {
 }
 
 /* ============================================================
+   TIME WINDOW
+
+   Narrowing a time axis is a six-step repair, not a domain write.
+   Clamping x alone leaves the y range spanning the whole series, the
+   tick stride tuned for a span that is no longer shown, and the
+   end-of-line labels stranded at the original max(x) -- which vega
+   lays out anyway, inflating the canvas by two thirds on a fifteen
+   year chart.
+
+   The mechanism is a CLAMP and never a transform filter. Filtering
+   truncates the data tab and the CSV export, deletes the end-of-line
+   rows outright, and -- decisively -- makes the operation lossy, so
+   widening a window afterwards cannot recover what narrowing threw
+   away. Clamping keeps whole data in the spec, which is what lets
+   every window recompute from scratch and makes drag-to-pan safe.
+   ============================================================ */
+
+const CFS_DATA_MARKS = ["line", "area", "bar", "point", "circle", "square",
+                        "rect", "arc", "tick", "trail"];
+const CFS_LVL_FIELD = "_y_text";
+
+/* Where does this node sit in the whole spec, and what data does it
+   inherit from above? Both matter when the caller handed us a panel
+   rather than the root: identity keys have to be absolute so two
+   panels with inline data at the same relative path do not collide,
+   and a spec that binds its data above the panel would otherwise look
+   like a panel with no data at all. */
+function locateNode(target) {
+  let out = { path: "spec", rows: null, key: null };
+  if (target === currentSpec) return out;
+  (function walk(node, path, rows, key) {
+    if (!node || typeof node !== "object") return false;
+    const d = node.data;
+    if (d) {
+      if (d.name && currentSpec.datasets && Array.isArray(currentSpec.datasets[d.name])) {
+        rows = currentSpec.datasets[d.name]; key = "ds:" + d.name;
+      } else if (Array.isArray(d.values)) {
+        rows = d.values; key = "at:" + path;
+      }
+    }
+    if (node === target) { out = { path: path, rows: rows, key: key }; return true; }
+    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
+      if (!Array.isArray(node[k])) continue;
+      for (let i = 0; i < node[k].length; i++) {
+        if (walk(node[k][i], path + "." + k + "[" + i + "]", rows, key)) return true;
+      }
+    }
+    if (node.spec) return walk(node.spec, path + ".spec", rows, key);
+    return false;
+  })(currentSpec, "spec", null, null);
+  return out;
+}
+
+/* Depth-first walk yielding every mark node together with the dataset
+   it draws from and a stable identity for that dataset. Data is
+   inherited: the producer binds an annotation's rows on the group node
+   and lets the rule and its label sublayers read them from there, so a
+   walk that only reads node.data misses both. */
+function walkDataNodes(root, fn) {
+  const seed = locateNode(root);
+  (function walk(node, path, rows, key) {
+    if (!node || typeof node !== "object") return;
+    const d = node.data;
+    if (d) {
+      if (d.name && currentSpec.datasets && Array.isArray(currentSpec.datasets[d.name])) {
+        rows = currentSpec.datasets[d.name]; key = "ds:" + d.name;
+      } else if (Array.isArray(d.values)) {
+        rows = d.values; key = "at:" + path;
+      }
+    }
+    if (node.mark) fn(node, rows, key);
+    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
+      if (Array.isArray(node[k])) {
+        node[k].forEach((c, i) => walk(c, path + "." + k + "[" + i + "]", rows, key));
+      }
+    }
+    if (node.spec) walk(node.spec, path + ".spec", rows, key);
+  })(root, seed.path, seed.rows, seed.key);
+}
+
+/* usermeta is vega-lite's sanctioned home for editor state -- the
+   compiler ignores it -- and is already where in-place renames and
+   per-series line styling live. */
+function windowStore() {
+  if (!currentSpec.usermeta) currentSpec.usermeta = {};
+  const m = currentSpec.usermeta;
+  if (!m.cfsWindow) m.cfsWindow = {};
+  if (!m.cfsWindow.anchors) m.cfsWindow.anchors = {};
+  return m.cfsWindow;
+}
+
+function encFieldOf(node, channel) {
+  const e = node.encoding && node.encoding[channel];
+  return (e && !Array.isArray(e) && e.field !== undefined) ? e.field : null;
+}
+
+/* The end-of-line label layer, identified by the derived y field the
+   engine writes for it. It is the one text layer deliberately drawn
+   outside the plot rect (align left, positive dx), so it is excluded
+   from clipping and relocated instead. */
+function isLvlNode(node) {
+  return markTypeOf(node) === "text" && encFieldOf(node, "y") === CFS_LVL_FIELD;
+}
+
+/* What is this panel actually plotting? Returns null when the panel
+   has no temporal x, which is how a bar-by-category or a scatter
+   opts out of the whole feature. */
+function temporalPlotInfo(root) {
+  let xField = null, yField = null, colorField = null;
+  let width = null, height = null;
+  const seriesNodes = [];
+  walkDataNodes(root, (node, rows) => {
+    const xe = node.encoding && node.encoding.x;
+    if (!xe || Array.isArray(xe) || xe.type !== "temporal" || !xe.field) return;
+    if (CFS_DATA_MARKS.indexOf(markTypeOf(node)) < 0) return;
+    if (!rows || !rows.length) return;
+    if (xField === null) xField = xe.field;
+    if (xe.field !== xField) return;
+    const yf = encFieldOf(node, "y");
+    if (yf && yf !== CFS_LVL_FIELD && yField === null) yField = yf;
+    const cf = encFieldOf(node, "color");
+    if (cf && colorField === null) colorField = cf;
+    seriesNodes.push({ node: node, rows: rows });
+  });
+  if (xField === null || !seriesNodes.length) return null;
+  width = walkExtractSize(root, "width");
+  height = walkExtractSize(root, "height");
+  return {
+    xField: xField, yField: yField, colorField: colorField,
+    seriesNodes: seriesNodes,
+    width: (typeof width === "number") ? width : 600,
+    height: (typeof height === "number") ? height : 350,
+  };
+}
+
+/* Full extent of the plotted data, ignoring any window in force --
+   the anchor "Max" returns to and the ceiling a drag cannot pan past. */
+function dataExtent(info) {
+  let lo = null, hi = null;
+  for (const s of info.seriesNodes) {
+    for (const r of s.rows) {
+      const d = parseSpecDate(r[info.xField]);
+      if (!d) continue;
+      const t = d.getTime();
+      if (lo === null || t < lo) lo = t;
+      if (hi === null || t > hi) hi = t;
+    }
+  }
+  return (lo === null) ? null : [new Date(lo), new Date(hi)];
+}
+
+/* Typical spacing between samples, which is what decides whether a short
+   preset could hold any data at all. Median rather than mean so a single
+   multi-year gap in an otherwise daily series does not read as the
+   cadence. */
+function dataCadence(info) {
+  const dates = [];
+  for (const s of info.seriesNodes) {
+    for (const r of s.rows) {
+      const d = parseSpecDate(r[info.xField]);
+      if (d) dates.push(d);
+    }
+  }
+  const sum = summarizeDates(dates);
+  return sum.diffsMs.length ? cfsMedian(sum.diffsMs) : null;
+}
+
+function currentWindow(root, info) {
+  let dom = null;
+  walkEncoding(root, "x", enc => {
+    if (dom) return;
+    if (enc && enc.scale && Array.isArray(enc.scale.domain) && enc.scale.domain.length === 2) {
+      const a = parseSpecDate(enc.scale.domain[0]), b = parseSpecDate(enc.scale.domain[1]);
+      if (a && b) dom = [a, b];
+    }
+  });
+  return dom || dataExtent(info);
+}
+
+/* The window the studio wrote, or null when the axis is still on auto.
+   currentWindow cannot answer this -- it reports the data extent for an
+   unclamped axis, which is the right answer for "what span is on screen"
+   and the wrong one for "did anyone clamp this". */
+function explicitXWindow(root, info) {
+  let win = null;
+  walkEncoding(root, "x", enc => {
+    if (win || !enc || enc.type !== "temporal" || !enc.scale ||
+        !Array.isArray(enc.scale.domain) || enc.scale.domain.length !== 2) return;
+    const a = parseSpecDate(enc.scale.domain[0]);
+    const b = parseSpecDate(enc.scale.domain[1]);
+    if (a && b) win = [a, b];
+  });
+  return win;
+}
+
+/* A tick choice is calibrated against a canvas width, and only the
+   calendar-boundary branches let vega-lite re-fit afterwards. The
+   intraday branch pins an explicit count, so the nine ticks that suit
+   1400px still ask for nine at 200px and print on top of each other.
+   Re-run the choice for every panel the studio has clamped.
+
+   Panels the studio has NOT clamped keep the producer's ticks: their
+   span is whatever vega-lite infers, so there is nothing here to
+   calibrate against and the engine already chose for this data. */
+function retuneWindowedTicks(root) {
+  let touched = 0;
+  for (const p of temporalPanels(root || currentSpec)) {
+    const win = explicitXWindow(p.node, p.info);
+    if (!win) continue;
+    const inWindow = rowsInWindow(p.info, win[0], win[1]);
+    if (!inWindow.length) continue;
+    const cfg = determineDateFormat(inWindow.map(e => e.date), p.info.width,
+                                    axisLabelFontSize());
+    applyDateFormatConfig(p.node, p.info.xField, cfg);
+    touched++;
+  }
+  return touched;
+}
+
+/* What the viewer is actually looking at, end by end. Differs from
+   currentWindow in that a domain with only one end set resolves the OTHER
+   end against the data rather than discarding the pair -- which is the
+   state the Advanced-controls knobs produce, since they write one bound
+   per edit. currentWindow's all-or-nothing fallback would read a
+   half-set pair as the full extent and clobber the bound just typed. */
+function effectiveXWindow(root, info) {
+  const extent = dataExtent(info);
+  if (!extent) return null;
+  let lo = null, hi = null;
+  walkEncoding(root, "x", enc => {
+    if (!enc || enc.type !== "temporal" || !enc.scale ||
+        !Array.isArray(enc.scale.domain)) return;
+    if (lo === null) lo = parseSpecDate(enc.scale.domain[0]);
+    if (hi === null) hi = parseSpecDate(enc.scale.domain[1]);
+  });
+  return [lo || extent[0], hi || extent[1]];
+}
+
+/* Rows of the primary series that fall inside the window, with their
+   dates already parsed. Everything downstream measures from this. */
+function rowsInWindow(info, lo, hi) {
+  const out = [];
+  const loT = lo.getTime(), hiT = hi.getTime();
+  for (const s of info.seriesNodes) {
+    for (const r of s.rows) {
+      const d = parseSpecDate(r[info.xField]);
+      if (!d) continue;
+      const t = d.getTime();
+      if (t < loT || t > hiT) continue;
+      out.push({ row: r, date: d });
+    }
+  }
+  return out;
+}
+
+/* The six steps. Returns a report the caller turns into an undo label
+   and a toast; the parity harness asserts on it directly. */
+function applyTimeWindow(root, lo, hi, opts) {
+  opts = opts || {};
+  const info = opts.info || temporalPlotInfo(root);
+  if (!info) return { ok: false, reason: "no temporal x axis in this panel" };
+
+  const inWindow = rowsInWindow(info, lo, hi);
+  if (!inWindow.length) return { ok: false, reason: "no data inside that window" };
+
+  const report = { ok: true, window: [formatSpecDate(lo), formatSpecDate(hi)] };
+
+  // 1. clamp every temporal x encoding in scope, including the ones on
+  //    the annotation and label layers -- a layer left on an unclamped
+  //    scale is drawn against a different x mapping from its siblings.
+  let clamped = 0;
+  walkEncoding(root, "x", enc => {
+    if (!enc || enc.type !== "temporal" || enc.field !== info.xField) return;
+    if (!enc.scale) enc.scale = {};
+    enc.scale.domain = [formatSpecDate(lo, true), formatSpecDate(hi, true)];
+    clamped++;
+  });
+  report.clamped = clamped;
+
+  // 2. clip. Everything except the end-of-line labels, which live in the
+  //    right margin by design and are re-anchored in step 6 instead.
+  let clipped = 0;
+  walkDataNodes(root, node => {
+    if (isTextPanelNode(node) || isLvlNode(node)) return;
+    setMarkProp(node, "clip", true);
+    clipped++;
+  });
+  report.clipped = clipped;
+
+  // 3. refit the range from the windowed rows of the DATA marks only.
+  //    Reading every node instead would pull in the annotation label
+  //    rows, which carry the pre-window maximum and would reproduce
+  //    the old domain almost exactly -- a bug that looks like a no-op.
+  let yDomain = null;
+  if (info.yField && nonLinearYScale(root, info.yField)) {
+    // The engine's domain arithmetic is linear throughout -- additive
+    // padding, and a floor that snaps to zero, which no log axis can
+    // even represent. Refitting a log scale with it would produce a
+    // domain vega cannot draw, so the range is left for vega to fit
+    // from the clamped data and the caller is told why.
+    report.yNote = "y scale is not linear; range left for vega to fit";
+  } else if (info.yField) {
+    const vals = [];
+    for (const e of inWindow) {
+      const v = cfsNum(e.row[info.yField]);
+      if (v !== null) vals.push(v);
+    }
+    if (vals.length) {
+      yDomain = calcYAxisDomain(vals, { includeZero: !!opts.includeZero });
+      setYDomain(root, info.yField, yDomain);
+      report.yDomain = yDomain;
+    }
+  }
+
+  // 4. re-anchor annotation furniture. A vline's LABEL is parked at the
+  //    data maximum by the producer, so it floats off the top once the
+  //    range refits; a hline's VALUE is a coordinate the user chose and
+  //    must not move. Matching on the old maximum separates them without
+  //    having to guess from the layer shape.
+  report.rebased = rebaseAnnotationFurniture(root, info, inWindow);
+
+  // 5. retune the ticks for the span now on screen.
+  const cfg = determineDateFormat(inWindow.map(e => e.date), info.width,
+                                  axisLabelFontSize());
+  applyDateFormatConfig(root, info.xField, cfg);
+  report.ticks = { format: cfg.format, tickCount: cfg.tickCount,
+                   tickStep: cfg.tickStep, description: cfg.description };
+
+  // 6. move the end-of-line labels to the last point each series still
+  //    has inside the window, then re-run the collision pass against the
+  //    refitted domain.
+  report.labels = relocateEndlineLabels(root, info, inWindow, yDomain);
+
+  return report;
+}
+
+function setYDomain(root, yField, domain) {
+  walkEncoding(root, "y", enc => {
+    if (!enc || enc.type !== "quantitative") return;
+    if (enc.field !== yField && enc.field !== CFS_LVL_FIELD) return;
+    if (enc.scale && enc.scale.type && enc.scale.type !== "linear") return;
+    if (!enc.scale) enc.scale = {};
+    enc.scale.domain = domain.slice();
+  });
+}
+
+function nonLinearYScale(root, yField) {
+  return !!yScaleTypeOf(root, yField);
+}
+
+/* The non-linear scale type on this y field, or null when it is linear
+   (explicitly or by omission). */
+function yScaleTypeOf(root, yField) {
+  let type = null;
+  walkEncoding(root, "y", enc => {
+    if (!enc || enc.field !== yField) return;
+    if (enc.scale && enc.scale.type && enc.scale.type !== "linear") {
+      type = enc.scale.type;
+    }
+  });
+  return type;
+}
+
+/* config.axis.labelFontSize is what the tick-width estimate has to
+   assume; the GS skin sets 18 and the engine's ladder is calibrated
+   to it. */
+function axisLabelFontSize() {
+  const v = getPath(currentSpec, "config.axisX.labelFontSize") ||
+            getPath(currentSpec, "config.axis.labelFontSize");
+  return (typeof v === "number" && v > 0) ? v : CFS_AXIS_LABEL_FONT;
+}
+
+/* Only a vline's LABEL is furniture. Every other annotation that emits
+   an (x, y) label row -- point label, callout, arrow, segment, point
+   highlight -- is sitting on a coordinate the caller chose, and moving
+   it would relocate the annotation itself. What separates them is that
+   the producer parks the vline label at the data maximum and nothing
+   else does, so the test is equality with that maximum.
+
+   The pristine value has to be remembered, not re-read: after the first
+   window the row no longer holds the maximum, so a second pass -- which
+   is every frame of a drag -- would stop recognising it and leave the
+   label behind at the previous window's anchor. */
+function rebaseAnnotationFurniture(root, info, inWindow) {
+  if (!info.yField) return 0;
+  let oldMax = null, newMax = null;
+  for (const s of info.seriesNodes) {
+    for (const r of s.rows) {
+      const v = cfsNum(r[info.yField]);
+      if (v !== null && (oldMax === null || v > oldMax)) oldMax = v;
+    }
+  }
+  for (const e of inWindow) {
+    const v = cfsNum(e.row[info.yField]);
+    if (v !== null && (newMax === null || v > newMax)) newMax = v;
+  }
+  if (oldMax === null || newMax === null) return 0;
+  const eps = Math.max(Math.abs(oldMax), 1) * 1e-9;
+
+  const anchors = windowStore().anchors;
+  let touched = 0;
+  const seen = Object.create(null);
+  walkDataNodes(root, (node, rows, key) => {
+    if (markTypeOf(node) !== "text" || isLvlNode(node) || !rows || !key) return;
+    if (seen[key]) return;
+    seen[key] = true;
+    let pristine = anchors[key];
+    if (!Array.isArray(pristine) || pristine.length !== rows.length) {
+      pristine = rows.map(r => {
+        const v = cfsNum(r[info.yField]);
+        return (v === null || r[info.xField] === undefined) ? null : v;
+      });
+      anchors[key] = pristine;
+    }
+    rows.forEach((r, i) => {
+      const p = pristine[i];
+      if (p === null || p === undefined) return;
+      if (Math.abs(p - oldMax) > eps) return;
+      r[info.yField] = newMax;
+      touched++;
+    });
+  });
+  return touched;
+}
+
+function applyDateFormatConfig(root, xField, cfg) {
+  walkEncoding(root, "x", enc => {
+    if (!enc || enc.type !== "temporal" || enc.field !== xField) return;
+    if (enc.axis === null) return;
+    if (typeof enc.axis !== "object" || enc.axis === undefined) enc.axis = {};
+    if (cfg.format) { enc.axis.format = cfg.format; enc.axis.formatType = "time"; }
+    else delete enc.axis.format;
+    if (cfg.labelExpr) enc.axis.labelExpr = cfg.labelExpr;
+    else delete enc.axis.labelExpr;
+    // tickCount carries either the soft integer hint or the explicit
+    // interval/step; they are mutually exclusive on one axis.
+    if (cfg.tickStep) enc.axis.tickCount = cfg.tickStep;
+    else if (typeof cfg.tickCount === "number") enc.axis.tickCount = cfg.tickCount;
+    else delete enc.axis.tickCount;
+  });
+}
+
+/* End-of-line labels are a separate text layer the producer pins at
+   max(x) with a positive dx, which is why an unrepaired window leaves
+   them stranded off the right of the plot and vega grows the canvas by
+   two thirds to lay them out.
+
+   Rebuilt from a remembered pristine copy rather than edited in place.
+   A series that falls out of the window loses its label -- there is no
+   line end left to label -- and an in-place edit would have no way to
+   bring it back when the window widens again, which is every drag that
+   reverses direction. */
+function relocateEndlineLabels(root, info, inWindow, yDomain) {
+  const out = { moved: 0, dropped: 0 };
+  const targets = [];
+  const seen = Object.create(null);
+  walkDataNodes(root, (node, rows, key) => {
+    if (!isLvlNode(node) || !rows || !key || seen[key]) return;
+    seen[key] = true;
+    targets.push({ node: node, rows: rows, key: key });
+  });
+  if (!targets.length) return out;
+
+  const last = Object.create(null);
+  for (const e of inWindow) {
+    const k = info.colorField ? String(e.row[info.colorField]) : "";
+    const prev = last[k];
+    if (!prev || e.date.getTime() > prev.date.getTime()) last[k] = e;
+  }
+
+  const store = windowStore();
+  if (!store.labels) store.labels = {};
+  const domain = yDomain || currentYDomain(root, info.yField);
+
+  for (const t of targets) {
+    let pristine = store.labels[t.key];
+    if (!Array.isArray(pristine)) {
+      pristine = deepClone(t.rows);
+      store.labels[t.key] = pristine;
+    }
+    const rebuilt = [];
+    for (const p of pristine) {
+      const k = info.colorField ? String(p[info.colorField]) : "";
+      const anchor = last[k];
+      if (!anchor) { out.dropped++; continue; }
+      const r = Object.assign({}, p);
+      r[info.xField] = anchor.row[info.xField];
+      if (info.yField) r[info.yField] = anchor.row[info.yField];
+      rebuilt.push(r);
+      out.moved++;
+    }
+    if (domain && info.yField) {
+      const fs = (typeof t.node.mark === "object" && t.node.mark.fontSize) || 11;
+      staggerLvlTextY(rebuilt, info.yField, fs, domain, info.height);
+    }
+    // In place, because a shared label dataset is shared by the text
+    // layer and its dot layer, and both want the same relocation.
+    t.rows.length = 0;
+    for (const r of rebuilt) t.rows.push(r);
+  }
+  return out;
+}
+
+function currentYDomain(root, yField) {
+  let dom = null;
+  walkEncoding(root, "y", enc => {
+    if (dom) return;
+    if (enc && enc.field === yField && enc.scale && Array.isArray(enc.scale.domain)) {
+      dom = enc.scale.domain;
+    }
+  });
+  return dom;
+}
+
+/* Undo restores a whole-spec snapshot, so nothing here has to be
+   individually reversible -- but "Max" still has to mean the data's
+   own extent rather than "whatever the producer emitted", because by
+   then the producer's domain has been overwritten. */
+function clearTimeWindow(root, info) {
+  const extent = dataExtent(info);
+  if (!extent) return { ok: false, reason: "no dated rows in this panel" };
+  return applyTimeWindow(root, extent[0], extent[1], { info: info });
+}
+
+/* Range-only edit: keep the window, recompute the y domain. */
+function refitYRange(root, opts) {
+  opts = opts || {};
+  const info = opts.info || temporalPlotInfo(root);
+  if (!info || !info.yField) return { ok: false, reason: "no quantitative y axis here" };
+  const win = currentWindow(root, info);
+  if (!win) return { ok: false, reason: "no dated rows in this panel" };
+  const inWindow = rowsInWindow(info, win[0], win[1]);
+  if (!inWindow.length) return { ok: false, reason: "no data inside the current window" };
+
+  if (nonLinearYScale(root, info.yField)) {
+    return { ok: false, reason: "this y axis is not linear, so a linear refit would break it" };
+  }
+  const vals = [];
+  for (const e of inWindow) {
+    const v = cfsNum(e.row[info.yField]);
+    if (v !== null) vals.push(v);
+  }
+  if (!vals.length) return { ok: false, reason: "no numeric values inside the window" };
+
+  const domain = calcYAxisDomain(vals, { includeZero: !!opts.includeZero });
+  setYDomain(root, info.yField, domain);
+  // The labels are spaced in pixel space, so a range change moves them
+  // even though the window did not.
+  relocateEndlineLabels(root, info, inWindow, domain);
+  return { ok: true, yDomain: domain };
+}
+
+/* Named windows. Anchored on the data's own right edge rather than
+   today's date: a chart of data that ends in 2019 should answer "1Y"
+   with its own last year, not with an empty window. */
+const CFS_WINDOW_PRESETS = [
+  { label: "1H", hours: 1 },
+  { label: "4H", hours: 4 },
+  { label: "1D", hours: 24 },
+  { label: "5D", hours: 120 },
+  { label: "1M", months: 1 },
+  { label: "3M", months: 3 },
+  { label: "6M", months: 6 },
+  { label: "YTD", ytd: true },
+  { label: "1Y", months: 12 },
+  { label: "3Y", months: 36 },
+  { label: "5Y", months: 60 },
+  { label: "10Y", months: 120 },
+  { label: "Max", max: true },
+];
+
+function presetWindow(preset, extent) {
+  const hi = extent[1];
+  if (preset.max) return [extent[0], hi];
+  if (preset.ytd) {
+    const start = new Date(Date.UTC(hi.getUTCFullYear(), 0, 1));
+    return [start < extent[0] ? extent[0] : start, hi];
+  }
+  if (preset.hours) {
+    const start = new Date(hi.getTime() - preset.hours * 36e5);
+    return [start < extent[0] ? extent[0] : start, hi];
+  }
+  // Calendar months, not 30-day multiples: "3M" back from 31 May has to
+  // land on 28 February, which is what pandas' DateOffset does too.
+  const start = new Date(Date.UTC(
+    hi.getUTCFullYear(), hi.getUTCMonth() - preset.months, hi.getUTCDate(),
+    hi.getUTCHours(), hi.getUTCMinutes(), hi.getUTCSeconds()));
+  return [start < extent[0] ? extent[0] : start, hi];
+}
+
+/* Only the presets that actually narrow THIS chart to something with data
+   in it. A six-hour session offered 1M through 10Y would be eight chips
+   that all mean Max; a fifteen-year quarterly series offered 1H would be
+   a chip that can only ever report an empty window. Max always stays,
+   because it is how a narrowed chart gets back. */
+function windowPresetsFor(extent, cadenceMs) {
+  if (!extent) return [];
+  const span = extent[1].getTime() - extent[0].getTime();
+  const floor = (typeof cadenceMs === "number" && cadenceMs > 0)
+    ? cadenceMs * CFS_MIN_PRESET_SAMPLES : 0;
+  const out = [];
+  for (const p of CFS_WINDOW_PRESETS) {
+    if (p.max) { out.push(p); continue; }
+    const w = presetWindow(p, extent);
+    // Indistinguishable from Max.
+    if (w[0].getTime() - extent[0].getTime() <= Math.max(6e4, span * 0.02)) continue;
+    // Too narrow to hold a readable number of samples.
+    if (w[1].getTime() - w[0].getTime() < floor) continue;
+    out.push(p);
+  }
+  return out;
+}
+
+/* Below this many samples a window is a line with nothing to read. */
+const CFS_MIN_PRESET_SAMPLES = 3;
+
+/* Which preset, if any, describes the window in force. Drives the
+   highlighted chip so the menu reports state instead of just offering
+   actions. */
+function activePresetLabel(root, info) {
+  const extent = dataExtent(info);
+  const win = currentWindow(root, info);
+  if (!extent || !win) return null;
+  // Wall-clock presets rarely coincide exactly with a sample, so allow a
+  // slice of the span -- but never so much that neighbouring presets on a
+  // short intraday chart both claim the same window.
+  const span = extent[1].getTime() - extent[0].getTime();
+  const tol = Math.min(36e5, Math.max(6e4, span * 0.01));
+  for (const p of CFS_WINDOW_PRESETS) {
+    const w = presetWindow(p, extent);
+    if (Math.abs(w[0].getTime() - win[0].getTime()) < tol &&
+        Math.abs(w[1].getTime() - win[1].getTime()) < tol) return p.label;
+  }
+  return null;
+}
+
+/* ============================================================
    KNOB APPLICATION
    ============================================================ */
 function applyKnob(knob, value) {
@@ -2130,6 +3480,7 @@ function applyKnob(knob, value) {
 }
 
 function onKnobChange(knob, value) {
+  pushUndo(knob.label || knob.name);
   currentKnobValues[knob.name] = value;
   overrides[knob.name] = value;
   applyKnob(knob, value);
@@ -2138,6 +3489,7 @@ function onKnobChange(knob, value) {
     const sel = document.getElementById("dimPresetSelect");
     if (sel) sel.value = "custom";
   }
+  if (knob.name === "width") retuneWindowedTicks();
   renderChart();
   updateTextAreas();
   updateSizeSummary();
@@ -2410,6 +3762,7 @@ function applyDimensionPreset(presetName, record) {
         if (knob) applyKnob(knob, v);
       }
     }
+    retuneWindowedTicks();
   }
   if (record) overrides.__dimPreset__ = presetName;
   initializeKnobs();
@@ -3033,6 +4386,21 @@ function syncTextKnob(knobName, value) {
   if (input) input.value = value;
 }
 
+/* The Advanced panel's four domain boxes are a second view of the scale
+   domains the window and range menus write. Re-reading them through the
+   same extractor that populates them on load keeps the panel from
+   reading "auto" while the chart in front of the user is clamped. */
+const CFS_DOMAIN_KNOBS = [["xDomainMin", "x", 0], ["xDomainMax", "x", 1],
+                          ["yDomainMin", "y", 0], ["yDomainMax", "y", 1]];
+
+function syncDomainKnobs() {
+  for (const [name, channel, idx] of CFS_DOMAIN_KNOBS) {
+    if (!document.getElementById("knob_" + name)) continue;
+    const v = _extractDomainBound(currentSpec, channel, idx);
+    syncTextKnob(name, (v === undefined || v === null) ? "" : String(v));
+  }
+}
+
 /* ---- the inline editor ---- */
 let _cfsEditor = null;
 
@@ -3080,6 +4448,9 @@ function beginInlineEdit(el) {
     if (e.key === "Enter") {
       const v = ed.value;
       closeInlineEditor();
+      // Snapshot before the edit so text retyping shares the one Undo
+      // button with right-click changes and drags.
+      if (v !== target.current) pushUndo("Renamed to \u201c" + v + "\u201d");
       applyTextEdit(target, v);
     } else if (e.key === "Escape") {
       closeInlineEditor();
@@ -3120,21 +4491,1591 @@ function cfsToast(msg) {
 }
 
 /* ============================================================
+   UNDO
+
+   Text editing keeps its own journal of closures because it has to
+   restore live node references. Everything reachable by right-click or
+   by a drag is a whole-spec mutation instead, so the cheapest correct
+   undo is a spec snapshot taken immediately before the change. Both
+   paths funnel through here so one button covers the lot.
+   ============================================================ */
+let _undoStack = [];
+const UNDO_LIMIT = 60;
+
+/* Returns the entry so a caller that snapshots before it knows the final
+   label -- a drag, which only knows its size on release -- can relabel it,
+   or drop it if the gesture turned out to be a no-op. */
+function pushUndo(label) {
+  const entry = { spec: deepClone(currentSpec), label: label };
+  _undoStack.push(entry);
+  if (_undoStack.length > UNDO_LIMIT) _undoStack.shift();
+  updateUndoButton();
+  return entry;
+}
+
+function updateUndoButton() {
+  const b = document.getElementById("undoBtn");
+  if (!b) return;
+  const n = _undoStack.length;
+  b.disabled = n === 0;
+  b.title = n ? ("Undo: " + _undoStack[n - 1].label) : "Nothing to undo";
+}
+
+function undoLastEdit() {
+  if (!_undoStack.length) { cfsToast("Nothing to undo."); return; }
+  closeMenu();
+  const entry = _undoStack.pop();
+  currentSpec = entry.spec;
+  populateKnobValuesFromSpec();
+  initializeKnobs();
+  renderChart();
+  updateTextAreas();
+  updateSizeSummary();
+  updateUndoButton();
+  cfsToast("Undone: " + entry.label);
+}
+
+/* Commit a spec mutation: snapshot, re-render, resync the panel. */
+function commitEdit(label, fn) {
+  pushUndo(label);
+  const changed = fn();
+  if (changed === false) {
+    _undoStack.pop();
+    updateUndoButton();
+    return false;
+  }
+  renderChart();
+  updateTextAreas();
+  updateSizeSummary();
+  syncDomainKnobs();
+  setStatus(label);
+  return true;
+}
+
+/* ============================================================
+   DIRECT MANIPULATION: WHAT DID THE POINTER HIT?
+
+   inspectTextNode's ancestor walk is not text-specific -- it reads
+   class tokens and bound scenegraph items -- so the same walk
+   classifies a line path or a legend swatch. What differs is the
+   mapping from role to an actionable target.
+   ============================================================ */
+
+function axisChannelOf(orient) {
+  return (orient === "left" || orient === "right") ? "y" : "x";
+}
+
+/* Every node in the tree whose colour encoding uses this field. A
+   multi-line chart draws its series from several layers (the line, its
+   end-of-line labels, sometimes a hover layer), and a recolour that
+   misses one leaves the chart internally inconsistent. */
+function colorNodesFor(field) {
+  const out = [];
+  (function walk(n) {
+    if (!n || typeof n !== "object") return;
+    const c = n.encoding && n.encoding.color;
+    if (c && !Array.isArray(c) && c.field === field) out.push(n);
+    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
+      if (Array.isArray(n[k])) n[k].forEach(walk);
+    }
+    if (n.spec) walk(n.spec);
+  })(currentSpec);
+  return out;
+}
+
+/* Distinct values of a field, in first-appearance order, across every
+   dataset the spec carries. Used when the compiled view does not expose
+   a top-level colour scale (concat specs resolve scales per panel). */
+function distinctFieldValues(field) {
+  const seen = [];
+  const scan = rows => {
+    for (const r of rows) {
+      if (r && r[field] !== undefined && seen.indexOf(r[field]) < 0) seen.push(r[field]);
+    }
+  };
+  if (currentSpec.datasets) {
+    for (const rows of Object.values(currentSpec.datasets)) {
+      if (Array.isArray(rows)) scan(rows);
+    }
+  }
+  (function walk(n) {
+    if (!n || typeof n !== "object") return;
+    if (n.data && Array.isArray(n.data.values)) scan(n.data.values);
+    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
+      if (Array.isArray(n[k])) n[k].forEach(walk);
+    }
+    if (n.spec) walk(n.spec);
+  })(currentSpec);
+  return seen;
+}
+
+/* What colour is each series actually painted right now? Read from the
+   rendered scenegraph rather than from the spec, because the producer's
+   colours may come from a config range, an explicit scale range, or a
+   palette default, and only the render reconciles all three. */
+function renderedSeriesColors(field) {
+  const out = {};
+  const svg = document.querySelector("#chart svg");
+  if (!svg) return out;
+  const sel = "g.role-mark path, g.role-mark rect, g.role-mark symbol, g.role-mark line, g.role-mark area";
+  for (const el of svg.querySelectorAll(sel)) {
+    const it = el.__data__ || (el.parentNode && el.parentNode.__data__);
+    if (!it || !it.datum) continue;
+    const key = it.datum[field];
+    if (key == null || out[key]) continue;
+    const c = it.stroke || it.fill;
+    if (c && c !== "transparent") out[key] = normalizeColor(c);
+  }
+  return out;
+}
+
+function colorScaleInfo(field) {
+  let domain = null;
+  if (vegaView) {
+    try {
+      const sc = vegaView.scale("color");
+      if (sc && typeof sc.domain === "function") domain = sc.domain().slice();
+    } catch (e) { /* concat specs resolve colour per panel, not at root */ }
+  }
+  if (!domain || !domain.length) domain = distinctFieldValues(field);
+  const painted = renderedSeriesColors(field);
+  const pal = (PALETTES[currentPalette] && PALETTES[currentPalette].colors) || [];
+  const colors = domain.map((d, i) => painted[d] || pal[i % (pal.length || 1)] || "#4C78A8");
+  return { domain: domain, colors: colors };
+}
+
+/* The chart engine draws direct end-of-line labels from a dataset that
+   carries its own readability-tuned colour column. Recolouring a series
+   without touching that column leaves the label the old colour. */
+function syncLabelColors(field, seriesValue, newColor) {
+  let touched = 0;
+  const scan = rows => {
+    if (!Array.isArray(rows) || !rows.length) return;
+    for (const col of Object.keys(rows[0])) {
+      if (!/colou?r/i.test(col)) continue;
+      for (const r of rows) {
+        if (r[field] === seriesValue) { r[col] = newColor; touched++; }
+      }
+    }
+  };
+  if (currentSpec.datasets) {
+    for (const rows of Object.values(currentSpec.datasets)) scan(rows);
+  }
+  (function walk(n) {
+    if (!n || typeof n !== "object") return;
+    if (n.data && Array.isArray(n.data.values)) scan(n.data.values);
+    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
+      if (Array.isArray(n[k])) n[k].forEach(walk);
+    }
+    if (n.spec) walk(n.spec);
+  })(currentSpec);
+  return touched;
+}
+
+function setSeriesColor(field, seriesValue, newColor) {
+  const info = colorScaleInfo(field);
+  const i = info.domain.indexOf(seriesValue);
+  if (i < 0) return false;
+  const range = info.colors.slice();
+  range[i] = newColor;
+  const nodes = colorNodesFor(field);
+  if (!nodes.length) return false;
+  for (const n of nodes) {
+    if (!n.encoding.color.scale) n.encoding.color.scale = {};
+    n.encoding.color.scale.domain = info.domain.slice();
+    n.encoding.color.scale.range = range;
+  }
+  syncLabelColors(field, seriesValue, newColor);
+  return true;
+}
+
+/* ---- per-series line styling -------------------------------------------
+   A scale-based strokeWidth encoding is accepted by the compiler and then
+   ignored at render time -- vega-lite even warns that the channel "should
+   not be used with an unsorted discrete field". A CONDITIONAL encoding
+   does work, but only once the mark's own strokeWidth is deleted, because
+   a mark property outranks the encoding.
+
+   Conditions are rebuilt wholesale on every change rather than parsed back
+   out of the previous test expressions, so the per-series values need
+   somewhere durable to live. usermeta is vega-lite's sanctioned home for
+   editor state -- the compiler ignores it entirely -- and is already where
+   in-place text renames are kept.
+   ------------------------------------------------------------------------ */
+function seriesStyleStore() {
+  if (!currentSpec.usermeta) currentSpec.usermeta = {};
+  const m = currentSpec.usermeta;
+  if (!m.cfsSeriesStyle) m.cfsSeriesStyle = {};
+  const s = m.cfsSeriesStyle;
+  if (!s.strokeWidth) s.strokeWidth = {};
+  if (!s.strokeDash) s.strokeDash = {};
+  if (!s.base) s.base = {};
+  return s;
+}
+
+/* The mark-level value is the "every other series" arm of the condition
+   list, so it has to be captured before the mark property is deleted. */
+function baseStyleValue(channel, nodes, fallbackValue) {
+  const store = seriesStyleStore();
+  if (store.base[channel] === undefined) {
+    let v;
+    for (const n of nodes) {
+      if (typeof n.mark === "object" && n.mark[channel] !== undefined) {
+        v = n.mark[channel];
+        break;
+      }
+    }
+    if (v === undefined) v = getPath(currentSpec, "config.line." + channel);
+    store.base[channel] = (v === undefined) ? fallbackValue : v;
+  }
+  return store.base[channel];
+}
+
+function writeSeriesConditions(field, channel, nodes, baseValue) {
+  const perField = seriesStyleStore()[channel][field] || {};
+  const entries = Object.entries(perField);
+  for (const n of nodes) {
+    if (typeof n.mark === "object") delete n.mark[channel];
+    if (!entries.length) { delete n.encoding[channel]; continue; }
+    n.encoding[channel] = {
+      condition: entries.map(([series, value]) => ({
+        test: "datum[" + exprQuote(field) + "] === " + exprQuote(series),
+        value: value,
+      })),
+      value: baseValue,
+    };
+  }
+  if (currentSpec.config && currentSpec.config.line) {
+    delete currentSpec.config.line[channel];
+  }
+}
+
+function styleableLineNodes(field) {
+  return colorNodesFor(field).filter(n => {
+    const mt = markTypeOf(n);
+    return mt === "line" || mt === "rule";
+  });
+}
+
+function setSeriesStrokeWidth(field, seriesValue, width) {
+  const nodes = styleableLineNodes(field);
+  if (!nodes.length) return false;
+  const base = baseStyleValue("strokeWidth", nodes, 2);
+  const store = seriesStyleStore();
+  if (!store.strokeWidth[field]) store.strokeWidth[field] = {};
+  store.strokeWidth[field][seriesValue] = width;
+  writeSeriesConditions(field, "strokeWidth", nodes, base);
+  return true;
+}
+
+function setSeriesDash(field, seriesValue, dashArr) {
+  const nodes = styleableLineNodes(field);
+  if (!nodes.length) return false;
+  // Solid is an empty dash pattern, not an absent one: every arm of the
+  // condition list has to name a concrete value.
+  const base = baseStyleValue("strokeDash", nodes, []);
+  const store = seriesStyleStore();
+  if (!store.strokeDash[field]) store.strokeDash[field] = {};
+  store.strokeDash[field][seriesValue] = dashArr || [];
+  writeSeriesConditions(field, "strokeDash", nodes, base);
+  return true;
+}
+
+function markTypeOf(node) {
+  if (!node || !node.mark) return null;
+  return typeof node.mark === "string" ? node.mark : node.mark.type;
+}
+
+/* Write a property onto a mark definition, promoting a bare string mark
+   ("line") to object form so it can carry properties at all. */
+function setMarkProp(node, prop, value) {
+  if (!node || !node.mark) return;
+  if (typeof node.mark === "string") node.mark = { type: node.mark };
+  if (value === undefined || value === null) delete node.mark[prop];
+  else node.mark[prop] = value;
+}
+
+function resolveHitTarget(el) {
+  const info = inspectTextNode(el);
+  const role = info.role || "";
+  const scope = info.scopeName ? decodeSpecPath(info.scopeName)
+                               : { node: currentSpec, path: "spec" };
+
+  if (role.indexOf("axis") === 0) {
+    const ch = axisChannelOf(info.axisOrient);
+    return {
+      kind: "axis", channel: ch, orient: info.axisOrient,
+      scope: scope, info: info,
+      title: ch.toUpperCase() + "-axis" +
+             (info.axisOrient ? " (" + info.axisOrient + ")" : ""),
+    };
+  }
+
+  if (role.indexOf("legend") === 0) {
+    let series = null, field = null;
+    const enc = firstColorEncoding();
+    if (enc) {
+      field = enc.field;
+      if (role === "legend-label" || role === "legend-symbol") {
+        const d = info.item && info.item.datum;
+        series = d ? (d.value !== undefined ? d.value : d[field]) : null;
+      }
+    }
+    return {
+      kind: "legend", scope: scope, info: info, field: field, series: series,
+      title: series != null ? ("Legend: " + series) : "Legend",
+    };
+  }
+
+  if (role === "mark" && info.markName) {
+    const hit = decodeSpecPath(info.markName);
+    if (hit) {
+      const node = hit.node;
+      const mt = markTypeOf(node);
+      if (isTextPanelNode(node)) {
+        return { kind: "canvas", info: info, title: "Chart" };
+      }
+      const colorEnc = node.encoding && node.encoding.color;
+      const field = (colorEnc && !Array.isArray(colorEnc)) ? colorEnc.field : undefined;
+      const datum = info.item && info.item.datum;
+      const series = (field && datum) ? datum[field] : null;
+      const isAnnotation = (mt === "rule" || mt === "text") && !field;
+      return {
+        kind: isAnnotation ? "annotation" : "series",
+        node: node, path: hit.path, markType: mt,
+        field: field || null, series: series != null ? series : null,
+        info: info,
+        title: series != null ? String(series)
+             : isAnnotation ? "Annotation"
+             : (mt ? mt.charAt(0).toUpperCase() + mt.slice(1) : "Mark"),
+      };
+    }
+  }
+
+  return { kind: "canvas", info: info, title: "Chart" };
+}
+
+function firstColorEncoding() {
+  let found = null;
+  walkEncoding(currentSpec, "color", enc => {
+    if (!found && enc && enc.field !== undefined) found = enc;
+  });
+  return found;
+}
+
+/* ============================================================
+   CONTEXT MENU CHROME
+
+   One reused root, rebuilt per open. Items are plain objects so an
+   action's shape (click row / swatch grid / stepper / chips) is a
+   rendering concern rather than a per-callsite DOM chore.
+   ============================================================ */
+let _menuEl = null;
+
+function menuRoot() {
+  if (!_menuEl) _menuEl = document.getElementById("cfsMenu");
+  return _menuEl;
+}
+
+function closeMenu() {
+  const m = menuRoot();
+  if (m) { m.classList.remove("on"); m.innerHTML = ""; }
+}
+
+function menuRow(label, accessory, onClick, opts) {
+  opts = opts || {};
+  const d = document.createElement("div");
+  d.className = "cfs-item" + (opts.disabled ? " cfs-disabled" : "") +
+                (opts.on ? " cfs-on" : "");
+  const s = document.createElement("span");
+  s.textContent = label;
+  d.appendChild(s);
+  if (accessory) {
+    const a = document.createElement("span");
+    a.className = "cfs-acc";
+    a.textContent = accessory;
+    d.appendChild(a);
+  }
+  if (!opts.disabled && onClick) {
+    d.addEventListener("click", () => {
+      if (!opts.keepOpen) closeMenu();
+      onClick();
+    });
+  }
+  return d;
+}
+
+function menuSwatches(label, colors, current, onPick) {
+  const wrap = document.createElement("div");
+  wrap.className = "cfs-sub";
+  if (label) {
+    const l = document.createElement("div");
+    l.className = "cfs-sub-label";
+    l.textContent = label;
+    wrap.appendChild(l);
+  }
+  const grid = document.createElement("div");
+  grid.className = "cfs-swatches";
+  for (const c of colors) {
+    const b = document.createElement("div");
+    b.className = "cfs-sw" + (normalizeColor(c).toLowerCase() ===
+                              normalizeColor(current || "").toLowerCase() ? " cfs-cur" : "");
+    b.style.background = c;
+    b.title = c;
+    b.addEventListener("click", () => { closeMenu(); onPick(c); });
+    grid.appendChild(b);
+  }
+  wrap.appendChild(grid);
+  const picker = document.createElement("input");
+  picker.type = "color";
+  picker.value = normalizeColor(current || "#4C78A8");
+  picker.style.marginTop = "6px";
+  picker.addEventListener("change", () => { closeMenu(); onPick(picker.value); });
+  wrap.appendChild(picker);
+  return wrap;
+}
+
+function menuStepper(label, valueText, onDown, onUp) {
+  const wrap = document.createElement("div");
+  wrap.className = "cfs-sub";
+  const l = document.createElement("div");
+  l.className = "cfs-sub-label";
+  l.textContent = label;
+  wrap.appendChild(l);
+  const row = document.createElement("div");
+  row.className = "cfs-steps";
+  const minus = document.createElement("button");
+  minus.textContent = "\u2212";
+  const num = document.createElement("span");
+  num.className = "cfs-num";
+  num.textContent = valueText;
+  const plus = document.createElement("button");
+  plus.textContent = "+";
+  // Steppers stay open: adjusting a tick count or a line weight is
+  // inherently iterative, and reopening the menu between nudges would
+  // make the common case the slow one.
+  minus.addEventListener("click", () => { num.textContent = onDown(); });
+  plus.addEventListener("click", () => { num.textContent = onUp(); });
+  row.appendChild(minus); row.appendChild(num); row.appendChild(plus);
+  wrap.appendChild(row);
+  return wrap;
+}
+
+function menuChips(label, options, current, onPick) {
+  const wrap = document.createElement("div");
+  wrap.className = "cfs-sub";
+  const l = document.createElement("div");
+  l.className = "cfs-sub-label";
+  l.textContent = label;
+  wrap.appendChild(l);
+  const row = document.createElement("div");
+  row.className = "cfs-chips";
+  for (const o of options) {
+    const b = document.createElement("button");
+    b.className = "cfs-chip" + (o.value === current ? " cfs-cur" : "");
+    b.textContent = o.label;
+    b.addEventListener("click", () => { closeMenu(); onPick(o.value); });
+    row.appendChild(b);
+  }
+  wrap.appendChild(row);
+  return wrap;
+}
+
+/* Two native date inputs plus an Apply. Deliberately not live-on-change:
+   a half-typed year is a valid date input value, and windowing on it
+   would rewrite the labels against a nonsense span. */
+function menuDateRange(label, loStr, hiStr, minStr, maxStr, onApply) {
+  const wrap = document.createElement("div");
+  wrap.className = "cfs-sub";
+  const l = document.createElement("div");
+  l.className = "cfs-sub-label";
+  l.textContent = label;
+  wrap.appendChild(l);
+  const row = document.createElement("div");
+  row.className = "cfs-dates";
+  const a = document.createElement("input");
+  const b = document.createElement("input");
+  for (const el of [a, b]) {
+    el.type = "date";
+    if (minStr) el.min = minStr;
+    if (maxStr) el.max = maxStr;
+  }
+  a.value = loStr || "";
+  b.value = hiStr || "";
+  const go = document.createElement("button");
+  go.textContent = "Apply";
+  const commit = () => {
+    if (!a.value || !b.value) { cfsToast("Pick both a start and an end date."); return; }
+    if (a.value >= b.value) { cfsToast("The start date has to come before the end date."); return; }
+    closeMenu();
+    onApply(a.value, b.value);
+  };
+  go.addEventListener("click", commit);
+  for (const el of [a, b]) {
+    el.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
+  }
+  row.appendChild(a); row.appendChild(b); row.appendChild(go);
+  wrap.appendChild(row);
+  return wrap;
+}
+
+function menuSep() {
+  const d = document.createElement("div");
+  d.className = "cfs-sep";
+  return d;
+}
+
+function openMenu(x, y, title, subtitle, build) {
+  const m = menuRoot();
+  if (!m) return;
+  m.innerHTML = "";
+  const head = document.createElement("div");
+  head.className = "cfs-menu-head";
+  const b = document.createElement("b");
+  b.textContent = title;
+  head.appendChild(b);
+  head.appendChild(document.createTextNode(subtitle || ""));
+  m.appendChild(head);
+  build(m);
+  m.classList.add("on");
+  // Place at the pointer, then pull back inside the viewport if the menu
+  // would overhang. Measured after paint because the height depends on
+  // which items the target produced.
+  m.style.left = "0px"; m.style.top = "0px";
+  const r = m.getBoundingClientRect();
+  const pad = 8;
+  let left = x, top = y;
+  if (left + r.width + pad > window.innerWidth) left = x - r.width;
+  if (top + r.height + pad > window.innerHeight + window.scrollY) {
+    top = Math.max(window.scrollY + pad, y - r.height);
+  }
+  m.style.left = Math.max(pad, left) + "px";
+  m.style.top = Math.max(pad, top) + "px";
+}
+
+/* ============================================================
+   MENU CONTENT PER TARGET
+   ============================================================ */
+
+const DASH_CHOICES = [
+  { label: "Solid", value: null },
+  { label: "Dashed", value: [6, 4] },
+  { label: "Dotted", value: [1, 2] },
+  { label: "Dash-dot", value: [6, 3, 2, 3] },
+  { label: "Long dash", value: [10, 4] },
+];
+
+/* Preset labels carry parenthetical sizes and mandate notes that are
+   useful in a dropdown but too long for a chip. */
+function shortPresetLabel(key) {
+  const p = DIM_PRESETS[key] || {};
+  const name = String(p.label || key).split("(")[0].trim();
+  return (typeof p.width === "number" && key !== "custom")
+    ? name + " " + p.width + "\u00d7" + p.height
+    : name;
+}
+
+function paletteColors() {
+  const pal = (PALETTES[currentPalette] && PALETTES[currentPalette].colors) || [];
+  const extra = ["#003359", "#5C92CB", "#8FBCE6", "#C00000", "#E8A33D",
+                 "#2E7D5B", "#7A5195", "#6B7B8F"];
+  const out = [];
+  for (const c of pal.concat(extra)) {
+    if (c && out.indexOf(c) < 0) out.push(c);
+  }
+  return out.slice(0, 16);
+}
+
+function buildSeriesMenu(t, m) {
+  const hasSeries = t.field && t.series != null;
+  const info = hasSeries ? colorScaleInfo(t.field) : null;
+  const idx = info ? info.domain.indexOf(t.series) : -1;
+  const curColor = (idx >= 0) ? info.colors[idx]
+    : normalizeColor((typeof t.node.mark === "object" && (t.node.mark.color ||
+        t.node.mark.stroke || t.node.mark.fill)) || "#4C78A8");
+
+  m.appendChild(menuSwatches("Colour", paletteColors(), curColor, c => {
+    commitEdit(hasSeries ? ("Recoloured " + t.series) : "Recoloured mark", () => {
+      if (hasSeries) return setSeriesColor(t.field, t.series, c);
+      setMarkProp(t.node, t.markType === "line" ? "stroke" : "fill", c);
+      setMarkProp(t.node, "color", c);
+      return true;
+    });
+  }));
+
+  if (t.markType === "line" || t.markType === "rule") {
+    m.appendChild(menuSep());
+    let w = currentLineWidth(t);
+    m.appendChild(menuStepper("Thickness", w.toFixed(1) + " px",
+      () => { w = Math.max(0.5, +(w - 0.5).toFixed(1)); applyLineWidth(t, w); return w.toFixed(1) + " px"; },
+      () => { w = Math.min(12, +(w + 0.5).toFixed(1)); applyLineWidth(t, w); return w.toFixed(1) + " px"; }));
+
+    m.appendChild(menuChips("Line style",
+      DASH_CHOICES.map(d => ({ label: d.label, value: d.label })), null, label => {
+        const choice = DASH_CHOICES.find(d => d.label === label);
+        commitEdit("Line style: " + label, () => {
+          if (hasSeries) return setSeriesDash(t.field, t.series, choice.value);
+          setMarkProp(t.node, "strokeDash", choice.value || undefined);
+          return true;
+        });
+      }));
+  }
+
+  if (t.markType === "bar" || t.markType === "area" || t.markType === "arc" ||
+      t.markType === "rect" || t.markType === "point" || t.markType === "circle") {
+    m.appendChild(menuSep());
+    let op = (typeof t.node.mark === "object" && t.node.mark.opacity) || 1;
+    m.appendChild(menuStepper("Opacity", Math.round(op * 100) + "%",
+      () => { op = Math.max(0.1, +(op - 0.1).toFixed(2)); applyOpacity(t, op); return Math.round(op * 100) + "%"; },
+      () => { op = Math.min(1, +(op + 0.1).toFixed(2)); applyOpacity(t, op); return Math.round(op * 100) + "%"; }));
+  }
+
+  if (t.markType === "point" || t.markType === "circle") {
+    m.appendChild(menuSep());
+    let sz = (typeof t.node.mark === "object" && t.node.mark.size) || 60;
+    m.appendChild(menuStepper("Point size", String(Math.round(sz)),
+      () => { sz = Math.max(10, sz - 20); applyPointSize(t, sz); return String(Math.round(sz)); },
+      () => { sz = Math.min(600, sz + 20); applyPointSize(t, sz); return String(Math.round(sz)); }));
+  }
+
+  if (hasSeries) {
+    m.appendChild(menuSep());
+    m.appendChild(menuRow("Recolour every series\u2026", null, () => {
+      openPaletteMenu();
+    }));
+  }
+}
+
+function currentLineWidth(t) {
+  if (t.field && t.series != null) {
+    const per = seriesStyleStore().strokeWidth[t.field];
+    if (per && typeof per[t.series] === "number") return per[t.series];
+    const base = seriesStyleStore().base.strokeWidth;
+    if (typeof base === "number") return base;
+  }
+  if (typeof t.node.mark === "object" && typeof t.node.mark.strokeWidth === "number") {
+    return t.node.mark.strokeWidth;
+  }
+  const cfg = getPath(currentSpec, "config.line.strokeWidth");
+  return typeof cfg === "number" ? cfg : 2;
+}
+
+function applyLineWidth(t, w) {
+  commitEdit("Line thickness " + w + "px", () => {
+    if (t.field && t.series != null) return setSeriesStrokeWidth(t.field, t.series, w);
+    setMarkProp(t.node, "strokeWidth", w);
+    return true;
+  });
+}
+
+function applyOpacity(t, op) {
+  commitEdit("Opacity " + Math.round(op * 100) + "%", () => {
+    setMarkProp(t.node, "opacity", op);
+    return true;
+  });
+}
+
+function applyPointSize(t, sz) {
+  commitEdit("Point size " + Math.round(sz), () => {
+    setMarkProp(t.node, "size", Math.round(sz));
+    return true;
+  });
+}
+
+/* A per-series recolour writes an explicit scale.range, which outranks
+   the config-level range a palette sets. Clearing those ranges is what
+   makes "recolour every series" actually mean every series. */
+function clearPerSeriesColorRanges() {
+  (function walk(n) {
+    if (!n || typeof n !== "object") return;
+    const c = n.encoding && n.encoding.color;
+    if (c && !Array.isArray(c) && c.scale && c.scale.range) {
+      delete c.scale.range;
+      if (!Object.keys(c.scale).length) delete c.scale;
+    }
+    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
+      if (Array.isArray(n[k])) n[k].forEach(walk);
+    }
+    if (n.spec) walk(n.spec);
+  })(currentSpec);
+}
+
+function openPaletteMenu() {
+  const r = menuRoot().getBoundingClientRect();
+  openMenu(r.left, r.top, "Palette", "applies to every series", m => {
+    for (const [name, rec] of Object.entries(PALETTES)) {
+      const row = menuRow(rec.label || name, null, () => {
+        commitEdit("Palette: " + (rec.label || name), () => {
+          clearPerSeriesColorRanges();
+          applyPalette(name, true);
+          return true;
+        });
+      }, { on: name === currentPalette });
+      const strip = document.createElement("span");
+      strip.style.cssText = "display:flex;gap:2px;margin-left:auto";
+      for (const c of (rec.colors || []).slice(0, 6)) {
+        const dot = document.createElement("span");
+        dot.style.cssText = "width:10px;height:10px;border-radius:2px;background:" + c;
+        strip.appendChild(dot);
+      }
+      row.appendChild(strip);
+      m.appendChild(row);
+    }
+  });
+}
+
+/* Every node that draws a plot in its own right, so the menu can tell
+   a single chart from one panel of a pack. `layer` is not a split --
+   a layered chart is one panel -- but the concat keys are. */
+function leafPanels(root) {
+  const out = [];
+  (function walk(node) {
+    if (!node || typeof node !== "object") return;
+    const ck = concatKeyOf(node);
+    if (ck) { for (const c of node[ck]) walk(c); return; }
+    if (node.spec) { walk(node.spec); return; }
+    if (isTextPanelNode(node)) return;
+    if (node.mark || Array.isArray(node.layer)) out.push(node);
+  })(root);
+  return out;
+}
+
+function temporalPanels(root) {
+  const out = [];
+  for (const p of leafPanels(root)) {
+    const info = temporalPlotInfo(p);
+    if (info) out.push({ node: p, info: info });
+  }
+  return out;
+}
+
+function buildAxisMenu(t, m) {
+  const ch = t.channel;
+  const cfgKey = ch === "y" ? "axisY" : "axisX";
+  // Panels resolve their scales independently, so an edit aimed at one
+  // of them has to stay inside it. A single-panel chart keeps the
+  // document-wide write, where it is useful rather than surprising.
+  const panels = leafPanels(currentSpec);
+  const scopeNode = (panels.length > 1 && t.scope && t.scope.node &&
+                     t.scope.node !== currentSpec) ? t.scope.node : null;
+  const root = scopeNode || currentSpec;
+  const readRoot = scopeNode || currentSpec;
+  const info = temporalPlotInfo(root);
+
+  if (ch === "x" && info) appendTimeWindowSection(t, m, root, info, scopeNode);
+  if (ch === "y" && info) appendValueRangeSection(t, m, root, info);
+
+  let ticks = currentTickCount(t, readRoot);
+  m.appendChild(menuStepper("Number of ticks", String(ticks),
+    () => { ticks = Math.max(2, ticks - 1); applyTickCount(t, ticks, scopeNode); return String(ticks); },
+    () => { ticks = Math.min(40, ticks + 1); applyTickCount(t, ticks, scopeNode); return String(ticks); }));
+
+  m.appendChild(menuSep());
+  const curAngle = readAxisProp(ch, cfgKey, "labelAngle", readRoot);
+  m.appendChild(menuChips("Label angle", [
+    { label: "0\u00b0", value: 0 }, { label: "30\u00b0", value: -30 },
+    { label: "45\u00b0", value: -45 }, { label: "90\u00b0", value: -90 },
+  ], typeof curAngle === "number" ? curAngle : 0, v => {
+    commitEdit("Label angle " + v + "\u00b0", () => {
+      setBothAxisProperty(currentSpec, ch, cfgKey, "labelAngle", v, scopeNode);
+      return true;
+    });
+  }));
+
+  m.appendChild(menuSep());
+  const gridOn = readAxisProp(ch, cfgKey, "grid", readRoot) !== false;
+  m.appendChild(menuRow(gridOn ? "Hide gridlines" : "Show gridlines",
+    gridOn ? "on" : "off", () => {
+      commitEdit(gridOn ? "Gridlines off" : "Gridlines on", () => {
+        setBothAxisProperty(currentSpec, ch, cfgKey, "grid", !gridOn, scopeNode);
+        return true;
+      });
+    }, { on: gridOn }));
+
+  const labelsOn = readAxisProp(ch, cfgKey, "labels", readRoot) !== false;
+  m.appendChild(menuRow(labelsOn ? "Hide tick labels" : "Show tick labels",
+    labelsOn ? "on" : "off", () => {
+      commitEdit(labelsOn ? "Tick labels off" : "Tick labels on", () => {
+        setBothAxisProperty(currentSpec, ch, cfgKey, "labels", !labelsOn, scopeNode);
+        return true;
+      });
+    }, { on: labelsOn }));
+
+  const domainOn = readAxisProp(ch, cfgKey, "domain", readRoot) !== false;
+  m.appendChild(menuRow(domainOn ? "Hide axis line" : "Show axis line",
+    domainOn ? "on" : "off", () => {
+      commitEdit(domainOn ? "Axis line off" : "Axis line on", () => {
+        setBothAxisProperty(currentSpec, ch, cfgKey, "domain", !domainOn, scopeNode);
+        return true;
+      });
+    }, { on: domainOn }));
+
+  m.appendChild(menuSep());
+  // `format` means a d3 number pattern on a quantitative axis and a
+  // strftime pattern on a temporal one, so offering ".0%" for a date
+  // axis produces garbage. Branch on what the axis actually encodes.
+  if (ch === "x" && info) {
+    m.appendChild(menuChips("Date format", [
+      { label: "2025", value: "%Y" }, { label: "Mar 25", value: "%b %y" },
+      { label: "06 Mar", value: "%d %b" }, { label: "Mar 2025", value: "%b %Y" },
+      { label: "09:30", value: "%H:%M" },
+    ], readAxisProp(ch, cfgKey, "format", readRoot) || "", v => {
+      commitEdit("Date format " + v, () => {
+        setAxisEncodingProperty(root, ch, "format", v);
+        setAxisEncodingProperty(root, ch, "formatType", "time");
+        return true;
+      });
+    }));
+  } else {
+    m.appendChild(menuChips("Number format", [
+      { label: "Auto", value: "" }, { label: "1,235", value: "," },
+      { label: "1.2", value: ".1f" }, { label: "1.23", value: ".2f" },
+      { label: "12%", value: ".0%" }, { label: "1.2k", value: ".2s" },
+    ], readAxisProp(ch, cfgKey, "format", readRoot) || "", v => {
+      commitEdit("Number format " + (v || "auto"), () => {
+        setBothAxisProperty(currentSpec, ch, cfgKey, "format", v || undefined, scopeNode);
+        return true;
+      });
+    }));
+  }
+
+  m.appendChild(menuSep());
+  m.appendChild(menuRow("Rename axis title\u2026", "double-click", () => {
+    const el = findAxisTitleEl(t.orient);
+    if (el) beginInlineEdit(el);
+    else cfsToast("This axis has no title to rename. Add one from Advanced controls.");
+  }));
+}
+
+/* ---- the time-window rows on a temporal x axis ---- */
+function appendTimeWindowSection(t, m, root, info, scopeNode) {
+  const extent = dataExtent(info);
+  if (!extent) return;
+  const win = currentWindow(root, info);
+  const active = activePresetLabel(root, info);
+
+  const run = (label, lo, hi, target) => {
+    commitEdit(label, () => {
+      const nodes = target || [{ node: root, info: info }];
+      let ok = 0, why = null;
+      for (const n of nodes) {
+        const r = applyTimeWindow(n.node, lo, hi, { info: n.info });
+        if (r.ok) ok++; else why = r.reason;
+      }
+      if (!ok) { cfsToast("Could not window this chart: " + (why || "no data")); return false; }
+      return true;
+    });
+  };
+
+  const presets = windowPresetsFor(extent, dataCadence(info));
+  if (presets.length > 1) {
+    m.appendChild(menuChips("Time window",
+      presets.map(p => ({ label: p.label, value: p.label })),
+      active, v => {
+        const p = CFS_WINDOW_PRESETS.filter(q => q.label === v)[0];
+        const w = presetWindow(p, extent);
+        run("Window: " + v, w[0], w[1]);
+      }));
+  }
+
+  m.appendChild(menuDateRange("From / to",
+    win ? formatSpecDate(win[0]).slice(0, 10) : "",
+    win ? formatSpecDate(win[1]).slice(0, 10) : "",
+    formatSpecDate(extent[0]).slice(0, 10),
+    formatSpecDate(extent[1]).slice(0, 10),
+    (a, b) => {
+      const lo = parseSpecDate(a), hi = parseSpecDate(b);
+      if (!lo || !hi) { cfsToast("Could not read those dates."); return; }
+      run("Window: " + a + " to " + b, lo, hi);
+    }));
+
+  // Packs are usually read on a common timeline, but not always -- so
+  // the scoped action stays primary and this sits beside it, the way a
+  // recolour-every-series row sits beside a single-series recolour.
+  if (scopeNode) {
+    const all = temporalPanels(currentSpec);
+    if (all.length > 1) {
+      m.appendChild(menuRow("Apply this window to every panel", all.length + " panels", () => {
+        const w = win || extent;
+        run("Windowed all panels", w[0], w[1], all);
+      }));
+    }
+  }
+  m.appendChild(menuRow("Drag along this axis to pan", "hint", null, { disabled: true }));
+  m.appendChild(menuSep());
+}
+
+/* ---- the range rows on a quantitative y axis ---- */
+function appendValueRangeSection(t, m, root, info) {
+  if (!info.yField) return;
+  // A log or symlog axis cannot take the engine's linear domain arithmetic,
+  // and zero is not even on it. Offering rows that could only ever toast an
+  // error reads as breakage, so say why instead.
+  if (nonLinearYScale(root, info.yField)) {
+    m.appendChild(menuRow("Range fitting needs a linear axis",
+                          yScaleTypeOf(root, info.yField) || "non-linear",
+                          null, { disabled: true }));
+    m.appendChild(menuSep());
+    return;
+  }
+  m.appendChild(menuRow("Fit range to visible data", "auto", () => {
+    commitEdit("Range fitted to view", () => {
+      const r = refitYRange(root, { info: info });
+      if (!r.ok) { cfsToast("Could not fit the range: " + r.reason); return false; }
+      return true;
+    });
+  }));
+  const dom = currentYDomain(root, info.yField);
+  const atZero = Array.isArray(dom) && Number(dom[0]) <= 0 && Number(dom[1]) >= 0;
+  m.appendChild(menuRow("Start range at zero", atZero ? "on" : "off", () => {
+    commitEdit("Range starts at zero", () => {
+      const r = refitYRange(root, { info: info, includeZero: true });
+      if (!r.ok) { cfsToast("Could not fit the range: " + r.reason); return false; }
+      return true;
+    });
+  }, { on: atZero }));
+  m.appendChild(menuSep());
+}
+
+function currentTickCount(t, root) {
+  const cfgKey = t.channel === "y" ? "axisY" : "axisX";
+  const explicit = readAxisProp(t.channel, cfgKey, "tickCount", root);
+  if (typeof explicit === "number") return explicit;
+  // No explicit count: count what is actually on screen, so the first
+  // nudge moves relative to what the user is looking at.
+  const svg = document.querySelector("#chart svg");
+  if (!svg) return 6;
+  let best = 0;
+  for (const g of svg.querySelectorAll("g.role-axis")) {
+    const d = g.__data__ || (g.firstChild && g.firstChild.__data__);
+    const orient = d && d.orient;
+    const chan = axisChannelOf(orient);
+    if (orient && chan !== t.channel) continue;
+    const n = g.querySelectorAll("g.role-axis-label text, text.role-axis-label").length ||
+              g.querySelectorAll("text").length;
+    if (n > best) best = n;
+  }
+  return best > 1 ? best : 6;
+}
+
+function applyTickCount(t, n, scopeNode) {
+  const cfgKey = t.channel === "y" ? "axisY" : "axisX";
+  commitEdit("Ticks: " + n, () => {
+    setBothAxisProperty(currentSpec, t.channel, cfgKey, "tickCount", n, scopeNode);
+    return true;
+  });
+}
+
+function readAxisProp(channel, cfgKey, prop, root) {
+  let v;
+  walkEncoding(root || currentSpec, channel, enc => {
+    if (v === undefined && enc && enc.axis && typeof enc.axis === "object" &&
+        enc.axis[prop] !== undefined) v = enc.axis[prop];
+  });
+  if (v === undefined) v = getPath(currentSpec, "config." + cfgKey + "." + prop);
+  return v;
+}
+
+function findAxisTitleEl(orient) {
+  const svg = document.querySelector("#chart svg");
+  if (!svg) return null;
+  for (const el of svg.querySelectorAll("text")) {
+    const info = inspectTextNode(el);
+    if (info.role === "axis-title" &&
+        (!orient || info.axisOrient === orient)) return el;
+  }
+  return null;
+}
+
+function buildLegendMenu(t, m) {
+  if (t.field && t.series != null) {
+    const info = colorScaleInfo(t.field);
+    const i = info.domain.indexOf(t.series);
+    m.appendChild(menuSwatches("Colour of " + t.series, paletteColors(),
+      i >= 0 ? info.colors[i] : null, c => {
+        commitEdit("Recoloured " + t.series, () =>
+          setSeriesColor(t.field, t.series, c));
+      }));
+    m.appendChild(menuSep());
+  }
+
+  const cur = readLegendProp("orient") || "right";
+  m.appendChild(menuChips("Position", [
+    { label: "Right", value: "right" }, { label: "Left", value: "left" },
+    { label: "Top", value: "top" }, { label: "Bottom", value: "bottom" },
+    { label: "Top-right", value: "top-right" },
+  ], cur, v => {
+    commitEdit("Legend " + v, () => {
+      walkEncoding(currentSpec, "color", enc => {
+        if (enc.legend === null) enc.legend = {};
+        if (typeof enc.legend !== "object") enc.legend = {};
+        enc.legend.orient = v;
+      });
+      return true;
+    });
+  }));
+
+  m.appendChild(menuChips("Direction", [
+    { label: "Vertical", value: "vertical" },
+    { label: "Horizontal", value: "horizontal" },
+  ], readLegendProp("direction") || "vertical", v => {
+    commitEdit("Legend " + v, () => {
+      walkEncoding(currentSpec, "color", enc => {
+        if (typeof enc.legend !== "object" || enc.legend === null) enc.legend = {};
+        enc.legend.direction = v;
+      });
+      return true;
+    });
+  }));
+
+  m.appendChild(menuSep());
+  m.appendChild(menuRow("Rename legend title\u2026", "double-click", () => {
+    const el = findRoleEl("legend-title");
+    if (el) beginInlineEdit(el);
+    else cfsToast("This legend has no title to rename.");
+  }));
+  m.appendChild(menuRow("Hide the legend", null, () => {
+    commitEdit("Legend hidden", () => {
+      walkEncoding(currentSpec, "color", enc => { enc.legend = null; });
+      return true;
+    });
+  }));
+}
+
+function readLegendProp(prop) {
+  let v;
+  walkEncoding(currentSpec, "color", enc => {
+    if (v === undefined && enc && enc.legend && typeof enc.legend === "object" &&
+        enc.legend[prop] !== undefined) v = enc.legend[prop];
+  });
+  return v;
+}
+
+function findRoleEl(role) {
+  const svg = document.querySelector("#chart svg");
+  if (!svg) return null;
+  for (const el of svg.querySelectorAll("text")) {
+    if (inspectTextNode(el).role === role) return el;
+  }
+  return null;
+}
+
+function buildAnnotationMenu(t, m) {
+  const cur = normalizeColor((typeof t.node.mark === "object" &&
+    (t.node.mark.color || t.node.mark.stroke)) || "#888888");
+  m.appendChild(menuSwatches("Colour", paletteColors(), cur, c => {
+    commitEdit("Annotation colour", () => {
+      setMarkProp(t.node, "color", c);
+      setMarkProp(t.node, "stroke", c);
+      return true;
+    });
+  }));
+  m.appendChild(menuSep());
+  m.appendChild(menuChips("Line style",
+    DASH_CHOICES.map(d => ({ label: d.label, value: d.label })), null, label => {
+      const choice = DASH_CHOICES.find(d => d.label === label);
+      commitEdit("Annotation " + label, () => {
+        setMarkProp(t.node, "strokeDash", choice.value || undefined);
+        return true;
+      });
+    }));
+  m.appendChild(menuSep());
+  m.appendChild(menuRow("Remove this annotation", null, () => {
+    commitEdit("Annotation removed", () => removeNodeFromSpec(t.node));
+  }));
+}
+
+/* Drop a layer out of whichever array holds it. */
+function removeNodeFromSpec(target) {
+  let removed = false;
+  (function walk(n) {
+    if (!n || typeof n !== "object" || removed) return;
+    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
+      if (!Array.isArray(n[k])) continue;
+      const i = n[k].indexOf(target);
+      if (i >= 0) { n[k].splice(i, 1); removed = true; return; }
+      n[k].forEach(walk);
+    }
+    if (n.spec) walk(n.spec);
+  })(currentSpec);
+  if (!removed) cfsToast("That annotation is not a removable layer.");
+  return removed;
+}
+
+function buildCanvasMenu(t, m) {
+  const w = walkExtractSize(currentSpec, "width");
+  const h = walkExtractSize(currentSpec, "height");
+  // The seven PRISM-canonical presets only. The extras (report,
+  // dashboard, widescreen, tile sizes) stay in Advanced -- a chart being
+  // hand-finished for publication is going to one of these or to a
+  // dragged size, and thirteen chips is a wall, not a choice.
+  const sizes = Object.keys(DIM_PRESETS)
+    .filter(k => DIM_PRESETS[k].prism || k === currentDimPreset)
+    .map(k => ({ label: shortPresetLabel(k), value: k }));
+  m.appendChild(menuChips("Size  (or drag the chart's edge)", sizes,
+    currentDimPreset, v => {
+      commitEdit("Size: " + v, () => { applyDimensionPreset(v, true); return true; });
+    }));
+
+  m.appendChild(menuSep());
+  m.appendChild(menuRow("Edit the title\u2026", "double-click", () => {
+    const el = findRoleEl("title-text");
+    if (el) beginInlineEdit(el);
+    else cfsToast("This chart has no title. Add one from Advanced controls.");
+  }));
+  m.appendChild(menuRow("Edit the subtitle\u2026", "double-click", () => {
+    const el = findRoleEl("title-subtitle");
+    if (el) beginInlineEdit(el);
+    else cfsToast("This chart has no subtitle. Add one from Advanced controls.");
+  }));
+
+  m.appendChild(menuSep());
+  m.appendChild(menuRow("Change the palette\u2026", currentPalette, () => {
+    openPaletteMenu();
+  }));
+  m.appendChild(menuRow("Change the theme\u2026", currentTheme, () => {
+    const r = menuRoot().getBoundingClientRect();
+    openMenu(r.left, r.top, "Theme", "typography and framing", mm => {
+      for (const [name, rec] of Object.entries(THEMES)) {
+        mm.appendChild(menuRow(rec.label || name, null, () => {
+          commitEdit("Theme: " + (rec.label || name), () => {
+            applyTheme(name, true);
+            return true;
+          });
+        }, { on: name === currentTheme }));
+      }
+    });
+  }));
+
+  m.appendChild(menuSep());
+  m.appendChild(menuRow("Download this chart", "PNG", () => downloadChart()));
+  m.appendChild(menuRow("Advanced controls\u2026",
+    String(KNOBS.length), () => {
+      const d = document.getElementById("knobsSection");
+      if (d) { d.open = true; d.scrollIntoView({ behavior: "smooth", block: "start" }); }
+    }));
+}
+
+/* ============================================================
+   WIRING: one delegated listener, re-marked hit targets per render
+   ============================================================ */
+function onChartContextMenu(e) {
+  const el = e.target;
+  if (!el || !el.closest || !el.closest("#chart")) return;
+  e.preventDefault();
+  e.stopPropagation();
+  closeInlineEditor();
+  const t = resolveHitTarget(el);
+  const x = e.clientX + window.scrollX;
+  const y = e.clientY + window.scrollY;
+  let sub = {
+    axis: "ticks, labels, gridlines",
+    legend: "position and entries",
+    annotation: "colour, style, remove",
+    canvas: "size, palette, theme",
+  }[t.kind] || "";
+  if (t.kind === "series") {
+    sub = (t.field && t.series != null)
+      ? ("this series only \u2014 " + (t.markType || "mark"))
+      : ("every " + (t.markType || "mark") + " on the chart");
+  }
+  openMenu(x, y, t.title, sub, m => {
+    if (t.kind === "series") buildSeriesMenu(t, m);
+    else if (t.kind === "axis") buildAxisMenu(t, m);
+    else if (t.kind === "legend") buildLegendMenu(t, m);
+    else if (t.kind === "annotation") buildAnnotationMenu(t, m);
+    else buildCanvasMenu(t, m);
+  });
+}
+
+/* Advertise which glyphs answer a right-click, the same way the text
+   pass advertises which answer a double-click. */
+function wireHitTargets() {
+  const svg = document.querySelector("#chart svg");
+  if (!svg) return;
+  const sel = "g.role-mark path, g.role-mark rect, g.role-mark symbol, " +
+              "g.role-mark line, g.role-mark area, g.role-legend rect, " +
+              "g.role-legend path, g.role-legend symbol";
+  for (const el of svg.querySelectorAll(sel)) {
+    const bb = el.getBBox ? el.getBBox() : null;
+    if (bb && bb.width < 0.5 && bb.height < 0.5) continue;
+    el.classList.add("cfs-hit");
+  }
+}
+
+/* ============================================================
+   DRAG TO RESIZE
+
+   The obvious implementation -- vegaView.width() / .height(), which
+   resize without recompiling the spec -- does not work on the specs
+   PRISM emits. Every chart with a source strip or a caption is a
+   vconcat, and vega-lite compiles those so the plot's height lives in a
+   `concat_0_height` layout signal rather than the root `height`. Setting
+   the root signal, or any of the concat signals, moves nothing; only
+   width propagates, and then only on single-column charts. So the
+   incremental path silently no-oped for the whole drag and the chart
+   snapped to its new size on release.
+
+   Recompiling the spec every frame is the honest alternative, and it is
+   affordable: a full re-embed is ~5-13ms against a 16ms frame budget.
+   What it needs is serialisation -- two vegaEmbed calls in flight on the
+   same container leave a half-laid-out SVG -- so frames are coalesced
+   behind the in-flight render rather than queued up behind it.
+
+   The spec is mutated on every frame, but the undo snapshot is taken
+   once at pointer-down, so a drag costs one undo entry, not hundreds.
+   ============================================================ */
+let _resize = null;
+let _pan = null;
+let _dragFrame = null;
+let _dragRenderInFlight = false;
+let _dragRenderQueued = false;
+let _dragRenderTail = Promise.resolve();
+
+/* Coalescing, not queueing: while a render is in flight later frames
+   collapse into a single pending flag, so releasing the pointer never
+   leaves a backlog of stale sizes to work through. _dragRenderTail lets
+   the release handler wait for the last frame instead of racing it. */
+/* The gesture supplies the per-frame spec write through _dragFrame; the
+   loop only owns the coalescing. Returning false from the frame aborts
+   without rendering, which is how a gesture that ended mid-flight stops
+   the queue. */
+function scheduleDragRender() {
+  if (_dragRenderInFlight) { _dragRenderQueued = true; return; }
+  _dragRenderInFlight = true;
+  _dragRenderTail = new Promise(resolve => {
+    requestAnimationFrame(() => {
+      if (!_dragFrame || _dragFrame() === false) {
+        _dragRenderInFlight = false;
+        _dragRenderQueued = false;
+        resolve();
+        return;
+      }
+      renderChart({ light: true }).then(() => {
+        _dragRenderInFlight = false;
+        resolve();
+        if (_dragRenderQueued) { _dragRenderQueued = false; scheduleDragRender(); }
+      });
+    });
+  });
+}
+
+/* Collapse the wrapper onto the rendered SVG so the frame and its three
+   handles sit on the chart's own edge. Vega picks the SVG's size from the
+   spec plus whatever the axes and legend need, so the only reliable
+   source is the rendered box -- re-measured after every render. */
+function syncChartFrame() {
+  const wrap = document.getElementById("chartWrap");
+  const svg = document.querySelector("#chart svg");
+  if (!wrap || !svg) return;
+  const box = svg.getBoundingClientRect();
+  if (box.width < 1 || box.height < 1) return;
+  wrap.style.width = Math.ceil(box.width) + "px";
+  wrap.style.height = Math.ceil(box.height) + "px";
+}
+
+function installResizeGrips() {
+  const wrap = document.getElementById("chartWrap");
+  if (!wrap) return;
+  for (const g of wrap.querySelectorAll(".cfs-grip")) {
+    g.addEventListener("pointerdown", e => beginResize(e, g.dataset.grip));
+  }
+}
+
+function beginResize(e, mode) {
+  e.preventDefault();
+  const w = walkExtractSize(currentSpec, "width");
+  const h = walkExtractSize(currentSpec, "height");
+  if (typeof w !== "number" || typeof h !== "number") {
+    cfsToast("This chart has no explicit size to drag; use Advanced controls.");
+    return;
+  }
+  _resize = {
+    mode: mode, x0: e.clientX, y0: e.clientY, w0: w, h0: h, w: w, h: h,
+    // Snapshot up front: the spec is rewritten on every frame, so by
+    // release there is no pre-drag state left to capture.
+    undoEntry: pushUndo("Resize"),
+  };
+  _dragFrame = () => {
+    const r = _resize;
+    if (!r) return false;
+    if (r.mode !== "s") walkSetSize(currentSpec, "width", r.w);
+    if (r.mode !== "e") walkSetSize(currentSpec, "height", r.h);
+    return true;
+  };
+  document.body.classList.add("cfs-resizing");
+  e.target.classList.add("cfs-live");
+  closeMenu();
+  const tag = document.getElementById("cfsSizeTag");
+  if (tag) tag.classList.add("on");
+  window.addEventListener("pointermove", onResizeMove);
+  window.addEventListener("pointerup", endResize, { once: true });
+}
+
+function onResizeMove(e) {
+  if (!_resize) return;
+  const r = _resize;
+  if (r.mode !== "s") r.w = Math.max(160, Math.round(r.w0 + (e.clientX - r.x0)));
+  if (r.mode !== "e") r.h = Math.max(100, Math.round(r.h0 + (e.clientY - r.y0)));
+  const tag = document.getElementById("cfsSizeTag");
+  if (tag) {
+    tag.textContent = r.w + " x " + r.h + "  (" + (r.w / r.h).toFixed(2) + ")";
+    tag.style.left = (e.clientX + 16) + "px";
+    tag.style.top = (e.clientY + 16) + "px";
+  }
+  // The frame is re-measured off the real SVG by syncChartFrame after each
+  // render rather than extrapolated from the pointer delta: axis labels and
+  // legends reflow as the plot resizes, so the box and the spec size do not
+  // move in lockstep.
+  r.moved = true;
+  scheduleDragRender();
+}
+
+/* Discard a drag's pointer-down snapshot when the gesture turned out not to
+   change anything. Guarded on identity because an edit made from a context
+   menu mid-drag would have pushed a later entry that must not be eaten. */
+function dropResizeUndo(r) {
+  if (!r || !r.undoEntry) return;
+  if (_undoStack[_undoStack.length - 1] !== r.undoEntry) return;
+  _undoStack.pop();
+  updateUndoButton();
+}
+
+function endResize() {
+  window.removeEventListener("pointermove", onResizeMove);
+  const r = _resize;
+  _resize = null;
+  _dragFrame = null;
+  _dragRenderQueued = false;
+  document.body.classList.remove("cfs-resizing");
+  for (const g of document.querySelectorAll(".cfs-grip.cfs-live")) {
+    g.classList.remove("cfs-live");
+  }
+  const tag = document.getElementById("cfsSizeTag");
+  if (tag) tag.classList.remove("on");
+  if (!r) return;
+  const netChange = !(r.w === r.w0 && r.h === r.h0);
+  // A grip click that never moved is not an edit, and nothing was rendered,
+  // so there is nothing to clean up beyond the snapshot.
+  if (!r.moved) {
+    dropResizeUndo(r);
+    return;
+  }
+  // Dragging out and back to the starting size is also not an edit, but the
+  // spec was rewritten and re-rendered on the way, so the full render still
+  // has to run to rewire the targets the light frames skipped.
+  const label = netChange ? ("Resized to " + r.w + " x " + r.h)
+                          : ("Size unchanged: " + r.w + " x " + r.h);
+  // The last drag frame may have been coalesced away, so write the final
+  // size unconditionally rather than trusting the render loop to have
+  // landed on it.
+  if (r.mode !== "s") walkSetSize(currentSpec, "width", r.w);
+  if (r.mode !== "e") walkSetSize(currentSpec, "height", r.h);
+  if (r.mode !== "s") retuneWindowedTicks();
+  if (netChange) {
+    if (r.mode !== "s") {
+      currentKnobValues["width"] = r.w;
+      overrides["width"] = r.w;
+    }
+    if (r.mode !== "e") {
+      currentKnobValues["height"] = r.h;
+      overrides["height"] = r.h;
+    }
+    currentDimPreset = "custom";
+    const sel = document.getElementById("dimPresetSelect");
+    if (sel) sel.value = "custom";
+    if (r.undoEntry) r.undoEntry.label = label;
+    updateUndoButton();
+  } else {
+    dropResizeUndo(r);
+  }
+  // Full render: the drag ran on light frames, so text and hit targets are
+  // unwired and the side tabs still describe the pre-drag size. Wait for any
+  // frame still in flight -- a second vegaEmbed on the same container mid
+  // render leaves a collapsed SVG behind.
+  const finish = () => {
+    renderChart();
+    updateTextAreas();
+    updateSizeSummary();
+    setStatus(label);
+  };
+  if (_dragRenderInFlight) _dragRenderTail.then(finish);
+  else finish();
+}
+
+/* ============================================================
+   DRAG TO PAN A TIME AXIS
+
+   Same shape as the resize drag -- one undo snapshot at pointer-down,
+   coalesced light frames, a full render on release -- but it does not
+   claim the pointer on the way down. A single click on a date label
+   still has to open the context menu, and a double-click still has to
+   start an inline rename, so the gesture only commits to panning once
+   the pointer has actually travelled.
+
+   The window is translated, never rescaled: the span stays fixed and
+   both edges move together, stopping against the data's own extent so
+   a drag cannot run off into empty space.
+   ============================================================ */
+
+/* The rendered plot width in CSS pixels. Vega sizes the SVG from the
+   spec plus whatever the axes and legend need, so the spec width is
+   the plot rect only if nothing has scaled it -- measure the axis the
+   pointer is on instead, and keep the spec value for when there is no
+   rendered geometry to read (the parity harness drives this headless). */
+function measuredAxisWidth(orient, fallback) {
+  const svg = document.querySelector("#chart svg");
+  if (svg) {
+    for (const g of svg.querySelectorAll("g.role-axis")) {
+      const d = g.__data__ || (g.firstChild && g.firstChild.__data__);
+      if (d && d.orient && d.orient !== orient) continue;
+      const line = g.querySelector("line.background, path.background, line.domain");
+      const box = (line || g).getBoundingClientRect();
+      if (box.width >= 1) return box.width;
+    }
+  }
+  return fallback;
+}
+
+function beginPan(e) {
+  if (e.button !== 0 || _pan || _resize) return;
+  const t = resolveHitTarget(e.target);
+  if (!t || t.kind !== "axis" || t.channel !== "x") return;
+  const panels = leafPanels(currentSpec);
+  const scopeNode = (panels.length > 1 && t.scope && t.scope.node &&
+                     t.scope.node !== currentSpec) ? t.scope.node : null;
+  const root = scopeNode || currentSpec;
+  const info = temporalPlotInfo(root);
+  if (!info) return;
+  const extent = dataExtent(info);
+  const win = currentWindow(root, info);
+  if (!extent || !win) return;
+  const width = measuredAxisWidth(t.orient, info.width);
+  if (!(width > 0)) return;
+  const span = win[1].getTime() - win[0].getTime();
+  if (!(span > 0)) return;
+
+  _pan = {
+    root: root, info: info,
+    eLo: extent[0].getTime(), eHi: extent[1].getTime(),
+    lo0: win[0].getTime(), span: span,
+    lo: win[0].getTime(), hi: win[1].getTime(),
+    x0: e.clientX, msPerPx: span / width,
+    started: false, undoEntry: null,
+  };
+  window.addEventListener("pointermove", onPanMove);
+  window.addEventListener("pointerup", endPan, { once: true });
+  window.addEventListener("pointercancel", endPan, { once: true });
+}
+
+function onPanMove(e) {
+  const p = _pan;
+  if (!p) return;
+  const dx = e.clientX - p.x0;
+  if (!p.started) {
+    // Below the threshold this is still a click or the start of a
+    // double-click, and neither should have moved the window.
+    if (Math.abs(dx) < 4) return;
+    p.started = true;
+    p.undoEntry = pushUndo("Pan");
+    closeMenu();
+    document.body.classList.add("cfs-resizing");
+    const tag = document.getElementById("cfsSizeTag");
+    if (tag) tag.classList.add("on");
+    _dragFrame = () => {
+      const q = _pan;
+      if (!q || !q.started) return false;
+      return applyTimeWindow(q.root, new Date(q.lo), new Date(q.hi),
+                             { info: q.info }).ok !== false;
+    };
+  }
+  // Grab-and-drag: pulling the axis right brings earlier data into view.
+  let lo = p.lo0 - dx * p.msPerPx;
+  let hi = lo + p.span;
+  if (lo < p.eLo) { lo = p.eLo; hi = lo + p.span; }
+  if (hi > p.eHi) { hi = p.eHi; lo = Math.max(hi - p.span, p.eLo); }
+  p.lo = lo; p.hi = hi;
+  const tag = document.getElementById("cfsSizeTag");
+  if (tag) {
+    tag.textContent = formatSpecDate(new Date(lo)).slice(0, 10) + "  \u2192  " +
+                      formatSpecDate(new Date(hi)).slice(0, 10);
+    tag.style.left = (e.clientX + 16) + "px";
+    tag.style.top = (e.clientY + 16) + "px";
+  }
+  scheduleDragRender();
+}
+
+function endPan() {
+  window.removeEventListener("pointermove", onPanMove);
+  const p = _pan;
+  _pan = null;
+  _dragFrame = null;
+  _dragRenderQueued = false;
+  document.body.classList.remove("cfs-resizing");
+  const tag = document.getElementById("cfsSizeTag");
+  if (tag) tag.classList.remove("on");
+  // Never crossed the threshold, so nothing was snapshotted or drawn and
+  // the click is still free to become a menu or a rename.
+  if (!p || !p.started) return;
+
+  const label = "Window: " + formatSpecDate(new Date(p.lo)).slice(0, 10) +
+                " to " + formatSpecDate(new Date(p.hi)).slice(0, 10);
+  // The last frame may have been coalesced away, so write the final
+  // window unconditionally rather than trusting the loop to have
+  // landed on it.
+  const res = applyTimeWindow(p.root, new Date(p.lo), new Date(p.hi), { info: p.info });
+  if (!res.ok) dropResizeUndo(p);
+  else if (p.undoEntry) { p.undoEntry.label = label; updateUndoButton(); }
+
+  const finish = () => {
+    renderChart();
+    updateTextAreas();
+    updateSizeSummary();
+    syncDomainKnobs();
+    setStatus(res.ok ? label : ("Pan failed: " + res.reason));
+  };
+  if (_dragRenderInFlight) _dragRenderTail.then(finish);
+  else finish();
+}
+
+/* ============================================================
    RENDER + SUMMARY
    ============================================================ */
-function renderChart() {
+/* Deliberately does NOT close the context menu. Steppers (tick count,
+   line thickness, opacity) re-render on every nudge, and a menu that
+   vanished after the first click would make the iterative case
+   unusable. Menu targets hold spec nodes, not DOM nodes, so they stay
+   valid across a re-render -- the two paths that REPLACE currentSpec,
+   undo and reset, close the menu themselves. */
+/* Returns the embed promise so callers that must not overlap renders --
+   the resize drag, which fires one per animation frame -- can wait for the
+   SVG to actually exist before starting the next. Overlapping vegaEmbed
+   calls on one container leave a half-laid-out SVG behind.
+
+   opts.light strips a drag frame down to the embed itself: re-wiring text
+   and hit targets walks every node in the scenegraph, and the Data / Code /
+   Metadata tabs re-serialise the whole spec. Neither is observable while
+   the pointer is down, and both run again on release. */
+function renderChart(opts) {
+  opts = opts || {};
   closeInlineEditor();
-  vegaEmbed("#chart", currentSpec, { renderer: "svg", actions: false })
+  const done = vegaEmbed("#chart", currentSpec, { renderer: "svg", actions: false })
     .then(r => {
       vegaView = r.view;
+      syncChartFrame();
+      if (opts.light) return;
       wireTextTargets();
+      wireHitTargets();
       // After the chart has been laid out, sync the sidebar height so the
       // info tabs never extend past the bottom of the chart panel.
-      requestAnimationFrame(syncSidebarHeight);
+      requestAnimationFrame(() => { syncChartFrame(); syncSidebarHeight(); });
     })
     .catch(err => { setStatus("render error: " + err.message); });
-  // Refresh dependent tabs whenever chart changes
-  try { refreshDependentTabs(); } catch (e) { /* tabs not yet initialized */ }
+  if (!opts.light) {
+    // Refresh dependent tabs whenever chart changes
+    try { refreshDependentTabs(); } catch (e) { /* tabs not yet initialized */ }
+  }
+  return done;
 }
 
 function refreshDependentTabs() {
@@ -3185,10 +6126,25 @@ function updateSizeSummary() {
 /* ============================================================
    EXPORT
    ============================================================ */
+/* The one download the toolbar offers. 2x matches what chart_functions
+   renders server-side, so a chart downloaded here and the same chart
+   downloaded from PRISM are the same asset apart from the edits. */
+function downloadChart() {
+  if (!vegaView) { cfsToast("The chart is still rendering."); return; }
+  closeMenu();
+  vegaView.toImageURL("png", 2)
+    .then(url => {
+      downloadURL(url, FILENAME + ".png");
+      setStatus("downloaded " + FILENAME + ".png");
+    })
+    .catch(err => cfsToast("Download failed: " + err.message));
+}
+
 function exportPNG(scale) {
   scale = scale || 2;
   if (!vegaView) return;
-  vegaView.toImageURL("png", scale).then(url => downloadURL(url, FILENAME + "_" + scale + "x.png"));
+  const suffix = scale === 2 ? "" : "_" + scale + "x";
+  vegaView.toImageURL("png", scale).then(url => downloadURL(url, FILENAME + suffix + ".png"));
 }
 
 function exportSVG() {
@@ -3278,9 +6234,26 @@ function downloadText(elementId, filename, mime) {
 /* ============================================================
    VIEW CONTROLS
    ============================================================ */
+/* Reset means "the chart as PRISM handed it over" -- every in-place
+   edit, right-click change and drag discarded in one step. The whole
+   pre-reset spec goes on the undo stack so this is not a trapdoor. */
 function resetView() {
+  closeMenu();
+  pushUndo("Reset to original");
+  currentSpec = deepClone(ORIGINAL_SPEC);
+  _textJournal = [];
+  overrides = {};
+  currentTheme = INITIAL_THEME;
+  currentPalette = INITIAL_PALETTE;
+  populateKnobValuesFromSpec();
+  currentDimPreset = detectDimPresetFromSpec();
+  initializeKnobs();
   renderChart();
-  setStatus("view reset");
+  updateTextAreas();
+  updateSizeSummary();
+  syncSelectors();
+  setStatus("reset to the original chart");
+  cfsToast("Back to the chart as PRISM built it. Undo brings your edits back.");
 }
 
 function toggleFullscreen() {
@@ -3917,8 +6890,17 @@ function applySpecSheet(name) {
   currentSpecSheet = name;
   const sheet = specSheets[name];
   if (!sheet) { setStatus("spec sheet '" + name + "' not found"); return; }
+  // Rebuilding from the original invalidates any spec node an open menu
+  // is holding, so the menu has to go with it.
+  closeMenu();
   currentSpec = deepClone(ORIGINAL_SPEC);
   overrides = {};
+  // The spec just went back to the producer's, so every knob value read
+  // off the old one is now describing a chart that no longer exists --
+  // including the domain boxes, which would keep advertising a window
+  // this sheet just discarded. Re-read before the sheet's own overrides
+  // go on top.
+  populateKnobValuesFromSpec();
   // The undo closures point into the spec being discarded.
   _textJournal = [];
   if (sheet.base_theme) applyTheme(sheet.base_theme, false);
@@ -4047,6 +7029,7 @@ function resetToTheme() {
   // Wipe spec back to producer-original then re-render. The user can
   // then explicitly pick a theme from the dropdown if they want to
   // override the producer's styling.
+  closeMenu();
   currentSpec = deepClone(ORIGINAL_SPEC);
   overrides = {};
   _textJournal = [];
@@ -4059,6 +7042,7 @@ function resetToTheme() {
 }
 
 function clearOverrides() {
+  closeMenu();
   overrides = {};
   currentSpec = deepClone(ORIGINAL_SPEC);
   _textJournal = [];
@@ -4070,8 +7054,13 @@ function clearOverrides() {
   setStatus("overrides cleared");
 }
 
+/* The raw-JSON mirrors were retired with the Raw tab; the Code tab and
+   the Export tab already serialise the spec on demand. Kept as a no-op
+   guard so the many call sites do not each need a condition. */
 function updateTextAreas() {
-  document.getElementById("specText").value = JSON.stringify(currentSpec, null, 2);
+  const spec = document.getElementById("specText");
+  if (!spec) return;
+  spec.value = JSON.stringify(currentSpec, null, 2);
   document.getElementById("overridesText").value = JSON.stringify({
     theme: currentTheme,
     palette: currentPalette,
@@ -4343,7 +7332,38 @@ function init() {
   syncSelectors();
   refreshDependentTabs();
   installSidebarHeightObserver();
+  installDirectManipulation();
+  updateUndoButton();
   requestAnimationFrame(syncSidebarHeight);
+}
+
+/* Delegated rather than per-node: vega rebuilds the SVG on every render,
+   so listeners bound to marks would have to be re-bound each time. The
+   container survives, so one listener does. */
+function installDirectManipulation() {
+  const host = document.getElementById("chart");
+  if (host) {
+    host.addEventListener("contextmenu", onChartContextMenu);
+    host.addEventListener("pointerdown", beginPan);
+  }
+  installResizeGrips();
+
+  document.addEventListener("pointerdown", e => {
+    const m = menuRoot();
+    if (m && m.classList.contains("on") && !m.contains(e.target)) closeMenu();
+  });
+  window.addEventListener("keydown", e => {
+    if (e.key === "Escape") closeMenu();
+    const meta = e.metaKey || e.ctrlKey;
+    if (meta && e.key.toLowerCase() === "z" && !e.shiftKey) {
+      const tag = (e.target && e.target.tagName) || "";
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+      undoLastEdit();
+    }
+    if (meta && e.key.toLowerCase() === "s") { e.preventDefault(); downloadChart(); }
+  });
+  window.addEventListener("scroll", closeMenu, { passive: true });
 }
 
 init();
