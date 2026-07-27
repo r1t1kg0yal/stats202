@@ -1046,7 +1046,10 @@ body { margin: 0; padding: 16px; font-family: sans-serif; font-size: 13px; }
 h1 { font-size: 16px; margin: 0 0 12px 0; }
 h2 { font-size: 13px; margin: 0; }
 h3 { font-size: 12px; margin: 8px 0 4px 0; }
-.layout { display: grid; grid-template-columns: 1fr 440px; gap: 16px; align-items: start; }
+/* The sidebar gives width back to the chart on a narrow window rather
+   than holding 440px and pushing the chart into a scroller. */
+.layout { display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 34vw, 440px);
+  gap: 16px; align-items: start; }
 .panel { border: 1px solid #000; padding: 10px; }
 .sidebar-panel { padding: 0; min-height: 320px; overflow: hidden; display: flex; flex-direction: column; box-sizing: border-box; }
 .sidebar-panel .tab-content { padding: 12px; flex: 1 1 0; overflow: auto; max-height: none; min-height: 0; }
@@ -1260,6 +1263,7 @@ body.cfs-resizing #chart svg { pointer-events: none; }
         title="Undo the last edit">Undo</button>
       <button onclick="resetView()" title="Discard every edit and return to the chart as PRISM built it">Reset</button>
       <button onclick="toggleFullscreen()" title="Hide the side panel to maximise the chart" id="fullscreenBtn">Fullscreen</button>
+      <button onclick="toggleChartFit()" id="fitBtn" class="hidden">Actual size</button>
       <span id="sizeSummary" class="size-summary"></span>
       <span id="status" style="font-size:11px; color:#555;"></span>
     </div>
@@ -4437,8 +4441,11 @@ function beginInlineEdit(el) {
     (rotated ? box.left : box.left - 4)) + "px";
   ed.style.top = (window.scrollY +
     (rotated ? box.top + box.height / 2 - 11 : box.top - 3)) + "px";
-  const fs = window.getComputedStyle(el).fontSize;
-  if (fs) ed.style.fontSize = fs;
+  // The computed size is in the SVG's own units, which are the screen's
+  // only at 100%. Scaling it keeps the editor the size of the glyphs it
+  // sits on top of.
+  const fs = parseFloat(window.getComputedStyle(el).fontSize);
+  if (fs > 0) ed.style.fontSize = (fs * _fitScale).toFixed(2) + "px";
   document.body.appendChild(ed);
   _cfsEditor = ed;
   ed.focus();
@@ -5760,6 +5767,93 @@ function scheduleDragRender() {
   });
 }
 
+/* ---- fit the chart to the panel ---------------------------------------
+   A composite, a facet grid or a presentation-sized single chart is
+   routinely wider than the column the editor gives it, and a chart the
+   user can only reach half of is not editable. Vega's SVG carries a
+   viewBox, so shrinking the element's CSS box scales the drawing with no
+   loss of crispness and without touching the spec -- the download still
+   exports at the chart's real size.
+
+   Width only. The page scrolls vertically anyway, and matching the panel
+   on both axes would shrink a tall chart for no reason.
+   ---------------------------------------------------------------------- */
+let _fitEnabled = true;   // session-only; the toolbar button flips it
+let _fitScale = 1;        // 1 means the chart is at its real size
+let _fitFrozen = null;    // scale held still for the length of a drag
+
+function chartAvailableWidth() {
+  const panel = document.getElementById("chartPanel");
+  if (!panel) return 0;
+  const cs = getComputedStyle(panel);
+  return panel.clientWidth -
+    parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+}
+
+/* The size vega laid the chart out at, which is the viewBox rather than
+   the width attribute: once this function has scaled the element, the
+   attribute still reads the natural size but the CSS box does not, and
+   measuring the box instead would ratchet the chart smaller on every
+   render. */
+function naturalChartSize(svg) {
+  const vb = (svg.getAttribute("viewBox") || "").trim().split(/[\s,]+/);
+  if (vb.length === 4) {
+    const w = parseFloat(vb[2]), h = parseFloat(vb[3]);
+    if (w > 0 && h > 0) return { w: w, h: h };
+  }
+  const aw = parseFloat(svg.getAttribute("width"));
+  const ah = parseFloat(svg.getAttribute("height"));
+  return { w: aw > 0 ? aw : 0, h: ah > 0 ? ah : 0 };
+}
+
+function applyChartFit() {
+  const svg = document.querySelector("#chart svg");
+  if (!svg) return;
+  const nat = naturalChartSize(svg);
+  if (!(nat.w > 0 && nat.h > 0)) return;
+  const avail = chartAvailableWidth();
+  let scale;
+  if (_fitFrozen !== null) scale = _fitFrozen;
+  else if (!_fitEnabled || !(avail > 0)) scale = 1;
+  else scale = Math.min(1, avail / nat.w);
+  _fitScale = scale;
+  if (scale >= 1) {
+    svg.style.width = "";
+    svg.style.height = "";
+  } else {
+    // Floor rather than round: a half-pixel over the panel is enough to
+    // put the scrollbar back, which is the thing being fixed.
+    svg.style.width = Math.floor(nat.w * scale) + "px";
+    svg.style.height = Math.floor(nat.h * scale) + "px";
+  }
+  updateFitButton(nat.w, avail);
+  updateSizeSummary();
+}
+
+/* The button is the escape hatch, so it only exists when there is
+   something to escape from -- on a chart that already fits, both modes
+   render identically. */
+function updateFitButton(naturalWidth, avail) {
+  const btn = document.getElementById("fitBtn");
+  if (!btn) return;
+  btn.classList.toggle("hidden", !(naturalWidth > avail + 1));
+  btn.textContent = _fitEnabled ? "Actual size" : "Fit to panel";
+  btn.title = _fitEnabled
+    ? "Show the chart at 100%; the panel will scroll"
+    : "Scale the chart down so all of it is visible. Its real size, and "
+      + "the size it downloads at, do not change.";
+}
+
+function toggleChartFit() {
+  _fitEnabled = !_fitEnabled;
+  applyChartFit();
+  syncChartFrame();
+  syncSidebarHeight();
+  cfsToast(_fitEnabled
+    ? "Fitted to the panel. The chart's real size is unchanged."
+    : "Showing the chart at 100%. Scroll the panel to reach the rest.");
+}
+
 /* Collapse the wrapper onto the rendered SVG so the frame and its three
    handles sit on the chart's own edge. Vega picks the SVG's size from the
    spec plus whatever the axes and legend need, so the only reliable
@@ -5790,6 +5884,11 @@ function beginResize(e, mode) {
     cfsToast("This chart has no explicit size to drag; use Advanced controls.");
     return;
   }
+  // Hold the fit still for the gesture. Re-fitting on every frame would
+  // pin the frame to the panel edge and the chart would appear not to
+  // respond at all; frozen, the edge tracks the pointer and the release
+  // render settles it back into the panel.
+  _fitFrozen = _fitScale;
   _resize = {
     mode: mode, x0: e.clientX, y0: e.clientY, w0: w, h0: h, w: w, h: h,
     // Snapshot up front: the spec is rewritten on every frame, so by
@@ -5815,8 +5914,12 @@ function beginResize(e, mode) {
 function onResizeMove(e) {
   if (!_resize) return;
   const r = _resize;
-  if (r.mode !== "s") r.w = Math.max(160, Math.round(r.w0 + (e.clientX - r.x0)));
-  if (r.mode !== "e") r.h = Math.max(100, Math.round(r.h0 + (e.clientY - r.y0)));
+  // A pointer travelling one screen pixel across a chart drawn at 80%
+  // is worth 1.25 chart pixels, so the delta is read back through the
+  // frozen scale before it reaches the spec.
+  const s = (_fitFrozen && _fitFrozen > 0) ? _fitFrozen : 1;
+  if (r.mode !== "s") r.w = Math.max(160, Math.round(r.w0 + (e.clientX - r.x0) / s));
+  if (r.mode !== "e") r.h = Math.max(100, Math.round(r.h0 + (e.clientY - r.y0) / s));
   const tag = document.getElementById("cfsSizeTag");
   if (tag) {
     tag.textContent = r.w + " x " + r.h + "  (" + (r.w / r.h).toFixed(2) + ")";
@@ -5847,6 +5950,10 @@ function endResize() {
   _resize = null;
   _dragFrame = null;
   _dragRenderQueued = false;
+  // Hand the fit back to the panel; the render below settles the new size
+  // into it. Released before the early returns so an aborted gesture does
+  // not leave the chart pinned at the drag's scale.
+  _fitFrozen = null;
   document.body.classList.remove("cfs-resizing");
   for (const g of document.querySelectorAll(".cfs-grip.cfs-live")) {
     g.classList.remove("cfs-live");
@@ -6062,13 +6169,18 @@ function renderChart(opts) {
   const done = vegaEmbed("#chart", currentSpec, { renderer: "svg", actions: false })
     .then(r => {
       vegaView = r.view;
+      // Fit before the frame is measured: the frame traces the SVG's box,
+      // and the fit is what decides how big that box is.
+      applyChartFit();
       syncChartFrame();
       if (opts.light) return;
       wireTextTargets();
       wireHitTargets();
       // After the chart has been laid out, sync the sidebar height so the
       // info tabs never extend past the bottom of the chart panel.
-      requestAnimationFrame(() => { syncChartFrame(); syncSidebarHeight(); });
+      requestAnimationFrame(() => {
+        applyChartFit(); syncChartFrame(); syncSidebarHeight();
+      });
     })
     .catch(err => { setStatus("render error: " + err.message); });
   if (!opts.light) {
@@ -6102,14 +6214,42 @@ function syncSidebarHeight() {
 }
 
 let _sidebarResizeObserver = null;
+let _lastFitWidth = null;
+let _viewportSyncQueued = false;
+
+/* Re-fit only when the panel actually got wider or narrower. The observer
+   also fires for the height change the fit itself causes, and refitting on
+   that would be a loop. */
+function onPanelResized() {
+  const w = chartAvailableWidth();
+  if (_lastFitWidth === null || Math.abs(w - _lastFitWidth) >= 1) {
+    _lastFitWidth = w;
+    applyChartFit();
+    syncChartFrame();
+  }
+  syncSidebarHeight();
+}
+
+function onViewportResized() {
+  if (_viewportSyncQueued) return;
+  _viewportSyncQueued = true;
+  requestAnimationFrame(() => {
+    _viewportSyncQueued = false;
+    _lastFitWidth = chartAvailableWidth();
+    applyChartFit();
+    syncChartFrame();
+    syncSidebarHeight();
+  });
+}
+
 function installSidebarHeightObserver() {
   const chartPanel = document.getElementById("chartPanel");
   if (!chartPanel) return;
   if (typeof ResizeObserver !== "undefined" && !_sidebarResizeObserver) {
-    _sidebarResizeObserver = new ResizeObserver(() => syncSidebarHeight());
+    _sidebarResizeObserver = new ResizeObserver(onPanelResized);
     _sidebarResizeObserver.observe(chartPanel);
   }
-  window.addEventListener("resize", syncSidebarHeight);
+  window.addEventListener("resize", onViewportResized);
 }
 
 function updateSizeSummary() {
@@ -6119,8 +6259,12 @@ function updateSizeSummary() {
   const autosize = currentKnobValues["autosize"] ?? "pad";
   const preset = currentDimPreset ?? "custom";
   const ratio = (w !== "?" && h !== "?") ? (w / h).toFixed(2) : "?";
+  // The width / height reported are always the chart's real ones; the zoom
+  // is appended so a scaled-down view never reads as a smaller chart.
+  const zoom = _fitScale < 0.999
+    ? "  zoom=" + Math.round(_fitScale * 100) + "%" : "";
   document.getElementById("sizeSummary").textContent =
-    "width=" + w + "  height=" + h + "  aspect=" + ratio + "  padding=" + pad + "  autosize=" + autosize + "  preset=" + preset;
+    "width=" + w + "  height=" + h + "  aspect=" + ratio + "  padding=" + pad + "  autosize=" + autosize + "  preset=" + preset + zoom;
 }
 
 /* ============================================================
@@ -6264,15 +6408,18 @@ function toggleFullscreen() {
   if (sidebar.classList.contains("hidden")) {
     sidebar.classList.remove("hidden");
     knobs.classList.remove("hidden");
-    layout.style.gridTemplateColumns = "1fr 440px";
+    // Back to the stylesheet's responsive pair rather than a hard 440px.
+    layout.style.gridTemplateColumns = "";
     btn.textContent = "Fullscreen";
-    requestAnimationFrame(syncSidebarHeight);
   } else {
     sidebar.classList.add("hidden");
     knobs.classList.add("hidden");
     layout.style.gridTemplateColumns = "1fr";
     btn.textContent = "Exit fullscreen";
   }
+  // The chart's share of the window just changed by 440-odd pixels, which
+  // is usually the difference between needing the fit and not.
+  requestAnimationFrame(onViewportResized);
 }
 
 /* ============================================================
