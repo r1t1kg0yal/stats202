@@ -3,7 +3,7 @@
 - **Module:** `chart_context`
 - **Audience:** PRISM in chat, email, report, and analysis workflows
 - **Tier:** 2 (registered context module)
-- **Scope:** Static PNG charts, multi-panel composites, and PNG tables. Interactive dashboards use `dashboards`.
+- **Scope:** Static PNG charts, multi-panel composites, and PNG tables. Live dashboards use `dashboards`.
 
 The v1 surface is canonical. `make_chart`, `make_table`, `build_charts`,
 `profile_df`, `ChartSpec`, all five `make_*pack_*` helpers, result classes,
@@ -137,6 +137,13 @@ Axis titles live only in `mapping`: `mapping['x_title']`,
 axis-title kwarg. Leave `interactive`, `auto_beautify`, `dimension_preset`, and
 runtime-injected kwargs at their defaults unless an external artifact
 constraint explicitly requires otherwise.
+
+A session run also registers the artifact so the user can reopen it in an HTML
+editor and restyle it by hand. That editor is a per-artifact companion, not a
+dashboard: a request to hand-edit, recolour, or retype one chart or table stays
+here, while live filtering, scheduled refresh, or cross-widget interaction is a
+`dashboards` task. Tables additionally return a direct link — see the tables
+spoke.
 
 ### Kwarg placement contract
 

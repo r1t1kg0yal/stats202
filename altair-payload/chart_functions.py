@@ -66,9 +66,12 @@ import re
 import sys
 import traceback
 from dataclasses import dataclass, field, fields, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Set, Tuple, Union
+from typing import (
+    Any, Callable, Dict, FrozenSet, List, Literal, Optional, Sequence, Set,
+    Tuple, Union,
+)
 
 # ---------------------------------------------------------------------------
 # Third-party
@@ -93,6 +96,13 @@ from prism_mcp.utils.chart_functions_studio import (
     DIMENSION_PRESETS as _STUDIO_DIMENSION_PRESETS,
     _compute_chart_id,
 )
+
+# The table studio is a self-contained companion to make_table(), the way
+# chart_functions_studio is to make_chart(). Its master switch lives in the
+# module (``TABLE_STUDIO_ENABLED``) and is consulted only when a caller
+# leaves ``make_table(interactive=...)`` at None. Nothing in the PNG path
+# touches it.
+from prism_mcp.utils import chart_functions_studio_tables as _table_studio
 
 # ---------------------------------------------------------------------------
 # Module logger
@@ -25866,6 +25876,7 @@ _TABLE_THEME: Dict[str, Any] = {
     "body_text":         "#000000",
     "positive_text":     "#0E7A28",
     "negative_text":     "#C00000",
+    "highlight_color":   "#E8F0F7",
     "title_font_size":   22,
     "subtitle_font_size": 13,
     "header_font_size":  14,
@@ -26138,6 +26149,49 @@ class TableResult:
     truncated_rows: int = 0
     canvas_size: Optional[Tuple[int, int]] = None
 
+    # ---- Interactive companion -------------------------------------------
+    # Populated only when make_table(interactive=True) runs. Deliberately the
+    # same field shape ChartResult carries for the chart studio, so PRISM
+    # reads the two artifacts with one habit.
+    interactive: bool = False
+    editor_table_id: Optional[str] = None
+    editor_html_path: Optional[str] = None
+    editor_url: Optional[str] = None
+
+
+# Named date hints for ``column_formats``. A raw strftime string is still
+# accepted (anything containing "%"), but the named forms are what the table
+# studio's header menu offers and what PRISM should reach for -- they read as
+# intent rather than as punctuation, and they round-trip through the studio.
+_TBL_DATE_HINTS: Dict[str, str] = {
+    "date_dmy":       "%d %b",
+    "date_dmy_yy":    "%d %b %y",
+    "date_mon_yy":    "%b %y",
+    "date_mon_yyyy":  "%b %Y",
+    "date_year":      "%Y",
+    "date_iso":       "%Y-%m-%d",
+    "date_slash":     "%d/%m/%y",
+    "date_time":      "%H:%M",
+}
+
+# Every hint ``_tbl_smart_format`` recognises. Anything else falls through to
+# the magnitude-aware default, which renders plausible-looking but unrequested
+# output -- so a mistyped hint used to be invisible in exactly the way a
+# mistyped column name was before ``_flag_unknown``. ``date_qtr`` is here
+# rather than in _TBL_DATE_HINTS because it is computed, not strftime'd.
+_TBL_FORMAT_HINTS: FrozenSet[str] = frozenset(
+    {"pct", "percent", "percentage", "pct_signed", "pct2", "pct2_signed",
+     "bp", "bps", "bp_signed", "currency", "ratio", "int", "date_qtr"}
+    | set(_TBL_DATE_HINTS)
+)
+
+# The names worth advertising: one spelling per distinct output. The rest of
+# _TBL_FORMAT_HINTS are accepted synonyms, kept out of error messages so the
+# suggested set stays scannable.
+_TBL_FORMAT_HINT_ALIASES: FrozenSet[str] = frozenset(
+    {"percent", "percentage", "bps"}
+)
+
 
 def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
     if value is None or (isinstance(value, float) and math.isnan(value)):
@@ -26145,10 +26199,19 @@ def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
     if isinstance(value, str):
         return value
     if isinstance(value, pd.Timestamp):
+        if hint == "date_qtr":
+            return f"Q{value.quarter} {value.strftime('%y')}"
+        if hint in _TBL_DATE_HINTS:
+            return value.strftime(_TBL_DATE_HINTS[hint])
         if hint and "%" in hint:
             return value.strftime(hint)
         return value.strftime("%d %b")
-    if not isinstance(value, (int, float)):
+    # np.float64 subclasses float but np.int64 does not subclass int, so an
+    # integer-dtype column used to fall through to str(value) and drop its
+    # format hint entirely -- "3M Chg" with bp_signed rendered "-75" from an
+    # int column and "-75bp" from a float one. Match on the numpy scalar
+    # types so dtype stops being visible in the output.
+    if not isinstance(value, (int, float, np.integer, np.floating)):
         return str(value)
     v = float(value)
     # ---- Year-detection heuristic (engine-side fix) ----
@@ -26158,7 +26221,7 @@ def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
     # This prevents "2024" from rendering as "2,024.0".
     if hint is None and v == int(v) and 1900 <= int(v) <= 2200:
         return str(int(v))
-    if hint == "pct" or hint == "percent":
+    if hint in ("pct", "percent", "percentage"):
         return f"{v:.1f}%"
     if hint == "pct_signed":
         return f"{v:+.1f}%"
@@ -26196,6 +26259,30 @@ def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
     if a == 0:
         return "0.00"
     return f"{v:.3f}"
+
+
+def _tbl_cell_text(
+    df: pd.DataFrame, r_idx: int, ci: int,
+    column_formats: Dict[str, str],
+    value_overrides: Optional[Dict[Any, str]] = None,
+) -> str:
+    """Formatted display text for one body cell.
+
+    The single resolution point for cell text, so column sizing, wrap
+    decisions, row heights, PIL painting and the studio's cell model can
+    never disagree about what a cell says. A ``value_overrides`` entry --
+    keyed either ``(row_index, column_name)`` or ``(row_index, col_pos)``
+    -- is a literal string that bypasses formatting entirely. That is what
+    the table studio writes when a cell is retyped by hand.
+    """
+    col = df.columns[ci]
+    if value_overrides:
+        override = value_overrides.get((r_idx, col))
+        if override is None:
+            override = value_overrides.get((r_idx, ci))
+        if override is not None:
+            return str(override)
+    return _tbl_smart_format(df.iat[r_idx, ci], column_formats.get(col))
 
 
 def _tbl_wrap_text(text: str, font, max_width_px: int) -> List[str]:
@@ -26406,6 +26493,8 @@ def _tbl_natural_widths(
     column_formats: Dict[str, str],
     sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
     theme: Dict[str, Any],
+    value_overrides: Optional[Dict[Any, str]] = None,
+    no_wrap_cols: Optional[Set[Any]] = None,
 ) -> Tuple[List[int], List[bool], List[int]]:
     """Compute the per-column natural width, wrap flag, and minimum
     floor (the smallest width that still keeps the header visible).
@@ -26424,6 +26513,12 @@ def _tbl_natural_widths(
                        truncation, which is forbidden) and to
                        max(header_w, ``_TBL_TEXT_COL_FLOOR``) for
                        wrapping text columns.
+
+    ``no_wrap_cols`` names columns that must not wrap regardless of how
+    wide their content is: they skip the ``_TBL_TEXT_COL_MAX`` cap and
+    take their full measured width. This is how ``column_widths=
+    {"col": "auto"}`` is served -- the caller cannot compute the pixel
+    width themselves because it depends on font metrics.
     """
     body_font = _tbl_load_font("regular", theme["body_font_size"])
     header_font = _tbl_load_font("bold", theme["header_font_size"])
@@ -26432,7 +26527,7 @@ def _tbl_natural_widths(
     widths: List[int] = []
     wraps: List[bool] = []
     floors: List[int] = []
-    for col in df.columns:
+    for ci, col in enumerate(df.columns):
         header_w = int(header_font.getlength(str(col))) + 2 * cell_pad_x
         # Sparkline / minibar columns carry a graphical body (line + dot
         # or bar), so their natural body width is fixed. The HEADER, on
@@ -26453,13 +26548,15 @@ def _tbl_natural_widths(
             floors.append(w)
             continue
         body_max_w = 0
-        for v in df[col].tolist():
-            text = _tbl_smart_format(v, column_formats.get(col))
+        for r_idx in range(len(df)):
+            text = _tbl_cell_text(df, r_idx, ci, column_formats, value_overrides)
             tw = int(body_font.getlength(text)) + 2 * cell_pad_x
             if tw > body_max_w:
                 body_max_w = tw
         natural = max(header_w, body_max_w, 60)
         is_text = _tbl_is_text_col(df, col, sparkline_columns, minibar_columns)
+        if no_wrap_cols and col in no_wrap_cols:
+            is_text = False
         if is_text and natural > _TBL_TEXT_COL_MAX:
             widths.append(max(header_w, _TBL_TEXT_COL_MAX))
             wraps.append(True)
@@ -26512,24 +26609,35 @@ def _tbl_row_heights(
     col_wraps: List[bool],
     column_formats: Dict[str, str],
     theme: Dict[str, Any],
+    value_overrides: Optional[Dict[Any, str]] = None,
+    row_height_scale: float = 1.0,
 ) -> List[int]:
-    """Per-row height, growing to fit any wrapping cell content."""
+    """Per-row height, growing to fit any wrapping cell content.
+
+    ``row_height_scale`` stretches or compresses the result uniformly for
+    callers who want a denser or airier table than the font size implies.
+    It is applied after content fitting, so a wrapped row scales along with
+    everything else, and it is floored at one line plus padding so scaling
+    down can never clip text.
+    """
     body_font = _tbl_load_font("regular", theme["body_font_size"])
     cell_pad_x = _TBL_CELL_PAD_X
     base_h = int(theme["body_font_size"] * 1.95)
     line_h = int(theme["body_font_size"] * 1.45)
     out: List[int] = []
-    for _, row in df.iterrows():
+    for r_idx in range(len(df)):
         max_lines = 1
-        for ci, col in enumerate(df.columns):
+        for ci in range(len(df.columns)):
             if not col_wraps[ci]:
                 continue
             avail = col_widths[ci] - 2 * cell_pad_x
-            text = _tbl_smart_format(row[col], column_formats.get(col))
+            text = _tbl_cell_text(df, r_idx, ci, column_formats, value_overrides)
             lines = _tbl_wrap_text(text, body_font, max(20, avail))
             if len(lines) > max_lines:
                 max_lines = len(lines)
         h = max(base_h, max_lines * line_h + 8)
+        if row_height_scale != 1.0:
+            h = max(max_lines * line_h + 8, int(h * row_height_scale))
         out.append(h)
     return out
 
@@ -26543,6 +26651,9 @@ def _tbl_normalize_theme_for_display(
     sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
     row_groups: Optional[List[Tuple[str, int]]],
     target_html_width: int,
+    column_widths: Optional[Dict[str, int]] = None,
+    value_overrides: Optional[Dict[Any, str]] = None,
+    row_height_scale: float = 1.0,
 ) -> Tuple[Dict[str, Any], _TableLayoutGeom, List[str], List[str]]:
     """Adapt ``theme`` font sizes so the rendered canvas hits the target
     display-width text size and stays within bounded aspect ratio.
@@ -26571,6 +26682,7 @@ def _tbl_normalize_theme_for_display(
             df, title, subtitle, caption, theme,
             header_levels, column_formats,
             sparkline_columns, minibar_columns, row_groups,
+            column_widths, value_overrides, row_height_scale,
         )
         last_geom, last_caption_lines = geom, caption_lines
 
@@ -26654,6 +26766,9 @@ def _tbl_layout(
     column_formats: Dict[str, str],
     sparkline_columns: Dict[str, List], minibar_columns: Dict[str, str],
     row_groups: Optional[List[Tuple[str, int]]],
+    column_widths: Optional[Dict[str, int]] = None,
+    value_overrides: Optional[Dict[Any, str]] = None,
+    row_height_scale: float = 1.0,
 ) -> Tuple[_TableLayoutGeom, List[str]]:
     """Compute a content-driven layout. Returns the geometry plus the
     pre-wrapped caption lines (so the draw step doesn't have to re-wrap).
@@ -26666,11 +26781,37 @@ def _tbl_layout(
     Height: title + header + Sum(row_heights) + group bands + caption
             + bottom padding. Always exact - no fixed canvas, so no
             bottom whitespace.
+
+    ``column_widths`` pins named columns to an exact pixel width, opting
+    them out of both natural sizing and compression. A pinned column
+    narrower than its content wraps rather than overflowing, which keeps
+    the engine's no-truncation guarantee intact. The value ``"auto"``
+    pins instead to whatever width the content actually needs, so the
+    column never wraps.
     """
     side_pad = _TBL_SIDE_PAD
+    auto_cols = {col for col, w in (column_widths or {}).items()
+                 if isinstance(w, str)}
     natural_w, wraps, floors = _tbl_natural_widths(
         df, column_formats, sparkline_columns, minibar_columns, theme,
+        value_overrides, no_wrap_cols=auto_cols,
     )
+    if column_widths:
+        for ci, col in enumerate(df.columns):
+            pinned = column_widths.get(col)
+            if pinned is None:
+                continue
+            if col in auto_cols:
+                # _tbl_natural_widths already measured the uncapped width;
+                # pinning the floor to it keeps compression from clawing it
+                # back and reintroducing the wrap the caller ruled out.
+                floors[ci] = natural_w[ci]
+                continue
+            pinned = max(40, int(pinned))
+            if pinned < natural_w[ci]:
+                wraps[ci] = True
+            natural_w[ci] = pinned
+            floors[ci] = pinned
     col_widths = _tbl_compress_to_fit(natural_w, wraps, floors, side_pad)
 
     canvas_w = 2 * side_pad + sum(col_widths)
@@ -26686,11 +26827,12 @@ def _tbl_layout(
     header_h = header_row_h * (n_super_levels + 1)
     body_top_y = title_h + header_h + (8 if title_h else 0)
 
-    row_default_h = int(theme["body_font_size"] * 1.95)
+    row_default_h = int(theme["body_font_size"] * 1.95 * row_height_scale)
     group_band_h = int(theme["body_font_size"] * 1.85)
 
     row_heights = _tbl_row_heights(
-        df, col_widths, wraps, column_formats, theme,
+        df, col_widths, wraps, column_formats, theme, value_overrides,
+        row_height_scale,
     )
     n_group_bands = len(row_groups or [])
     body_h = sum(row_heights) + n_group_bands * group_band_h
@@ -26771,6 +26913,7 @@ def _tbl_resolve_column_mode(
     r: int, c: int, df: pd.DataFrame,
     column_color_modes: Dict[str, Dict[str, Any]],
     rag_thresholds: Dict[str, Any],
+    theme: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     col_name = df.columns[c]
     spec = column_color_modes.get(col_name)
@@ -26791,7 +26934,7 @@ def _tbl_resolve_column_mode(
             return None
         return _tbl_rag_color(vf, thr)
     if mode == "highlight":
-        return spec.get("color", "#E8F0F7")
+        return spec.get("color", (theme or _TABLE_THEME)["highlight_color"])
     if vf is None:
         return None
     if mode in ("heatmap", "sequential"):
@@ -26958,6 +27101,7 @@ def _tbl_draw_body(
     signed_columns: List[str],
     total_rows: List[int],
     subtotal_rows: List[int],
+    value_overrides: Optional[Dict[Any, str]] = None,
 ) -> None:
     """Draw every body row. Canvas is content-sized so there is no
     body-bottom check and no truncation; every row renders. Wrapping
@@ -27019,7 +27163,7 @@ def _tbl_draw_body(
                     ci = col_index[hcol]
                     draw.rectangle(
                         [geom.col_xs[ci], y, geom.col_xs[ci + 1], y + rh],
-                        fill="#E8F0F7",
+                        fill=theme["highlight_color"],
                     )
         cell_bg: Dict[int, Optional[str]] = {}
         if not is_total:
@@ -27027,7 +27171,7 @@ def _tbl_draw_body(
                 color = _tbl_resolve_heatmap_group(r_idx, ci, df, heatmap_groups)
                 if color is None:
                     color = _tbl_resolve_column_mode(
-                        r_idx, ci, df, column_color_modes, rag_thresholds,
+                        r_idx, ci, df, column_color_modes, rag_thresholds, theme,
                     )
                 cell_bg[ci] = color
                 if color:
@@ -27060,7 +27204,7 @@ def _tbl_draw_body(
             if ci == 0 and row_indent and r_idx < len(row_indent):
                 indent_px = row_indent[r_idx] * 16
             v = row[col]
-            text_str = _tbl_smart_format(v, column_formats.get(col))
+            text_str = _tbl_cell_text(df, r_idx, ci, column_formats, value_overrides)
             text_color = cell_text_colors.get((r_idx, ci))
             if text_color is None:
                 if is_total:
@@ -27119,6 +27263,339 @@ def _tbl_draw_body(
         y += rh
 
 
+def _tbl_jsonable(value: Any) -> Any:
+    """Coerce one raw cell value into something ``json.dumps`` accepts.
+
+    Timestamps become ``{"__date__": "<iso>"}`` so the browser can tell a
+    date apart from a string and re-run the date formatters against it;
+    everything else collapses to str / int / float / None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return {"__date__": value.isoformat()}
+    if isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, (int, float)):
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return int(value) if isinstance(value, int) else f
+    if hasattr(value, "item"):  # numpy scalar
+        try:
+            return _tbl_jsonable(value.item())
+        except (ValueError, AttributeError):
+            return str(value)
+    if isinstance(value, (datetime, date)):
+        return {"__date__": value.isoformat()}
+    return str(value)
+
+
+def _tbl_studio_kwargs(*, df: pd.DataFrame, **kw: Any) -> Dict[str, Any]:
+    """Re-express a resolved ``make_table`` call as JSON-safe kwargs.
+
+    This dict IS the studio's state: every gesture mutates it and the Code
+    tab serialises it straight back to a ``make_table(...)`` call. The only
+    transformations are ones JSON forces -- tuple cell keys become
+    ``"row,col"`` strings, tuples become lists -- and each has an exact
+    inverse the studio applies when it regenerates the Python.
+
+    ``sparkline_columns`` is the one argument that cannot survive the trip:
+    its per-row series are data, not styling, and inlining them would bloat
+    the sidecar for no editing benefit. A boolean marker is recorded instead
+    and the regenerated call references the caller's own variable.
+    """
+    col_names = list(df.columns)
+
+    # make_table fills an unset caption from source= before rendering. Carrying
+    # both through would make the regenerated call state the same string twice,
+    # so the derived caption is dropped and source= alone reproduces it.
+    caption = kw.get("caption")
+    source = kw.get("source")
+    if source and caption == f"Source: {source}":
+        caption = None
+
+    def cell_key(key: Any) -> str:
+        r, c = key
+        ci = col_names.index(c) if c in col_names else int(c)
+        return f"{r},{ci}"
+
+    def pairs(seq: Any) -> Optional[List[List[Any]]]:
+        return [[a, b] for a, b in seq] if seq else None
+
+    out: Dict[str, Any] = {
+        "title": kw.get("title"),
+        "subtitle": kw.get("subtitle"),
+        "caption": caption,
+        "source": source,
+        "skin": kw.get("skin") or "gs_clean",
+        "_theme_overrides": dict(kw.get("theme_overrides") or {}),
+        "column_formats": dict(kw.get("column_formats") or {}),
+        "column_aligns": dict(kw.get("column_aligns") or {}),
+        "column_color_modes": dict(kw.get("column_color_modes") or {}),
+        "rag_thresholds": {
+            k: (list(v) if isinstance(v, tuple) else v)
+            for k, v in (kw.get("rag_thresholds") or {}).items()
+        },
+        "heatmap_groups": [dict(g) for g in (kw.get("heatmap_groups") or [])],
+        "highlight_columns": list(kw.get("highlight_columns") or []),
+        "signed_columns": list(kw.get("signed_columns") or []),
+        "minibar_columns": dict(kw.get("minibar_columns") or {}),
+        "row_bands": bool(kw.get("row_bands", True)),
+        "row_indent": list(kw.get("row_indent") or []),
+        "row_colors": {str(k): v for k, v in (kw.get("row_colors") or {}).items()},
+        "total_rows": list(kw.get("total_rows") or []),
+        "subtotal_rows": list(kw.get("subtotal_rows") or []),
+        "cell_colors": {cell_key(k): v
+                        for k, v in (kw.get("cell_colors") or {}).items()},
+        "cell_text_colors": {cell_key(k): v
+                             for k, v in (kw.get("cell_text_colors") or {}).items()},
+        "value_overrides": {cell_key(k): v
+                            for k, v in (kw.get("value_overrides") or {}).items()},
+        "column_widths": dict(kw.get("column_widths") or {}),
+        "row_height_scale": float(kw.get("row_height_scale") or 1.0),
+        "show_index": bool(kw.get("show_index", False)),
+        "target_html_width": int(kw.get("target_html_width")
+                                 or _TBL_TARGET_HTML_WIDTH_PX),
+        "save_as": kw.get("save_as"),
+        "has_sparklines": bool(kw.get("sparkline_columns")),
+    }
+
+    row_groups = pairs(kw.get("row_groups"))
+    if row_groups:
+        out["row_groups"] = row_groups
+    header_levels = kw.get("header_levels")
+    if header_levels:
+        out["header_levels"] = [[[str(lbl), int(span)] for lbl, span in level]
+                                for level in header_levels]
+    return out
+
+
+def _tbl_build_cell_model(
+    df: pd.DataFrame, geom: _TableLayoutGeom, theme: Dict[str, Any],
+    column_formats: Dict[str, str], column_aligns: Dict[str, str],
+    column_color_modes: Dict[str, Dict[str, Any]],
+    heatmap_groups: List[Dict[str, Any]],
+    rag_thresholds: Dict[str, Any],
+    row_bands: bool,
+    row_groups: Optional[List[Tuple[str, int]]],
+    row_indent: Optional[List[int]],
+    row_colors: Dict[int, str],
+    cell_colors: Dict[Tuple[int, int], str],
+    cell_text_colors: Dict[Tuple[int, int], str],
+    highlight_columns: List[str],
+    sparkline_columns: Dict[str, List[List[float]]],
+    minibar_columns: Dict[str, str],
+    signed_columns: List[str],
+    total_rows: List[int],
+    subtotal_rows: List[int],
+    *,
+    caption_lines: List[str],
+    header_levels: Optional[List[List[Tuple[str, int]]]] = None,
+    value_overrides: Optional[Dict[Any, str]] = None,
+) -> Dict[str, Any]:
+    """Resolve the table to a JSON-serialisable cell model.
+
+    The resolve half of ``_tbl_draw_body``, with the drawing removed. It
+    walks the same rows, calls the same resolvers in the same priority
+    order, and records what ``_tbl_draw_body`` would have painted:
+    formatted text, wrapped lines, background, foreground, indent, plus
+    the geometry the layout pass already computed.
+
+    Nothing here affects the PNG. ``make_table`` still paints through
+    ``_tbl_draw_body``; this runs alongside it only when
+    ``interactive=True``, and exists so ``chart_functions_studio_tables``
+    can render the same table in a browser without reimplementing any of
+    the engine's judgement. Keeping the two in one file, next to each
+    other, is what keeps them honest -- a change to one is visibly a
+    change the other needs.
+
+    Also carries every RAW value, so the browser can re-run formatting and
+    colour scales after an edit rather than round-tripping to Python.
+    """
+    body_font = _tbl_load_font("regular", theme["body_font_size"])
+    body_bold = _tbl_load_font("bold", theme["body_font_size"])
+    cell_pad_x = _TBL_CELL_PAD_X
+    n_cols = len(df.columns)
+
+    group_starts: Dict[int, str] = {}
+    if row_groups:
+        cursor = 0
+        for label, count in row_groups:
+            group_starts[cursor] = label
+            cursor += count
+
+    columns: List[Dict[str, Any]] = []
+    for ci, col in enumerate(df.columns):
+        if col in sparkline_columns:
+            kind = "spark"
+        elif col in minibar_columns:
+            kind = "minibar"
+        elif pd.api.types.is_datetime64_any_dtype(df[col]):
+            kind = "date"
+        elif pd.api.types.is_numeric_dtype(df[col]):
+            kind = "num"
+        else:
+            kind = "text"
+        columns.append({
+            "name": str(col),
+            "kind": kind,
+            "align": column_aligns.get(col, _tbl_default_align(col, df)),
+            "fmt": column_formats.get(col),
+            "width": geom.col_widths[ci],
+            "wrap": bool(geom.col_wraps[ci]),
+            "numeric": kind == "num",
+            # JSON has one number type, so -75.0 reaches the browser
+            # indistinguishable from -75. The studio regenerates the DataFrame
+            # literal from these raws, and without the dtype it would rebuild a
+            # float column as an int one.
+            "int_dtype": bool(pd.api.types.is_integer_dtype(df[col])),
+            "minibar_src": minibar_columns.get(col),
+        })
+
+    minibar_max: Dict[str, float] = {}
+    for col, src in (minibar_columns or {}).items():
+        if src in df.columns:
+            m = pd.to_numeric(df[src], errors="coerce").abs().max()
+            minibar_max[col] = float(m) if pd.notna(m) else 0.0
+
+    rows: List[Dict[str, Any]] = []
+    for r_idx in range(len(df)):
+        rh = (geom.row_heights[r_idx] if r_idx < len(geom.row_heights)
+              else geom.row_default_h)
+        is_total = r_idx in total_rows
+        is_subtotal = r_idx in subtotal_rows
+
+        if is_total:
+            row_bg: Optional[str] = theme["total_band"]
+        elif is_subtotal:
+            row_bg = theme["subtotal_band"]
+        else:
+            row_bg = theme["row_band_color"] if (row_bands and r_idx % 2 == 1) else None
+            if row_colors.get(r_idx):
+                row_bg = row_colors[r_idx]
+
+        # Background priority matches _tbl_draw_body's paint order exactly:
+        # highlight, then heatmap group, then column mode, then the explicit
+        # per-cell override on top of all of it. _tbl_draw_body paints the
+        # highlight rect over the row band rather than instead of it, and
+        # skips it entirely on total and subtotal rows -- both of which the
+        # model has to reproduce, since the PNG is the thing being matched.
+        cell_bg: Dict[int, Optional[str]] = {}
+        if not is_total:
+            for ci, col in enumerate(df.columns):
+                color: Optional[str] = None
+                if col in highlight_columns and not is_subtotal:
+                    color = theme["highlight_color"]
+                resolved = _tbl_resolve_heatmap_group(r_idx, ci, df, heatmap_groups)
+                if resolved is None:
+                    resolved = _tbl_resolve_column_mode(
+                        r_idx, ci, df, column_color_modes, rag_thresholds, theme,
+                    )
+                if resolved is not None:
+                    color = resolved
+                cell_bg[ci] = color
+        for (cell_r, cell_c), col_hex in cell_colors.items():
+            if cell_r == r_idx and 0 <= cell_c < n_cols:
+                cell_bg[cell_c] = col_hex
+
+        cells: List[Dict[str, Any]] = []
+        for ci, col in enumerate(df.columns):
+            bg = cell_bg.get(ci)
+            raw = _tbl_jsonable(df.iat[r_idx, ci])
+
+            if col in sparkline_columns:
+                series = (sparkline_columns[col][r_idx]
+                          if r_idx < len(sparkline_columns[col]) else None)
+                cells.append({
+                    "c": ci, "kind": "spark", "raw": None, "text": "",
+                    "lines": [], "bg": bg, "fg": None, "indent": 0,
+                    "spark": [float(v) for v in series] if series else [],
+                })
+                continue
+            if col in minibar_columns:
+                src = minibar_columns[col]
+                v = df.iloc[r_idx].get(src)
+                try:
+                    vf = float(v) if pd.notna(v) else 0.0
+                except (TypeError, ValueError):
+                    vf = 0.0
+                cells.append({
+                    "c": ci, "kind": "minibar", "raw": raw, "text": "",
+                    "lines": [], "bg": bg, "fg": None, "indent": 0,
+                    "bar": {"v": vf, "max": minibar_max.get(col, 0.0)},
+                })
+                continue
+
+            indent_px = 0
+            if ci == 0 and row_indent and r_idx < len(row_indent):
+                indent_px = row_indent[r_idx] * 16
+
+            text = _tbl_cell_text(df, r_idx, ci, column_formats, value_overrides)
+            v = df.iat[r_idx, ci]
+
+            fg = cell_text_colors.get((r_idx, ci))
+            if fg is None:
+                if is_total:
+                    fg = "#FFFFFF"
+                elif (col in signed_columns and isinstance(v, (int, float))
+                        and not pd.isna(v)):
+                    fg = (theme["positive_text"] if v > 0
+                          else theme["negative_text"] if v < 0
+                          else theme["body_text"])
+                    if (bg is not None and fg != theme["body_text"]
+                            and _tbl_contrast_ratio(fg, bg) < _TBL_MIN_TEXT_CONTRAST):
+                        fg = _tbl_readable_text_color(bg)
+                elif bg is not None:
+                    fg = _tbl_readable_text_color(bg)
+                else:
+                    fg = theme["body_text"]
+
+            font = body_bold if (is_total or is_subtotal) else body_font
+            avail = geom.col_widths[ci] - 2 * cell_pad_x - indent_px
+            lines = (_tbl_wrap_text(text, font, max(20, avail))
+                     if geom.col_wraps[ci] else [text])
+
+            cells.append({
+                "c": ci, "kind": "text", "raw": raw, "text": text,
+                "lines": lines, "bg": bg, "fg": fg, "indent": indent_px,
+            })
+
+        rows.append({
+            "r": r_idx, "h": rh,
+            "kind": "total" if is_total else "subtotal" if is_subtotal else "normal",
+            "group": group_starts.get(r_idx),
+            "row_bg": row_bg,
+            "cells": cells,
+        })
+
+    return {
+        "canvas": {"w": geom.canvas_w, "h": geom.canvas_h},
+        "theme": {
+            **{k: v for k, v in theme.items() if isinstance(v, (str, int, float))},
+            "font_family": "GS Sans, Arial, Helvetica, sans-serif",
+        },
+        "geom": {
+            "table_x": geom.table_x,
+            "table_w": geom.table_w,
+            "header_h": geom.header_h,
+            "group_band_h": geom.group_band_h,
+            "col_widths": list(geom.col_widths),
+            "row_default_h": geom.row_default_h,
+            "body_top_y": geom.body_top_y,
+        },
+        "title": {
+            "lines": list(geom.title_lines),
+            "subtitle": list(geom.subtitle_lines),
+            "caption": list(caption_lines or []),
+        },
+        "header_levels": [[[str(lbl), int(span)] for lbl, span in level]
+                          for level in (header_levels or [])],
+        "columns": columns,
+        "rows": rows,
+    }
+
+
 def _tbl_png_bytes(img: Image.Image) -> bytes:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -27161,6 +27638,7 @@ def make_table(
     caption: Optional[str] = None,
     source: Optional[str] = None,
     skin: str = "gs_clean",
+    theme_overrides: Optional[Dict[str, Any]] = None,
     column_formats: Optional[Dict[str, str]] = None,
     column_aligns: Optional[Dict[str, str]] = None,
     header_levels: Optional[List[List[Tuple[str, int]]]] = None,
@@ -27179,6 +27657,9 @@ def make_table(
     signed_columns: Optional[List[str]] = None,
     total_rows: Optional[List[int]] = None,
     subtotal_rows: Optional[List[int]] = None,
+    column_widths: Optional[Dict[str, int]] = None,
+    value_overrides: Optional[Dict[Tuple[int, str], str]] = None,
+    row_height_scale: float = 1.0,
     show_index: bool = False,
     save_as: Optional[str] = None,
     session_path: Optional[str] = None,
@@ -27186,6 +27667,7 @@ def make_table(
     output_dir: str = "",
     user_id: Optional[str] = None,
     target_html_width: int = _TBL_TARGET_HTML_WIDTH_PX,
+    interactive: Optional[bool] = None,
 ) -> TableResult:
     """Render a DataFrame as a content-sized PNG table.
 
@@ -27209,6 +27691,19 @@ def make_table(
         1. cell_colors[(r, c)]      4. heatmap_groups       7. highlight_columns
         2. total_rows               5. column_color_modes   8. row_groups (handled separately)
         3. subtotal_rows            6. row_colors[r]        9. row_bands
+
+    ``column_widths={"Economy": 220}`` pins a column to an exact pixel
+    width; a pinned column narrower than its content wraps rather than
+    overflowing. ``value_overrides={(3, "GDP"): "n/a"}`` replaces one
+    cell's text outright, bypassing formatting. Both exist mainly so the
+    table studio's edits round-trip back into a runnable call.
+
+    ``interactive=True`` additionally emits a self-contained HTML editor
+    beside the PNG and registers the reopen artifacts under
+    ``{session_path}/tables/``, mirroring what ``make_chart`` does for
+    charts. Left at None it follows
+    ``chart_functions_studio_tables.TABLE_STUDIO_ENABLED``. The PNG is
+    byte-identical either way.
     """
     warnings: List[str] = []
 
@@ -27297,7 +27792,7 @@ def make_table(
     # convention -- a column NAME is the natural key, an integer index is the
     # fallback. Previously, passing a name silently raised a low-information
     # TypeError from deep inside _tbl_draw_body.
-    def _normalize_cell_keys(d):
+    def _normalize_cell_keys(d, label="cell_colors/cell_text_colors"):
         if not d:
             return {}
         out = {}
@@ -27310,7 +27805,7 @@ def make_table(
             if isinstance(c, str):
                 if c not in col_to_idx:
                     warnings.append(
-                        f"cell_colors/cell_text_colors key (r={r}, c={c!r}): "
+                        f"{label} key (r={r}, c={c!r}): "
                         f"column name not in df.columns; skipping"
                     )
                     continue
@@ -27326,6 +27821,12 @@ def make_table(
     total_rows = list(total_rows or [])
     subtotal_rows = list(subtotal_rows or [])
     row_colors = dict(row_colors or {})
+    column_widths = dict(column_widths or {})
+    # Same (row, column) key shape as cell_colors, so it needs the same
+    # normalisation: a stale column name from a renamed studio session used to
+    # survive to the editor's kwargs snapshot, where the name-or-index lookup
+    # fell through to int(name) and took the whole companion down with it.
+    value_overrides = _normalize_cell_keys(value_overrides, "value_overrides")
 
     # ---- Kwarg-family validation (single-pass aggregation) --------------
     # header_levels / row_groups / column_color_modes / heatmap_groups are
@@ -27349,7 +27850,11 @@ def make_table(
         heatmap_groups = []
     heatmap_groups = list(heatmap_groups or [])
 
-    raw_modes = column_color_modes or {}
+    # The caller's own spellings are kept alongside the normalized dicts: the
+    # engine resolves colour from the normalized form, but the table studio
+    # regenerates Python and should hand back "rwg", not the internal
+    # {'mode': 'diverging', 'palette': 'rwg', 'center': 0} expansion of it.
+    raw_modes = dict(column_color_modes or {})
     normalized_modes: Dict[str, Dict[str, Any]] = {}
     for col, spec in raw_modes.items():
         try:
@@ -27375,7 +27880,110 @@ def make_table(
             f"(higher-is-bad) or {{{col!r}: (red_max, amber_max)}} (lower-is-bad)."
         ))
 
+    # Every styling kwarg above is keyed by column name, and a name that
+    # matches nothing was previously applied to nothing without comment --
+    # so a typo, or a studio-side rename that missed a remap, looked exactly
+    # like a table that simply chose not to style that column. Warn (rather
+    # than fail) to match the precedent _normalize_cell_keys already set for
+    # cell_colors, since the rest of the table still renders correctly.
+    _known_cols = set(df.columns)
+
+    def _flag_unknown(label: str, names: Any) -> None:
+        stray = [n for n in (names or []) if n not in _known_cols]
+        if not stray:
+            return
+        warnings.append(
+            f"{label}: {', '.join(repr(n) for n in stray)} "
+            f"not in df.columns, so it had no effect. Available columns: "
+            f"{', '.join(repr(c) for c in df.columns)}."
+        )
+
+    # A hint the formatter does not recognise renders the magnitude-aware
+    # default, which looks like a deliberate choice rather than a typo. Raw
+    # strftime is still accepted, hence the "%" escape.
+    _stray_hints = sorted({
+        h for h in column_formats.values()
+        if isinstance(h, str) and h not in _TBL_FORMAT_HINTS and "%" not in h
+    })
+    if _stray_hints:
+        _named = sorted(_TBL_FORMAT_HINTS - _TBL_FORMAT_HINT_ALIASES)
+        _guesses = []
+        for h in _stray_hints:
+            near = difflib.get_close_matches(h, _named, n=1, cutoff=0.6)
+            _guesses.append(f"{h!r}{f' (did you mean {near[0]!r}?)' if near else ''}")
+        warnings.append(
+            f"column_formats: {', '.join(_guesses)} "
+            f"is not a known format hint, so those columns used the default "
+            f"format. Available: {', '.join(_named)}, or "
+            f"any strftime string containing '%'."
+        )
+
+    _bad_widths = {
+        c: w for c, w in column_widths.items()
+        if not (isinstance(w, str) and w == "auto")
+        and not (isinstance(w, (int, float, np.integer, np.floating))
+                 and not isinstance(w, bool))
+    }
+    if _bad_widths:
+        kwarg_findings.append(ValidationError(
+            f"column_widths values must be a pixel number or the string "
+            f"'auto' (width the content needs, never wraps). Got "
+            f"{', '.join(f'{c!r}: {w!r}' for c, w in _bad_widths.items())}."
+        ))
+        column_widths = {c: w for c, w in column_widths.items()
+                         if c not in _bad_widths}
+
+    _flag_unknown("column_formats", column_formats)
+    _flag_unknown("column_aligns", column_aligns)
+    _flag_unknown("column_color_modes", column_color_modes)
+    _flag_unknown("rag_thresholds", rag_thresholds)
+    _flag_unknown("column_widths", column_widths)
+    _flag_unknown("sparkline_columns", sparkline_columns)
+    _flag_unknown("minibar_columns", minibar_columns)
+    _flag_unknown("minibar_columns source column", minibar_columns.values())
+    _flag_unknown("highlight_columns", highlight_columns)
+    _flag_unknown("signed_columns", signed_columns)
+    if not 0.5 <= row_height_scale <= 3.0:
+        kwarg_findings.append(ValidationError(
+            f"row_height_scale={row_height_scale!r} is outside the supported "
+            f"0.5-3.0 range. 1.0 is the default; below 1 compresses rows, "
+            f"above 1 gives them more air."
+        ))
+    for _gi, _grp in enumerate(heatmap_groups):
+        if isinstance(_grp, dict):
+            _flag_unknown(f"heatmap_groups[{_gi}]['columns']", _grp.get("columns"))
+
+    # ``skin`` used to be accepted and then silently discarded here, so a
+    # caller could ask for a non-default table skin and get gs_clean without
+    # being told. The named skins live in the table studio next to the picker
+    # that offers them, which keeps one source of truth for what a skin means
+    # rather than two lists that drift. Font sizes always come from
+    # ``_TABLE_THEME`` -- a skin recolours, it does not resize, because the
+    # normalize pass owns font sizing.
+    if skin not in _table_studio.TABLE_THEMES:
+        kwarg_findings.append(ValidationError(
+            f"skin={skin!r} is not a known table skin. Available: "
+            f"{', '.join(sorted(_table_studio.TABLE_THEMES))}."
+        ))
     theme = dict(_TABLE_THEME)
+    theme.update({k: v for k, v in
+                  _table_studio.TABLE_THEMES.get(skin, {}).items()
+                  if k != "label" and k in _TABLE_THEME})
+
+    # ``theme_overrides`` is the escape hatch the table studio's Advanced
+    # panel writes into: one-off recolours and font-size nudges that no named
+    # skin covers. Without it a studio session could produce an appearance
+    # its own regenerated call could not reproduce.
+    if theme_overrides:
+        unknown = sorted(set(theme_overrides) - set(_TABLE_THEME))
+        if unknown:
+            kwarg_findings.append(ValidationError(
+                f"theme_overrides has unknown key(s) "
+                f"{', '.join(repr(k) for k in unknown)}. Valid keys: "
+                f"{', '.join(sorted(_TABLE_THEME))}."
+            ))
+        theme.update({k: v for k, v in theme_overrides.items()
+                      if k in _TABLE_THEME})
 
     # ---- Shape validation + defensive int() coercion at the boundary ----
     # The engine internals expect (label, span)-tuple form for both
@@ -27510,6 +28118,9 @@ def make_table(
             header_levels, column_formats,
             sparkline_columns, minibar_columns, row_groups,
             target_html_width=target_html_width,
+            column_widths=column_widths,
+            value_overrides=value_overrides,
+            row_height_scale=row_height_scale,
         )
     )
     warnings.extend(normalize_warnings)
@@ -27567,6 +28178,7 @@ def make_table(
         cell_colors, cell_text_colors, highlight_columns,
         sparkline_columns, minibar_columns, signed_columns,
         total_rows, subtotal_rows,
+        value_overrides,
     )
 
     _tbl_draw_caption(draw, caption, geom, theme)
@@ -27626,6 +28238,92 @@ def make_table(
         written_path = str(full)
         presigned_url = f"file://{full}"
 
+    # ---- Interactive companion + reopen sidecar --------------------------
+    # Session runs only, same restriction make_chart's spec sidecar carries:
+    # a standalone / output_dir run has no session folder to register
+    # against. Failure here is a warning, never a failed table -- the PNG is
+    # the deliverable and it is already written.
+    want_interactive = (
+        _table_studio.TABLE_STUDIO_ENABLED if interactive is None else bool(interactive)
+    )
+    editor_table_id: Optional[str] = None
+    editor_html_path: Optional[str] = None
+    editor_url: Optional[str] = None
+
+    if want_interactive and session_path and written_path and s3_manager is not None:
+        try:
+            model = _tbl_build_cell_model(
+                df, geom, theme,
+                column_formats, column_aligns, column_color_modes, heatmap_groups,
+                rag_thresholds, row_bands, row_groups, row_indent, row_colors,
+                cell_colors, cell_text_colors, highlight_columns,
+                sparkline_columns, minibar_columns, signed_columns,
+                total_rows, subtotal_rows,
+                caption_lines=_caption_lines,
+                header_levels=header_levels,
+                value_overrides=value_overrides,
+            )
+            # The editor is a pixel-editing surface and regenerates Python
+            # from its own numbers, so "auto" is resolved to the width it
+            # actually produced before the snapshot ever sees it.
+            _col_pos = {c: i for i, c in enumerate(df.columns)}
+            studio_widths = {
+                c: (geom.col_widths[_col_pos[c]]
+                    if isinstance(w, str) and c in _col_pos else w)
+                for c, w in column_widths.items()
+            }
+            studio_kwargs = _tbl_studio_kwargs(
+                df=df, title=title, subtitle=subtitle, caption=caption,
+                source=source, skin=skin, theme_overrides=theme_overrides,
+                column_formats=column_formats, column_aligns=column_aligns,
+                header_levels=header_levels, row_groups=row_groups,
+                row_indent=row_indent, row_bands=row_bands, row_colors=row_colors,
+                column_color_modes=raw_modes,
+                heatmap_groups=heatmap_groups, rag_thresholds=rag_thresholds,
+                highlight_columns=highlight_columns,
+                cell_colors=cell_colors, cell_text_colors=cell_text_colors,
+                sparkline_columns=sparkline_columns,
+                minibar_columns=minibar_columns, signed_columns=signed_columns,
+                total_rows=total_rows, subtotal_rows=subtotal_rows,
+                column_widths=studio_widths, value_overrides=value_overrides,
+                row_height_scale=row_height_scale,
+                show_index=show_index, save_as=written_path,
+                target_html_width=target_html_width,
+            )
+            studio = _table_studio.wrap_table_interactive_prism(
+                model=model,
+                kwargs=studio_kwargs,
+                user_id=user_id,
+                session_path=session_path,
+                table_name=Path(written_path).stem,
+                png_path=written_path,
+            )
+            persisted = _table_studio.persist_editable_table(
+                model, studio_kwargs,
+                png_path=written_path,
+                session_path=session_path,
+                s3_manager=s3_manager,
+                title=title,
+                editor_html=studio.editor_html,
+                editor_name=Path(written_path).stem,
+            )
+            editor_table_id = persisted["table_id"]
+            editor_html_path = persisted["editor_html_path"]
+            try:
+                editor_url = generate_presigned_download_url(
+                    editor_html_path).presigned_url
+            except Exception:  # noqa: BLE001
+                if hasattr(s3_manager, "local_path"):
+                    editor_url = (
+                        f"file://{s3_manager.local_path(editor_html_path).resolve()}"
+                    )
+            logger.info(
+                "[make_table] table_id=%s editor=%s png=%s",
+                editor_table_id, editor_html_path, written_path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Interactive table companion failed: {exc}")
+
     return TableResult(
         success=True,
         png_path=written_path,
@@ -27635,6 +28333,10 @@ def make_table(
         n_cols=len(df.columns),
         truncated_rows=0,
         canvas_size=canvas,
+        interactive=bool(editor_table_id),
+        editor_table_id=editor_table_id,
+        editor_html_path=editor_html_path,
+        editor_url=editor_url,
     )
 
 

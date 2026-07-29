@@ -8629,6 +8629,37 @@ def _prism_chart_type_to_mark(prism_chart_type: str) -> str:
 
 
 # =============================================================================
+# TABLE STUDIO BRIDGE
+# =============================================================================
+#
+# The table studio lives in its own file. Charts and tables share a visual
+# language and a session layout but nothing below the shell -- one mutates a
+# Vega-Lite spec for vega-embed, the other renders a DOM table from a cell
+# model -- so merging them would mean two unrelated templates in one
+# namespace. Re-exporting here means a caller that already imports the chart
+# studio does not need to learn a second module path:
+#
+#     from chart_functions_studio import wrap_table_interactive_prism
+#
+# ``chart_functions.py`` imports the table studio directly, via
+# ``prism_mcp.utils.chart_functions_studio_tables``. This bridge is for
+# everyone else. Deleting chart_functions_studio_tables.py disables the
+# feature; this import is the only place the chart studio references it.
+# =============================================================================
+
+from chart_functions_studio_tables import (  # noqa: E402, F401
+    TABLE_STUDIO_ENABLED,
+    TABLE_THEMES,
+    InteractiveTableResult,
+    PrismInteractiveTableResult,
+    TableStyleSheet,
+    persist_editable_table,
+    wrap_table_interactive,
+    wrap_table_interactive_prism,
+)
+
+
+# =============================================================================
 # SAMPLES (for demos, tests, CLI)
 # =============================================================================
 

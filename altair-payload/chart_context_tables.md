@@ -59,6 +59,8 @@ not apply.
 | `title`, `subtitle` | Top labels |
 | `caption` | Italic note below the table |
 | `source` | Attribution; fills an unset caption as `Source: ...` |
+| `skin` | Palette; recolours only, never resizes |
+| `theme_overrides` | Override individual skin colours, e.g. `{'row_band_color': '#FFF4E5'}`; an unknown key raises listing all of them |
 | `column_formats` | `{column: format_hint}` |
 | `column_aligns` | `{column: 'left'|'center'|'right'}` |
 | `header_levels` | Multi-level column headers |
@@ -76,6 +78,9 @@ not apply.
 | `minibar_columns` | `{display_column: numeric_source_column}` |
 | `signed_columns` | Positive/negative text colour |
 | `total_rows`, `subtotal_rows` | Style rows already present in the data |
+| `column_widths` | `{column: pixels}` pin, or `{column: 'auto'}` to fit the content and never wrap |
+| `value_overrides` | `{(row, column): text}` replaces one cell's text, bypassing formatting |
+| `row_height_scale` | Row air; 0.5–3.0, default 1.0 |
 | `show_index` | Include DataFrame index; default `False` |
 | `target_html_width` | Intended display width for font normalization; default 720, use 600 for narrower email |
 | `save_as` | Stable PNG path |
@@ -84,9 +89,23 @@ If a DataFrame index carries a semantic identifier such as country or ticker,
 either `reset_index()` so it becomes a named column (preferred) or set
 `show_index=True`; the default intentionally omits the index.
 
+| Skin | Use |
+|---|---|
+| `gs_clean` | Default house palette; navy headers |
+| `slate` | Softer blue-grey alternative to the default |
+| `mono` | Greyscale, including gains and losses |
+| `print` | Black and white, no row banding; for printed handouts |
+
 Canvas dimensions are content-driven. Text columns wrap, every row is kept,
 and the table is never truncated. A table too wide to remain legible on a
-portrait page raises; transpose, split, aggregate, or shorten headers.
+portrait page raises; transpose, split, aggregate, or shorten headers. Reach
+for `column_widths` / `row_height_scale` only to satisfy a stated layout
+request; the engine's own sizing is the default. For "wide enough not to
+wrap" pass `'auto'` rather than guessing a pixel count — the width depends on
+font metrics you cannot measure.
+
+Every column-keyed kwarg above warns rather than fails when a name matches no
+column, so a mistyped column silently styles nothing. Check `result.warnings`.
 
 ## 3. `TableResult`
 
@@ -97,12 +116,35 @@ Use dot notation:
 | `png_path`, `download_url` | Stored PNG and user-facing URL |
 | `n_rows`, `n_cols` | Rendered shape |
 | `canvas_size` | Emitted `(width, height)` |
-| `warnings` | Non-fatal dropped keys or automatic font adjustments |
+| `warnings` | Non-fatal dropped keys, unknown column names or format hints, automatic font adjustments |
 | `truncated_rows` | Always 0 |
+| `interactive`, `editor_url` | Whether an editor was emitted, and its link |
 | `success`, `error_message` | Returned results are successful; failures raise |
 
 Tables are deterministic and excluded from chart vision QC. Inspect and surface
 material `result.warnings`.
+
+### Editor companion
+
+Session runs emit a self-contained HTML editor beside the PNG by default, in
+which the user can restyle, reformat, resize, and retype the table directly
+and copy back a runnable `make_table(...)` call. Leave `interactive` alone —
+it is on unless the run has no session to write to, which is why
+`editor_url` can be unset. Surface it next to the PNG whenever it is present,
+including when the user says they want to adjust the table themselves. The
+editor is a per-table companion, not a dashboard — a request for live
+filtering, refresh, or cross-widget interaction is a `dashboards` task.
+
+Studio-generated code round-trips exactly. When a user supplies one of those
+calls, keep every kwarg it carries — `skin`, `theme_overrides`,
+`column_widths`, `value_overrides`, and `row_height_scale` are the ones the
+editor writes, and dropping them silently discards the user's edits.
+
+`value_overrides`, `row_colors`, `row_indent`, `total_rows`, and
+`subtotal_rows` all address rows by position. Re-running a studio call
+against refreshed data moves them onto whatever now sits at that index, with
+no error. Re-sort the new data the same way, or drop the row-indexed kwargs
+and say so.
 
 ## 4. Colour semantics
 
@@ -138,14 +180,25 @@ rag_thresholds={
 String buckets such as `High` / `Medium` / `Low` use `cell_colors`, not
 `column_color_modes='rag'`.
 
+`rag` means traffic-light status against risk bands. A plain "highlight the
+cells above X" is not that: build `cell_colors` from a comprehension over the
+data, the same way string buckets do.
+
+```python
+cell_colors={
+    (i, "Policy Rate (%)"): "#FFF4CC"
+    for i, v in enumerate(df["Policy Rate (%)"]) if v > 4.0
+}
+```
+
 ### Shared heatmap scales
 
 ```python
 heatmap_groups=[
     {
-        "columns": ["US", "UK", "EU", "JPN"],
+        "columns": ["1M", "3M", "6M"],
         "scope": "row",
-        "mode": "sequential",
+        "mode": "diverging",
     },
 ]
 ```
@@ -156,8 +209,15 @@ heatmap_groups=[
 | `row` | Across the selected columns within each row |
 | `group` | One scale across every selected cell |
 
-`mode` is `sequential` or `diverging`. `heatmap_groups` wins over
-`column_color_modes` for covered columns.
+`mode` is `sequential` for unsigned magnitudes or `diverging` for
+red-negative/green-positive. `heatmap_groups` wins over `column_color_modes`
+for covered columns.
+
+For signed returns, `rwg` colours each column on its own scale and is the
+default choice. Switch to a row- or group-scope `diverging` heatmap only when
+the comparison the user wants runs *across* the selected columns rather than
+down them. Do not add `signed_columns` on top of either: the background
+already carries the sign.
 
 Per-cell background priority, highest first:
 
@@ -224,6 +284,21 @@ numeric unit before `make_table`.
 
 Omitted hints use magnitude-aware defaults.
 
+Datetime columns are formatted automatically; name a hint only to override the
+choice. A raw strftime string is also accepted.
+
+| Hint | Output |
+|---|---|
+| `date_dmy`, `date_dmy_yy` | `05 Apr`, `05 Apr 26` |
+| `date_mon_yy`, `date_mon_yyyy` | `Apr 26`, `Apr 2026` |
+| `date_year`, `date_qtr` | `2026`, `Q2 26` |
+| `date_iso`, `date_slash` | `2026-04-05`, `05/04/26` |
+| `date_time` | `14:30` |
+
+An unrecognised hint warns, names the closest match, and falls back to the
+default format rather than raising — so a typo produces plausible but
+unrequested output unless `result.warnings` is read.
+
 ## 8. Common shapes
 
 | Shape | Useful kwargs |
@@ -247,6 +322,8 @@ defect it can evaluate. Common repairs are:
 - keep color-mode values to `rwg`, `bw`, or `rag`;
 - put numeric RAG boundaries in `rag_thresholds` for every `rag` column;
 - pass `heatmap_groups` as a list of dictionaries;
+- name a published `skin`, and keep `theme_overrides` keys to theme keys;
+- keep `row_height_scale` within 0.5–3.0;
 - transpose, split, aggregate, or shorten an over-wide table.
 
 Fix every numbered finding, then re-run. Never catch and suppress the error.
