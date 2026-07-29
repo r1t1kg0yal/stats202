@@ -8647,7 +8647,7 @@ def _prism_chart_type_to_mark(prism_chart_type: str) -> str:
 # feature; this import is the only place the chart studio references it.
 # =============================================================================
 
-from chart_functions_studio_tables import (  # noqa: E402, F401
+from prism_mcp.utils.chart_functions_studio_tables import (  # noqa: E402, F401
     TABLE_STUDIO_ENABLED,
     TABLE_THEMES,
     InteractiveTableResult,

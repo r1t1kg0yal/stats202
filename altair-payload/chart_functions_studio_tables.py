@@ -405,12 +405,23 @@ h1 { font-size: 19px; margin: 0 0 3px; font-weight: 700; letter-spacing: -.2px; 
   border: 1px solid #003359; border-radius: 4px; font-weight: 650; }
 .table-toolbar button.primary:hover { background: #0b4b7a; color: #fff; }
 .table-toolbar button[disabled] { opacity: .4; cursor: default; }
+.table-toolbar button.hidden { display: none; }
 .sizetag { margin-left: auto; font: 11px ui-monospace, Menlo, monospace;
   color: #667; white-space: nowrap; }
 
-/* ---- the table itself ---- */
+/* ---- the table itself ----
+   Three nested boxes, because the table is drawn at its real size and then
+   scaled to fit the panel:
+     #tableWrap   the panel's scroller and padding
+     #tableScale  the table's footprint AT THE CURRENT ZOOM -- sized in JS,
+                  and what the resize frame and its grips trace, so they
+                  stay full-size and on the artifact's own edge however far
+                  the table has been scaled down
+     #tableMount  the table at 100%, carrying the scale transform
+   -------------------------------------------------------------------- */
 #tableWrap { overflow: auto; padding: 14px; background: #fff; }
-#tableMount { display: inline-block; }
+#tableScale { position: relative; display: inline-block; vertical-align: top; }
+#tableMount { display: block; transform-origin: 0 0; }
 .pt-frame { padding: 12px; display: inline-block; background: #fff;
   position: relative; }
 table.pt { border-collapse: collapse; table-layout: fixed; background: #fff; }
@@ -433,19 +444,19 @@ table.pt th .grip:hover { background: rgba(148,199,221,.75); }
 .pt-cap { font-style: italic; }
 .pt-rule { height: 1px; }
 
-/* ---- whole-table resize: the chart studio's grips, traced around the
-   .pt-frame rather than the panel, so the drag edge sits on the artifact's
+/* ---- whole-table resize: the chart studio's grips, traced around
+   #tableScale rather than the panel, so the drag edge sits on the artifact's
    own circumference. ---------------------------------------------------- */
 .ts-frame { position: absolute; inset: -2px; pointer-events: none;
   border: 1px dashed #a9bed4; border-radius: 3px;
   opacity: 0; transition: opacity .12s; z-index: 4; }
-.pt-frame:hover .ts-frame, body.ts-resizing .ts-frame { opacity: 1; }
+#tableScale:hover .ts-frame, body.ts-resizing .ts-frame { opacity: 1; }
 body.ts-resizing .ts-frame { border-style: solid; border-color: #1d6fc4;
   box-shadow: 0 0 0 3px rgba(29,111,196,.13); }
 .ts-grip { position: absolute; opacity: 0; transition: opacity .12s;
   background: #fff; border: 1.5px solid #1d6fc4; border-radius: 2px;
   box-shadow: 0 1px 3px rgba(16,32,56,.28); z-index: 6; }
-.pt-frame:hover .ts-grip, body.ts-resizing .ts-grip { opacity: 1; }
+#tableScale:hover .ts-grip, body.ts-resizing .ts-grip { opacity: 1; }
 .ts-grip:hover, .ts-grip.live { background: #1d6fc4; }
 .ts-grip-e  { right: -6px; top: 50%; margin-top: -13px;
   width: 9px; height: 26px; cursor: ew-resize; }
@@ -590,16 +601,28 @@ body.fullscreen .sidebar, body.fullscreen .knobs-section { display: none; }
 <div class="layout">
 
   <!-- ============ table panel ============ -->
-  <div class="panel">
+  <div class="panel" id="tablePanel">
     <div class="table-toolbar">
       <button id="btnPng" class="primary">Download</button>
       <button id="btnUndo" disabled>Undo</button>
       <button id="btnReset">Reset</button>
       <button id="btnFull">Fullscreen</button>
+      <button id="btnFit" class="hidden">Actual size</button>
       <button id="btnAdvanced">All controls</button>
       <span class="sizetag" id="sizeTag"></span>
     </div>
-    <div id="tableWrap"><div id="tableMount"></div></div>
+    <div id="tableWrap">
+      <div id="tableScale">
+        <div id="tableMount"></div>
+        <div class="ts-frame"></div>
+        <div class="ts-grip ts-grip-e"  data-ts-grip="e"
+          title="Drag to widen or narrow every column"></div>
+        <div class="ts-grip ts-grip-s"  data-ts-grip="s"
+          title="Drag to change row height"></div>
+        <div class="ts-grip ts-grip-se" data-ts-grip="se"
+          title="Drag to resize both"></div>
+      </div>
+    </div>
     <div class="hint" id="hintLine"></div>
     <div class="ts-sizetag" id="tsSizeTag"></div>
   </div>
@@ -1441,20 +1464,125 @@ function renderTable() {
     c.textContent = line; frame.appendChild(c);
   });
 
-  const outline = document.createElement("div");
-  outline.className = "ts-frame";
-  frame.appendChild(outline);
-  [["e",  "Drag to widen or narrow every column"],
-   ["s",  "Drag to change row height"],
-   ["se", "Drag to resize both"]].forEach(([mode, tip]) => {
-    const gh = document.createElement("div");
-    gh.className = "ts-grip ts-grip-" + mode;
-    gh.dataset.tsGrip = mode; gh.title = tip;
-    frame.appendChild(gh);
-  });
-
   mount.innerHTML = ""; mount.appendChild(frame);
   wireGestures(tbl, frame);
+  // The resize frame and its grips sit outside the scaled subtree, so the box
+  // they trace has to be re-measured off the new table on every render.
+  applyTableFit();
+}
+
+// ===========================================================================
+// FIT THE TABLE TO THE PANEL
+//
+// A table is routinely wider than the column the editor gives it -- nine
+// columns, a set of pinned widths, or a couple of east drags will do it, and a
+// laptop window leaves this panel under 800px -- while the handles the studio
+// is built around live on the table's own right and bottom edge. Off the right
+// of a scroller they are invisible and unreachable, so the gesture disappears
+// exactly on the tables that most need it, and one drag past the panel's width
+// used to put the handle being held beyond the edge it had just created. So the
+// same deal the chart studio strikes: scale the artifact down until all of it
+// and its drag bounds are inside the panel.
+//
+// The table is still built at its real size and only the painted result is
+// scaled, so nothing downstream is affected -- the size tag, the Code tab and
+// every PNG export still speak in the table's own pixels.
+//
+// Width only, as in the chart studio. The page scrolls vertically anyway, and
+// squeezing a fifty-row table into a viewport's height would make it
+// unreadable for no gain.
+// ===========================================================================
+let _tfEnabled = true;   // session-only; the toolbar button flips it
+let _tfScale = 1;        // 1 means the table is at its real size
+let _tfFrozen = null;    // scale held still for the length of a drag
+
+// A pointer travelling one screen pixel across a table drawn at 80% is worth
+// 1.25 table pixels, so every drag delta is read back through the frozen
+// scale before it reaches the kwargs.
+const tfDragScale = () => (_tfFrozen && _tfFrozen > 0 ? _tfFrozen : 1);
+
+function tableAvailableWidth() {
+  const wrap = document.getElementById("tableWrap");
+  if (!wrap) return 0;
+  const cs = getComputedStyle(wrap);
+  return wrap.clientWidth -
+    parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+}
+
+// offsetWidth rather than getBoundingClientRect: a transform moves the painted
+// box but not the layout one, so this keeps reading the table's real size
+// instead of ratcheting it smaller on every render.
+function naturalTableSize() {
+  const f = document.getElementById("ptFrame");
+  if (!f) return { w: 0, h: 0 };
+  return { w: f.offsetWidth, h: f.offsetHeight };
+}
+
+function applyTableFit() {
+  const mount = document.getElementById("tableMount");
+  const box = document.getElementById("tableScale");
+  if (!mount || !box) return;
+  const nat = naturalTableSize();
+  if (!(nat.w > 0 && nat.h > 0)) return;
+  const avail = tableAvailableWidth();
+  let s;
+  if (_tfFrozen !== null) s = _tfFrozen;
+  else if (!_tfEnabled || !(avail > 0)) s = 1;
+  else s = Math.min(1, avail / nat.w);
+  _tfScale = s;
+  if (s >= 0.999) {
+    mount.style.transform = "";
+    box.style.width = ""; box.style.height = "";
+  } else {
+    mount.style.transform = "scale(" + s.toFixed(5) + ")";
+    // Floor rather than round: half a pixel over the panel is enough to put
+    // the scrollbar back, which is the thing being fixed.
+    box.style.width  = Math.floor(nat.w * s) + "px";
+    box.style.height = Math.floor(nat.h * s) + "px";
+  }
+  updateFitButton(nat.w, avail);
+}
+
+/* The button is the escape hatch, so it only exists when there is something
+   to escape from -- on a table that already fits, both modes are identical. */
+function updateFitButton(naturalWidth, avail) {
+  const b = document.getElementById("btnFit");
+  if (!b) return;
+  b.classList.toggle("hidden", !(naturalWidth > avail + 1));
+  b.textContent = _tfEnabled ? "Actual size" : "Fit to panel";
+  b.title = _tfEnabled
+    ? "Show the table at 100%; the panel will scroll"
+    : "Scale the table down so all of it, and its drag handles, are visible. "
+      + "Its real size, and the size it downloads at, do not change.";
+}
+
+function toggleTableFit() {
+  _tfEnabled = !_tfEnabled;
+  applyTableFit();
+  updateSizeSummary();
+  toast(_tfEnabled
+    ? "Fitted to the panel. The table's real size is unchanged."
+    : "Showing the table at 100%. Scroll the panel to reach the rest.");
+}
+
+// Re-fit only when the panel actually got wider or narrower. The observer also
+// fires for the height change a fit itself causes, and refitting on that would
+// be a loop.
+let _tfObserver = null;
+let _tfLastWidth = null;
+
+function installFitObserver() {
+  const wrap = document.getElementById("tableWrap");
+  if (!wrap || _tfObserver || typeof ResizeObserver === "undefined") return;
+  _tfLastWidth = tableAvailableWidth();
+  _tfObserver = new ResizeObserver(() => {
+    const w = tableAvailableWidth();
+    if (Math.abs(w - _tfLastWidth) < 1) return;
+    _tfLastWidth = w;
+    applyTableFit();
+    updateSizeSummary();
+  });
+  _tfObserver.observe(wrap);
 }
 
 // ===========================================================================
@@ -1471,9 +1599,13 @@ function rebuildTitleLines() {
 // without going through the full redraw -- can still keep the toolbar
 // honest about the size it is producing.
 function updateSizeSummary() {
+  // The dimensions reported are always the table's real ones; the zoom is
+  // appended so a scaled-down view never reads as a smaller table.
+  const zoom = _tfScale < 0.999
+    ? "  |  zoom " + Math.round(_tfScale * 100) + "%" : "";
   document.getElementById("sizeTag").textContent =
     M.canvas.w + " x " + M.canvas.h + " px  |  " + M.rows.length + " rows x "
-    + M.columns.length + " cols  |  body " + M.theme.body_font_size + "px";
+    + M.columns.length + " cols  |  body " + M.theme.body_font_size + "px" + zoom;
 }
 
 function redraw(label) {
@@ -1696,14 +1828,21 @@ function wireGestures(tbl, frame) {
       const ci = +grip.dataset.c, name = M.columns[ci].name;
       const x0 = e.clientX, w0 = M.geom.col_widths[ci];
       pushUndo("column width");
+      // Hold the fit still for the gesture. Re-fitting on every frame would
+      // pin the table to the panel's width and the column would look like it
+      // was refusing to move; frozen, the edge tracks the pointer and the
+      // release settles the new width back into the panel.
+      _tfFrozen = _tfScale;
       const mv = (ev) => {
         K.column_widths = K.column_widths || {};
-        K.column_widths[name] = Math.max(48, Math.round(w0 + (ev.clientX - x0)));
+        K.column_widths[name] =
+          Math.max(48, Math.round(w0 + (ev.clientX - x0) / tfDragScale()));
         rebuild(); renderTable(); updateSizeSummary();
       };
       const up = () => {
         document.removeEventListener("mousemove", mv);
         document.removeEventListener("mouseup", up);
+        _tfFrozen = null;
         redraw(name + " -> " + K.column_widths[name] + "px");
       };
       document.addEventListener("mousemove", mv);
@@ -1731,11 +1870,10 @@ function wireGestures(tbl, frame) {
 
   // ---- the frame itself: the "whole table" target ----
   frame.oncontextmenu = (e) => {
-    if (e.target.closest("td[data-c], th, [data-role], .ts-grip")) return;
+    if (e.target.closest("td[data-c], th, [data-role]")) return;
     e.preventDefault(); e.stopPropagation();
     canvasMenu(e.clientX, e.clientY);
   };
-  installFrameGrips(frame);
 }
 
 // ===========================================================================
@@ -1763,15 +1901,14 @@ const TS_MIN_SCALE = 0.7, TS_MAX_SCALE = 2.0;
 let _tsResize = null;
 let _tsRaf = null;
 
-function installFrameGrips(frame) {
-  frame.querySelectorAll(".ts-grip").forEach((g) => {
+// Wired once, at boot: the grips belong to #tableScale rather than to the
+// table, so unlike everything else in the studio they survive a re-render.
+function installFrameGrips() {
+  document.querySelectorAll("#tableScale .ts-grip").forEach((g) => {
     g.onmousedown = (e) => beginFrameResize(e, g.dataset.tsGrip);
   });
 }
 
-// Re-applied after every drag frame: renderTable rebuilds the frame from
-// scratch, so the grip the pointer is holding is a different element by the
-// time the next frame lands.
 function markLiveGrip(mode) {
   document.querySelectorAll(".ts-grip").forEach((g) => {
     g.classList.toggle("live", g.dataset.tsGrip === mode);
@@ -1794,6 +1931,9 @@ function beginFrameResize(e, mode) {
     // frame, so by release there is no pre-drag state left to capture.
     undoEntry: pushUndo("table size"),
   };
+  // Frozen for the same reason as a column drag: a re-fit per frame would pin
+  // the edge to the panel and the table would appear not to respond at all.
+  _tfFrozen = _tfScale;
   document.body.classList.add("ts-resizing");
   markLiveGrip(mode);
   document.getElementById("tsSizeTag").classList.add("on");
@@ -1830,8 +1970,9 @@ function onFrameResizeMove(e) {
   if (!r) return;
   r.px = e.clientX; r.py = e.clientY;
   if (e.clientX !== r.x0 || e.clientY !== r.y0) r.moved = true;
-  if (r.mode !== "s") applyWidthDrag(r, e.clientX - r.x0);
-  if (r.mode !== "e") applyHeightDrag(r, e.clientY - r.y0);
+  const s = tfDragScale();
+  if (r.mode !== "s") applyWidthDrag(r, (e.clientX - r.x0) / s);
+  if (r.mode !== "e") applyHeightDrag(r, (e.clientY - r.y0) / s);
   // Coalesce rather than queue: a re-wrap of every cell is more work than a
   // pointer event, and a backlog of stale sizes to grind through on release
   // is the one thing that makes a drag feel broken.
@@ -1840,7 +1981,6 @@ function onFrameResizeMove(e) {
     _tsRaf = null;
     if (!_tsResize) return;
     rebuild(); renderTable();
-    markLiveGrip(_tsResize.mode);
     updateSizeSummary();
     updateSizeTag(_tsResize);
   });
@@ -1859,6 +1999,9 @@ function endFrameResize() {
   const r = _tsResize;
   _tsResize = null;
   if (_tsRaf) { cancelAnimationFrame(_tsRaf); _tsRaf = null; }
+  // Hand the fit back to the panel before the early returns below, so an
+  // aborted gesture does not leave the table pinned at the drag's scale.
+  _tfFrozen = null;
   document.body.classList.remove("ts-resizing");
   markLiveGrip(null);
   document.getElementById("tsSizeTag").classList.remove("on");
@@ -3038,6 +3181,7 @@ document.getElementById("btnFull").onclick = () => {
   document.getElementById("btnFull").textContent =
     document.body.classList.contains("fullscreen") ? "Exit fullscreen" : "Fullscreen";
 };
+document.getElementById("btnFit").onclick = toggleTableFit;
 document.getElementById("btnAdvanced").onclick = () => {
   const d = document.getElementById("knobsSection");
   d.open = !d.open;
@@ -3077,7 +3221,9 @@ document.getElementById("hintLine").innerHTML =
 
 loadSheets();
 buildKnobs();
+installFrameGrips();
 redraw();
+installFitObserver();
 </script>
 </body>
 </html>
