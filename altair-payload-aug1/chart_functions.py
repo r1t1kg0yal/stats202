@@ -91,10 +91,8 @@ from PIL import Image, ImageDraw, ImageFont
 from prism_mcp.utils.download_links import generate_presigned_download_url
 from prism_mcp.utils.unit_helper_functions import guess_units_from_name
 from prism_mcp.utils.vision_functions import check_chart_quality
-from prism_mcp.utils import chart_house_style as _house
-from prism_mcp.utils.chart_house_style import GS_PRIMARY
-from prism_mcp.utils import chart_functions_studio as _chart_studio
 from prism_mcp.utils.chart_functions_studio import (
+    GS_PRIMARY, MONO_BLUE, MONO_GREY, VIVID, TABLEAU, OKABE_ITO, PASTEL,
     DIMENSION_PRESETS as _STUDIO_DIMENSION_PRESETS,
     _compute_chart_id,
 )
@@ -141,28 +139,16 @@ ChartType = Literal[
 
 IntentType = Literal["explore", "publish", "monitor"]
 
-# The skill publishes the first block to PRISM. The second block exists
-# because the chart studio offers those canvases as resize targets, and a
-# studio session has to be able to regenerate into a call this engine
-# accepts -- before they were listed here, four studio resizes produced a
-# ``dimensions`` value the engine rejected.
 DimensionPreset = Literal[
-    "wide",          # 700x350   - Landscape, good for time series
-    "square",        # 450x450   - Equal dimensions
-    "tall",          # 400x550   - Portrait orientation
-    "compact",       # 400x300   - Small footprint
-    "presentation",  # 900x500   - Large, for slides
-    "thumbnail",     # 300x200   - Very small preview
-    "teams",         # 420x210   - Required for Teams medium thumbnails
+    "wide",          # 700x350 - Landscape, good for time series
+    "square",        # 450x450 - Equal dimensions
+    "tall",          # 400x550 - Portrait orientation
+    "compact",       # 400x300 - Small footprint
+    "presentation",  # 900x500 - Large, for slides
+    "thumbnail",     # 300x200 - Very small preview
+    "teams",         # 420x210 - Required for Teams medium thumbnails
     "page_grid",     # facet-grid only -- auto-sized per (rows, cols)
-    "report",        # 600x400   - studio resize target
-    "dashboard",     # 800x500   - studio resize target
-    "widescreen",    # 1200x500  - studio resize target
-    "twopack",       # 540x360   - studio resize target (2-pack tile)
-    "fourpack",      # 420x280   - studio resize target (4-pack tile)
 ]
-
-SkinName = Literal["gs_clean", "mono", "print", "slate", "dark"]
 
 
 # ===========================================================================
@@ -220,6 +206,7 @@ _GROUPED_BAR_FACET_SPACING_PX = 6
 # paddingInner stays tight so bars within a group remain adjacent.
 _GROUPED_BAR_INNER_X_PADDING_OUTER = 0.14
 _GROUPED_BAR_INNER_X_PADDING_INNER = 0.02
+_FACET_LABEL_MIN_PITCH_PX = 28     # min horizontal pitch between visible facet labels
 # Vertical grouped-bar category labels are facet-header labels (one per
 # x-group), NOT regular axis tick labels, so they inherit nothing from the
 # skin's ``config.axis`` block -- see ``_facet_header_label_font``. Pinned
@@ -229,6 +216,71 @@ _GROUPED_BAR_INNER_X_PADDING_INNER = 0.02
 # against ``_SKIN_AXIS_LABEL_FONT_PX`` (18). Kept as a literal because this
 # constant is defined above that one.
 _GROUPED_BAR_CATEGORY_LABEL_FONT_SIZE = 18
+
+
+def _facet_label_thinning_expr(
+    label_values: List[Any],
+    total_strip_px: int,
+) -> Optional[str]:
+    """Build a Vega-Lite ``labelExpr`` that hides facet-header labels
+    when the per-facet pitch drops below readability.
+
+    COLUMN faceting only -- i.e. the VERTICAL grouped bar, whose facet
+    strip runs left-to-right so the pitch has to accommodate a rotated
+    label's rendered WIDTH. Vega-Lite's standard
+    ``labelOverlap='greedy'`` axis trick does not apply to facet headers
+    (they are per-facet, not per-axis), and without thinning e.g. n=17
+    facets in a 280px cell pack labels at ~14px pitch and collide
+    visibly even when rotated. This helper picks an evenly-spaced
+    visible subset (target pitch ``_FACET_LABEL_MIN_PITCH_PX``) and
+    emits a Vega expression returning the value for visible labels and
+    an empty string for hidden ones.
+
+    Do NOT reuse this for the row-faceted horizontal bar. There the
+    strip runs top-to-bottom and the binding constraint is line height,
+    roughly 2.4x smaller than this width budget -- so the guard fired
+    where no collision existed and deleted category names. That path
+    sizes its header font from the measured pitch
+    (``_bar_horizontal_label_font_for_pitch``) and raises via
+    ``_validate_bar_horizontal_label_pitch`` rather than hiding
+    anything.
+
+    Returns ``None`` (no thinning needed) when every label fits at
+    >= ``_FACET_LABEL_MIN_PITCH_PX`` of pitch, in which case the
+    caller should leave ``labelExpr`` unset.
+    """
+    n = len(label_values)
+    if n == 0:
+        return None
+    pitch = total_strip_px / n
+    if pitch >= _FACET_LABEL_MIN_PITCH_PX:
+        return None
+
+    max_visible = max(2, total_strip_px // _FACET_LABEL_MIN_PITCH_PX)
+    if max_visible >= n:
+        return None
+
+    # Pick evenly-spaced indices so the visible labels span the full
+    # range (first + last always shown, middles distributed).
+    if max_visible == 1:
+        visible_idx = {0}
+    else:
+        step = (n - 1) / (max_visible - 1)
+        visible_idx = {int(round(i * step)) for i in range(max_visible)}
+    visible_idx = {i for i in visible_idx if 0 <= i < n}
+    visible_str = [str(label_values[i]) for i in sorted(visible_idx)]
+
+    # Escape single quotes inside labels so the JS literal stays valid.
+    def _esc(s: str) -> str:
+        return s.replace("\\", "\\\\").replace("'", "\\'")
+    js_array = "[" + ",".join(f"'{_esc(s)}'" for s in visible_str) + "]"
+    # ``datum.value`` is the NATIVE type (integer for numeric facets,
+    # string for nominal labels). Cast both sides to string via
+    # toString() so the comparison is type-safe regardless of input.
+    return (
+        f"indexof({js_array}, toString(datum.value)) >= 0 "
+        f"? toString(datum.value) : ''"
+    )
 
 
 def _facet_header_label_font(skin_config: Dict[str, Any]) -> str:
@@ -260,20 +312,24 @@ TENOR_ORDER = [
     "12Y", "15Y", "20Y", "25Y", "30Y", "40Y", "50Y",
 ]
 
-# Dimension presets in pixels, from the shared canvas ladder. Everything the
-# chart studio can resize to is expressible here, so a studio session always
-# regenerates into a call this engine accepts.
-#
-# ``page_grid`` is a sentinel: actual panel dims are derived from the facet
-# grid shape (rows, cols) at render time. Its pair is the USABLE composite
-# outer area on US Letter portrait (~1200 x 1600 px) that
-# ``_resolve_facet_panel_dims`` divides up -- sized so a 5x4 grid lands at
-# ~260x280 per panel after default 50px inter-panel spacing, intentionally
-# airy so the small-multiples grid reads as a print-paper layout rather than
-# a packed dashboard.
+# Dimension presets in pixels.
 DIMENSION_PRESETS: Dict[str, Tuple[int, int]] = {
-    name: (entry["width"], entry["height"])
-    for name, entry in _house.DIMENSIONS.items()
+    "wide": (700, 350),
+    "square": (450, 450),
+    "tall": (400, 550),
+    "compact": (400, 300),
+    "presentation": (900, 500),
+    "thumbnail": (300, 200),
+    "teams": (420, 210),
+    # ``page_grid`` is a sentinel: actual panel dims are derived from
+    # the facet grid shape (rows, cols) at render time. The tuple here
+    # is the USABLE composite outer area on US Letter portrait
+    # (~1200 x 1600 px) that ``_resolve_facet_panel_dims`` divides up.
+    # Sized so a 5x4 grid lands at ~260x280 per panel after default
+    # 50px inter-panel spacing -- intentionally airy so the small-
+    # multiples grid reads as a print-paper layout, not a packed
+    # dashboard.
+    "page_grid": (1200, 1600),
 }
 
 
@@ -520,7 +576,6 @@ _PUBLIC_CHART_MAPPING_KEYS: frozenset = frozenset({
 
 _ENGINE_ONLY_CHART_MAPPING_KEYS: frozenset = frozenset({
     "_anno_label_anchor_right_x",
-    "_bar_category_axis_plan",
     "_chart_height_px",
     "_chart_width_px",
     "_facet_panel",
@@ -1147,11 +1202,11 @@ _AXIS_LABEL_CHAR_WIDTH_RATIO = 0.62
 # is ever introduced, thread its size through instead of this default.
 _SKIN_AXIS_LABEL_FONT_PX = 18
 
-# Cap on y-axis label length, from the house style rather than restated
-# here: the studio composes axis titles against the same limit, and a
-# second copy of the number would let it build a chart whose own
-# regenerated call this validator rejects.
-_Y_AXIS_LABEL_MAX_CHARS = _house.Y_AXIS_TITLE_MAX_CHARS
+# Soft cap on y-axis label length. The PRISM style guide says ~16 chars is
+# the visual sweet spot; we hard-fail past 24 to surface obvious abuses
+# (raw column names, generated tokens) without being too pedantic about
+# borderline-long human labels.
+_Y_AXIS_LABEL_MAX_CHARS = 28
 
 # Dual-axis charts must never ship a positional placeholder as the semantic
 # right-axis title.  Normalise punctuation/case before comparing so variants
@@ -10574,12 +10629,11 @@ def _horizontal_label_min_pitch_px(label_font_size: int) -> float:
     the gutter, so the binding constraint is LINE HEIGHT: a ``1.2`` line
     box plus a 2px inter-row gap.
 
-    Deliberately NOT ``_bar_category_pitch_needed``, the vertical bar's
-    budget, whose strip runs left-to-right and whose rotated rungs
-    therefore measure glyph height without reading leading. Sizing the
-    row-faceted horizontal bar against a rotated-WIDTH budget once
-    demanded ~2.4x the room its labels actually occupy and silently
-    deleted category names from n=13 up.
+    Deliberately NOT ``_FACET_LABEL_MIN_PITCH_PX``, which is a rotated-
+    label WIDTH budget for the vertical (column-faceted) bar, where the
+    facet strip runs left-to-right. Applying that width constant to the
+    row-faceted horizontal bar demanded ~2.4x the room the labels
+    actually occupy and silently deleted category names from n=13 up.
 
     Exact inverse of ``_bar_horizontal_label_font_for_pitch``, so
     ``_horizontal_label_min_pitch_px(font_for_pitch(p)) <= p`` holds for
@@ -10668,199 +10722,6 @@ def _validate_bar_horizontal_label_pitch(
         f"{fits} categories (aggregate or take the top-N), render this "
         f"chart standalone rather than inside a composite cell, or switch to "
         f"a heatmap for this many rows.{grouped_hint}"
-    )
-
-
-# Vertical-bar category-axis label fitting.
-#
-# A vertical bar's category names sit along the x axis, so the room each
-# one gets is the per-category PITCH -- plot width / categories on a plain
-# bar, total facet-strip width / categories on a grouped one. Three
-# rotations are available and each spends that pitch differently:
-#
-#   0 deg    horizontal text. Footprint is the widest LINE's rendered
-#            width, so long names are expensive.
-#   -45 deg  diagonal. Neighbouring labels are parallel, so what has to
-#            clear is the PERPENDICULAR gap between their baselines,
-#            which is ``pitch * sin(45 deg)``. Inverted, the pitch has to
-#            cover ``glyph_stack * 1.42``.
-#   -90 deg  vertical text. Footprint is just the glyph stack -- the
-#            cheapest of the three, which is why it is the last rung.
-#
-# ``glyph_stack`` is ``n_lines * (font * 0.8 + 2)`` -- glyph height plus a
-# separation gap. Rotated labels need glyph separation, not reading
-# leading, so this is deliberately tighter than
-# ``_horizontal_label_min_pitch_px``'s 1.2 line box (that one measures
-# horizontal text stacked down a gutter, where leading does apply). At the
-# 18px skin font it yields 16.4px for -90 and 23.3px for -45, which is
-# where the two pitch constants this codebase already calibrated by eye
-# landed (``_PROFILE_MIN_PITCH_45_PX`` = 22 and
-# ``calculate_optimal_label_angle``'s 20px -45 threshold). Keeping the
-# rotated budget on that calibration matters: inflate it and the ladder
-# jumps to -90 on axes that read fine at -45.
-#
-# THE ENGINE NEVER HIDES A CATEGORY NAME TO MAKE THE AXIS FIT. Two guards
-# used to. On the plain path, ``labelOverlap='greedy'`` fired at >= 45
-# categories or at -90 with >= 20 -- and Vega implements the hide by
-# emitting the label with ``opacity="0"``, so the loss was invisible in
-# the ChartResult, invisible in the spec, and invisible to a naive scrape
-# of the rendered SVG; a 50-bar axis quietly shipped 25 names. On the
-# grouped path a ``header.labelExpr`` whitelist deleted an irregular
-# subset of facet-header labels (12 quarters in a 280px composite cell
-# lost three). The deeper defect was that the angle picker and the
-# thinner disagreed: the picker accepted -45 at a 20px pitch while the
-# thinner demanded 28px and deleted the difference. One pitch model now
-# drives both, and the ladder rotates first, then shrinks the font, then
-# raises -- the same contract ``_validate_bar_horizontal_label_pitch``
-# enforces on the category axis of a horizontal bar.
-# Inter-label breathing room for HORIZONTAL (0 deg) labels, whose
-# footprints face each other end-to-end. Same 12px the profile axis and
-# ``calculate_optimal_label_angle`` already use, so a bar and a profile
-# sharing a canvas agree on when 0 deg stops fitting. Rotated labels carry
-# their separation inside the glyph term instead (the ``+ 2.0`` below).
-_BAR_CATEGORY_LABEL_GAP_PX = 12.0
-# Hard floor. Below this the axis is unreadable whatever we do, so the
-# builder raises with the remedies named instead of rendering a lie.
-_BAR_CATEGORY_LABEL_FONT_MIN = 8
-# Soft floor. A rung of the angle ladder only wins if it can host a label
-# at least this large; otherwise we advance to the next (steeper) rung,
-# which buys back font size. Rotating is a smaller readability cost than
-# shrinking type past this point.
-_BAR_CATEGORY_LABEL_FONT_COMFORT = 14
-# 1 / sin(45 deg): converts a perpendicular clearance into the horizontal
-# pitch a -45 label needs.
-_BAR_CATEGORY_DIAGONAL_PITCH_FACTOR = 1.42
-_BAR_CATEGORY_ANGLE_LADDER = (0, -45, -90)
-
-
-def _bar_category_label_shape(labels: Sequence[Any]) -> Tuple[int, int]:
-    """``(longest line in characters, most lines in any label)``.
-
-    ``_build_bar`` wraps nominal x labels at two words per line, so a
-    category label can be multi-line. The two dimensions are spent on
-    different axes: line LENGTH drives the horizontal (0 deg) footprint,
-    line COUNT drives the rotated one.
-    """
-    line_groups = [str(label).split("\n") for label in labels] or [[""]]
-    max_line_chars = max(
-        (len(line) for group in line_groups for line in group), default=1,
-    )
-    max_lines = max((len(group) for group in line_groups), default=1)
-    return max(max_line_chars, 1), max(max_lines, 1)
-
-
-def _bar_category_pitch_needed(
-    max_line_chars: int,
-    n_lines: int,
-    label_angle: int,
-    label_font_size: int,
-) -> float:
-    """Horizontal room one category label occupies at ``label_angle``."""
-    if label_angle == 0:
-        return (
-            max_line_chars * _axis_label_px_per_char(label_font_size)
-            + _BAR_CATEGORY_LABEL_GAP_PX
-        )
-    glyph_stack = n_lines * (label_font_size * 0.8 + 2.0)
-    if abs(label_angle) >= 90:
-        return glyph_stack
-    return glyph_stack * _BAR_CATEGORY_DIAGONAL_PITCH_FACTOR
-
-
-def _bar_category_font_for_pitch(
-    pitch_px: float,
-    max_line_chars: int,
-    n_lines: int,
-    label_angle: int,
-    base_font_size: int,
-) -> int:
-    """Largest font at or below ``base_font_size`` that fits ``pitch_px``.
-
-    Returns ``0`` when even ``_BAR_CATEGORY_LABEL_FONT_MIN`` overflows, so
-    callers can distinguish "shrink to fit" from "cannot fit at all".
-    """
-    for font_size in range(
-        int(base_font_size), _BAR_CATEGORY_LABEL_FONT_MIN - 1, -1,
-    ):
-        need = _bar_category_pitch_needed(
-            max_line_chars, n_lines, label_angle, font_size,
-        )
-        if need <= pitch_px:
-            return font_size
-    return 0
-
-
-def _bar_category_axis_plan(
-    labels: Sequence[Any],
-    pitch_px: float,
-    base_font_size: int,
-    *,
-    extent_px: int,
-    grouped: bool,
-    skip_horizontal: bool = False,
-) -> Tuple[int, int]:
-    """``(label_angle, label_font_size)`` that shows EVERY category name.
-
-    Walks ``_BAR_CATEGORY_ANGLE_LADDER`` and takes the flattest rotation
-    that can host a label at ``_BAR_CATEGORY_LABEL_FONT_COMFORT`` or
-    larger. When none can, vertical text gets whatever font still fits,
-    because its footprint is the smallest of the three.
-
-    Args:
-        skip_horizontal: Drop the 0 deg rung and start the ladder at -45.
-            For facet-grid panels, where a band label is centre-anchored
-            and its outer half overflows the panel into the neighbouring
-            one's gutter -- horizontal text collides ACROSS panels even at
-            a pitch that seats it comfortably within its own. Rotating
-            anchors each label under its own tick. This is a preference,
-            not an override: -45 still has to fit, and the ladder still
-            falls through to -90 and to a smaller font when it does not.
-
-    Raises:
-        ValidationError: When the pitch cannot host even
-            ``_BAR_CATEGORY_LABEL_FONT_MIN`` vertical text. Dropping names
-            to make the chart fit is not an option the engine has.
-    """
-    max_line_chars, n_lines = _bar_category_label_shape(labels)
-    comfort = min(_BAR_CATEGORY_LABEL_FONT_COMFORT, base_font_size)
-    ladder = tuple(
-        angle for angle in _BAR_CATEGORY_ANGLE_LADDER
-        if not (skip_horizontal and angle == 0)
-    )
-
-    for label_angle in ladder:
-        font_size = _bar_category_font_for_pitch(
-            pitch_px, max_line_chars, n_lines, label_angle, base_font_size,
-        )
-        if font_size >= comfort:
-            return label_angle, font_size
-
-    font_size = _bar_category_font_for_pitch(
-        pitch_px, max_line_chars, n_lines, -90, base_font_size,
-    )
-    if font_size:
-        return -90, font_size
-
-    floor_pitch = _bar_category_pitch_needed(
-        max_line_chars, n_lines, -90, _BAR_CATEGORY_LABEL_FONT_MIN,
-    )
-    n_categories = len(labels)
-    fits = max(1, int(extent_px // floor_pitch))
-    grouped_hint = (
-        " Setting stack=True also frees the room grouped bars spend on "
-        "side-by-side bars and their inter-group gutters."
-        if grouped else ""
-    )
-    raise ValidationError(
-        f"VERTICAL BAR CATEGORY-LABEL ERROR: {n_categories} categories in "
-        f"a {extent_px}px-wide canvas leaves {pitch_px:.1f}px per category, "
-        f"below the {floor_pitch:.1f}px a category label needs rotated "
-        f"vertical at the minimum {_BAR_CATEGORY_LABEL_FONT_MIN}px font. "
-        f"The engine will not drop category names to make the chart fit. "
-        f"Show at most {fits} categories (aggregate or take the top-N), "
-        f"render this chart standalone rather than inside a composite "
-        f"cell, or switch to bar_horizontal, which reads long category "
-        f"lists down the page.{grouped_hint}"
     )
 
 
@@ -12377,20 +12238,6 @@ def get_axis_beautification(
                 tick_values=tick_values,
                 label_overlap="greedy",
             )
-        elif isinstance(mapping.get("_bar_category_axis_plan"), dict):
-            # ``_build_bar`` already fitted this axis: it measured the
-            # per-category pitch (plot width for a plain bar, facet-strip
-            # width for a grouped one) and picked the angle AND font that
-            # let every category name render. Re-deriving an angle here
-            # from a second model is what let the two disagree -- this
-            # branch used to hard-set -45 inside any composite panel, and
-            # the grouped path's header thinner then deleted whichever
-            # labels -45 could not seat.
-            plan_angle = int(mapping["_bar_category_axis_plan"]["label_angle"])
-            configs["x"] = AxisConfig(
-                label_angle=plan_angle,
-                label_limit=150 if plan_angle != 0 else 200,
-            )
         else:
             unique_vals = list(x_data.unique())
             # Pass the actual unique-value count as estimated_tick_count
@@ -12786,49 +12633,27 @@ def _apply_typography_overrides(spec: Dict[str, Any], preset: str) -> Dict[str, 
         config["line"]["strokeWidth"] = overrides["line_strokeWidth"]
 
     # Facet-header labels (grouped-bar category labels) live on the row /
-    # column encoding, and a per-encoding ``axis.labelFontSize`` beats
-    # ``config.axis``, so neither is reached by the block above -- an
-    # unpatched header renders at the skin's 18px beside 8px tick labels
-    # on a 420x210 Teams canvas. Clamp instead of assign in both places:
-    # the bar builders may already have shrunk a category label below the
-    # preset size to fit a measured pitch (``_bar_category_axis_plan``,
+    # column encoding, not in ``config.axis``, so the axis override above
+    # cannot reach them -- an unpatched header renders at the skin's 18px
+    # beside 8px tick labels on a 420x210 Teams canvas. Clamp instead of
+    # assign: ``_build_bar_horizontal`` may already have shrunk the header
+    # below the preset size to fit a tight row pitch (see
     # ``_bar_horizontal_y_label_font_size``), and the preset must not
-    # enlarge it back into a collision the fit maths just ruled out.
+    # enlarge it back into a collision.
     if "axis_labelFontSize" in overrides:
-        capped = overrides["axis_labelFontSize"]
-
-        def clamp_label_fonts(node: Any) -> None:
-            if isinstance(node, list):
-                for item in node:
-                    clamp_label_fonts(item)
-                return
-            if not isinstance(node, dict):
-                return
-            enc = node.get("encoding")
-            if isinstance(enc, dict):
-                for channel in ("row", "column"):
-                    channel_def = enc.get(channel)
-                    if not isinstance(channel_def, dict):
-                        continue
-                    header = channel_def.get("header")
-                    if isinstance(header, dict):
-                        header["labelFontSize"] = min(
-                            header.get("labelFontSize", capped), capped,
-                        )
-                for channel in ("x", "y"):
-                    channel_def = enc.get(channel)
-                    if not isinstance(channel_def, dict):
-                        continue
-                    axis = channel_def.get("axis")
-                    if isinstance(axis, dict) and "labelFontSize" in axis:
-                        axis["labelFontSize"] = min(
-                            axis["labelFontSize"], capped,
-                        )
-            for key in ("layer", "spec", "vconcat", "hconcat", "concat"):
-                if key in node:
-                    clamp_label_fonts(node[key])
-
-        clamp_label_fonts(spec)
+        enc = spec.get("encoding")
+        if isinstance(enc, dict):
+            capped = overrides["axis_labelFontSize"]
+            for channel in ("row", "column"):
+                channel_def = enc.get(channel)
+                if not isinstance(channel_def, dict):
+                    continue
+                header = channel_def.get("header")
+                if not isinstance(header, dict):
+                    continue
+                header["labelFontSize"] = min(
+                    header.get("labelFontSize", capped), capped,
+                )
 
     return spec
 
@@ -12860,196 +12685,158 @@ BASE_CONFIG: Dict[str, Any] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Skins are built, not written.
-# ---------------------------------------------------------------------------
+# Goldman Sachs Clean - the only published PRISM skin today.
 #
-# Every skin is ``_build_skin(house_style)``. Only the colour anchors, the
-# palette, and the gradient differ between them; mark geometry, the type
-# ramp, and the slider definitions are shared, so a new skin is a house-style
-# entry rather than another 150-line literal to keep in sync.
+# Single source of truth for the categorical palette: GS_PRIMARY in
+# chart_functions_studio.py.  ``color_scheme`` (and the named anchors
+# ``primary_color`` / ``secondary_color`` / ``accent_color``) are
+# derived from GS_PRIMARY["colors"] so every consumer of the palette
+# stays in lockstep.  ``label_color_scheme`` is the
+# parallel per-slot palette LastValueLabel uses -- identical to
+# ``color_scheme`` for the dark slots and a darker HSL-derived hex
+# for slots that read poorly as 15pt text on white (slots 1, 2, 3, 6).
+# Edit GS_PRIMARY there to change any production color; do not
+# hardcode hex values here.
 #
-# The palette a skin renders comes from ``chart_house_style``:
-# ``color_scheme`` is that palette's hex list and ``label_color_scheme`` is
-# its parallel per-slot text palette, which LastValueLabel uses -- identical
-# to the stroke colour for slots that survive as 15pt type and a darker
-# HSL-derived hex for the ones that do not. Palettes without a published
-# text variant fall back to their stroke colours.
-#
-# GS_PRIMARY slot order:
+# Slot order:
 #   0 navy (primary), 1 light blue (secondary), 2 mid blue,
 #   3 grey, 4 red (accent), 5 cobalt blue, 6 olive green, 7 purple,
 #   8 orange, 9 teal.
-
-# Mark geometry shared by every skin. A house style may override individual
-# properties through its ``mark_overrides`` (``print`` thickens strokes and
-# enlarges points so the chart survives greyscale photocopying); it never
-# replaces the block.
-_SHARED_MARK_CONFIG: Dict[str, Any] = {
-    "line": {"strokeWidth": 2, "interpolate": "linear", "pointSize": 30, "clip": True},
-    "point": {"size": 60, "filled": True, "opacity": 0.7},
-    "bar": {"cornerRadius": 0, "opacity": 1.0},
-    "area": {"opacity": 0.7, "interpolate": "linear", "clip": True},
-    "arc": {"innerRadius": 50, "outerRadius": 100, "padAngle": 0.02, "cornerRadius": 3},
-    "boxplot": {"size": 40},
-}
-
-# Interactive sliders exposed by chart_functions_studio (humans only, not the
-# LLM). Identical across skins -- a slider range is a property of the mark,
-# not of the palette it is drawn in.
-_INTERACTIVE_PARAMS: Dict[str, Any] = {
-    "multi_line": [
-        {"name": "strokeWidth", "label": "Line Width", "min": 0.5, "max": 5, "step": 0.5, "default": 2},
-        {"name": "lineOpacity", "label": "Opacity", "min": 0.3, "max": 1.0, "step": 0.1, "default": 1.0},
-    ],
-    "scatter": [
-        {"name": "pointSize", "label": "Point Size", "min": 20, "max": 200, "step": 10, "default": 60},
-        {"name": "pointOpacity", "label": "Opacity", "min": 0.2, "max": 1.0, "step": 0.1, "default": 0.7},
-    ],
-    "scatter_multi": [
-        {"name": "pointSize", "label": "Point Size", "min": 20, "max": 200, "step": 10, "default": 60},
-        {"name": "pointOpacity", "label": "Opacity", "min": 0.2, "max": 1.0, "step": 0.1, "default": 0.7},
-    ],
-    "donut": [
-        {"name": "innerRadius", "label": "Inner Radius (0=Pie)", "min": 0, "max": 100, "step": 5, "default": 50},
-        {"name": "outerRadius", "label": "Outer Radius", "min": 50, "max": 150, "step": 5, "default": 100},
-        {"name": "padAngle", "label": "Slice Gap", "min": 0, "max": 0.1, "step": 0.01, "default": 0.02},
-        {"name": "arcCornerRadius", "label": "Corner Radius", "min": 0, "max": 10, "step": 1, "default": 3},
-    ],
-    "bar": [
-        {"name": "barOpacity", "label": "Bar Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
-        {"name": "cornerRadius", "label": "Corner Radius", "min": 0, "max": 10, "step": 1, "default": 0},
-    ],
-    "bar_horizontal": [
-        {"name": "barOpacity", "label": "Bar Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
-        {"name": "cornerRadius", "label": "Corner Radius", "min": 0, "max": 10, "step": 1, "default": 0},
-    ],
-    "bullet": [
-        {"name": "markerSize", "label": "Marker Size", "min": 40, "max": 300, "step": 20, "default": 120},
-        {"name": "rangeBarHeight", "label": "Range Bar Height", "min": 4, "max": 24, "step": 2, "default": 12},
-    ],
-    "waterfall": [
-        {"name": "barOpacity", "label": "Bar Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
-        {"name": "cornerRadius", "label": "Corner Radius", "min": 0, "max": 10, "step": 1, "default": 0},
-    ],
-    "histogram": [
-        {"name": "barOpacity", "label": "Bar Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 0.8},
-    ],
-    "area": [
-        {"name": "areaOpacity", "label": "Fill Opacity", "min": 0.2, "max": 1.0, "step": 0.1, "default": 0.7},
-    ],
-    "heatmap": [
-        {"name": "heatmapOpacity", "label": "Cell Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
-    ],
-    "boxplot": [
-        {"name": "boxOpacity", "label": "Box Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
-    ],
-}
-
-
-def _build_skin(style: Dict[str, Any]) -> Dict[str, Any]:
-    """Assemble a skin from a house style.
-
-    The Vega-Lite ``config`` block is derived rather than written out: axis,
-    legend and title typography all resolve from the same type scale, so an
-    axis title can never end up a different size than the tick labels it
-    describes because two literals drifted.
-    """
-    scale = _house.TYPE_SCALE["chart"]
-    font = style["font_family"]
-    ink = style["ink"]
-    palette = _house.get_palette(style["palette"])
-
-    mark_config = copy.deepcopy(_SHARED_MARK_CONFIG)
-    for mark, props in style.get("mark_overrides", {}).items():
-        mark_config.setdefault(mark, {}).update(props)
-
-    return {
-        **BASE_CONFIG,
-        "name": style["name"],
-        "description": style["description"],
-        "primary_color":      style["primary"],
-        "secondary_color":    style["secondary"],
-        "accent_color":       style["accent"],
-        "background_color":   style["background"],
-        "trendline_color":    style["trendline"],
-        "color_scheme":       list(palette["colors"]),
-        "label_color_scheme": _house.label_colors(style["palette"]),
-        "heatmap_scheme":     style["gradient"],
-        "font_family":        font,
-        "title_font_size":    scale["title"],
-        "label_font_size":    scale["axis_label"],
-        # Ink levels the renderer reaches for outside the Vega config block:
-        # caption and side-panel prose, and the composite super-subtitle.
-        "muted_color":        style["muted_ink"],
-        "subtitle_color":     style["subtitle_ink"],
-        "mark_config": mark_config,
-        "config": {
-            # Vega-Lite default is "%b %d, %Y" (month+day+year). House rule:
-            # never all three -- day+month or month+year only.
-            "timeFormat": "%b %y",
-            # Canvas fill. Absent until the first non-white skin existed, so
-            # a dark skin rendered light text onto white.
-            "background": style["background"],
-            "view": {"strokeWidth": 0},
-            "axis": {
-                "grid": False,
-                "domainColor": ink,
-                "tickColor": ink,
-                "labelColor": ink,
-                # Without this the axis title falls through to Vega's black
-                # default, which drifts off-ink for any skin whose ink is not
-                # pure black.
-                "titleColor": ink,
-                "labelFont": font,
-                "titleFont": font,
-                "titleFontWeight": "normal",
-                "labelFontWeight": "normal",
-                "labelFontSize": scale["axis_label"],
-                # Axis title (e.g. "Yield (%)") matches the tick-label size.
-                # A title smaller than the values it describes inverts the
-                # typographic hierarchy, which reads as a rendering mistake --
-                # most visibly on horizontal bars, where the x-axis title sits
-                # directly beneath a row of tick numbers for side-by-side
-                # comparison.
-                "titleFontSize": scale["axis_title"],
-            },
-            "legend": {
-                "labelFont": font,
-                "titleFont": font,
-                "titleFontSize": scale["legend_title"],
-                "labelFontSize": scale["legend_label"],
-                "labelColor": ink,
-                "titleColor": ink,
-                "labelLimit": 800,
-                "rowPadding": 2,
-            },
-            "title": {
-                "font": font,
-                "fontSize": scale["title"],
-                "fontWeight": "bold",
-                "color": ink,
-                "anchor": "start",
-                "offset": 4,
-                "subtitleFontSize": scale["subtitle"],
-                "subtitleFont": font,
-                "subtitleFontWeight": "normal",
-                "subtitleColor": style["subtitle_ink"],
-            },
+GS_CLEAN: Dict[str, Any] = {
+    **BASE_CONFIG,
+    "name": "gs_clean",
+    "description": "Clean, professional style. PRISM default. Palette "
+                   "follows GS_PRIMARY in chart_functions_studio.py "
+                   "(single source of truth). Line strokes use "
+                   "``color_scheme``; LastValueLabel labels use "
+                   "``label_color_scheme`` -- identical to lines for the "
+                   "dark slots, darker HSL-derived hex for the "
+                   "readability-weak slots (light blue, mid blue, grey, "
+                   "olive).",
+    "primary_color":      GS_PRIMARY["colors"][0],   # #003359 navy
+    "secondary_color":    GS_PRIMARY["colors"][1],   # #94C7DD light blue
+    "accent_color":       GS_PRIMARY["colors"][4],   # #C00000 red (alert)
+    "background_color":   "#FFFFFF",
+    "trendline_color":    "#999999",
+    "color_scheme":       list(GS_PRIMARY["colors"]),
+    "label_color_scheme": list(GS_PRIMARY["label_colors"]),
+    "heatmap_scheme": "blues",
+    "font_family": "GS Sans, Liberation Sans, Arial, sans-serif",
+    "title_font_size": 26,
+    "label_font_size": 18,
+    "mark_config": {
+        "line": {"strokeWidth": 2, "interpolate": "linear", "pointSize": 30, "clip": True},
+        "point": {"size": 60, "filled": True, "opacity": 0.7},
+        "bar": {"cornerRadius": 0, "opacity": 1.0},
+        "area": {"opacity": 0.7, "interpolate": "linear", "clip": True},
+        "arc": {"innerRadius": 50, "outerRadius": 100, "padAngle": 0.02, "cornerRadius": 3},
+        "boxplot": {"size": 40},
+    },
+    # ----- Vega-Lite-level config block ----------------------------------
+    # Sourced from chart_functions_studio.py's gs_clean theme ("Exact match to PRISM
+    # GS_CLEAN: navy #003359, Liberation Sans, 26pt title"). Sizes here
+    # supersede the OCR'd MD values which had several typos (28pt title,
+    # 20pt subtitle, axis labels and titles transposed).
+    "config": {
+        # Vega-Lite default is "%b %d, %Y" (month+day+year). House rule:
+        # never all three -- day+month or month+year only.
+        "timeFormat": "%b %y",
+        "view": {"strokeWidth": 0},
+        "axis": {
+            "grid": False,
+            "domainColor": "#000000",
+            "tickColor": "#000000",
+            "labelColor": "#000000",
+            "labelFont": "GS Sans, Liberation Sans, Arial, sans-serif",
+            "titleFont": "GS Sans, Liberation Sans, Arial, sans-serif",
+            "titleFontWeight": "normal",
+            "labelFontWeight": "normal",
+            "labelFontSize": 18,   # axis tick labels
+            # Axis title (e.g. "Yield (%)") matches the tick-label size.
+            # A title smaller than the values it describes inverts the
+            # typographic hierarchy, which reads as a rendering mistake --
+            # most visibly on horizontal bars, where the x-axis title sits
+            # directly beneath a row of tick numbers for side-by-side
+            # comparison.
+            "titleFontSize": 18,
         },
-        "interactive_params": copy.deepcopy(_INTERACTIVE_PARAMS),
-    }
-
-
-# Every house style is a published skin. The four that joined ``gs_clean``
-# already existed on the table side, so a slate table finally has a slate
-# chart to sit beside.
-AVAILABLE_SKINS: Dict[str, Dict[str, Any]] = {
-    name: _build_skin(_house.get_house_style(name))
-    for name in _house.house_style_names()
+        "legend": {
+            "labelFont": "GS Sans, Liberation Sans, Arial, sans-serif",
+            "titleFont": "GS Sans, Liberation Sans, Arial, sans-serif",
+            "titleFontSize": 14,
+            "labelFontSize": 14,
+            "labelLimit": 800,
+            "rowPadding": 2,
+        },
+        "title": {
+            "font": "GS Sans, Liberation Sans, Arial, sans-serif",
+            "fontSize": 26,
+            "fontWeight": "bold",
+            "color": "#000000",
+            "anchor": "start",
+            "offset": 4,
+            "subtitleFontSize": 14,
+            "subtitleFont": "GS Sans, Liberation Sans, Arial, sans-serif",
+            "subtitleFontWeight": "normal",
+            "subtitleColor": "#333333",
+        },
+    },
+    # Interactive sliders exposed by chart_functions_studio (humans only, not the LLM).
+    "interactive_params": {
+        "multi_line": [
+            {"name": "strokeWidth", "label": "Line Width", "min": 0.5, "max": 5, "step": 0.5, "default": 2},
+            {"name": "lineOpacity", "label": "Opacity", "min": 0.3, "max": 1.0, "step": 0.1, "default": 1.0},
+        ],
+        "scatter": [
+            {"name": "pointSize", "label": "Point Size", "min": 20, "max": 200, "step": 10, "default": 60},
+            {"name": "pointOpacity", "label": "Opacity", "min": 0.2, "max": 1.0, "step": 0.1, "default": 0.7},
+        ],
+        "scatter_multi": [
+            {"name": "pointSize", "label": "Point Size", "min": 20, "max": 200, "step": 10, "default": 60},
+            {"name": "pointOpacity", "label": "Opacity", "min": 0.2, "max": 1.0, "step": 0.1, "default": 0.7},
+        ],
+        "donut": [
+            {"name": "innerRadius", "label": "Inner Radius (0=Pie)", "min": 0, "max": 100, "step": 5, "default": 50},
+            {"name": "outerRadius", "label": "Outer Radius", "min": 50, "max": 150, "step": 5, "default": 100},
+            {"name": "padAngle", "label": "Slice Gap", "min": 0, "max": 0.1, "step": 0.01, "default": 0.02},
+            {"name": "arcCornerRadius", "label": "Corner Radius", "min": 0, "max": 10, "step": 1, "default": 3},
+        ],
+        "bar": [
+            {"name": "barOpacity", "label": "Bar Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
+            {"name": "cornerRadius", "label": "Corner Radius", "min": 0, "max": 10, "step": 1, "default": 0},
+        ],
+        "bar_horizontal": [
+            {"name": "barOpacity", "label": "Bar Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
+            {"name": "cornerRadius", "label": "Corner Radius", "min": 0, "max": 10, "step": 1, "default": 0},
+        ],
+        "bullet": [
+            {"name": "markerSize", "label": "Marker Size", "min": 40, "max": 300, "step": 20, "default": 120},
+            {"name": "rangeBarHeight", "label": "Range Bar Height", "min": 4, "max": 24, "step": 2, "default": 12},
+        ],
+        "waterfall": [
+            {"name": "barOpacity", "label": "Bar Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
+            {"name": "cornerRadius", "label": "Corner Radius", "min": 0, "max": 10, "step": 1, "default": 0},
+        ],
+        "histogram": [
+            {"name": "barOpacity", "label": "Bar Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 0.8},
+        ],
+        "area": [
+            {"name": "areaOpacity", "label": "Fill Opacity", "min": 0.2, "max": 1.0, "step": 0.1, "default": 0.7},
+        ],
+        "heatmap": [
+            {"name": "heatmapOpacity", "label": "Cell Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
+        ],
+        "boxplot": [
+            {"name": "boxOpacity", "label": "Box Opacity", "min": 0.5, "max": 1.0, "step": 0.1, "default": 1.0},
+        ],
+    },
 }
 
-GS_CLEAN: Dict[str, Any] = AVAILABLE_SKINS["gs_clean"]
+
+# Registry of all available skins. Today only ``gs_clean`` is published.
+AVAILABLE_SKINS: Dict[str, Dict[str, Any]] = {
+    "gs_clean": GS_CLEAN,
+}
 
 
 def get_skin(name: str, intent: str = "explore") -> Dict[str, Any]:
@@ -13092,22 +12879,33 @@ def _get_color_scale(skin_config: Dict[str, Any]) -> alt.Scale:
 # Categorical palette registry (PRISM-facing color customisation)
 # ---------------------------------------------------------------------------
 #
-# The engine-side view of ``chart_house_style.PALETTES``: name -> hex list,
-# which is all the colour-scale builders need. The skill spoke
-# (``chart_context_colors.md``) publishes the names PRISM is allowed to
-# pass; those names are these names.
+# PRISM-friendly aliases for the curated set of categorical palettes
+# already defined in ``chart_functions_studio.py``. The skill spoke
+# (``chart_context_colors.md``) is the single source of truth for the
+# names PRISM is allowed to pass; this table is the engine-side map
+# from those names to the actual hex lists. Keep both in lockstep.
 #
 # Sequential / diverging palettes for heatmaps + scatter phase-space
-# gradient flow through Vega-Lite's named-scheme handling
+# gradient continue to flow through Vega-Lite's named-scheme handling
 # (``alt.Scheme(...)`` or ``scale.scheme=<name>``); they are not in
 # this registry because Vega does the colour generation, not us.
 
 _CATEGORICAL_PALETTES: Dict[str, List[str]] = {
-    name: _house.palette_colors(name)
-    for name in _house.categorical_palette_names()
+    "gs_primary": list(GS_PRIMARY["colors"]),
+    "colorblind": list(OKABE_ITO["colors"]),
+    "bold":       list(VIVID["colors"]),
+    "mono_navy":  list(MONO_BLUE["colors"]),
+    "mono_grey":  list(MONO_GREY["colors"]),
+    "business":   list(TABLEAU["colors"]),
+    "pastel":     list(PASTEL["colors"]),
 }
 
-_HEATMAP_GRADIENT_NAMES: Set[str] = set(_house.GRADIENTS)
+_HEATMAP_GRADIENT_NAMES: Set[str] = {
+    "blues", "greens", "reds", "oranges", "purples", "greys",
+    "viridis", "plasma", "magma", "cividis", "turbo", "inferno", "rainbow",
+    "redblue", "spectral", "browngreen", "redyellowblue",
+    "redyellowgreen", "blueorange",
+}
 
 
 def _collect_color_kwarg_findings(
@@ -16938,32 +16736,45 @@ def _build_bar(
     y_title = _format_label(y_field, mapping, "y")
     _validate_y_axis_label(y_title, mapping)
 
-    # ---- category-axis label fit (nominal x) -----------------------------
-    # Angle AND font come from one pitch measurement, so nothing
-    # downstream has to hide a name it cannot place -- see the model above
-    # ``_bar_category_axis_plan``. This pair serves the plain / stacked
-    # path, whose bars divide ``width`` evenly. The grouped path's category
-    # names are facet-header labels laid out across a different extent, so
-    # it plans separately further down.
-    base_label_font_size = int(
-        skin_config.get("config", {}).get("axis", {}).get(
-            "labelFontSize", _DEFAULT_AXIS_LABEL_FONT_SIZE,
-        )
-    )
-    grouped_path = bool(color_field) and not stack
-    if x_type == "nominal" and not grouped_path:
+    # ---- optimal label angle for nominal x ------------------------------
+    if x_type == "nominal":
         bar_labels = [str(v) for v in df[x_field].unique()]
-        bar_label_angle, bar_label_font_size = _bar_category_axis_plan(
-            bar_labels,
-            pitch_px=width / max(len(bar_labels), 1),
-            base_font_size=base_label_font_size,
-            extent_px=width,
-            grouped=False,
-            skip_horizontal=bool(mapping.get("_facet_panel")),
+        # For nominal x Vega-Lite renders every tick (no auto-thinning),
+        # so use the actual label count as the tick count to avoid
+        # under-estimating collisions.
+        bar_label_angle = calculate_optimal_label_angle(
+            bar_labels, width, estimated_tick_count=len(bar_labels),
         )
+        if mapping.get("_facet_panel"):
+            bar_label_angle = -45
     else:
         bar_label_angle = 0
-        bar_label_font_size = base_label_font_size
+
+    # ---- high-cardinality / rotated-label x-axis thinning ---------------
+    # Two paths trigger greedy thinning:
+    #   1. Beyond ~45 nominal bars: even at 0deg the default "render
+    #      every tick" produces an unreadable black ribbon.
+    #   2. ``-90 deg`` label rotation with ``>= 20`` labels: at
+    #      90 deg the relevant collision constraint is label HEIGHT, which
+    #      is ``char_count * font_size`` and easily exceeds the per-bar
+    #      horizontal space (e.g. 35 6-char tickers in 700px = 20px each
+    #      vs 108px label height).
+    # Vega-Lite's ``labelOverlap='greedy'`` hides colliding labels and
+    # ``labelSeparation`` pads the minimum gap so survivors don't merge.
+    needs_thinning_high_n = (
+        x_type == "nominal" and df[x_field].nunique() >= 45
+    )
+    needs_thinning_rotated = (
+        x_type == "nominal"
+        and bar_label_angle == -90
+        and df[x_field].nunique() >= 20
+    )
+    if needs_thinning_high_n or needs_thinning_rotated:
+        bar_x_label_overlap: Any = "greedy"
+        bar_x_label_separation: Any = 6
+    else:
+        bar_x_label_overlap = alt.Undefined
+        bar_x_label_separation = alt.Undefined
 
     primary_color = _resolve_single_series_color(mapping, skin_config)
     bar_opacity, bar_opacity_enc = _prepare_categorical_opacity(
@@ -16987,16 +16798,6 @@ def _build_bar(
 
     # ---- STACKED or single-series path ----------------------------------
     if not color_field or stack:
-        if x_type == "nominal":
-            # Publishing the resolved plan is what stops
-            # ``get_axis_beautification`` recomputing the angle from a
-            # different model and overwriting this one -- its nominal
-            # branch hard-set -45 for every composite panel regardless of
-            # whether -45 could actually host the names.
-            mapping["_bar_category_axis_plan"] = {
-                "label_angle": bar_label_angle,
-                "label_font_size": bar_label_font_size,
-            }
         chart = (
             alt.Chart(df)
             .mark_bar(
@@ -17016,10 +16817,8 @@ def _build_bar(
                     axis=alt.Axis(
                         titleFontWeight="normal",
                         labelAngle=bar_label_angle,
-                        labelFontSize=(
-                            bar_label_font_size if x_type == "nominal"
-                            else alt.Undefined
-                        ),
+                        labelOverlap=bar_x_label_overlap,
+                        labelSeparation=bar_x_label_separation,
                     ),
                 ),
                 y=alt.Y(
@@ -17295,31 +17094,46 @@ def _build_bar(
             if pd.api.types.is_datetime64_any_dtype(df_grouped[col]):
                 df_grouped[col] = df_grouped[col].dt.strftime("%Y-%m-%dT%H:%M:%S")
 
-        # Category-label fit for the column-facet header. A grouped bar's
-        # category names ARE its facet-header labels, and Vega-Lite lays
-        # that header strip out left-to-right across the WHOLE composition
-        # -- so the room one name gets is the total strip width divided by
-        # the facet count, not the per-facet width. Sizing against
-        # ``facet_width`` alone (which excludes the inter-facet gutters)
-        # is what let the angle picker and the old header thinner
-        # disagree, and the thinner resolved the disagreement by deleting
-        # labels: 12 quarters in a 280px composite cell shipped 9 names.
-        # The plan now returns an angle AND a font that fit the measured
-        # pitch, so nothing has to be hidden; below the minimum font it
-        # raises. The header is immutable once ``.encode()`` runs, so this
-        # has to resolve before ``alt.Header`` is constructed.
-        total_strip_px = n_x_cats * facet_width + spacing_overhead
-        facet_label_angle, facet_label_font_size = _bar_category_axis_plan(
+        # Per-facet header label angle: use the per-facet width (not the
+        # global chart width) so we don't wastefully rotate short labels
+        # that would fit horizontally inside one facet column.
+        facet_label_angle = calculate_optimal_label_angle(
             [str(v) for v in df_grouped[x_field].unique()],
-            pitch_px=total_strip_px / max(n_x_cats, 1),
-            base_font_size=_GROUPED_BAR_CATEGORY_LABEL_FONT_SIZE,
-            extent_px=width,
-            grouped=True,
+            facet_width,
+            estimated_tick_count=1,
         )
-        mapping["_bar_category_axis_plan"] = {
-            "label_angle": facet_label_angle,
-            "label_font_size": facet_label_font_size,
-        }
+
+        # Facet-header label thinning: column-faceted bars have one label
+        # per facet (Vega-Lite renders them as a row beneath the chart).
+        # The standard ``labelOverlap='greedy'`` axis trick doesn't apply
+        # to facet headers -- they're per-facet, not per-axis. Without
+        # thinning, n=17 in a 280px cell crams 17 labels into ~250px =
+        # ~14px/label, so even rotated they collide visibly. Show only
+        # every Nth label so visible labels get >= ~28px breathing room.
+        # This MUST happen before alt.Header is constructed because
+        # Header is immutable after `.encode()` builds the chart.
+        total_strip_px = n_x_cats * facet_width + spacing_overhead
+        facet_label_expr = _facet_label_thinning_expr(
+            list(df_grouped[x_field].unique()),
+            total_strip_px=total_strip_px,
+        )
+        # When thinning fires, re-pick the rotation angle against the
+        # SURVIVOR pitch (not the per-facet pitch). Thinning leaves each
+        # surviving label ~28px of room -- that is enough for diagonal
+        # text but typically not enough for the GS skin's 16pt
+        # horizontal axis labels (a 3-char label at 16pt needs ~30px).
+        # The prior heuristic clobbered the angle to 0 whenever thinning
+        # fired, producing colliding horizontal labels in 4-grid
+        # composites with 10+ categories ("XLAXLBXLC...").
+        if facet_label_expr is not None:
+            survivor_count = max(
+                2, total_strip_px // _FACET_LABEL_MIN_PITCH_PX,
+            )
+            facet_label_angle = calculate_optimal_label_angle(
+                [str(v) for v in df_grouped[x_field].unique()],
+                chart_width=total_strip_px,
+                estimated_tick_count=int(survivor_count),
+            )
 
         # HARDCODED: grouped bar charts NEVER show a global x-axis title.
         # Per-facet header labels replace the axis title.
@@ -17327,9 +17141,10 @@ def _build_bar(
             orient="bottom",
             labelAngle=facet_label_angle,
             labelPadding=14,
-            labelFontSize=facet_label_font_size,
+            labelFontSize=_GROUPED_BAR_CATEGORY_LABEL_FONT_SIZE,
             labelFont=_facet_header_label_font(skin_config),
         )
+
 
         # When labels are rotated, align them so they don't overlap the chart
         if facet_label_angle != 0:
@@ -17337,6 +17152,8 @@ def _build_bar(
             header_kwargs["labelBaseline"] = "middle"
         else:
             header_kwargs["labelBaseline"] = "top"
+        if facet_label_expr is not None:
+            header_kwargs["labelExpr"] = facet_label_expr
 
         chart = (
             alt.Chart(df_grouped)
@@ -17714,14 +17531,14 @@ def _build_bar_horizontal(
         # clears the minimum-font floor, so the gate below is the only
         # check required and no label ever has to be hidden.
         #
-        # This path used to emit a ``header.labelExpr`` whitelist sized
-        # against a 28px rotated-WIDTH budget borrowed from the column
-        # facet. Against a top-to-bottom strip that demanded ~2.4x the
-        # room the labels occupy, so it silently deleted category names
-        # from n_y_cats=13 upward -- inside a band the cell-budget gate
-        # above already keeps readable. The vertical bar's own header
-        # thinner is gone for the same reason; see
-        # ``_bar_category_axis_plan``.
+        # This path used to call ``_facet_label_thinning_expr``, which
+        # applies the column-facet WIDTH budget
+        # (``_FACET_LABEL_MIN_PITCH_PX`` = 28px, calibrated for rotated
+        # labels along a left-to-right strip). Against a top-to-bottom
+        # strip that demanded ~2.4x the room the labels occupy, and
+        # emitted a labelExpr whitelist that silently deleted category
+        # names from n_y_cats=13 upward -- inside a band the cell-budget
+        # gate above already keeps readable.
         row_pitch_px = facet_height + _GROUPED_BAR_FACET_SPACING_PX
         _validate_bar_horizontal_label_pitch(
             row_pitch_px=row_pitch_px,
@@ -20785,18 +20602,6 @@ _CHART_SPEC_PREFIX = "charts"
 _CHART_MANIFEST_NAME = "chart_manifest.json"
 
 
-def _studio_dimension_name(dimensions: Optional[str]) -> str:
-    """The studio preset name for an engine dimension choice.
-
-    ``page_grid`` is a chart_functions-only sentinel -- its panel dims are
-    derived from the facet grid shape at render time, so the studio's preset
-    table has no entry for it. ``custom`` is the studio's own name for
-    "keep whatever width/height the spec already carries", which is exactly
-    what a rendered spec does carry.
-    """
-    return dimensions if dimensions in _STUDIO_DIMENSION_PRESETS else "custom"
-
-
 def _persist_editable_spec(
     spec: Dict[str, Any],
     *,
@@ -20806,9 +20611,7 @@ def _persist_editable_spec(
     chart_type: str,
     title: Optional[str],
     dimensions: Optional[str],
-    editor_html: Optional[str] = None,
-    editor_name: Optional[str] = None,
-) -> Dict[str, Optional[str]]:
+) -> str:
     """Write the editable Vega-Lite spec beside an emitted chart PNG.
 
     The rendered PNG is the only artifact that reaches a chat answer; the
@@ -20819,7 +20622,6 @@ def _persist_editable_spec(
         {session_path}/charts/{chart_id}.spec.json   editable Vega-Lite
         {session_path}/charts/{chart_id}.meta.json   studio open arguments
         {session_path}/charts/chart_manifest.json    png_path -> chart_id
-        {session_path}/charts/{name}_editor.html     the studio (optional)
 
     ``chart_id`` comes from the studio's own ``_compute_chart_id``, so an
     id resolved out of the manifest is the same id the studio derives from
@@ -20828,8 +20630,7 @@ def _persist_editable_spec(
     ``chart_type`` must be a name ``wrap_interactive_prism`` accepts, since
     the meta sidecar is literally its argument record.
 
-    Returns ``{"chart_id", "spec_path", "editor_html_path"}``, the same
-    shape ``chart_functions_studio_tables.persist_editable_table`` returns.
+    Returns the ``chart_id``.
     """
     chart_id = _compute_chart_id(spec)
     prefix = f"{session_path.rstrip('/')}/{_CHART_SPEC_PREFIX}"
@@ -20837,20 +20638,22 @@ def _persist_editable_spec(
     manifest_key = f"{prefix}/{_CHART_MANIFEST_NAME}"
     stamp = datetime.now(timezone.utc).isoformat()
 
-    editor_key: Optional[str] = None
-    if editor_html is not None:
-        name = editor_name or f"chart_{chart_id}"
-        editor_key = f"{prefix}/{name}_editor.html"
+    # ``page_grid`` is a chart_functions-only sentinel -- its panel dims
+    # are derived from the facet grid shape at render time, so the studio's
+    # preset table has no entry for it. Record ``custom`` instead, which
+    # keeps whatever width/height the persisted spec already carries.
+    studio_dimensions = (
+        dimensions if dimensions in _STUDIO_DIMENSION_PRESETS else "custom"
+    )
 
     meta = {
         "schema_version": 1,
         "chart_id": chart_id,
         "chart_type": chart_type,
         "title": title,
-        "dimensions": _studio_dimension_name(dimensions),
+        "dimensions": studio_dimensions,
         "png_path": png_path,
         "spec_path": spec_key,
-        "editor_html_path": editor_key,
         "created_at": stamp,
     }
 
@@ -20859,8 +20662,6 @@ def _persist_editable_spec(
         json.dumps(meta, indent=2, default=str).encode("utf-8"),
         f"{prefix}/{chart_id}.meta.json",
     )
-    if editor_key is not None:
-        s3_manager.put(editor_html.encode("utf-8"), editor_key)
 
     try:
         manifest = json.loads(s3_manager.get(manifest_key).decode("utf-8"))
@@ -20871,152 +20672,10 @@ def _persist_editable_spec(
     s3_manager.put(json.dumps(manifest, indent=2).encode("utf-8"), manifest_key)
 
     logger.info(
-        "[_persist_editable_spec] chart_id=%s spec=%s editor=%s png=%s",
-        chart_id, spec_key, editor_key, png_path,
+        "[_persist_editable_spec] chart_id=%s spec=%s png=%s",
+        chart_id, spec_key, png_path,
     )
-    return {
-        "chart_id": chart_id,
-        "spec_path": spec_key,
-        "editor_html_path": editor_key,
-    }
-
-
-def _studio_call_kwargs(**kwargs: Any) -> Dict[str, Any]:
-    """The arguments the studio needs to write this call out again.
-
-    A studio edit is a DELTA on the call that produced the chart, so the
-    only way it can emit a runnable ``make_chart(...)`` is to be handed
-    the original. Everything that is session plumbing (``df``,
-    ``s3_manager``, ``session_path``, ``output_dir``) or is not
-    JSON-representable is left out: the studio emits ``df=df`` and lets
-    the caller supply the frame.
-    """
-    out: Dict[str, Any] = {}
-    for key, value in kwargs.items():
-        if value is None or value == {} or value == []:
-            continue
-        if key == "mapping" and isinstance(value, dict):
-            # By the time the studio is built the engine has written its
-            # own working keys into the caller's mapping. Emitting those
-            # would produce a call the validator refuses.
-            value = {
-                k: v for k, v in value.items()
-                if k in _PUBLIC_CHART_MAPPING_KEYS
-            }
-            if not value:
-                continue
-        try:
-            json.dumps(value)
-        except (TypeError, ValueError):
-            # Structured annotations and the like are objects here; the
-            # studio shows them as they were passed rather than guessing.
-            value = _annotations_as_json(value)
-            if value is None:
-                continue
-        out[key] = value
-    return out
-
-
-def _annotations_as_json(value: Any) -> Optional[Any]:
-    """Annotation dataclasses back to the dicts ``make_chart`` also takes."""
-    if isinstance(value, (list, tuple)):
-        out = [_annotations_as_json(v) for v in value]
-        return None if any(v is None for v in out) else out
-    for attr in ("to_dict", "_asdict"):
-        fn = getattr(value, attr, None)
-        if callable(fn):
-            try:
-                return fn()
-            except Exception:  # noqa: BLE001
-                return None
-    if hasattr(value, "__dict__"):
-        try:
-            data = {k: v for k, v in vars(value).items() if not k.startswith("_")}
-            json.dumps(data)
-            data["type"] = type(value).__name__.lower()
-            return data
-        except (TypeError, ValueError):
-            return None
-    return None
-
-
-def _emit_chart_studio(
-    spec: Dict[str, Any],
-    *,
-    png_path: str,
-    session_path: str,
-    s3_manager: Any,
-    chart_type: str,
-    title: Optional[str],
-    dimensions: Optional[str],
-    skin: str,
-    user_id: Optional[str],
-    interactive: Optional[bool],
-    warnings: List[str],
-    call: Optional[Dict[str, Any]] = None,
-) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Build the interactive companion, persist it, and presign it.
-
-    Shared by the three emit paths (``_make_chart``, ``_render_facet_grid``,
-    ``_make_composite``) so the studio opens the same way from a single
-    chart, a facet grid, and a pack.
-
-    The reopen sidecar is written whether or not the studio is enabled --
-    the persisted spec has standalone value and the two failures are
-    reported separately, so a studio that cannot build never costs the
-    session its reopenable spec. Neither failure fails the chart: the PNG
-    is the deliverable and it is already written.
-
-    Returns ``(chart_id, editor_html_path, editor_download_url)``.
-    """
-    want_interactive = (
-        _chart_studio.CHART_STUDIO_ENABLED if interactive is None
-        else bool(interactive)
-    )
-
-    editor_html: Optional[str] = None
-    if want_interactive:
-        try:
-            studio = _chart_studio.wrap_interactive_prism(
-                altair_chart=spec,
-                chart_type=chart_type,
-                dimensions=_studio_dimension_name(dimensions),
-                skin=skin,
-                user_id=user_id,
-                session_path=session_path,
-                chart_name=Path(png_path).stem,
-                call=call,
-            )
-            editor_html = studio.editor_html
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"Interactive chart companion failed: {exc}")
-
-    try:
-        persisted = _persist_editable_spec(
-            spec,
-            png_path=png_path,
-            session_path=session_path,
-            s3_manager=s3_manager,
-            chart_type=chart_type,
-            title=title,
-            dimensions=dimensions,
-            editor_html=editor_html,
-            editor_name=Path(png_path).stem,
-        )
-    except Exception as exc:  # noqa: BLE001
-        warnings.append(f"Editable-spec persistence failed: {exc}")
-        return None, None, None
-
-    editor_html_path = persisted["editor_html_path"]
-    editor_url: Optional[str] = None
-    if editor_html_path:
-        try:
-            editor_url = generate_presigned_download_url(
-                editor_html_path).presigned_url
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"Editor download URL failed: {exc}")
-
-    return persisted["chart_id"], editor_html_path, editor_url
+    return chart_id
 
 
 def _make_chart(
@@ -21037,7 +20696,7 @@ def _make_chart(
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
-    interactive: Optional[bool] = None,
+    interactive: bool = True,
     auto_beautify: bool = True,
     layers: Optional[List[Dict[str, Any]]] = None,
     user_id: Optional[str] = None,
@@ -21081,11 +20740,7 @@ def _make_chart(
             Falls back to a local-FS-backed manager for standalone runs.
         save_as: Fixed S3 path (relative to ``session_path``); overwrites
             on refresh, no timestamp prefix. Use for dashboard charts.
-        interactive: Emit the self-contained HTML editor beside the PNG and
-            register the reopen artifacts under ``{session_path}/charts/``,
-            mirroring what ``make_table`` does for tables. Left at None it
-            follows ``chart_functions_studio.CHART_STUDIO_ENABLED``. The PNG
-            is unaffected either way.
+        interactive: Reserved for future interactive HTML companion.
         auto_beautify: When True (default), apply axis-config beautification
             (date format, label angle, y-domain, log scale recommendation).
         layers: Optional list of extra overlay layers (regression, rule,
@@ -22154,15 +21809,13 @@ def _make_chart(
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Failed to generate PNG download URL: {exc}")
 
-    # ---- Interactive companion + reopen sidecar --------------------------
+    # ---- Reopenable spec sidecar ----------------------------------------
     # Session runs only: standalone / output_dir runs have no session
     # folder to register the chart against.
     editor_chart_id: Optional[str] = None
-    editor_html_path: Optional[str] = None
-    editor_download_url: Optional[str] = None
     if session_path and png_path and not png_save_failed:
-        editor_chart_id, editor_html_path, editor_download_url = (
-            _emit_chart_studio(
+        try:
+            editor_chart_id = _persist_editable_spec(
                 spec,
                 png_path=png_path,
                 session_path=session_path,
@@ -22170,19 +21823,9 @@ def _make_chart(
                 chart_type=chart_type,
                 title=title,
                 dimensions=dimensions,
-                skin=skin,
-                user_id=user_id,
-                interactive=interactive,
-                warnings=warnings,
-                call=_studio_call_kwargs(
-                    chart_type=chart_type, mapping=mapping, title=title,
-                    subtitle=subtitle, skin=skin, intent=intent,
-                    dimensions=dimensions, annotations=annotations,
-                    caption=caption, source=source, side_left=side_left,
-                    side_right=side_right, layers=layers, save_as=save_as,
-                ),
             )
-        )
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"Editable-spec persistence failed: {exc}")
 
     return ChartResult(
         png_path=png_path,
@@ -22196,10 +21839,8 @@ def _make_chart(
         ),
         warnings=warnings,
         audit_trail=audit_trail,
-        interactive=bool(editor_html_path),
+        interactive=interactive,
         editor_chart_id=editor_chart_id,
-        editor_html_path=editor_html_path,
-        editor_download_url=editor_download_url,
     )
 
 
@@ -23044,10 +22685,7 @@ def _isolate(chart: alt.Chart) -> alt.Chart:
 # annotation.
 _TEXT_PANEL_DEFAULTS: Dict[str, Any] = {
     "font_size": 12,
-    # ``None`` means "take the skin's muted ink". A caller-supplied colour
-    # still wins. Hardcoding a grey here made the caption the one element
-    # that ignored the skin, which only became visible on a dark canvas.
-    "color": None,
+    "color": "#555555",
     "italic": False,
     "align": "left",
     # Inner padding inside the text panel itself. The OUTER (chart-edge)
@@ -23137,7 +22775,7 @@ def _build_text_panel(
     """
     text = cfg["text"]
     font_size = int(cfg["font_size"])
-    color = cfg["color"] or skin_config.get("muted_color", "#5B5B5B")
+    color = cfg["color"]
     italic = bool(cfg["italic"])
     align = cfg["align"]
     padding = int(cfg["padding"])
@@ -24353,7 +23991,7 @@ def _render_facet_grid(
     session_path: Optional[str],
     s3_manager: Any,
     save_as: Optional[str],
-    interactive: Optional[bool],
+    interactive: bool,
     auto_beautify: bool,
     layers: Optional[List[Dict[str, Any]]],
     user_id: Optional[str],
@@ -24827,16 +24465,14 @@ def _render_facet_grid(
         except Exception as exc:  # noqa: BLE001
             warnings_list.append(f"Failed to generate PNG download URL: {exc}")
 
-    # ---- Interactive companion + reopen sidecar --------------------------
+    # ---- Reopenable spec sidecar ----------------------------------------
     # The recorded chart_type is the BASE type, not ``{chart_type}_facet``:
     # the studio's knob map only accepts the base names, and the grid
     # layout is already visible in the persisted spec's concat structure.
     editor_chart_id: Optional[str] = None
-    editor_html_path: Optional[str] = None
-    editor_download_url: Optional[str] = None
     if session_path and png_path and not png_save_failed:
-        editor_chart_id, editor_html_path, editor_download_url = (
-            _emit_chart_studio(
+        try:
+            editor_chart_id = _persist_editable_spec(
                 composite_spec,
                 png_path=png_path,
                 session_path=session_path,
@@ -24844,12 +24480,9 @@ def _render_facet_grid(
                 chart_type=chart_type,
                 title=title,
                 dimensions=dimensions,
-                skin=skin,
-                user_id=user_id,
-                interactive=interactive,
-                warnings=warnings_list,
             )
-        )
+        except Exception as exc:  # noqa: BLE001
+            warnings_list.append(f"Editable-spec persistence failed: {exc}")
 
     return ChartResult(
         png_path=png_path,
@@ -24857,8 +24490,6 @@ def _render_facet_grid(
         vegalite_json=composite_spec,
         chart_type=f"{chart_type}_facet",
         editor_chart_id=editor_chart_id,
-        editor_html_path=editor_html_path,
-        editor_download_url=editor_download_url,
         skin=skin,
         success=not png_save_failed,
         error_message=(
@@ -24866,7 +24497,7 @@ def _render_facet_grid(
             else None
         ),
         warnings=warnings_list,
-        interactive=bool(editor_html_path),
+        interactive=False,
     )
 
 
@@ -25136,7 +24767,7 @@ def _make_composite(
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
     spacing: int = 20,
-    interactive: Optional[bool] = None,
+    interactive: bool = True,
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
@@ -25410,21 +25041,20 @@ def _make_composite(
     # multi-line title body) and a too-long title would have already
     # short-circuited above with CompositeResult(success=False).
     if super_title_lines:
-        _scale = _house.TYPE_SCALE["chart"]
         title_props = _title_dict_from_lines(
             super_title_lines,
             width_px=super_title_width,
             subtitle_lines=super_subtitle_lines,
-            fontSize=_scale["composite_super_title"],
-            font=skin_config.get("font_family", _house.FONT_STACK),
+            fontSize=32,
+            font=skin_config.get(
+                "font_family", "GS Sans, Liberation Sans, Arial, sans-serif",
+            ),
             anchor="middle",
             offset=20,
         )
         if super_subtitle_lines:
-            title_props["subtitleFontSize"] = _scale["composite_super_subtitle"]
-            title_props["subtitleColor"] = skin_config.get(
-                "subtitle_color", "#666666",
-            )
+            title_props["subtitleFontSize"] = 22
+            title_props["subtitleColor"] = "#666666"
         composite = composite.properties(title=title_props)
 
     composite = composite.configure(**skin_config.get("config", {}))
@@ -25517,15 +25147,13 @@ def _make_composite(
         except Exception as exc:  # noqa: BLE001
             warnings_list.append(f"Composite presigned URL failed: {exc}")
 
-    # ---- Interactive companion + reopen sidecar --------------------------
+    # ---- Reopenable spec sidecar ----------------------------------------
     # ``{layout}_composite`` is the name the studio's composite branch
     # recognises, which bypasses its single-mark knob whitelist.
     editor_chart_id: Optional[str] = None
-    editor_html_path: Optional[str] = None
-    editor_download_url: Optional[str] = None
     if session_path and png_path and not png_save_failed:
-        editor_chart_id, editor_html_path, editor_download_url = (
-            _emit_chart_studio(
+        try:
+            editor_chart_id = _persist_editable_spec(
                 spec_dict,
                 png_path=png_path,
                 session_path=session_path,
@@ -25533,20 +25161,15 @@ def _make_composite(
                 chart_type=f"{layout}_composite",
                 title=title,
                 dimensions=dimension_preset,
-                skin=skin,
-                user_id=user_id,
-                interactive=interactive,
-                warnings=warnings_list,
             )
-        )
+        except Exception as exc:  # noqa: BLE001
+            warnings_list.append(f"Editable-spec persistence failed: {exc}")
 
     return CompositeResult(
         png_path=png_path,
         layout=layout,
         n_charts=n_charts,
         editor_chart_id=editor_chart_id,
-        editor_html_path=editor_html_path,
-        editor_download_url=editor_download_url,
         success=not png_save_failed and not chart_errors,
         error_message=(
             f"PNG export unavailable: {png_error_message}"
@@ -25584,7 +25207,7 @@ def make_2pack_horizontal(
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
     spacing: int = 20,
-    interactive: Optional[bool] = None,
+    interactive: bool = True,
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
@@ -25625,7 +25248,7 @@ def make_2pack_vertical(
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
     spacing: int = 20,
-    interactive: Optional[bool] = None,
+    interactive: bool = True,
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
@@ -25667,7 +25290,7 @@ def make_3pack_triangle(
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
     spacing: int = 20,
-    interactive: Optional[bool] = None,
+    interactive: bool = True,
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
@@ -25710,7 +25333,7 @@ def make_4pack_grid(
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
     spacing: int = 20,
-    interactive: Optional[bool] = None,
+    interactive: bool = True,
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
@@ -25756,7 +25379,7 @@ def make_6pack_grid(
     filename_prefix: Optional[str] = None,
     filename_suffix: Optional[str] = None,
     spacing: int = 20,
-    interactive: Optional[bool] = None,
+    interactive: bool = True,
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
@@ -26239,36 +25862,40 @@ def _bar_horizontal_auto_height(
 #   2. total_rows               5. column_color_modes   8. row_groups (handled separately)
 #   3. subtotal_rows            6. row_colors[r]        9. row_bands
 
-# Table colour anchors and type sizes, from the same house style the chart
-# skins are built from -- which is what lets a table and a chart share an
-# exhibit without one of them looking imported.
-#
-# ``AVAILABLE_TABLE_THEMES`` carries all five styles; ``_TABLE_THEME`` is the
-# default the renderer starts from and the key set that ``theme_overrides``
-# is validated against.
-AVAILABLE_TABLE_THEMES: Dict[str, Dict[str, Any]] = {
-    name: {
-        **_house.table_theme(name),
-        "title_font_size":    _house.table_font_px("title"),
-        "subtitle_font_size": _house.table_font_px("subtitle"),
-        "header_font_size":   _house.table_font_px("header"),
-        "body_font_size":     _house.table_font_px("body"),
-        "caption_font_size":  _house.table_font_px("caption"),
-    }
-    for name in _house.house_style_names()
+_TABLE_THEME: Dict[str, Any] = {
+    "primary_color":     GS_PRIMARY["colors"][0],
+    "secondary_color":   GS_PRIMARY["colors"][1],
+    "accent_color":      GS_PRIMARY["colors"][4],
+    "background_color":  "#FFFFFF",
+    "row_band_color":    "#F7F7F7",
+    "subtotal_band":     "#EFEFEF",
+    "total_band":        GS_PRIMARY["colors"][0],
+    "border_color":      "#1F1F1F",
+    "muted_text":        "#5B5B5B",
+    "header_text":       "#FFFFFF",
+    "body_text":         "#000000",
+    "positive_text":     "#0E7A28",
+    "negative_text":     "#C00000",
+    "highlight_color":   "#E8F0F7",
+    "title_font_size":   22,
+    "subtitle_font_size": 13,
+    "header_font_size":  14,
+    "body_font_size":    13,
+    "caption_font_size": 11,
 }
 
-_TABLE_THEME: Dict[str, Any] = AVAILABLE_TABLE_THEMES["gs_clean"]
-
-# (kind, *colors, max_intensity) -- the shape the fill maths expects, from
-# the shared ramp definitions the table studio also ships to the browser.
 _TABLE_PALETTES: Dict[str, Tuple] = {
-    name: (
-        (ramp["kind"], ramp["end"], ramp["max_i"])
-        if ramp["kind"] == "sequential"
-        else (ramp["kind"], ramp["neg"], ramp["pos"], ramp["max_i"])
-    )
-    for name, ramp in _house.TABLE_RAMPS.items()
+    "bw":       ("sequential", GS_PRIMARY["colors"][2], 0.70),
+    "wb":       ("sequential", GS_PRIMARY["colors"][2], 0.70),
+    "wb_full":  ("sequential", GS_PRIMARY["colors"][0], 0.65),
+    "wg":       ("sequential", "#3C9A4E", 0.65),
+    "wr":       ("sequential", GS_PRIMARY["colors"][4], 0.55),
+    "wo":       ("sequential", GS_PRIMARY["colors"][8], 0.65),
+    "wgrey":    ("sequential", "#5B5B5B", 0.55),
+    "rwg":      ("diverging", GS_PRIMARY["colors"][4], "#3C9A4E", 0.65),
+    "rwb":      ("diverging", GS_PRIMARY["colors"][4], GS_PRIMARY["colors"][0], 0.65),
+    "bwr":      ("diverging", GS_PRIMARY["colors"][0], GS_PRIMARY["colors"][4], 0.65),
+    "owb":      ("diverging", GS_PRIMARY["colors"][8], GS_PRIMARY["colors"][0], 0.65),
 }
 
 # Content-driven table sizing constants. The table engine sizes its PNG

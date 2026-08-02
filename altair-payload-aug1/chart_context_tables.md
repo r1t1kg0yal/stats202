@@ -95,11 +95,6 @@ either `reset_index()` so it becomes a named column (preferred) or set
 | `slate` | Softer blue-grey alternative to the default |
 | `mono` | Greyscale, including gains and losses |
 | `print` | Black and white, no row banding; for printed handouts |
-| `dark` | Light-on-dark, for screen viewing only; never for a printed or emailed exhibit |
-
-The same five names are chart skins. Pass one skin to every artifact in an
-exhibit and the table and the charts share a frame; mix them and they read
-as pasted from different documents.
 
 Canvas dimensions are content-driven. Text columns wrap, every row is kept,
 and the table is never truncated. A table too wide to remain legible on a
@@ -123,7 +118,7 @@ Use dot notation:
 | `canvas_size` | Emitted `(width, height)` |
 | `warnings` | Non-fatal dropped keys, unknown column names or format hints, automatic font adjustments |
 | `truncated_rows` | Always 0 |
-| `interactive`, `editor_url` | Whether an editor was emitted, and its internal link; never surface the URL |
+| `interactive`, `editor_url` | Whether an editor was emitted, and its link |
 | `success`, `error_message` | Returned results are successful; failures raise |
 
 Tables are deterministic and excluded from chart vision QC. Inspect and surface
@@ -132,30 +127,22 @@ material `result.warnings`.
 ### Editor companion
 
 Session runs emit a self-contained HTML editor beside the PNG by default, in
-which the user can restyle, reformat, resize, restructure and retype the
-table directly and copy back a runnable `make_table(...)` call. Leave
-`interactive` alone. Never surface `editor_url` — the user opens the editor
-by clicking the table in place, so when they ask to adjust it themselves say
-"you can edit the table by clicking on it". The editor is a per-table
-companion, not a dashboard — a request for live filtering, refresh, or
-cross-widget interaction is a `dashboards` task.
+which the user can restyle, reformat, resize, and retype the table directly
+and copy back a runnable `make_table(...)` call. Leave `interactive` alone —
+it is on unless the run has no session to write to, which is why
+`editor_url` can be unset. Surface it next to the PNG whenever it is present,
+including when the user says they want to adjust the table themselves. The
+editor is a per-table companion, not a dashboard — a request for live
+filtering, refresh, or cross-widget interaction is a `dashboards` task.
 
-Studio-generated code round-trips exactly and carries both halves of the
-edit — the kwargs and the data. Keep the whole block; dropping a kwarg it
-carries (`skin`, `theme_overrides`, `column_widths`, `value_overrides`,
-`row_height_scale`) silently undoes the styling.
-
-The data half arrives one of two ways and the code says which. Where every
-edit was a rule, it emits the original frame followed by the pandas that
-reproduces them — a drop, a sort, a filter, a rename, a `df.insert` for a
-computed column — so replacing the literal with a fresh pull re-applies all
-of it. Where an edit typed a value or placed a row by hand, it emits the
-edited frame instead and states the reason in a comment above it; that one
-cannot be refreshed without redoing the edit.
+Studio-generated code round-trips exactly. When a user supplies one of those
+calls, keep every kwarg it carries — `skin`, `theme_overrides`,
+`column_widths`, `value_overrides`, and `row_height_scale` are the ones the
+editor writes, and dropping them silently discards the user's edits.
 
 `value_overrides`, `row_colors`, `row_indent`, `total_rows`, and
-`subtotal_rows` address rows by position either way, so pointing a studio
-call at refreshed data moves them onto whatever now sits at that index, with
+`subtotal_rows` all address rows by position. Re-running a studio call
+against refreshed data moves them onto whatever now sits at that index, with
 no error. Re-sort the new data the same way, or drop the row-indexed kwargs
 and say so.
 

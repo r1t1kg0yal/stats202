@@ -128,16 +128,9 @@ result = make_chart(
 
 `title` should state the finding. `subtitle` adds context, never attribution.
 `source="Haver"` renders `Source: Haver` below the chart; an explicit
-`caption` wins. Never invent a source. `intent` is `explore` (default),
-`publish` (700×400), or `monitor` (500×300). Canvas dimensions are otherwise
-engine-selected.
-
-`skin` is `gs_clean` (default), `slate`, `mono`, `print`, or `dark`. Stay on
-the default unless the request names a constraint that another one answers:
-`print` for a black-and-white handout, `mono` when colour would imply a
-distinction the data does not support, `dark` for on-screen viewing only.
-The same five names are table skins — pass one skin to every artifact in an
-exhibit so they share a frame.
+`caption` wins. Never invent a source. `skin="gs_clean"` is the only published
+skin. `intent` is `explore` (default), `publish` (700×400), or `monitor`
+(500×300). Canvas dimensions are otherwise engine-selected.
 
 Axis titles live only in `mapping`: `mapping['x_title']`,
 `mapping['y_title']`, `mapping['y_title_right']`. There is no top-level
@@ -145,21 +138,12 @@ axis-title kwarg. Leave `interactive`, `auto_beautify`, `dimension_preset`, and
 runtime-injected kwargs at their defaults unless an external artifact
 constraint explicitly requires otherwise.
 
-A session run also registers the artifact with an interactive editor the user
-opens by clicking the artifact in place. Never mint or surface an editor link;
-say "you can edit the chart by clicking on it" (or the table). The editor
-changes what the chart shows as well as how it looks — window a date or
-numeric axis, sort a categorical one, transform a series, add or drop lines,
-draw an annotation. Build what was asked for regardless; what the editor
-absorbs is the open-ended follow-on, so "let me try a few cuts of this" is an
-editor answer rather than repeated re-runs. It is still a per-artifact
-companion, not a dashboard: live filtering, scheduled refresh, or
-cross-widget interaction is a `dashboards` task.
-
-Studio-generated code carries the edit as a pandas preamble above the call —
-the transform, the lifted column, the dropped series. Keep the whole block;
-point `df` at a fresh pull and the edits re-apply. Anything the call cannot
-express is named in comments at its foot.
+A session run also registers the artifact so the user can reopen it in an HTML
+editor and restyle it by hand. That editor is a per-artifact companion, not a
+dashboard: a request to hand-edit, recolour, or retype one chart or table stays
+here, while live filtering, scheduled refresh, or cross-widget interaction is a
+`dashboards` task. Tables additionally return a direct link — see the tables
+spoke.
 
 ### Kwarg placement contract
 
@@ -214,7 +198,6 @@ The engine raises rather than truncating. These are ceilings, not targets.
 | Value-axis title (`y_title`, `y_title_right`; `x_title` on horizontal bars) | 28 characters | Aim for concise metric + unit |
 | Auto end-label series name | 32 characters | Rename categories before charting |
 | Bar category label | 22 characters | Abbreviate in the DataFrame |
-| Bar / `bar_horizontal` category count vs canvas | Every category must be labelled; the engine rotates and shrinks to fit but never hides a name | Aggregate or take the top-N, render standalone instead of in a composite cell, or switch to `bar_horizontal` for long lists |
 | Heatmap row or column label | 20 characters | Abbreviate in the DataFrame |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `line`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |

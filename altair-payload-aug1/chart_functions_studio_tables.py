@@ -58,25 +58,11 @@ THE CELL MODEL IS THE CONTRACT
                          "bg", "fg", "indent", "spark", "bar"}, ...]}, ...],
         }
 
-    ``kwargs`` is the ORIGINAL ``make_table`` call, JSON-safe.
-
-    In the browser the state splits in two and the model becomes derived:
-
-        K   the kwargs. Styling, and what the Code tab serialises straight
-            back to a runnable ``make_table(...)`` call.
-        D   the data. Which columns exist, in what order, and the raw value
-            behind every cell -- everything the engine received as the
-            DataFrame, plus the text / line-break / height baselines it
-            measured, carried alongside the value they describe.
-        M   the cell model above, rebuilt from (K, D) on every change and
-            never written to directly.
-
-    Unlike the chart studio -- whose state is a mutated Vega-Lite spec with
-    no inverse -- the round-trip here is an identity: K regenerates the
-    call and D regenerates the DataFrame, so a structurally edited table
-    re-runs through ``make_table`` and lands where the studio was showing
-    it. K addresses D by POSITION in nine places, which is what
-    ``applyStructural()`` exists to keep true.
+    ``kwargs`` is the ORIGINAL ``make_table`` call, JSON-safe. It is the
+    studio's live state: every gesture mutates a kwarg, and the Code tab
+    serialises those kwargs straight back to a runnable ``make_table(...)``
+    call. Unlike the chart studio -- whose state is a mutated Vega-Lite
+    spec with no inverse -- the round-trip here is an identity.
 
 S3 / PERSISTENCE PARITY
 
@@ -156,8 +142,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from prism_mcp.utils import chart_house_style as _house
-
 
 __version__ = "0.1.0"
 
@@ -183,34 +167,80 @@ TABLE_MANIFEST_NAME = "table_manifest.json"
 
 
 # =============================================================================
-# PALETTES
+# PALETTES -- ported verbatim from chart_functions._TABLE_PALETTES
 #
 # Shipped into the template so the browser resolves colour scales with the
 # same maths the engine used, which is what lets a colour-mode change apply
-# live instead of round-tripping to Python. Reading them from the house
-# style is what makes "same maths" true: this module previously carried its
-# own copy, and the ``wo`` / ``owb`` orange had drifted a shade away from
-# the one the engine renders.
+# live instead of round-tripping to Python.
 # =============================================================================
 
 TABLE_PALETTES: Dict[str, Dict[str, Any]] = {
-    name: dict(ramp) for name, ramp in _house.TABLE_RAMPS.items()
+    "bw":      {"kind": "sequential", "end": "#5C92CB", "max_i": 0.70},
+    "wb":      {"kind": "sequential", "end": "#5C92CB", "max_i": 0.70},
+    "wb_full": {"kind": "sequential", "end": "#003359", "max_i": 0.65},
+    "wg":      {"kind": "sequential", "end": "#3C9A4E", "max_i": 0.65},
+    "wr":      {"kind": "sequential", "end": "#C00000", "max_i": 0.55},
+    "wo":      {"kind": "sequential", "end": "#E8A33D", "max_i": 0.65},
+    "wgrey":   {"kind": "sequential", "end": "#5B5B5B", "max_i": 0.55},
+    "rwg":     {"kind": "diverging", "neg": "#C00000", "pos": "#3C9A4E", "max_i": 0.65},
+    "rwb":     {"kind": "diverging", "neg": "#C00000", "pos": "#003359", "max_i": 0.65},
+    "bwr":     {"kind": "diverging", "neg": "#003359", "pos": "#C00000", "max_i": 0.65},
+    "owb":     {"kind": "diverging", "neg": "#E8A33D", "pos": "#003359", "max_i": 0.65},
 }
 
-RAG_COLORS = dict(_house.RAG_COLORS)
+RAG_COLORS = {"red": "#F4D6D6", "amber": "#FCE9CC", "green": "#D8EED8"}
 
 
 # =============================================================================
 # THEMES
 #
-# One per house style, so every table skin has a chart skin of the same name
-# to sit beside. Applied browser-side and serialised into the regenerated
-# call as ``skin=``.
+# ``gs_clean`` is byte-identical to chart_functions._TABLE_THEME. The other
+# three exist because the chart studio has four and a table studio that
+# offered one would look broken beside it. They are applied browser-side and
+# serialise into the regenerated call as ``skin=``.
 # =============================================================================
 
 TABLE_THEMES: Dict[str, Dict[str, Any]] = {
-    name: _house.table_theme(name, include_label=True)
-    for name in _house.house_style_names()
+    "gs_clean": {
+        "label": "GS Clean",
+        "primary_color": "#003359", "secondary_color": "#94C7DD",
+        "background_color": "#FFFFFF", "row_band_color": "#F7F7F7",
+        "subtotal_band": "#EFEFEF", "total_band": "#003359",
+        "border_color": "#1F1F1F", "muted_text": "#5B5B5B",
+        "header_text": "#FFFFFF", "body_text": "#000000",
+        "positive_text": "#0E7A28", "negative_text": "#C00000",
+        "highlight_color": "#E8F0F7",
+    },
+    "mono": {
+        "label": "Monochrome",
+        "primary_color": "#1F1F1F", "secondary_color": "#5B5B5B",
+        "background_color": "#FFFFFF", "row_band_color": "#F4F4F4",
+        "subtotal_band": "#E8E8E8", "total_band": "#1F1F1F",
+        "border_color": "#1F1F1F", "muted_text": "#5B5B5B",
+        "header_text": "#FFFFFF", "body_text": "#000000",
+        "positive_text": "#1F1F1F", "negative_text": "#1F1F1F",
+        "highlight_color": "#EDEDED",
+    },
+    "print": {
+        "label": "Print",
+        "primary_color": "#000000", "secondary_color": "#444444",
+        "background_color": "#FFFFFF", "row_band_color": "#FFFFFF",
+        "subtotal_band": "#F2F2F2", "total_band": "#000000",
+        "border_color": "#000000", "muted_text": "#333333",
+        "header_text": "#FFFFFF", "body_text": "#000000",
+        "positive_text": "#000000", "negative_text": "#000000",
+        "highlight_color": "#F2F2F2",
+    },
+    "slate": {
+        "label": "Slate",
+        "primary_color": "#22303C", "secondary_color": "#4A6274",
+        "background_color": "#FFFFFF", "row_band_color": "#F5F7F9",
+        "subtotal_band": "#E9EEF2", "total_band": "#22303C",
+        "border_color": "#22303C", "muted_text": "#5A6B79",
+        "header_text": "#FFFFFF", "body_text": "#12181F",
+        "positive_text": "#0E7A28", "negative_text": "#B3261E",
+        "highlight_color": "#EAF1F7",
+    },
 }
 
 
@@ -565,8 +595,8 @@ body.fullscreen .sidebar, body.fullscreen .knobs-section { display: none; }
 <h1 id="pageTitle">__TITLE__</h1>
 <p class="subline">Table Studio &middot; <span id="shapeLine"></span> &middot;
   <b>right-click</b> a cell, a header, or the table background &middot;
-  <b>double-click</b> a cell to change its value &middot; <b>drag</b> the
-  table's edge or a header edge to resize</p>
+  <b>double-click</b> to retype &middot; <b>drag</b> the table's edge or a
+  header edge to resize</p>
 
 <div class="layout">
 
@@ -687,61 +717,17 @@ const INITIAL_ACTIVE_SHEET = "__ACTIVE_SHEET__";
 
 // ===========================================================================
 // LIVE STATE
-//   K -- the make_table kwargs. Styling, and the studio's state for it;
-//        every gesture writes here and the Code tab serialises it straight
-//        back to Python.
-//   D -- the data. Which columns exist, in what order, the raw value behind
-//        every cell, and the baselines the engine itself produced for them.
-//        A structural edit (add / delete / move a row or column) mutates D
-//        and nothing else; every visual consequence falls out of rebuild().
-//   M -- the cell model. Derived, and ONLY derived: rebuild() is
-//        (K, D) -> M and is the single path from state to pixels.
-//
-// K addresses D by POSITION in nine places, so the two cannot move
-// independently -- see POSITIONAL and applyStructural() below.
+//   K -- the make_table kwargs. THIS is the studio's state; every gesture
+//        writes here and the Code tab serialises it straight back to Python.
+//   M -- the cell model. Derived: rebuilt from K + the raw values on
+//        every change.
 // ===========================================================================
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
 let K = clone(BASE_KWARGS);
 let M = clone(BASE_MODEL);
+const RAW_W = BASE_MODEL.geom.col_widths.slice();
 const BASE_THEME = clone(BASE_MODEL.theme);
-
-// Splits the engine's model into the data half. The baselines travel with
-// the value they describe rather than with a position, so a row that moves
-// keeps the exact text, line breaks and height PIL measured for it instead
-// of being re-measured with whatever font the browser happens to have.
-function extractData(model) {
-  return {
-    columns: model.columns.map((c, ci) => ({
-      name: c.name,
-      kind: c.kind,
-      int_dtype: !!c.int_dtype,
-      wrap: !!c.wrap,
-      minibar_src: c.minibar_src || null,
-      w0: model.geom.col_widths[ci],
-      fmt0: c.fmt == null ? null : c.fmt,
-      align0: c.align,
-    })),
-    rows: model.rows.map((row) => ({
-      h0: row.h,
-      cells: row.cells.map((cell) => ({
-        raw: cell.raw === undefined ? null : cell.raw,
-        spark: cell.spark || null,
-        text0: cell.text,
-        lines0: cell.lines,
-      })),
-    })),
-    // What was DONE to the data, in order, alongside what it now is. A
-    // structural edit that is a rule -- drop this column, sort by that one,
-    // total at the bottom -- can be replayed over next month's numbers; one
-    // that is a typed value cannot. Recording both lets the codegen emit the
-    // original frame plus the rules when every edit is replayable, and fall
-    // back to the edited frame when one of them is not.
-    ops: [],
-  };
-}
-
-let D = extractData(BASE_MODEL);
 let selection = [];          // [[r,c], ...]
 let colSelection = [];       // [c, ...] for heatmap grouping
 let _undo = [];
@@ -781,46 +767,13 @@ function syncUndoButton() {
 
 // Returns the entry so a gesture that snapshots at pointer-down can take it
 // back off the stack if the drag turned out to change nothing.
-//
-// Both halves of the state are snapshotted, unconditionally. A structural
-// edit moves D and K together, and an undo that restored only one of them
-// would leave the styling addressing rows that are no longer there -- so
-// there is one snapshot shape rather than a styling one and a data one to
-// pick between at every call site.
 function pushUndo(label) {
-  const entry = { K: clone(K), D: clone(D), label: label || "edit" };
+  const entry = { K: clone(K), label: label || "edit" };
   _undo.push(entry);
   if (_undo.length > 60) _undo.shift();
   syncUndoButton();
   return entry;
 }
-
-function restoreSnapshot(entry) {
-  K = entry.K;
-  D = entry.D;
-}
-
-/**
- * Record what a structural edit was, in pandas.
- *
- * `py` is the line that reproduces the edit over any frame with the same
- * columns. Passing null instead says the edit cannot be replayed -- it typed
- * a value, or addressed a row by position -- and `why` is shown to the user
- * in the generated code as the reason the original frame could not be kept.
- * One unreplayable edit is enough to take the whole call out of replay mode,
- * because the later rules were expressed against the edited frame.
- */
-function pushOp(py, why) {
-  D.ops = D.ops || [];
-  D.ops.push(py == null ? { py: null, why: why } : { py: py });
-}
-
-function dataIsReplayable() {
-  return (D.ops || []).every((o) => o.py != null);
-}
-
-const pyBool = (v) => (v ? "True" : "False");
-const pyNames = (names) => "[" + names.map(pyLit).join(", ") + "]";
 
 // ===========================================================================
 // COLOUR MATHS -- ports of chart_functions._tbl_* so a colour-mode change
@@ -831,24 +784,9 @@ function hex2rgb(h) {
   return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16),
           parseInt(h.slice(4, 6), 16)];
 }
-// Lower case, matching _rgb_to_hex's "%02x". Both sides compute the same
-// colour; spelling it the same way is what lets a heatmap cell survive the
-// codegen round-trip as the identical literal rather than a same-pixel
-// different-string one.
-//
-// Python's round() breaks a tie to the nearest EVEN integer where
-// Math.round() breaks it upward, so a channel landing exactly on .5 -- which
-// pale heat shades do land on -- would otherwise render one step off the
-// engine for the same arithmetic.
-function roundHalfEven(n) {
-  const f = Math.floor(n), d = n - f;
-  if (d > 0.5) return f + 1;
-  if (d < 0.5) return f;
-  return f % 2 === 0 ? f : f + 1;
-}
 function rgb2hex(r, g, b) {
-  const c = (n) => Math.max(0, Math.min(255, roundHalfEven(n)))
-                     .toString(16).padStart(2, "0");
+  const c = (n) => Math.max(0, Math.min(255, Math.round(n)))
+                     .toString(16).padStart(2, "0").toUpperCase();
   return "#" + c(r) + c(g) + c(b);
 }
 function blend(c1, c2, t) {
@@ -1060,9 +998,6 @@ function wrapText(text, maxW, size, bold) {
 // ===========================================================================
 function theme() { return M.theme; }
 function colByName(name) { return M.columns.findIndex((c) => c.name === name); }
-// The data's own lookup. M is last frame's render, so anything running
-// between one redraw and the next has to ask D instead.
-function dColByName(name) { return D.columns.findIndex((c) => c.name === name); }
 function ck(r, c) { return r + "," + c; }
 
 function columnNumbers(ci) {
@@ -1143,28 +1078,6 @@ function rebuild() {
   const th = M.theme;
   const bodyFs = th.body_font_size, headFs = th.header_font_size;
 
-  // --- columns, from D ---
-  M.columns = D.columns.map((dc) => ({
-    name: dc.name,
-    kind: dc.kind,
-    int_dtype: dc.int_dtype,
-    wrap: dc.wrap,
-    minibar_src: dc.minibar_src,
-    numeric: dc.kind === "num",
-    fmt0: dc.fmt0,
-    align0: dc.align0,
-    fmt: (K.column_formats || {})[dc.name] ?? dc.fmt0 ?? null,
-    align: (K.column_aligns || {})[dc.name] || dc.align0,
-    width: (K.column_widths || {})[dc.name] || dc.w0,
-  }));
-  M.geom.col_widths = M.columns.map((col) => col.width);
-
-  // Formulas and aggregate rows are re-evaluated into D before anything
-  // reads a value, so a computed column behaves as an ordinary column of
-  // numbers everywhere downstream -- including the minibar extents and the
-  // wrapped-line measurement below.
-  materialiseDerived();
-
   // A column is pristine while nothing that could change where its text
   // breaks has moved. While it is, the engine's own wrapped lines are used
   // verbatim rather than being re-measured in the browser.
@@ -1173,53 +1086,16 @@ function rebuild() {
     && M.columns[ci].fmt === M.columns[ci].fmt0
     && !((K.column_widths || {})[M.columns[ci].name]);
 
-  // --- minibar scale, from D ---
-  // The bar and the extent it is drawn against are data, not styling, so
-  // both are derived here rather than baked at build time -- deleting the
-  // largest row has to rescale every remaining bar, the same way re-running
-  // make_table on the smaller frame would.
-  const barMax = {};
-  D.columns.forEach((dc) => {
-    if (dc.kind !== "minibar") return;
-    const si = D.columns.findIndex((c) => c.name === dc.minibar_src);
-    let m = 0;
-    if (si >= 0) D.rows.forEach((row) => {
-      const v = row.cells[si] ? row.cells[si].raw : null;
-      if (typeof v === "number" && isFinite(v)) m = Math.max(m, Math.abs(v));
-    });
-    barMax[dc.name] = m;
-  });
+  // --- widths ---
+  M.geom.col_widths = M.columns.map((col, ci) =>
+    (K.column_widths || {})[col.name] || RAW_W[ci]);
 
-  // --- rows, from D ---
-  M.rows = D.rows.map((dr, r) => ({
-    r: r,
-    h: dr.h0,
-    h0: dr.h0,
-    kind: "normal",
-    group: null,
-    row_bg: null,
-    cells: dr.cells.map((dcell, ci) => {
-      const dc = D.columns[ci];
-      const kind = dc ? dc.kind : "text";
-      const cell = {
-        c: ci,
-        kind: (kind === "spark" || kind === "minibar") ? kind : "text",
-        raw: dcell.raw,
-        text: "", lines: [], bg: null, fg: null, indent: 0,
-        text0: dcell.text0, lines0: dcell.lines0,
-      };
-      if (kind === "spark") cell.spark = dcell.spark || [];
-      if (kind === "minibar") {
-        const si = D.columns.findIndex((c) => c.name === dc.minibar_src);
-        const v = (si >= 0 && dr.cells[si]) ? dr.cells[si].raw : null;
-        cell.bar = {
-          v: (typeof v === "number" && isFinite(v)) ? v : 0.0,
-          max: barMax[dc.name] || 0.0,
-        };
-      }
-      return cell;
-    }),
-  }));
+  // --- per-column derived config ---
+  M.columns.forEach((col, ci) => {
+    col.fmt   = (K.column_formats || {})[col.name] ?? col.fmt0 ?? null;
+    col.align = (K.column_aligns  || {})[col.name] || col.align0;
+    col.width = M.geom.col_widths[ci];
+  });
 
   const highlight = K.highlight_columns || [];
   const signed    = K.signed_columns || [];
@@ -1823,37 +1699,6 @@ function mNumber(m, placeholder, initial, fn) {
   d.appendChild(i); d.appendChild(b); m.appendChild(d);
   setTimeout(() => i.focus(), 30);
 }
-// A formula field is wider and monospaced than the numeric ones, because
-// column names have to be typed exactly as they appear in the header.
-function mFormula(m, initial, fn) {
-  const d = document.createElement("div"); d.className = "num";
-  const i = document.createElement("input");
-  i.type = "text"; i.placeholder = "[Column A] - [Column B]";
-  i.value = initial == null ? "" : String(initial);
-  i.style.minWidth = "250px"; i.style.fontFamily = "ui-monospace, Menlo, monospace";
-  const b = document.createElement("button"); b.textContent = "Apply";
-  const go = () => { fn(i.value); closeMenu(); };
-  b.onclick = go;
-  i.onkeydown = (e) => { if (e.key === "Enter") go(); };
-  d.appendChild(i); d.appendChild(b); m.appendChild(d);
-  setTimeout(() => { i.focus(); i.select(); }, 30);
-}
-function mNewComputed(m, fn) {
-  const d = document.createElement("div"); d.className = "num";
-  const n = document.createElement("input");
-  n.type = "text"; n.placeholder = "Name"; n.style.maxWidth = "104px";
-  const i = document.createElement("input");
-  i.type = "text"; i.placeholder = "[Column A] - [Column B]";
-  i.style.minWidth = "210px"; i.style.fontFamily = "ui-monospace, Menlo, monospace";
-  const b = document.createElement("button"); b.textContent = "Add";
-  const go = () => { fn(n.value, i.value); closeMenu(); };
-  b.onclick = go;
-  [n, i].forEach((el) => {
-    el.onkeydown = (e) => { if (e.key === "Enter") go(); };
-  });
-  d.appendChild(n); d.appendChild(i); d.appendChild(b); m.appendChild(d);
-  setTimeout(() => n.focus(), 30);
-}
 
 // ===========================================================================
 // GESTURES
@@ -1885,22 +1730,6 @@ function beginEdit(el, commit) {
   };
 }
 
-// Typing in a cell changes the value. Whatever else is selected in the same
-// column changes with it, which is how you blank a range or set a floor.
-function editCellValue(r, c) {
-  const td = document.querySelector('#ptTable td[data-r="' + r + '"][data-c="' + c + '"]');
-  const ln = td && td.querySelector(".ln");
-  if (!ln) return;
-  const targets = selection.some(([a, b]) => a === r && b === c)
-    ? selection.slice() : [[r, c]];
-  beginEdit(ln, (txt) => {
-    if (setCellValues(targets, txt)) {
-      redraw(targets.length > 1
-        ? "Set " + targets.length + " cells" : "Set " + D.columns[c].name);
-    } else redraw();
-  });
-}
-
 function wireGestures(tbl, frame) {
   // ---- cells ----
   tbl.querySelectorAll("tbody td[data-c]").forEach((td) => {
@@ -1914,7 +1743,14 @@ function wireGestures(tbl, frame) {
     };
     td.ondblclick = (e) => {
       e.stopPropagation();
-      editCellValue(r, c);
+      const w = td.querySelector(".cw"); if (!w) return;
+      const ln = w.querySelector(".ln"); if (!ln) return;
+      beginEdit(ln, (txt) => {
+        pushUndo("cell text");
+        K.value_overrides = K.value_overrides || {};
+        K.value_overrides[ck(r, c)] = txt;
+        redraw("value_overrides[" + r + ", " + JSON.stringify(M.columns[c].name) + "]");
+      });
     };
     td.onmousedown = (e) => {
       if (e.button !== 0) return;
@@ -2181,7 +2017,7 @@ function endFrameResize() {
   // rather than leaving the pins behind.
   if (!r.moved || (sameW && sameH)) {
     if (_undo[_undo.length - 1] === r.undoEntry) {
-      restoreSnapshot(_undo.pop());
+      K = _undo.pop().K;
       syncUndoButton();
     }
     rebuild(); renderTable();
@@ -2195,1317 +2031,23 @@ function endFrameResize() {
   redraw("Resized " + parts.join(", "));
 }
 
-// ===========================================================================
-// STRUCTURAL EDITS
-//
-// Adding, deleting or moving a row or a column moves every row and column
-// after it, and K addresses D by position in nine places. Miss one and the
-// styling silently lands on the wrong row -- a defect with no error, no
-// warning, and nothing on screen to say which row was meant.
-//
-// So the nine are declared ONCE, here, and an op supplies only an index
-// map: old position -> new position, or null for "this one is gone". An op
-// never names a kwarg, which is what stops the tenth op from forgetting the
-// ninth structure. Adding a positional kwarg means adding a row to this
-// table; the structural probe fails on any key in K it cannot classify.
-//
-//   form         shape in K                      remapped by
-//   ----------   ----------------------------    -------------------------
-//   indexList    [3, 7]                          mapping each, dropping
-//                                                the deleted
-//   indexMap     {"3": "#EEE"}                   rekeying
-//   denseArray   [0, 1, 1, 0]  (one per row)     scatter into a fresh
-//                                                array of the new length
-//   spans        [["EM", 3], ["DM", 4]]          expand to one label per
-//                                                row, remap, re-collapse
-//   cellMap      {"3,2": "#EEE"}                 both halves independently
-//   spanLevels   [[["H1", 2], ["H2", 3]], ...]   spans, per header level
-// ===========================================================================
-const POSITIONAL = [
-  { key: "total_rows",       axis: "row",  form: "indexList" },
-  { key: "subtotal_rows",    axis: "row",  form: "indexList" },
-  { key: "row_colors",       axis: "row",  form: "indexMap" },
-  { key: "row_indent",       axis: "row",  form: "denseArray", fill: 0 },
-  { key: "row_groups",       axis: "row",  form: "spans" },
-  { key: "cell_colors",      axis: "cell", form: "cellMap" },
-  { key: "cell_text_colors", axis: "cell", form: "cellMap" },
-  { key: "value_overrides",  axis: "cell", form: "cellMap" },
-  { key: "header_levels",    axis: "col",  form: "spanLevels" },
-];
-
-// Keyed by column NAME, so they survive a reorder untouched but have to
-// follow a rename and be dropped on a delete. minibar_columns is the one
-// that carries a column name in its VALUE as well as its key -- renaming a
-// minibar's source column and not following it here leaves the bar pointing
-// at a column that no longer exists.
-const NAME_KEYED = [
-  { key: "column_formats",     form: "nameMap" },
-  { key: "column_aligns",      form: "nameMap" },
-  { key: "column_color_modes", form: "nameMap" },
-  { key: "rag_thresholds",     form: "nameMap" },
-  { key: "column_widths",      form: "nameMap" },
-  { key: "minibar_columns",    form: "nameMapAndValue" },
-  { key: "highlight_columns",  form: "nameList" },
-  { key: "signed_columns",     form: "nameList" },
-  { key: "heatmap_groups",     form: "groupCols" },
-];
-
-// Everything else in K. Listed so the probe can prove the three lists
-// together account for every key the engine emits, rather than trusting
-// that a new kwarg would have been noticed.
-const INDEX_FREE = [
-  "title", "subtitle", "caption", "source", "skin", "_theme_overrides",
-  "row_bands", "row_height_scale", "show_index", "target_html_width",
-  "save_as", "has_sparklines", "column_renames",
-];
-
-function spansToLabels(spans, n) {
-  const out = new Array(n).fill(null);
-  let cursor = 0;
-  (spans || []).forEach((pair) => {
-    const label = pair[0], count = pair[1];
-    for (let i = 0; i < count && cursor < n; i++, cursor++) out[cursor] = label;
-  });
-  return out;
-}
-
-function labelsToSpans(labels) {
-  const out = [];
-  labels.forEach((l) => {
-    const last = out[out.length - 1];
-    if (last && last[0] === l) last[1] += 1; else out.push([l, 1]);
-  });
-  return out;
-}
-
-// A row inserted inside a band belongs to that band, so a hole left by the
-// remap inherits from the row above it. A hole before the first band has
-// nothing to inherit and becomes "", which is the studio's existing
-// spelling for "covered by row_groups but showing no band".
-function fillSpanHoles(labels) {
-  let carry = "";
-  return labels.map((l) => {
-    if (l == null) return carry;
-    carry = l; return l;
-  });
-}
-
-function remapSpans(spans, map, nOld, nNew) {
-  const old = spansToLabels(spans, nOld);
-  const next = new Array(nNew).fill(null);
-  old.forEach((label, i) => {
-    const j = map(i);
-    if (j != null && j >= 0 && j < nNew) next[j] = label;
-  });
-  return labelsToSpans(fillSpanHoles(next));
-}
-
-/**
- * Re-address every positional kwarg after a structural edit.
- *
- * rowMap / colMap are old-index -> new-index, or null for deleted. Either
- * may be omitted when that axis did not move. nRows / nCols are the counts
- * AFTER the edit, and default to D's, so the normal call site is
- * applyStructural({rowMap}) with D already mutated.
- */
-function applyStructural(opts) {
-  const rowMap = opts.rowMap || ((i) => i);
-  const colMap = opts.colMap || ((i) => i);
-  const nRowsOld = opts.nRowsOld == null ? D.rows.length : opts.nRowsOld;
-  const nColsOld = opts.nColsOld == null ? D.columns.length : opts.nColsOld;
-  const nRows = opts.nRows == null ? D.rows.length : opts.nRows;
-  const nCols = opts.nCols == null ? D.columns.length : opts.nCols;
-
-  POSITIONAL.forEach((spec) => {
-    const cur = K[spec.key];
-    if (cur == null) return;               // absent stays absent
-    const map = spec.axis === "col" ? colMap : rowMap;
-    const nOld = spec.axis === "col" ? nColsOld : nRowsOld;
-    const nNew = spec.axis === "col" ? nCols : nRows;
-
-    if (spec.form === "indexList") {
-      const seen = new Set();
-      K[spec.key] = cur
-        .map((i) => map(+i))
-        .filter((i) => {
-          if (i == null || i < 0 || i >= nNew || seen.has(i)) return false;
-          seen.add(i); return true;
-        })
-        .sort((a, b) => a - b);
-
-    } else if (spec.form === "indexMap") {
-      const out = {};
-      Object.keys(cur).forEach((k) => {
-        const i = map(+k);
-        if (i != null && i >= 0 && i < nNew) out[i] = cur[k];
-      });
-      K[spec.key] = out;
-
-    } else if (spec.form === "denseArray") {
-      const out = new Array(nNew).fill(spec.fill);
-      cur.forEach((v, i) => {
-        const j = map(i);
-        if (j != null && j >= 0 && j < nNew) out[j] = v;
-      });
-      K[spec.key] = out;
-
-    } else if (spec.form === "spans") {
-      K[spec.key] = remapSpans(cur, map, nOld, nNew);
-
-    } else if (spec.form === "spanLevels") {
-      K[spec.key] = cur.map((level) => remapSpans(level, map, nOld, nNew));
-
-    } else if (spec.form === "cellMap") {
-      const out = {};
-      Object.keys(cur).forEach((k) => {
-        const parts = k.split(",");
-        const r = rowMap(+parts[0]), c = colMap(+parts[1]);
-        if (r == null || c == null) return;
-        if (r < 0 || r >= nRows || c < 0 || c >= nCols) return;
-        out[r + "," + c] = cur[k];
-      });
-      K[spec.key] = out;
-    }
-  });
-}
-
-/**
- * Follow a column rename, or drop a deleted column's styling.
- *
- * renames is {oldName: newName}; drops is a Set of names going away. Both
- * are name-space edits, which is why they are separate from the positional
- * remap -- moving a column needs applyStructural, renaming one needs this,
- * and deleting one needs both.
- */
-function applyNameChange(renames, drops) {
-  renames = renames || {};
-  drops = drops || new Set();
-  const to = (n) => (Object.prototype.hasOwnProperty.call(renames, n) ? renames[n] : n);
-  const gone = (n) => drops.has(n);
-
-  NAME_KEYED.forEach((spec) => {
-    const cur = K[spec.key];
-    if (cur == null) return;
-
-    if (spec.form === "nameMap" || spec.form === "nameMapAndValue") {
-      const out = {};
-      Object.keys(cur).forEach((n) => {
-        if (gone(n)) return;
-        let v = cur[n];
-        if (spec.form === "nameMapAndValue" && typeof v === "string") {
-          if (gone(v)) return;             // source column deleted: drop the bar
-          v = to(v);
-        }
-        out[to(n)] = v;
-      });
-      K[spec.key] = out;
-
-    } else if (spec.form === "nameList") {
-      K[spec.key] = cur.filter((n) => !gone(n)).map(to);
-
-    } else if (spec.form === "groupCols") {
-      K[spec.key] = cur
-        .map((g) => Object.assign({}, g, {
-          columns: (g.columns || []).filter((n) => !gone(n)).map(to),
-        }))
-        .filter((g) => g.columns.length);   // an empty group colours nothing
-    }
-  });
-
-  // A formula names its source columns too, so it follows a rename. A
-  // deleted source cannot be followed: the column keeps the numbers it last
-  // computed and loses the rule, rather than silently pointing at nothing.
-  const stranded = [];
-  D.columns.forEach((dc, ci) => {
-    if (!dc.formula) return;
-    if (dc.formula.deps.some(gone)) {
-      delete dc.formula;
-      inferColumn(ci);
-      stranded.push(dc.name);
-      return;
-    }
-    if (!dc.formula.deps.some((n) => to(n) !== n)) return;
-    dc.formula.src = dc.formula.src.replace(
-      /\[([^\]]*)\]/g, (whole, n) => "[" + to(n.trim()) + "]");
-    dc.formula = compileFormula(dc.formula.src, dc.name);
-  });
-  if (stranded.length) {
-    toast(stranded.join(", ") + ": kept the values, dropped the formula");
-    // Those numbers were worked out here and are in no upstream frame.
-    pushOp(null, "a formula was cut loose from a deleted source");
-  }
-}
-
 function renameColumn(oldName, newName) {
   const ci = colByName(oldName);
-  const wasComputed = ci >= 0 && !!D.columns[ci].formula;
-  // A header is one of the things the engine sizes a column from, so a
-  // longer or shorter one moves the width over there while the studio goes
-  // on showing the old number. Only a rename that changes which of header
-  // and content is the wider needs the studio's own measurement pinned.
-  if (ci >= 0 && D.columns[ci].kind !== "spark") {
-    const texts = M.rows.map((row) => {
-      const t = row.cells[ci] ? row.cells[ci].text : null;
-      return t == null ? "" : t;
-    });
-    let body = 0;
-    texts.forEach((t) => {
-      body = Math.max(body, measure(t, M.theme.body_font_size, false));
-    });
-    const before = Math.max(body, measure(oldName, M.theme.header_font_size, true));
-    const after = Math.max(body, measure(newName, M.theme.header_font_size, true));
-    if (Math.abs(after - before) > 0.5) {
-      const w = measuredColumnWidth(newName, texts);
-      D.columns[ci].w0 = w;
-      pinColumnWidth(newName, w);
-    }
-  }
-  if (ci >= 0) D.columns[ci].name = newName;
-  applyNameChange({ [oldName]: newName }, null);
+  if (ci >= 0) M.columns[ci].name = newName;
+  const remap = (obj) => {
+    if (!obj || !(oldName in obj)) return obj;
+    obj[newName] = obj[oldName]; delete obj[oldName]; return obj;
+  };
+  ["column_formats", "column_aligns", "column_color_modes", "rag_thresholds",
+   "column_widths", "minibar_columns"].forEach((k) => { if (K[k]) remap(K[k]); });
+  ["highlight_columns", "signed_columns"].forEach((k) => {
+    if (K[k]) K[k] = K[k].map((n) => (n === oldName ? newName : n));
+  });
+  (K.heatmap_groups || []).forEach((g) => {
+    g.columns = (g.columns || []).map((n) => (n === oldName ? newName : n));
+  });
   K.column_renames = K.column_renames || {};
   K.column_renames[oldName] = newName;
-  // A computed column is named by the df.insert that creates it, so there
-  // is nothing in the frame to rename.
-  if (!wasComputed) {
-    pushOp(DF_NAME + " = " + DF_NAME + ".rename(columns="
-           + pyLit({ [oldName]: newName }) + ")");
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Duplicating an index copies whatever styling was attached to it. Like
-// applyStructural this walks the registry rather than naming kwargs, so a
-// duplicate cannot pick up eight of the nine.
-// ---------------------------------------------------------------------------
-function copyStyling(axis, from, to) {
-  POSITIONAL.forEach((spec) => {
-    const cur = K[spec.key];
-    if (cur == null) return;
-    if (spec.form === "spans" || spec.form === "spanLevels") return;  // adjacent: the span already covers it
-    if (spec.form === "cellMap") {
-      Object.keys(cur).slice().forEach((k) => {
-        const p = k.split(",");
-        const at = axis === "row" ? +p[0] : +p[1];
-        if (at !== from) return;
-        cur[axis === "row" ? to + "," + p[1] : p[0] + "," + to] = cur[k];
-      });
-      return;
-    }
-    if (spec.axis !== axis) return;
-    if (spec.form === "indexList") {
-      if (cur.includes(from) && !cur.includes(to)) {
-        cur.push(to); cur.sort((a, b) => a - b);
-      }
-    } else if (spec.form === "indexMap") {
-      if (cur[from] !== undefined) cur[to] = cur[from];
-    } else if (spec.form === "denseArray") {
-      cur[to] = cur[from];
-    }
-  });
-}
-
-function copyColumnStyling(fromName, toName) {
-  NAME_KEYED.forEach((spec) => {
-    const cur = K[spec.key];
-    if (cur == null) return;
-    if (spec.form === "nameMap" || spec.form === "nameMapAndValue") {
-      if (cur[fromName] !== undefined) cur[toName] = cur[fromName];
-    } else if (spec.form === "nameList") {
-      if (cur.includes(fromName) && !cur.includes(toName)) cur.push(toName);
-    } else if (spec.form === "groupCols") {
-      cur.forEach((g) => {
-        if ((g.columns || []).includes(fromName) && !g.columns.includes(toName))
-          g.columns.push(toName);
-      });
-    }
-  });
-}
-
-// old index -> new index for a single element moving from one slot to another.
-function moveIndex(i, from, to) {
-  if (i === from) return to;
-  if (from < to) return (i > from && i <= to) ? i - 1 : i;
-  return (i >= to && i < from) ? i + 1 : i;
-}
-
-// ---------------------------------------------------------------------------
-// DATA EDITS
-//
-// A cell's value is data, not styling: changing it has to move the number
-// the heatmap reads, the sort orders by, the minibar draws and the
-// regenerated DataFrame carries. value_overrides remains for the other
-// intent -- printing something a value is not -- and is reached from the
-// menu rather than from a double-click.
-// ---------------------------------------------------------------------------
-const _NUM_RE = /^[-+]?(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?$/;
-
-function parseCellInput(txt, kind) {
-  const s = String(txt == null ? "" : txt).trim();
-  if (!s || s === "\u2014") return null;
-  if (kind === "date" && /^\d{4}-\d{2}-\d{2}/.test(s)) return { __date__: s };
-  // A numeric cell is read back through its own formatting, so whatever the
-  // format added is taken off again before parsing. Without this, retyping
-  // the "3.4%" or "$1.23B" already on screen would store a string and
-  // collapse the whole column to text.
-  if (kind === "num") {
-    let bare = s.replace(/[,\s]/g, "").replace(/^\+/, "")
-                .replace(/[%$\u00A3\u20AC]/g, "")
-                .replace(/bp$/i, "").replace(/x$/i, "");
-    let mult = 1;
-    const mag = bare.match(/([kmb])$/i);
-    if (mag) {
-      const u = mag[1].toLowerCase();
-      mult = u === "k" ? 1e3 : u === "m" ? 1e6 : 1e9;
-      bare = bare.slice(0, -1);
-    }
-    if (_NUM_RE.test(bare)) return Number(bare) * mult;
-  }
-  const plain = s.replace(/,/g, "");
-  if (_NUM_RE.test(plain)) return Number(plain);
-  return s;
-}
-
-// Predict what pandas will infer from the regenerated literal. The studio
-// and the engine have to agree about a column's type or the round-trip
-// changes the formatting -- and note that ANY null makes an integer column
-// float64 over there, so it has to here too.
-function inferColumn(ci) {
-  const dc = D.columns[ci];
-  if (!dc || dc.kind === "spark" || dc.kind === "minibar") return;
-  if (dc.formula) return;    // materialiseDerived owns a computed column's type
-  const vals = D.rows.map((row) => (row.cells[ci] ? row.cells[ci].raw : null));
-  const present = vals.filter((v) => v != null);
-  let kind = "text";
-  if (present.length
-      && present.every((v) => typeof v === "object" && v.__date__)) kind = "date";
-  else if (present.length
-      && present.every((v) => typeof v === "number" && isFinite(v))) kind = "num";
-  const wasNum = dc.kind === "num";
-  dc.kind = kind;
-  dc.int_dtype = kind === "num" && present.length === vals.length
-                 && present.every((v) => Number.isInteger(v));
-  dc.align0 = kind === "num" ? "right" : "left";
-  if (kind !== "text") dc.wrap = false;
-
-  // A number format, a heatmap or a minibar on a column that no longer
-  // holds numbers is not a preference the engine can honour -- it would
-  // fail on the regenerated call rather than render something.
-  if (wasNum && kind !== "num") {
-    dc.fmt0 = null;
-    ["column_formats", "column_color_modes", "rag_thresholds",
-     "minibar_columns"].forEach((k) => { if (K[k]) delete K[k][dc.name]; });
-    if (K.signed_columns)
-      K.signed_columns = K.signed_columns.filter((n) => n !== dc.name);
-    if (K.heatmap_groups)
-      K.heatmap_groups = K.heatmap_groups
-        .map((g) => Object.assign({}, g, {
-          columns: (g.columns || []).filter((n) => n !== dc.name) }))
-        .filter((g) => g.columns.length);
-  }
-}
-
-function setCellValues(cells, txt) {
-  const targets = cells.filter(([r, c]) => {
-    const dc = D.columns[c], dr = D.rows[r];
-    if (!dc || !dr || dc.kind === "spark" || dc.kind === "minibar") return false;
-    // A derived cell would be overwritten on the next rebuild. The label
-    // column of a computed row is not derived, so that stays editable.
-    if (dc.formula) return false;
-    return !(dr.agg && c > 0 && dc.kind === "num");
-  });
-  if (!targets.length) {
-    toast("That cell is computed \u2014 change the formula, or the values it reads");
-    return false;
-  }
-  pushUndo(targets.length > 1 ? "edit " + targets.length + " cells" : "cell value");
-  const touched = new Set();
-  // The engine sizes a column from its widest content, so changing a value
-  // can widen or narrow it over there while the studio goes on showing the
-  // old width. Pinning what is on screen is what keeps the preview true.
-  new Set(targets.map(([, c]) => c)).forEach((c) => {
-    pinColumnWidth(D.columns[c].name, M.geom.col_widths[c]);
-  });
-  targets.forEach(([r, c]) => {
-    const cell = D.rows[r].cells[c];
-    cell.raw = parseCellInput(txt, D.columns[c].kind);
-    // The engine measured its baseline against the OLD value.
-    delete cell.text0;
-    delete cell.lines0;
-    // An override would mask the edit, so typing a value clears it.
-    if (K.value_overrides) delete K.value_overrides[ck(r, c)];
-    touched.add(c);
-  });
-  touched.forEach((c) => inferColumn(c));
-  pushOp(null, "a value was typed in");
-  return true;
-}
-
-// ---------------------------------------------------------------------------
-// STRUCTURAL OPERATIONS
-//
-// Every one is the same shape: mutate D, describe the index shift, hand it
-// to applyStructural. None of them names a styling kwarg except to READ it
-// -- sort and filter consult total_rows to decide which rows are summaries
-// and therefore hold their position, which is a decision about the
-// operation rather than a remap.
-// ---------------------------------------------------------------------------
-// `opPy` is supplied by deleteRowsWhere, which deletes by a RULE and can
-// therefore be replayed. A deletion driven by a click is by position and
-// cannot be.
-function deleteRows(idxs, opPy, why) {
-  const drop = new Set(idxs.map(Number));
-  if (!drop.size) return false;
-  if (drop.size >= D.rows.length) {
-    toast("A table needs at least one row");
-    return false;
-  }
-  const nOld = D.rows.length;
-  const map = new Map();
-  let next = 0;
-  for (let i = 0; i < nOld; i++) map.set(i, drop.has(i) ? null : next++);
-
-  pushUndo(drop.size > 1 ? "delete " + drop.size + " rows" : "delete row");
-  // Deleting a row can take a column's widest value with it, and the engine
-  // sizes a column from its widest content -- so it would lay that column
-  // out narrower than the studio is still showing it. Pinning the width it
-  // already has is what keeps the preview true; a column whose widest value
-  // survives is left for the engine to re-derive as before.
-  D.columns.forEach((dc, c) => {
-    if (dc.kind === "spark") return;
-    let all = 0, left = 0;
-    for (let i = 0; i < nOld; i++) {
-      const cell = M.rows[i] && M.rows[i].cells[c];
-      const w = (cell && cell.text != null)
-        ? measure(cell.text, M.theme.body_font_size, false) : 0;
-      if (w > all) all = w;
-      if (!drop.has(i) && w > left) left = w;
-    }
-    if (left < all - 0.5) pinColumnWidth(dc.name, M.geom.col_widths[c]);
-  });
-  D.rows = D.rows.filter((_, i) => !drop.has(i));
-  applyStructural({
-    rowMap: (i) => (map.has(i) ? map.get(i) : null),
-    nRowsOld: nOld,
-  });
-  pushOp(opPy || null, why || "rows were deleted by position");
-  selection = [];
-  return true;
-}
-
-function insertRow(at) {
-  const nOld = D.rows.length;
-  at = Math.max(0, Math.min(nOld, at));
-  pushUndo("insert row");
-  // No text0 / lines0: a new cell has no engine-measured baseline, so
-  // rebuild() measures it live, which is exactly what should happen.
-  D.rows.splice(at, 0, {
-    h0: M.geom.row_default_h,
-    cells: D.columns.map((dc) => ({
-      raw: null,
-      spark: dc.kind === "spark" ? [] : null,
-    })),
-  });
-  applyStructural({
-    rowMap: (i) => (i < at ? i : i + 1),
-    nRowsOld: nOld,
-  });
-  pushOp(null, "a blank row was inserted");
-  selection = [];
-  return true;
-}
-
-function duplicateRow(r) {
-  const nOld = D.rows.length;
-  if (!D.rows[r]) return false;
-  pushUndo("duplicate row");
-  // The copy keeps text0 / lines0: same values, so the engine's own
-  // measurement of them is still the right baseline.
-  D.rows.splice(r + 1, 0, JSON.parse(JSON.stringify(D.rows[r])));
-  applyStructural({ rowMap: (i) => (i <= r ? i : i + 1), nRowsOld: nOld });
-  copyStyling("row", r, r + 1);
-  pushOp(null, "a row was duplicated in place");
-  selection = [];
-  return true;
-}
-
-function moveRow(from, to) {
-  const nOld = D.rows.length;
-  to = Math.max(0, Math.min(nOld - 1, to));
-  if (from === to || !D.rows[from]) return false;
-  pushUndo("move row");
-  D.rows.splice(to, 0, D.rows.splice(from, 1)[0]);
-  applyStructural({ rowMap: (i) => moveIndex(i, from, to), nRowsOld: nOld });
-  pushOp(null, "a row was moved by hand");
-  selection = [];
-  return true;
-}
-
-// Rows that summarise their neighbours hold their position and separate the
-// sort into runs; so does a change of group band. With neither, that is one
-// run over the whole table, i.e. an ordinary sort.
-function _fixedRows() {
-  return new Set([].concat(K.total_rows || [], K.subtotal_rows || []).map(Number));
-}
-
-function sortRows(ci, asc) {
-  const nOld = D.rows.length;
-  const fixed = _fixedRows();
-  const bands = spansToLabels(K.row_groups, nOld);
-  const key = (i) => {
-    const cell = D.rows[i].cells[ci];
-    const v = cell ? cell.raw : null;
-    if (v == null) return null;
-    if (typeof v === "object" && v.__date__) return v.__date__;
-    return v;
-  };
-  const cmp = (a, b) => {
-    const x = key(a), y = key(b);
-    if (x == null && y == null) return 0;
-    if (x == null) return 1;              // blanks sink, either direction
-    if (y == null) return -1;
-    const d = (typeof x === "number" && typeof y === "number")
-      ? x - y : String(x).localeCompare(String(y));
-    return d * (asc ? 1 : -1);
-  };
-
-  const order = D.rows.map((_, i) => i);
-  let run = [];
-  const flush = () => {
-    if (run.length > 1) {
-      const sorted = run.slice().sort(cmp);
-      run.forEach((slot, k) => { order[slot] = sorted[k]; });
-    }
-    run = [];
-  };
-  for (let i = 0; i < nOld; i++) {
-    if (fixed.has(i)) { flush(); continue; }
-    if (run.length && bands[i] !== bands[run[0]]) flush();
-    run.push(i);
-  }
-  flush();
-  if (order.every((v, i) => v === i)) {
-    toast("Already sorted by " + D.columns[ci].name);
-    return false;
-  }
-
-  // A sort is replayable when it was one run over the whole table on a
-  // column pandas would order the same way. Sorting inside bands or around
-  // summary rows is not something sort_values does, and text ordering is the
-  // browser's collation rather than Python's, so both fall back to the
-  // edited frame rather than emit a line that would drift.
-  const dc = D.columns[ci];
-  const plain = !fixed.size && !(K.row_groups || []).length
-    && !D.rows.some((r) => r.agg) && !dc.formula
-    && (dc.kind === "num" || dc.kind === "date");
-
-  pushUndo("sort by " + D.columns[ci].name);
-  const map = new Array(nOld);
-  order.forEach((oldI, newI) => { map[oldI] = newI; });
-  D.rows = order.map((i) => D.rows[i]);
-  applyStructural({ rowMap: (i) => map[i], nRowsOld: nOld });
-  pushOp(
-    plain
-      ? DF_NAME + " = " + DF_NAME + ".sort_values(" + pyLit(dc.name)
-        + ", ascending=" + pyBool(asc) + ", kind=\"stable\")"
-        + ".reset_index(drop=True)"
-      : null,
-    "the sort ran within bands or around summary rows");
-  selection = [];
-  return true;
-}
-
-// make_table has no filter kwarg, so a filter is a deletion: the rows go,
-// and the smaller frame is what the regenerated call carries. `keep` is the
-// same predicate written as a pandas mask, so the filter can be replayed
-// over a later pull -- unless summary rows were exempted from it, which is
-// a carve-out no mask expresses.
-function deleteRowsWhere(ci, test, label, keep) {
-  const fixed = _fixedRows();
-  const hit = [];
-  D.rows.forEach((row, i) => {
-    if (fixed.has(i)) return;
-    const cell = row.cells[ci];
-    if (test(cell ? cell.raw : null)) hit.push(i);
-  });
-  if (!hit.length) { toast("No rows are " + label); return false; }
-  if (hit.length >= D.rows.length) {
-    toast("That would delete every row");
-    return false;
-  }
-  const replayable = keep && !fixed.size && !D.rows.some((r) => r.agg)
-    && !D.columns[ci].formula;
-  const ok = deleteRows(
-    hit,
-    replayable
-      ? DF_NAME + " = " + DF_NAME + "[" + keep + "].reset_index(drop=True)"
-      : null,
-    "the filter stepped around summary rows");
-  if (ok) toast("Deleted " + hit.length + " row" + (hit.length > 1 ? "s" : "")
-                + " " + label);
-  return ok;
-}
-
-// --- columns ---------------------------------------------------------------
-
-function uniqueColumnName(base) {
-  const taken = new Set(D.columns.map((c) => c.name));
-  if (!taken.has(base)) return base;
-  for (let i = 2; ; i++) if (!taken.has(base + " " + i)) return base + " " + i;
-}
-
-function measuredColumnWidth(name, texts) {
-  let w = measure(name, M.theme.header_font_size, true);
-  texts.forEach((t) => { w = Math.max(w, measure(t, M.theme.body_font_size, false)); });
-  return Math.max(72, Math.min(280, Math.round(w) + 24));
-}
-
-// A column the engine never laid out has no engine-chosen width, and the
-// browser's text metrics are not PIL's, so the studio cannot guess one that
-// the engine would agree with. Its own guess is pinned instead, which the
-// engine does honour. Only the new column needs this -- the engine
-// re-derives every pre-existing width unchanged.
-function pinColumnWidth(name, px) {
-  K.column_widths = K.column_widths || {};
-  K.column_widths[name] = Math.round(px);
-}
-
-function insertColumn(at, name) {
-  const nOld = D.columns.length;
-  at = Math.max(0, Math.min(nOld, at));
-  const nm = uniqueColumnName(String(name || "").trim() || "New column");
-  const w = measuredColumnWidth(nm, []);
-  pushUndo("insert column");
-  D.columns.splice(at, 0, {
-    name: nm, kind: "text", int_dtype: false, wrap: false, minibar_src: null,
-    w0: w, fmt0: null, align0: "left",
-  });
-  D.rows.forEach((row) => { row.cells.splice(at, 0, { raw: null }); });
-  applyStructural({ colMap: (i) => (i < at ? i : i + 1), nColsOld: nOld });
-  pinColumnWidth(nm, w);
-  pushOp(null, "a blank column was added for values typed by hand");
-  selection = [];
-  return true;
-}
-
-function deleteColumns(idxs) {
-  const drop = new Set(idxs.map(Number));
-  if (!drop.size) return false;
-  if (drop.size >= D.columns.length) {
-    toast("A table needs at least one column");
-    return false;
-  }
-  const nOld = D.columns.length;
-  const gone = [...drop].map((i) => D.columns[i].name);
-  // A computed column is never in the frame the call starts from -- it is
-  // added by a df.insert further down -- so dropping one is expressed by
-  // that insert simply no longer being emitted.
-  const fromFrame = [...drop].filter((i) => !D.columns[i].formula)
-                             .map((i) => D.columns[i].name);
-  const map = new Map();
-  let next = 0;
-  for (let i = 0; i < nOld; i++) map.set(i, drop.has(i) ? null : next++);
-
-  pushUndo(drop.size > 1 ? "delete " + drop.size + " columns" : "delete column");
-  D.columns = D.columns.filter((_, i) => !drop.has(i));
-  D.rows.forEach((row) => { row.cells = row.cells.filter((_, i) => !drop.has(i)); });
-  applyStructural({ colMap: (i) => map.get(i), nColsOld: nOld });
-  applyNameChange({}, new Set(gone));
-  // A minibar reads from a source column; if that source has gone, the
-  // column it fed is ordinary data again.
-  D.columns.forEach((dc, ci) => {
-    if (dc.minibar_src && gone.includes(dc.minibar_src)) {
-      dc.minibar_src = null;
-      dc.kind = "text";
-      inferColumn(ci);
-    }
-  });
-  pushOp(fromFrame.length
-    ? DF_NAME + " = " + DF_NAME + ".drop(columns=" + pyNames(fromFrame) + ")"
-    : "");
-  selection = [];
-  return true;
-}
-
-function duplicateColumn(ci) {
-  const nOld = D.columns.length;
-  const src = D.columns[ci];
-  if (!src) return false;
-  if (src.kind === "spark") {
-    toast("Sparkline columns cannot be duplicated");
-    return false;
-  }
-  const nm = uniqueColumnName(src.name + " copy");
-  // "... copy" is a longer header than the original, so the engine would
-  // lay the copy out wider. It is a column the engine has never seen, so
-  // the studio's own width is pinned rather than guessed at.
-  const w = measuredColumnWidth(nm, M.rows.map((row) => {
-    const t = row.cells[ci] ? row.cells[ci].text : null;
-    return t == null ? "" : t;
-  }));
-  pushUndo("duplicate column");
-  const copy = Object.assign({}, src, { name: nm, w0: w });
-  if (src.formula) copy.formula = clone(src.formula);   // not a shared object
-  D.columns.splice(ci + 1, 0, copy);
-  D.rows.forEach((row) => {
-    row.cells.splice(ci + 1, 0, JSON.parse(JSON.stringify(row.cells[ci])));
-  });
-  applyStructural({ colMap: (i) => (i <= ci ? i : i + 1), nColsOld: nOld });
-  copyStyling("col", ci, ci + 1);
-  copyColumnStyling(src.name, nm);
-  pinColumnWidth(nm, w);
-  // Copying a computed column would have to land after the insert that
-  // creates its source, which is emitted last; the copy of an ordinary one
-  // is just another column of the frame.
-  pushOp(src.formula
-    ? null
-    : DF_NAME + ".insert(" + (ci + 1) + ", " + pyLit(nm) + ", "
-      + DF_NAME + "[" + pyLit(src.name) + "])",
-    "a computed column was duplicated");
-  selection = [];
-  return true;
-}
-
-function moveColumn(from, to) {
-  const nOld = D.columns.length;
-  to = Math.max(0, Math.min(nOld - 1, to));
-  if (from === to || !D.columns[from]) return false;
-  pushUndo("move column");
-  D.columns.splice(to, 0, D.columns.splice(from, 1)[0]);
-  D.rows.forEach((row) => { row.cells.splice(to, 0, row.cells.splice(from, 1)[0]); });
-  applyStructural({ colMap: (i) => moveIndex(i, from, to), nColsOld: nOld });
-  // Reordering names a full column order, and a computed column is not in
-  // the frame yet at that point in the script.
-  pushOp(D.columns.some((c) => c.formula)
-    ? null
-    : DF_NAME + " = " + DF_NAME + "[" + pyNames(D.columns.map((c) => c.name)) + "]",
-    "a column moved past a computed one");
-  selection = [];
-  return true;
-}
-
-// ---------------------------------------------------------------------------
-// TRANSPOSE
-//
-// The three cell-addressed maps rotate straight through, and row_groups /
-// header_levels are the same span structure on opposite axes so they swap.
-// Everything else positional is row-only and has no column counterpart in
-// make_table, and every name-keyed kwarg is addressed to columns that are
-// now rows. Those are dropped, and the toast says which.
-// ---------------------------------------------------------------------------
-function transposeTable() {
-  if (D.columns.some((c) => c.kind === "spark" || c.kind === "minibar")) {
-    toast("Sparkline and minibar columns have no transposed form");
-    return false;
-  }
-  const nOldR = D.rows.length, nOldC = D.columns.length;
-  if (nOldC < 2 || !nOldR) { toast("Nothing to transpose"); return false; }
-
-  const dropped = POSITIONAL.concat(NAME_KEYED).map((s) => s.key)
-    .filter((k) => !["cell_colors", "cell_text_colors", "value_overrides",
-                     "row_groups", "header_levels", "column_widths"].includes(k))
-    .filter((k) => {
-      const v = K[k];
-      return v != null && (Array.isArray(v) ? v.length : Object.keys(v).length);
-    });
-  // A formula reads columns and a summary row reads rows; after a transpose
-  // neither is addressing anything that still exists. The numbers they had
-  // worked out survive as ordinary data.
-  if (D.columns.some((c) => c.formula)) dropped.push("column formulas");
-  if (D.rows.some((r) => r.agg)) dropped.push("summary rows keep their numbers");
-
-  pushUndo("transpose");
-
-  const oldCols = D.columns, oldRows = D.rows;
-  const oldBands = K.row_groups ? spansToLabels(K.row_groups, nOldR) : null;
-  const oldHeader = (K.header_levels || [])[0]
-    ? spansToLabels(K.header_levels[0], nOldC) : null;
-
-  const rot = (obj) => {
-    if (obj == null) return null;
-    const out = {};
-    Object.keys(obj).forEach((k) => {
-      const p = k.split(","), r = +p[0], c = +p[1];
-      if (c < 1 || c >= nOldC || r < 0 || r >= nOldR) return;  // old col 0 is a header now
-      out[(c - 1) + "," + (r + 1)] = obj[k];
-    });
-    return Object.keys(out).length ? out : null;
-  };
-  const kept = {
-    cell_colors: rot(K.cell_colors),
-    cell_text_colors: rot(K.cell_text_colors),
-    value_overrides: rot(K.value_overrides),
-  };
-
-  const label = (v, i) => {
-    if (v == null) return "col_" + (i + 1);
-    if (typeof v === "object" && v.__date__) return String(v.__date__).slice(0, 10);
-    return String(v);
-  };
-  const newNames = oldRows.map((row, i) => label(row.cells[0]
-    ? row.cells[0].raw : null, i));
-
-  const blank = (nm) => ({
-    name: nm, kind: "text", int_dtype: false, wrap: false, minibar_src: null,
-    w0: 0, fmt0: null, align0: "left",
-  });
-  const seen = new Set();
-  D.columns = [blank("Field")].concat(newNames.map((nm) => {
-    let out = nm;
-    for (let i = 2; seen.has(out); i++) out = nm + " " + i;
-    seen.add(out);
-    return blank(out);
-  }));
-  D.rows = [];
-  for (let c = 1; c < nOldC; c++) {
-    const cells = [{ raw: oldCols[c].name }];
-    for (let r = 0; r < nOldR; r++) {
-      cells.push({ raw: oldRows[r].cells[c] ? oldRows[r].cells[c].raw : null });
-    }
-    D.rows.push({ h0: M.geom.row_default_h, cells: cells });
-  }
-
-  POSITIONAL.concat(NAME_KEYED).forEach((s) => { delete K[s.key]; });
-  Object.keys(kept).forEach((k) => { if (kept[k]) K[k] = kept[k]; });
-  if (oldBands) K.header_levels = [labelsToSpans([""].concat(oldBands))];
-  if (oldHeader) {
-    const spans = labelsToSpans(fillSpanHoles(oldHeader.slice(1)));
-    if (spans.length) K.row_groups = spans;
-  }
-
-  // Every column here is new, so every width is a studio guess and every
-  // one of them has to be pinned for the engine to agree.
-  D.columns.forEach((dc, ci) => {
-    inferColumn(ci);
-    dc.w0 = measuredColumnWidth(dc.name,
-      D.rows.map((row) => (row.cells[ci].raw == null ? "" : String(row.cells[ci].raw))));
-    pinColumnWidth(dc.name, dc.w0);
-  });
-
-  // set_index/T/reset_index is the same rotation, but only when the labels
-  // it promotes to headers are plain unique text -- pandas keeps duplicate
-  // column names where the studio numbers them apart, and would use a
-  // Timestamp where the studio uses the date's first ten characters.
-  // infer_objects undoes T collapsing every column to object.
-  const rotatable = !newNames.some((n, i) => newNames.indexOf(n) !== i)
-    && oldCols[0].kind === "text" && !oldCols.some((c) => c.formula)
-    && !oldRows.some((r) => r.agg);
-  pushOp(rotatable
-    ? DF_NAME + " = " + DF_NAME + ".set_index(" + pyLit(oldCols[0].name) + ").T"
-      + ".rename_axis(\"Field\").reset_index().infer_objects()"
-    : null,
-    "the transposed headers are not plain unique text");
-
-  selection = [];
-  if (dropped.length) toast("Transposed \u2014 dropped " + dropped.join(", "));
-  return true;
-}
-
-// ===========================================================================
-// DERIVED VALUES
-//
-// A computed column has to be right in three places: on screen now, after a
-// source cell is edited, and in the regenerated call. The third is what
-// decides the design -- the formula is emitted as a df.insert() line rather
-// than baked as numbers, so re-running against refreshed data recomputes it
-// instead of freezing the column at today's value. That in turn forces the
-// evaluation order below to match pandas exactly.
-//
-// Grammar:
-//   expr    := term (('+' | '-') term)*
-//   term    := factor (('*' | '/') factor)*
-//   factor  := '-'? primary
-//   primary := number | '[' column ']' | agg '(' expr ')' | '(' expr ')'
-//   agg     := sum | mean | median | min | max | count
-// ===========================================================================
-const FORMULA_AGGS = ["sum", "mean", "median", "min", "max", "count"];
-
-function tokenizeFormula(src) {
-  const out = [];
-  let i = 0;
-  while (i < src.length) {
-    const c = src[i];
-    if (/\s/.test(c)) { i++; continue; }
-    if (c === "[") {
-      const j = src.indexOf("]", i);
-      if (j < 0) throw new Error("a [column name] is not closed");
-      out.push({ t: "col", v: src.slice(i + 1, j).trim() });
-      i = j + 1; continue;
-    }
-    if (/[0-9.]/.test(c)) {
-      const m = /^[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?/.exec(src.slice(i));
-      if (!m) throw new Error("could not read a number at position " + i);
-      out.push({ t: "num", v: Number(m[0]) });
-      i += m[0].length; continue;
-    }
-    if (/[a-zA-Z_]/.test(c)) {
-      const m = /^[a-zA-Z_][a-zA-Z_0-9]*/.exec(src.slice(i));
-      out.push({ t: "fn", v: m[0].toLowerCase() });
-      i += m[0].length; continue;
-    }
-    if ("+-*/()".indexOf(c) >= 0) { out.push({ t: c }); i++; continue; }
-    throw new Error("unexpected " + JSON.stringify(c)
-                    + " \u2014 column names go in [square brackets]");
-  }
-  if (!out.length) throw new Error("the formula is empty");
-  return out;
-}
-
-function parseFormula(src) {
-  const tk = tokenizeFormula(src);
-  let p = 0;
-  const peek = () => tk[p];
-  const eat = (t) => {
-    if (!tk[p] || tk[p].t !== t) throw new Error("expected " + JSON.stringify(t));
-    return tk[p++];
-  };
-  const expr = () => {
-    let n = term();
-    while (peek() && (peek().t === "+" || peek().t === "-"))
-      n = { k: "bin", op: tk[p++].t, a: n, b: term() };
-    return n;
-  };
-  const term = () => {
-    let n = factor();
-    while (peek() && (peek().t === "*" || peek().t === "/"))
-      n = { k: "bin", op: tk[p++].t, a: n, b: factor() };
-    return n;
-  };
-  const factor = () => {
-    if (peek() && peek().t === "-") { p++; return { k: "neg", a: factor() }; }
-    return primary();
-  };
-  const primary = () => {
-    const t = peek();
-    if (!t) throw new Error("the formula ends early");
-    if (t.t === "num") { p++; return { k: "num", v: t.v }; }
-    if (t.t === "col") { p++; return { k: "col", name: t.v }; }
-    if (t.t === "(") { p++; const e = expr(); eat(")"); return e; }
-    if (t.t === "fn") {
-      if (FORMULA_AGGS.indexOf(t.v) < 0)
-        throw new Error(JSON.stringify(t.v) + " is not a function \u2014 use "
-                        + FORMULA_AGGS.join(", "));
-      p++; eat("("); const e = expr(); eat(")");
-      return { k: "agg", fn: t.v, a: e };
-    }
-    throw new Error("unexpected " + JSON.stringify(t.v == null ? t.t : t.v));
-  };
-  const ast = expr();
-  if (p < tk.length) throw new Error("there is leftover input after the formula");
-  return ast;
-}
-
-function formulaRefs(ast, out) {
-  out = out || [];
-  if (ast.k === "col" && out.indexOf(ast.name) < 0) out.push(ast.name);
-  if (ast.a) formulaRefs(ast.a, out);
-  if (ast.b) formulaRefs(ast.b, out);
-  return out;
-}
-
-// Whether a node evaluates to one value per row rather than to a scalar.
-// Only the per-row ones need guarding against a zero denominator.
-function isSeriesNode(n) {
-  if (n.k === "col") return true;
-  if (n.k === "agg" || n.k === "num") return false;
-  if (n.k === "neg") return isSeriesNode(n.a);
-  return isSeriesNode(n.a) || isSeriesNode(n.b);
-}
-
-/** Parse and validate against the live columns. Throws with a readable why. */
-function compileFormula(src, forColumn) {
-  const ast = parseFormula(String(src || ""));
-  const refs = formulaRefs(ast);
-  const names = D.columns.map((c) => c.name);
-  const missing = refs.filter((n) => names.indexOf(n) < 0);
-  if (missing.length)
-    throw new Error("no column called " + missing.map(JSON.stringify).join(", "));
-  if (forColumn && refs.indexOf(forColumn) >= 0)
-    throw new Error("a column cannot refer to itself");
-  refs.forEach((n) => {
-    const dc = D.columns[dColByName(n)];
-    if (dc.kind === "spark")
-      throw new Error(JSON.stringify(n) + " is a sparkline, not a number");
-  });
-  // pandas reduces a Series, so an aggregate needs a column inside it and
-  // cannot wrap another aggregate -- both would be a scalar by then.
-  (function walk(n, inAgg) {
-    if (n.k === "agg") {
-      if (inAgg) throw new Error("one " + n.fn + "() cannot sit inside another");
-      if (!formulaRefs(n.a).length)
-        throw new Error(n.fn + "() needs a [column] inside it");
-      inAgg = true;
-    }
-    if (n.a) walk(n.a, inAgg);
-    if (n.b) walk(n.b, inAgg);
-  })(ast, false);
-  // A chain is fine, a cycle is not, and a cycle would otherwise show up as
-  // stale numbers rather than as an error.
-  if (forColumn) {
-    const seen = {};
-    const reaches = (name) => {
-      if (name === forColumn) return true;
-      if (seen[name]) return false;
-      seen[name] = true;
-      const dc = D.columns[dColByName(name)];
-      if (!dc || !dc.formula) return false;
-      return dc.formula.deps.some(reaches);
-    };
-    if (refs.some(reaches))
-      throw new Error("that would make the columns depend on each other in a loop");
-  }
-  return { src: String(src).trim(), ast: ast, deps: refs };
-}
-
-function evalFormulaNode(node, valueOf, aggOf) {
-  switch (node.k) {
-    case "num": return node.v;
-    case "col": return valueOf(node.name);
-    case "neg": {
-      const v = evalFormulaNode(node.a, valueOf, aggOf);
-      return v == null ? null : -v;
-    }
-    case "bin": {
-      const a = evalFormulaNode(node.a, valueOf, aggOf);
-      const b = evalFormulaNode(node.b, valueOf, aggOf);
-      if (a == null || b == null) return null;
-      if (node.op === "+") return a + b;
-      if (node.op === "-") return a - b;
-      if (node.op === "*") return a * b;
-      return b === 0 ? null : a / b;   // matches the NaN guard the codegen emits
-    }
-    case "agg": return aggOf(node);
-  }
-  return null;
-}
-
-function reduceAgg(fn, vals) {
-  if (fn === "count") return vals.length;
-  if (!vals.length) return null;
-  if (fn === "sum") return vals.reduce((s, v) => s + v, 0);
-  if (fn === "mean") return vals.reduce((s, v) => s + v, 0) / vals.length;
-  if (fn === "min") return Math.min.apply(null, vals);
-  if (fn === "max") return Math.max.apply(null, vals);
-  const s = vals.slice().sort((x, y) => x - y), m = s.length >> 1;
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-}
-
-// Aggregates run over the DATA rows only, so a share-of-total column does
-// not fold the total row back into its own denominator.
-function makeAggResolver(dataRows, valueAt) {
-  const cache = {};
-  const aggOf = (node) => {
-    const key = JSON.stringify(node);
-    if (Object.prototype.hasOwnProperty.call(cache, key)) return cache[key];
-    const vals = [];
-    dataRows.forEach((r) => {
-      const v = evalFormulaNode(node.a, (n) => valueAt(r, n), aggOf);
-      if (typeof v === "number" && isFinite(v)) vals.push(v);
-    });
-    cache[key] = reduceAgg(node.fn, vals);
-    return cache[key];
-  };
-  return aggOf;
-}
-
-/** Dependency order, so a formula that reads another formula sees it fresh. */
-function formulaOrder() {
-  const pending = [];
-  D.columns.forEach((c, i) => { if (c.formula) pending.push(i); });
-  const done = {}, out = [];
-  let guard = pending.length + 1;
-  while (pending.length && guard-- > 0) {
-    for (let k = 0; k < pending.length; k++) {
-      const ci = pending[k];
-      const blocked = D.columns[ci].formula.deps.some((n) => {
-        const di = dColByName(n);
-        return di >= 0 && D.columns[di].formula && !done[di];
-      });
-      if (!blocked) { out.push(ci); done[ci] = 1; pending.splice(k, 1); k--; }
-    }
-  }
-  return out.concat(pending);
-}
-
-/** Which rows a computed row summarises. */
-function aggSourceRows(r) {
-  if (D.rows[r].agg.scope === "all") {
-    const out = [];
-    D.rows.forEach((row, i) => { if (!row.agg) out.push(i); });
-    return out;
-  }
-  // A subtotal summarises the run of data rows immediately above it, which
-  // needs no group bands and stays right when they change.
-  const out = [];
-  for (let i = r - 1; i >= 0 && !D.rows[i].agg; i--) out.unshift(i);
-  return out;
-}
-
-/**
- * Write every derived value into D.
- *
- * D holds the formulas and the aggregate markers; these values are a cache
- * of what they currently evaluate to. Materialising rather than deriving
- * into M is deliberate -- sort, filter, heatmap extents, minibar scales and
- * the codegen all read D.rows[].cells[].raw, and every one of them should
- * see a computed column as an ordinary column of numbers.
- *
- * The order mirrors what the regenerated call does, and has to: the
- * aggregate rows are baked into the DataFrame literal and the df.insert()
- * lines run afterwards over every row, total rows included.
- */
-function materialiseDerived() {
-  const dataRows = [];
-  D.rows.forEach((row, i) => { if (!row.agg) dataRows.push(i); });
-
-  // 1. Computed rows fill their plain numeric columns.
-  D.rows.forEach((row, r) => {
-    if (!row.agg) return;
-    const src = aggSourceRows(r);
-    D.columns.forEach((dc, ci) => {
-      if (ci === 0 || dc.formula || dc.kind !== "num") return;
-      const cell = row.cells[ci];
-      if (!cell) return;
-      const vals = [];
-      src.forEach((i) => {
-        const v = D.rows[i].cells[ci] ? D.rows[i].cells[ci].raw : null;
-        if (typeof v === "number" && isFinite(v)) vals.push(v);
-      });
-      cell.raw = reduceAgg(row.agg.fn, vals);
-      delete cell.text0; delete cell.lines0;
-    });
-  });
-
-  // 2. Computed columns, over EVERY row including the computed ones.
-  const valueAt = (r, name) => {
-    const ci = dColByName(name);
-    if (ci < 0 || !D.rows[r] || !D.rows[r].cells[ci]) return null;
-    const v = D.rows[r].cells[ci].raw;
-    return (typeof v === "number" && isFinite(v)) ? v : null;
-  };
-  formulaOrder().forEach((ci) => {
-    const f = D.columns[ci].formula;
-    const aggOf = makeAggResolver(dataRows, valueAt);
-    let whole = true, anyNull = false;
-    D.rows.forEach((row, r) => {
-      const cell = row.cells[ci];
-      if (!cell) return;
-      const v = evalFormulaNode(f.ast, (n) => valueAt(r, n), aggOf);
-      cell.raw = (typeof v === "number" && isFinite(v)) ? v : null;
-      if (cell.raw == null) anyNull = true;
-      else if (!Number.isInteger(cell.raw)) whole = false;
-      delete cell.text0; delete cell.lines0;
-    });
-    const dc = D.columns[ci];
-    dc.kind = "num";
-    dc.int_dtype = whole && !anyNull;
-    dc.align0 = "right";
-  });
-}
-
-// ---------------------------------------------------------------------------
-// The gestures that create derived things.
-// ---------------------------------------------------------------------------
-function addComputedColumn(at, name, src) {
-  const nOld = D.columns.length;
-  const nm = uniqueColumnName(String(name || "").trim() || "Computed");
-  const f = compileFormula(src, nm);          // throws; the caller toasts it
-  at = Math.max(0, Math.min(nOld, at));
-  pushUndo("computed column");
-  D.columns.splice(at, 0, {
-    name: nm, kind: "num", int_dtype: false, wrap: false, minibar_src: null,
-    w0: 72, fmt0: null, align0: "right", formula: f,
-  });
-  D.rows.forEach((row) => { row.cells.splice(at, 0, { raw: null }); });
-  applyStructural({ colMap: (i) => (i < at ? i : i + 1), nColsOld: nOld });
-  // The values have to exist before the column can be measured, and it is a
-  // column the engine has never laid out, so its width is pinned.
-  materialiseDerived();
-  const w = measuredColumnWidth(nm, D.rows.map(
-    (row) => formatRaw(row.cells[at].raw, null)));
-  D.columns[at].w0 = w;
-  pinColumnWidth(nm, w);
-  selection = [];
-  return true;
-}
-
-function setColumnFormula(ci, src) {
-  const dc = D.columns[ci];
-  const f = compileFormula(src, dc.name);     // throws; the caller toasts it
-  pushUndo("formula");
-  dc.formula = f;
-  dc.minibar_src = null;
-  materialiseDerived();
-  return true;
-}
-
-// Keeps the numbers, drops the rule that produced them. Also what happens
-// on its own when a source column is deleted.
-function detachFormula(ci) {
-  if (!D.columns[ci].formula) return false;
-  pushUndo("detach formula");
-  delete D.columns[ci].formula;
-  inferColumn(ci);
-  // Without the rule those numbers are values, and values live in the frame.
-  pushOp(null, "a formula was replaced by the numbers it produced");
-  return true;
-}
-
-function addComputedRow(at, fn, scope, label, quiet) {
-  const nOld = D.rows.length;
-  at = Math.max(0, Math.min(nOld, at));
-  // A grand total appended to the end is one pandas line. A subtotal sits
-  // inside the frame at a position that says nothing about a later pull, so
-  // it stays baked.
-  const appendable = scope === "all" && at === nOld
-    && !D.rows.some((r) => r.agg);
-  if (!quiet) pushUndo("computed row");
-  D.rows.splice(at, 0, {
-    h0: M.geom.row_default_h,
-    agg: { fn: fn, scope: scope },
-    cells: D.columns.map((dc, ci) => ({
-      raw: ci === 0 ? label : null,
-      spark: dc.kind === "spark" ? [] : null,
-    })),
-  });
-  applyStructural({ rowMap: (i) => (i < at ? i : i + 1), nRowsOld: nOld });
-  const key = scope === "all" ? "total_rows" : "subtotal_rows";
-  K[key] = (K[key] || []).concat([at]).sort((a, b) => a - b);
-  if (appendable) {
-    // Computed columns are not in the frame yet, so they are left out here
-    // and pick the row up when their df.insert runs over every row.
-    const parts = [pyLit(D.columns[0].name) + ": " + pyLit(label)];
-    D.columns.forEach((dc, ci) => {
-      if (ci === 0 || dc.formula || dc.kind !== "num") return;
-      parts.push(pyLit(dc.name) + ": " + DF_NAME + "[" + pyLit(dc.name)
-                 + "]." + fn + "()");
-    });
-    pushOp(DF_NAME + ".loc[len(" + DF_NAME + ")] = {" + parts.join(", ") + "}");
-  } else {
-    pushOp(null, "a summary row was placed inside the table");
-  }
-  selection = [];
-  return true;
-}
-
-// One subtotal per group band, inserted bottom-up so the earlier insertions
-// do not move the boundaries the later ones are measured against.
-function addBandSubtotals(fn, word) {
-  const labels = spansToLabels(K.row_groups, D.rows.length);
-  if (!K.row_groups || !K.row_groups.length) {
-    toast("There are no group bands to subtotal");
-    return false;
-  }
-  const ends = [];
-  labels.forEach((l, i) => {
-    if (i + 1 >= labels.length || labels[i + 1] !== l) ends.push([i + 1, l]);
-  });
-  const usable = ends.filter(([e]) => e > 0 && !D.rows[e - 1].agg);
-  if (!usable.length) { toast("Every band already ends in a computed row"); return false; }
-  pushUndo("band subtotals");
-  usable.slice().reverse().forEach(([end, label]) => {
-    addComputedRow(end, fn, "band", (label || "Group") + " " + word, true);
-  });
-  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -3543,19 +2085,14 @@ function cellMenu(x, y, r, c) {
       });
       redraw("cleared " + n + " cells");
     });
-    mRow(m, "Change the value\u2026", "double-click", () => editCellValue(r, c));
-    mRow(m, "Print something else here\u2026", "value_overrides", () => {
-      openMenu(x, y, (mm) => {
-        mHead(mm, "Text to print instead");
-        mNote(mm, "The value underneath is unchanged, so the heatmap, any "
-                  + "sort and the DataFrame still see it. Use this for "
-                  + "\u2014, n/a, or a footnote marker.");
-        mNumber(mm, "e.g. n/a", "", (txt) => {
-          pushUndo("printed text");
-          K.value_overrides = K.value_overrides || {};
-          selection.forEach(([rr, cc]) => { K.value_overrides[ck(rr, cc)] = txt; });
-          redraw("value_overrides x" + n);
-        });
+    mRow(m, "Edit this value\u2026", "double-click", () => {
+      const td = document.querySelector('#ptTable td[data-r="' + r + '"][data-c="' + c + '"]');
+      const ln = td && td.querySelector(".ln");
+      if (ln) beginEdit(ln, (txt) => {
+        pushUndo("cell text");
+        K.value_overrides = K.value_overrides || {};
+        K.value_overrides[ck(r, c)] = txt;
+        redraw("value_overrides set");
       });
     });
 
@@ -3617,120 +2154,6 @@ function cellMenu(x, y, r, c) {
       });
       redraw("row styling cleared");
     });
-
-    mSep(m);
-    mHead(m, "Rows");
-    mNote(m, "Structural edits change the data, so the Data tab and the "
-             + "DataFrame in the Code tab follow. Styling stays attached to "
-             + "the row it was put on.");
-    mRow(m, "Insert a blank row above", "", () => {
-      if (insertRow(r)) redraw("Inserted a row at " + r);
-    });
-    mRow(m, "Insert a blank row below", "", () => {
-      if (insertRow(r + 1)) redraw("Inserted a row at " + (r + 1));
-    });
-    mRow(m, "Duplicate this row", "", () => {
-      if (duplicateRow(r)) redraw("Duplicated row " + r);
-    });
-    const delRows = [...new Set(selection.map(([rr]) => rr))];
-    const delLabel = delRows.length > 1
-      ? "Delete " + delRows.length + " selected rows" : "Delete this row";
-    mRow(m, delLabel, "", () => {
-      if (deleteRows(delRows.length ? delRows : [r]))
-        redraw(delLabel.replace("Delete", "Deleted"));
-    });
-    mChips(m, [["up", "Move up"], ["down", "Move down"],
-               ["top", "To top"], ["bottom", "To bottom"]], null, (where) => {
-      const to = where === "up" ? r - 1 : where === "down" ? r + 1
-               : where === "top" ? 0 : D.rows.length - 1;
-      if (moveRow(r, to)) redraw("Moved row " + r + " to " + to);
-    });
-    if (D.rows[r].agg) {
-      mRow(m, "Keep the numbers, stop recomputing this row", "", () => {
-        pushUndo("detach summary row");
-        delete D.rows[r].agg;
-        redraw("Row " + r + " is now plain data");
-      });
-    } else {
-      mRow(m, "Insert a summary row here\u2026", "subtotal_rows", () => {
-        openMenu(x, y, (mm) => {
-          mHead(mm, "Summarise the rows above");
-          mNote(mm, "A summary row reads the run of ordinary rows directly "
-                    + "above it and follows them as they are edited. Its "
-                    + "numbers are written into the DataFrame as values, so "
-                    + "the regenerated call reproduces the table you see.");
-          summaryChoices(mm, (fn, label) => {
-            if (addComputedRow(r, fn, "band", label))
-              redraw("Inserted a " + fn + " row at " + r);
-          });
-        });
-      });
-    }
-
-    mSep(m);
-    mHead(m, "Sort and filter by " + col.name);
-    mNote(m, "Total and subtotal rows hold their position and split the "
-             + "sort, and so does a group band, so a sort reorders within "
-             + "each band rather than across them.");
-    mChips(m, [["asc", "Sort A\u2192Z / low\u2192high"],
-               ["desc", "Sort Z\u2192A / high\u2192low"]], null, (dir) => {
-      if (sortRows(c, dir === "asc")) redraw("Sorted by " + col.name);
-    });
-    // Each filter carries the pandas mask that KEEPS what it does not
-    // delete, so the same rule can run again over a later pull.
-    const dfc = DF_NAME + "[" + pyLit(col.name) + "]";
-    mRow(m, "Delete rows where this is blank", "", () => {
-      if (deleteRowsWhere(c, (v) => v == null, "blank in " + col.name,
-                          dfc + ".notna()")) redraw();
-    });
-    const numFilter = (label, cmp, op) => {
-      mRow(m, "Delete rows where this is " + label + "\u2026", "", () => {
-        openMenu(x, y, (mm) => {
-          mHead(mm, "Delete rows where " + col.name + " is " + label);
-          mNumber(mm, "value", "", (txt) => {
-            const t = parseCellInput(txt, col.kind);
-            if (t == null) return;
-            // Negated rather than inverted, so a blank -- which compares
-            // false either way in both languages -- survives the filter.
-            if (deleteRowsWhere(c, (v) => v != null && cmp(v, t),
-                                label + " " + txt + " in " + col.name,
-                                "~(" + dfc + " " + op + " " + pyLit(t) + ")")) redraw();
-          });
-        });
-      });
-    };
-    if (col.kind === "num") {
-      numFilter("below", (v, t) => v < t, "<");
-      numFilter("above", (v, t) => v > t, ">");
-    } else {
-      mRow(m, "Delete rows that do not contain\u2026", "", () => {
-        openMenu(x, y, (mm) => {
-          mHead(mm, "Keep only rows whose " + col.name + " contains");
-          mNumber(mm, "text", "", (txt) => {
-            if (!txt) return;
-            const needle = txt.toLowerCase();
-            if (deleteRowsWhere(c,
-                  (v) => v == null || !String(v).toLowerCase().includes(needle),
-                  "without \u201c" + txt + "\u201d in " + col.name,
-                  dfc + ".notna() & " + dfc + ".astype(str).str.lower()"
-                  + ".str.contains(" + pyLit(needle) + ", regex=False)")) redraw();
-          });
-        });
-      });
-    }
-  });
-}
-
-// The six ways a summary row can read the rows it covers, with the label it
-// writes into the first column.
-function summaryChoices(m, pick) {
-  [["sum", "Total", "adds them up"],
-   ["mean", "Average", "the arithmetic mean"],
-   ["median", "Median", "the middle value"],
-   ["min", "Minimum", "the smallest"],
-   ["max", "Maximum", "the largest"],
-   ["count", "Count", "how many are not blank"]].forEach(([fn, label, why]) => {
-    mRow(m, label, why, () => pick(fn, label));
   });
 }
 
@@ -3897,19 +2320,18 @@ function headerMenu(x, y, ci, shift) {
       mRow(m, (hasBar ? "Remove" : "Add") + " mini-bars", "minibar_columns", () => {
         pushUndo("minibar");
         K.minibar_columns = K.minibar_columns || {};
-        const dc = D.columns[ci];
-        if (hasBar) {
-          delete K.minibar_columns[col.name];
-          dc.minibar_src = null;
-          dc.kind = "num";
-          inferColumn(ci);
-        } else {
-          K.minibar_columns[col.name] = col.name;
-          // A minibar draws its own column's numbers, and rebuild() rescales
-          // the extent from D on every pass, so nothing is cached here.
-          dc.minibar_src = col.name;
-          dc.kind = "minibar";
-        }
+        if (hasBar) delete K.minibar_columns[col.name];
+        else K.minibar_columns[col.name] = col.name;
+        M.rows.forEach((row) => {
+          const cell = row.cells[ci];
+          if (hasBar) { cell.kind = "text"; cell.bar = null; }
+          else {
+            const pool = columnNumbers(ci);
+            const mx = pool.length ? Math.max(...pool.map(Math.abs)) : 0;
+            cell.kind = "minibar";
+            cell.bar = { v: typeof cell.raw === "number" ? cell.raw : 0, max: mx };
+          }
+        });
         redraw("minibar_columns");
       });
     }
@@ -3951,7 +2373,7 @@ function headerMenu(x, y, ci, shift) {
       K.column_widths[col.name] = Math.max(48, w);
       redraw("column_widths set");
     });
-    mRow(m, "Reset width to engine default", String(D.columns[ci].w0) + "px", () => {
+    mRow(m, "Reset width to engine default", String(RAW_W[ci]) + "px", () => {
       pushUndo("column width");
       if (K.column_widths) delete K.column_widths[col.name];
       redraw("width reset");
@@ -3968,103 +2390,6 @@ function headerMenu(x, y, ci, shift) {
       K.heatmap_groups = (K.heatmap_groups || []).filter(
         (g) => !(g.columns || []).includes(col.name));
       redraw("column cleared");
-    });
-
-    mSep(m);
-    mHead(m, "Columns");
-    mNote(m, "Structural edits change the data, so the Data tab and the "
-             + "DataFrame in the Code tab follow. A column the studio creates "
-             + "gets its width pinned, because the engine has never laid that "
-             + "column out and cannot otherwise be told what you are looking at.");
-    const insertAt = (at) => {
-      openMenu(x, y, (mm) => {
-        mHead(mm, "Name for the new column");
-        mNumber(mm, "e.g. Forecast", "", (nm) => {
-          if (insertColumn(at, nm)) redraw("Inserted a column at " + at);
-        });
-      });
-    };
-    mRow(m, "Insert a blank column before", "", () => insertAt(ci));
-    mRow(m, "Insert a blank column after", "", () => insertAt(ci + 1));
-    mRow(m, "Duplicate this column", "", () => {
-      if (duplicateColumn(ci)) redraw("Duplicated " + col.name);
-    });
-    mRow(m, "Delete this column", "", () => {
-      if (deleteColumns([ci])) redraw("Deleted " + col.name);
-    });
-    mChips(m, [["left", "Move left"], ["right", "Move right"],
-               ["first", "To front"], ["last", "To back"]], null, (where) => {
-      const to = where === "left" ? ci - 1 : where === "right" ? ci + 1
-               : where === "first" ? 0 : D.columns.length - 1;
-      if (moveColumn(ci, to)) redraw("Moved " + col.name + " to " + to);
-    });
-    mChips(m, [["asc", "Sort rows A\u2192Z / low\u2192high"],
-               ["desc", "Sort rows Z\u2192A / high\u2192low"]], null, (dir) => {
-      if (sortRows(ci, dir === "asc")) redraw("Sorted by " + col.name);
-    });
-
-    mSep(m);
-    mHead(m, "Computed \u2014 df.insert(...)");
-    const formulaHelp = (mm) => {
-      const nums = D.columns.filter((c) => c.kind === "num" && !c.formula)
-                            .map((c) => "[" + c.name + "]");
-      mNote(mm, "Numbers: " + (nums.join("  ") || "none")
-                + ".  Combine them with + - * / ( ) and numbers, or wrap one in "
-                + FORMULA_AGGS.join(", ") + " for a whole-column figure \u2014 "
-                + "so [x] / sum([x]) * 100 is a share of the total. The formula "
-                + "is written into the call as a df.insert() line, so re-running "
-                + "it against fresh data recomputes the column instead of "
-                + "freezing today's numbers.");
-    };
-    const dcf = D.columns[ci].formula;
-    if (dcf) {
-      mNote(m, col.name + "  =  " + dcf.src);
-      mRow(m, "Edit this formula\u2026", "", () => {
-        openMenu(x, y, (mm) => {
-          mHead(mm, "Formula for " + col.name);
-          formulaHelp(mm);
-          mFormula(mm, dcf.src, (src) => {
-            try {
-              setColumnFormula(ci, src);
-              redraw(col.name + " = " + src.trim());
-            } catch (err) { toast(String(err.message || err)); }
-          });
-        });
-      });
-      mRow(m, "Keep the numbers, drop the formula", "", () => {
-        if (detachFormula(ci)) redraw(col.name + " is now plain data");
-      });
-    }
-    mRow(m, "Add a computed column after\u2026", "", () => {
-      openMenu(x, y, (mm) => {
-        mHead(mm, "New computed column");
-        formulaHelp(mm);
-        mNewComputed(mm, (nm, src) => {
-          try {
-            addComputedColumn(ci + 1, nm, src);
-            redraw("Added " + JSON.stringify(nm) + " = " + String(src).trim());
-          } catch (err) { toast(String(err.message || err)); }
-        });
-      });
-    });
-
-    mSep(m);
-    mRow(m, "Transpose the whole table", "rows \u2194 columns", () => {
-      openMenu(x, y, (mm) => {
-        mHead(mm, "Transpose");
-        mNote(mm, "Column " + JSON.stringify(M.columns[0].name) + " becomes the "
-                  + "header row and the remaining columns become rows. Cell "
-                  + "colours and printed text rotate with their cells, and the "
-                  + "group bands become header bands. Row styling and every "
-                  + "per-column setting address things that will not exist "
-                  + "afterwards, so they are dropped.");
-        mRow(mm, "Transpose", String(M.rows.length) + "\u00d7"
-                 + String(M.columns.length) + " \u2192 "
-                 + String(M.columns.length - 1) + "\u00d7"
-                 + String(M.rows.length + 1), () => {
-          if (transposeTable()) redraw("Transposed");
-        });
-      });
     });
   });
 }
@@ -4118,32 +2443,6 @@ function canvasMenu(x, y) {
         K.target_html_width = +v;
         redraw("target_html_width = " + v);
       });
-    mSep(m);
-    mHead(m, "Computed rows");
-    mNote(m, "make_table's total_rows and subtotal_rows only style a row you "
-             + "had already worked out. These work it out as well, and keep "
-             + "it in step as the data underneath changes.");
-    mRow(m, "Add a summary row at the bottom\u2026", "total_rows", () => {
-      openMenu(x, y, (mm) => {
-        mHead(mm, "Summarise every row");
-        summaryChoices(mm, (fn, label) => {
-          if (addComputedRow(D.rows.length, fn, "all", label))
-            redraw("Added a " + fn + " row");
-        });
-      });
-    });
-    mRow(m, "Add a summary row to each group band\u2026", "subtotal_rows", () => {
-      openMenu(x, y, (mm) => {
-        mHead(mm, "Summarise each band");
-        mNote(mm, "One row at the foot of every row_groups band, labelled with "
-                  + "the band. A bottom total added afterwards skips them, so "
-                  + "it never counts the same number twice.");
-        summaryChoices(mm, (fn, label) => {
-          if (addBandSubtotals(fn, label)) redraw("Added a " + fn + " row per band");
-        });
-      });
-    });
-
     mSep(m);
     mRow(m, "Reset size to the engine's own layout", "drag the edge to resize", () => {
       pushUndo("table size");
@@ -4415,10 +2714,8 @@ function generateCall() {
   const tov = pyDictBlock(K._theme_overrides || {});
   if (tov) add("theme_overrides", tov);
 
-  // When the data block is replaying rules it already carries the rename as
-  // a real line; the note is only needed where the frame arrives renamed.
   const renames = K.column_renames || {};
-  if (Object.keys(renames).length && !dataIsReplayable()) {
+  if (Object.keys(renames).length) {
     L.push("    # applied to the frame before the call:");
     L.push("    #   " + DF_NAME + " = " + DF_NAME + ".rename(columns="
            + pyLit(renames) + ")");
@@ -4485,127 +2782,29 @@ function generateCall() {
   return L.join("\n");
 }
 
-/**
- * Render a formula as the pandas that reproduces it exactly.
- *
- * `maskVar` names an index of the data rows. It is threaded into aggregate
- * arguments only, so `[GDP] / sum([GDP])` divides every row -- total rows
- * included -- by a denominator that excludes them.
- */
-function formulaToPandas(ast, maskVar) {
-  const P = (n, masked) => {
-    switch (n.k) {
-      case "num": return String(n.v);
-      case "col": return masked
-        ? DF_NAME + ".loc[" + maskVar + ", " + pyLit(n.name) + "]"
-        : DF_NAME + "[" + pyLit(n.name) + "]";
-      case "neg": return "-" + P(n.a, masked);
-      case "bin": {
-        let b = P(n.b, masked);
-        // Dividing by zero is a blank cell in the studio, so the zeros in a
-        // denominator become NaN here instead of inf in the PNG.
-        if (n.op === "/" && isSeriesNode(n.b))
-          b = "(" + b + ').replace(0, float("nan"))';
-        return "(" + P(n.a, masked) + " " + n.op + " " + b + ")";
-      }
-      case "agg": return "(" + P(n.a, !!maskVar) + ")." + n.fn + "()";
-    }
-    return "None";
-  };
-  return P(ast, false);
-}
-
-function usesAggregateFn(node) {
-  if (node.k === "agg") return true;
-  return (node.a && usesAggregateFn(node.a)) || (node.b && usesAggregateFn(node.b));
-}
-
-/** The `pd.DataFrame({...})` block for a set of columns and their values. */
-function frameLiteral(cols, rows) {
-  const L = [DF_NAME + " = pd.DataFrame({"];
-  cols.forEach((col, k) => {
-    const vals = rows.map((cells) => {
-      const raw = cells[k];
+function generateDataCode() {
+  const cols = M.columns.map((c) => c.name);
+  const L = ["import pandas as pd", "", DF_NAME + " = pd.DataFrame({"];
+  cols.forEach((name, ci) => {
+    const isInt = M.columns[ci].int_dtype;
+    const vals = M.rows.map((row) => {
+      const raw = row.cells[ci] ? row.cells[ci].raw : null;
       if (raw == null) return "None";
       if (typeof raw === "object" && raw.__date__)
         return '"' + raw.__date__.slice(0, 10) + '"';
       // Whole floats stringify without their decimal point, which would
       // rebuild a float column as an int one.
       if (typeof raw === "number")
-        return (!col.int_dtype && Number.isInteger(raw)) ? raw.toFixed(1) : String(raw);
+        return (!isInt && Number.isInteger(raw)) ? raw.toFixed(1) : String(raw);
       return '"' + String(raw).replace(/"/g, '\\"') + '"';
     });
-    L.push("    " + pyLit(col.name) + ": [" + vals.join(", ") + "],");
+    L.push("    " + pyLit(name) + ": [" + vals.join(", ") + "],");
   });
   L.push("})");
-  cols.forEach((col) => {
-    if (col.kind === "date")
-      L.push(DF_NAME + "[" + pyLit(col.name) + "] = pd.to_datetime("
-             + DF_NAME + "[" + pyLit(col.name) + "])");
+  const dateCols = M.columns.filter((c) => c.kind === "date").map((c) => c.name);
+  dateCols.forEach((n) => {
+    L.push(DF_NAME + "[" + pyLit(n) + "] = pd.to_datetime(" + DF_NAME + "[" + pyLit(n) + "])");
   });
-  return L;
-}
-
-/**
- * The frame the call runs on.
- *
- * When every structural edit was a rule, the frame emitted is the ORIGINAL
- * one and the rules follow it as pandas, so swapping the literal for a live
- * pull re-applies them to next month's numbers. One edit that typed a value
- * or named a position breaks that, and the frame emitted is the edited one
- * instead -- correct, but no longer a description of how to get there.
- *
- * Computed columns are outside that choice: they are always a df.insert()
- * rule and are always left out of the literal.
- */
-function generateDataCode() {
-  const ops = (D.ops || []).filter((o) => o.py !== "");
-  const replay = dataIsReplayable();
-  const L = ["import pandas as pd", ""];
-
-  if (replay) {
-    const cols = BASE_MODEL.columns;
-    L.push.apply(L, frameLiteral(cols, BASE_MODEL.rows.map(
-      (row) => cols.map((c, k) => (row.cells[k] ? row.cells[k].raw : null)))));
-    if (ops.length) {
-      L.push("");
-      L.push("# Rules, not values \u2014 point " + DF_NAME
-             + " at a fresh pull and these still apply.");
-      ops.forEach((o) => L.push(o.py));
-    }
-  } else {
-    const keep = [];
-    M.columns.forEach((c, ci) => { if (!D.columns[ci].formula) keep.push(ci); });
-    const blocked = ops.find((o) => o.py == null);
-    L.push("# " + blocked.why[0].toUpperCase() + blocked.why.slice(1)
-           + ", so this is the edited frame rather than the original.");
-    L.push.apply(L, frameLiteral(
-      keep.map((ci) => M.columns[ci]),
-      M.rows.map((row) => keep.map((ci) => (row.cells[ci] ? row.cells[ci].raw : null)))));
-  }
-
-  const order = formulaOrder();
-  if (order.length) {
-    const aggRows = [];
-    D.rows.forEach((row, i) => { if (row.agg) aggRows.push(i); });
-    const needsMask = aggRows.length
-      && order.some((ci) => usesAggregateFn(D.columns[ci].formula.ast));
-    const maskVar = needsMask ? "_data" : null;
-    L.push("");
-    if (needsMask)
-      L.push(maskVar + " = " + DF_NAME + ".index.difference(["
-             + aggRows.join(", ") + "])   # rows that are not totals");
-    // Whichever frame was emitted, its columns are D's in D's order with the
-    // computed ones missing, so an insert position counts what precedes it.
-    const placed = [];
-    D.columns.forEach((c, ci) => { if (!c.formula) placed.push(ci); });
-    order.forEach((ci) => {
-      const at = placed.filter((p) => p < ci).length;
-      L.push(DF_NAME + ".insert(" + at + ", " + pyLit(M.columns[ci].name) + ", "
-             + formulaToPandas(D.columns[ci].formula.ast, maskVar) + ")");
-      placed.push(ci);
-    });
-  }
   return L.join("\n");
 }
 
@@ -4966,14 +3165,14 @@ document.getElementById("btnDlCall").onclick = () =>
 document.getElementById("btnPng").onclick = () => downloadPNG(2);
 document.getElementById("btnReset").onclick = () => {
   pushUndo("reset");
-  K = clone(BASE_KWARGS); D = extractData(BASE_MODEL);
+  K = clone(BASE_KWARGS); M = clone(BASE_MODEL);
   selection = []; colSelection = [];
   syncKnobs(); redraw("Reset to the original make_table call");
 };
 document.getElementById("btnUndo").onclick = () => {
   const s = _undo.pop();
   if (!s) return;
-  restoreSnapshot(s);
+  K = s.K;
   syncUndoButton();
   syncKnobs(); redraw("Undid: " + s.label);
 };
@@ -4996,16 +3195,29 @@ document.addEventListener("keydown", (e) => {
 
 document.getElementById("hintLine").innerHTML =
   "Every control is reachable from the table itself. <b>Right-click</b> a cell "
-  + "for colour, its value, and the row operations \u2014 insert, duplicate, "
-  + "delete, move, sort, filter; a header for format / colour mode / alignment "
-  + "and the column operations, including transpose; the background for theme "
-  + "and size. <b>Shift-click</b> several "
+  + "for background and text colour, a header for format / colour mode / "
+  + "alignment, the background for theme and size. <b>Shift-click</b> several "
   + "headers then right-click one to build a shared heatmap scale. "
   + "<b>Drag</b> across cells to select a range, a header edge to resize one "
   + "column, or the table's own right / bottom / corner handle to resize the "
-  + "whole thing. <b>Double-click</b> a cell to change its value, or any other "
-  + "text to retype it. Everything you change is "
+  + "whole thing. <b>Double-click</b> any text to retype it. Everything you change is "
   + "reflected in the Code tab as a runnable make_table(...) call.";
+
+// Snapshot what the engine itself decided, on both the live model and the
+// reset baseline. Two purposes: a cleared override falls back to make_table's
+// own choice rather than to nothing, and an untouched cell keeps the exact
+// text, line breaks and row height PIL produced instead of being re-measured
+// with whatever font the browser happens to have.
+[M, BASE_MODEL].forEach((model) => {
+  model.columns.forEach((c) => { c.fmt0 = c.fmt; c.align0 = c.align; });
+  model.rows.forEach((row) => {
+    row.h0 = row.h;
+    row.cells.forEach((cell) => {
+      cell.text0 = cell.text;
+      cell.lines0 = cell.lines;
+    });
+  });
+});
 
 loadSheets();
 buildKnobs();

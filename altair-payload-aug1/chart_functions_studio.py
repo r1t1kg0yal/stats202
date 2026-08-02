@@ -46,20 +46,17 @@ LIBRARY USAGE
     # generic path (any altair/vega-lite spec)
     result = wrap_interactive(my_vega_spec, output_path="out.html")
 
-    # PRISM-specific path (adds session-path convention, opens on the
-    # chart's own house style, reads user's active spec sheet from user_id).
-    # make_chart calls this and stores the HTML through the S3 manager, so
-    # write_local stays off there and on in the dev harness.
+    # PRISM-specific path (adds session-path convention, GS_CLEAN theme
+    # as default, reads user's active spec sheet from user_id)
     result = wrap_interactive_prism(
         altair_chart=chart,
         chart_type='multi_line',
         dimensions='wide',
-        skin='gs_clean',
         annotations=my_annotations,
         user_id='ritik',
         session_path='sessions/20260417_xxx',
     )
-    # -> result.editor_html, result.editor_html_path, result.chart_id
+    # -> result.editor_html_path, result.editor_url, result.chart_id
 
 CLI USAGE
 
@@ -99,81 +96,68 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from prism_mcp.utils import chart_house_style as _house
-
 
 __version__ = "0.4.0"
-
-
-# =============================================================================
-# MASTER SWITCH
-# =============================================================================
-#
-# Consulted by ``chart_functions.make_chart`` only when its ``interactive``
-# kwarg is left at ``None``. Flip to False to turn the companion off engine
-# wide without touching a call site. Mirrors
-# ``chart_functions_studio_tables.TABLE_STUDIO_ENABLED``.
-# =============================================================================
-
-CHART_STUDIO_ENABLED: bool = True
 
 
 # =============================================================================
 # DIMENSION PRESETS
 # =============================================================================
 #
-# Derived from the house style so a resize chosen in this editor is always
-# expressible as a ``make_chart(dimension_preset=...)`` kwarg. Before the
-# derivation the editor offered five canvases the engine's DimensionPreset
-# literal rejected outright, which meant a studio session could reach a size
-# its own regenerated call could not reproduce.
-#
-# Two presets are studio-only and stay out of the shared ladder:
-#   ``custom``     -- "keep the explicit width/height already on the spec",
-#                     which names no preset at all
-#   ``page_grid``  -- a facet sentinel whose panel dimensions derive from the
-#                     grid shape at render time; nothing to resize to
+# PRISM's 7 canonical presets first, followed by 5 useful extras.
+# Each preset is a width/height pair + optional typography override
+# keyed in TYPOGRAPHY_OVERRIDES.
 # =============================================================================
 
 DIMENSION_PRESETS: Dict[str, Dict[str, Any]] = {
-    name: {
-        "width": entry["width"],
-        "height": entry["height"],
-        "label": (
-            f"{entry['label']} [default]" if name == "wide"
-            else f"{entry['label']} [mandatory for MS Teams]" if name == "teams"
-            else entry["label"]
-        ),
-        "prism": entry["prism"],
-    }
-    for name, entry in _house.DIMENSIONS.items()
-    if name != "page_grid"
-}
-DIMENSION_PRESETS["custom"] = {
-    "width": 600, "height": 400, "label": "Custom", "prism": False,
+    # PRISM canonical
+    "wide":         {"width": 700,  "height": 350, "label": "Wide (700x350) [default]",   "prism": True},
+    "square":       {"width": 450,  "height": 450, "label": "Square (450x450)",            "prism": True},
+    "tall":         {"width": 400,  "height": 550, "label": "Tall (400x550)",              "prism": True},
+    "compact":      {"width": 400,  "height": 300, "label": "Compact (400x300)",           "prism": True},
+    "presentation": {"width": 900,  "height": 500, "label": "Presentation (900x500)",      "prism": True},
+    "thumbnail":    {"width": 300,  "height": 200, "label": "Thumbnail (300x200)",         "prism": True},
+    "teams":        {"width": 420,  "height": 210, "label": "Teams (420x210) [mandatory for MS Teams]", "prism": True},
+    # Extras (useful but not PRISM-canonical)
+    "report":       {"width": 600,  "height": 400, "label": "Report (600x400)",            "prism": False},
+    "dashboard":    {"width": 800,  "height": 500, "label": "Dashboard (800x500)",         "prism": False},
+    "widescreen":   {"width": 1200, "height": 500, "label": "Widescreen (1200x500)",       "prism": False},
+    "twopack":      {"width": 540,  "height": 360, "label": "2-pack tile (540x360)",       "prism": False},
+    "fourpack":     {"width": 420,  "height": 280, "label": "4-pack tile (420x280)",       "prism": False},
+    "custom":       {"width": 600,  "height": 400, "label": "Custom",                       "prism": False},
 }
 
 
 # When a small dimension preset is selected, the editor applies these
-# typography overrides automatically so the chart stays legible. The values
-# live in the house style; this maps them onto knob names.
-_TYPOGRAPHY_KNOB_NAMES: Dict[str, str] = {
-    "title":        "titleSize",
-    "axis_label":   "labelSize",
-    "axis_title":   "axisTitleSize",
-    "legend_label": "legendLabelSize",
-    "legend_title": "legendTitleSize",
-    "stroke_width": "strokeWidth",
-    "point_size":   "pointSize",
-}
-
+# typography overrides automatically so the chart stays legible.
 TYPOGRAPHY_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    preset: {
-        _TYPOGRAPHY_KNOB_NAMES[slot]: value
-        for slot, value in overrides.items()
-        if slot in _TYPOGRAPHY_KNOB_NAMES
-    }
-    for preset, overrides in _house.DIMENSION_TYPE_OVERRIDES.items()
+    "teams": {
+        "titleSize":       12,
+        "labelSize":       8,
+        "axisTitleSize":   9,
+        "legendLabelSize": 8,
+        "legendTitleSize": 9,
+        "strokeWidth":     1.5,
+        "pointSize":       40,
+    },
+    "thumbnail": {
+        "titleSize":       10,
+        "labelSize":       7,
+        "axisTitleSize":   8,
+        "legendLabelSize": 7,
+        "legendTitleSize": 8,
+        "strokeWidth":     1.2,
+        "pointSize":       30,
+    },
+    "compact": {
+        "titleSize":       18,
+        "labelSize":       12,
+        "axisTitleSize":   13,
+        "legendLabelSize": 10,
+        "legendTitleSize": 11,
+        "strokeWidth":     1.8,
+        "pointSize":       50,
+    },
 }
 
 
@@ -682,31 +666,40 @@ def list_supported_marks() -> List[str]:
 # THEMES
 # =============================================================================
 #
-# A theme = flat dict of knob-name -> value + a default palette. Every theme
-# is derived from a house style, so the four names offered here are the same
-# four the engine renders and the same four the table studio offers. The
-# editor cannot reach a look that ``make_chart`` could not reproduce.
-#
-# Only the colour anchors and the type ramp vary between themes. Mark
-# geometry (corner radii, symbol shapes, arc radii) is style-independent and
-# lives in the shared block below -- a house style recolours, it does not
-# redraw.
+# A theme = flat dict of knob-name -> value + optional default palette.
+# The GS_CLEAN theme mirrors PRISM's GS_CLEAN exactly.
 # =============================================================================
 
 
-def _shared_theme_values() -> Dict[str, Any]:
-    """Knob defaults every theme carries identically."""
-    return {
+GS_CLEAN: Dict[str, Any] = {
+    "name": "gs_clean",
+    "label": "GS Clean (PRISM default)",
+    "description": "Exact match to PRISM GS_CLEAN: navy #003359, Liberation Sans, 26pt title",
+    "values": {
         # Dimensions
+        "background": "#ffffff",
         "padding": 10,
         "viewStrokeWidth": 0,
         "autosize": "pad",
         # Title
+        "titleSize": 26,
+        "titleColor": "#000000",
         "titleWeight": "bold",
         "titleAnchor": "start",
         "titleOffset": 4,
+        "subtitleSize": 14,
+        "subtitleColor": "#333333",
         "subtitleWeight": "normal",
+        # Typography
+        "fontFamily": "GS Sans, Liberation Sans, Arial, sans-serif",
+        "labelSize": 18,
+        "axisTitleSize": 16,
+        "legendLabelSize": 14,
+        "legendTitleSize": 14,
         # Axes
+        "domainColor": "#000000",
+        "tickColor": "#000000",
+        "labelColor": "#000000",
         "domainWidth": 1,
         "tickSize": 5,
         "xDomainShow": True,
@@ -745,8 +738,11 @@ def _shared_theme_values() -> Dict[str, Any]:
         "padAngle": 0.02,
         "arcCornerRadius": 3,
         "rectOpacity": 1.0,
+        "rectStroke": "#ffffff",
         "rectStrokeWidth": 0.5,
         "boxSize": 20,
+        # Colors
+        "primaryColor": "#003359",
         # Interactivity
         "tooltipEnabled": True,
         "tooltipShowAllFields": True,
@@ -754,73 +750,84 @@ def _shared_theme_values() -> Dict[str, Any]:
         "brushZoomX": False,
         "brushZoomY": False,
         "legendClickToggle": True,
-    }
-
-
-# Maps a house style's engine-shaped mark override onto the knob name the
-# editor exposes for the same property.
-_MARK_OVERRIDE_KNOBS: Dict[str, str] = {
-    "line.strokeWidth":  "strokeWidth",
-    "line.opacity":      "lineOpacity",
-    "line.interpolate":  "interpolate",
-    "point.size":        "pointSize",
-    "point.opacity":     "pointOpacity",
-    "point.filled":      "pointFilled",
-    "bar.opacity":       "barOpacity",
-    "bar.cornerRadius":  "barCornerRadius",
-    "area.opacity":      "areaOpacity",
+    },
+    "palette": "gs_primary",
 }
 
 
-def _studio_theme(style: Dict[str, Any]) -> Dict[str, Any]:
-    """Build an editor theme from a house style."""
-    scale = _house.TYPE_SCALE["chart"]
-    values = _shared_theme_values()
-    values.update({
-        "background":      style["background"],
-        "titleSize":       scale["title"],
-        "titleColor":      style["ink"],
-        "subtitleSize":    scale["subtitle"],
-        "subtitleColor":   style["subtitle_ink"],
-        "fontFamily":      style["font_family"],
-        "labelSize":       scale["axis_label"],
-        "axisTitleSize":   scale["axis_title"],
-        "legendLabelSize": scale["legend_label"],
-        "legendTitleSize": scale["legend_title"],
-        "domainColor":     style["ink"],
-        "tickColor":       style["ink"],
-        "labelColor":      style["ink"],
-        # Heatmap cell separators read as gaps, so they take the canvas
-        # colour rather than a fixed white that would show as a light grid
-        # on a dark background.
-        "rectStroke":      style["background"],
-        "primaryColor":    style["primary"],
-    })
-    for path, value in _flatten_mark_overrides(style.get("mark_overrides", {})):
-        knob = _MARK_OVERRIDE_KNOBS.get(path)
-        if knob:
-            values[knob] = value
-    return {
-        "name": style["name"],
-        "label": style["label"],
-        "description": style["description"],
-        "values": values,
-        "palette": style["palette"],
-    }
+MINIMAL: Dict[str, Any] = {
+    "name": "minimal",
+    "label": "Minimal",
+    "description": "Ultra-clean, tiny labels, press-ready",
+    "values": {
+        "background": "#ffffff",
+        "fontFamily": "Helvetica",
+        "titleSize": 14, "titleColor": "#111111", "titleWeight": "normal",
+        "labelSize": 10, "axisTitleSize": 11,
+        "legendLabelSize": 10,
+        "domainColor": "#000000", "tickColor": "#000000", "labelColor": "#000000",
+        "domainWidth": 0.5, "tickSize": 3,
+        "legendOrient": "none",
+        "padding": 4,
+        "strokeWidth": 1.5, "lineOpacity": 1.0,
+        "barOpacity": 1.0,
+        "primaryColor": "#08306b",
+    },
+    "palette": "mono_blue",
+}
 
 
-def _flatten_mark_overrides(overrides: Dict[str, Any]):
-    for mark, props in (overrides or {}).items():
-        for prop, value in (props or {}).items():
-            yield f"{mark}.{prop}", value
+DARK: Dict[str, Any] = {
+    "name": "dark",
+    "label": "Dark",
+    "description": "Dark background, light text, vivid palette",
+    "values": {
+        "background": "#121212",
+        "fontFamily": "Helvetica",
+        "titleSize": 16, "titleColor": "#eaeaea", "titleWeight": "bold",
+        "labelSize": 12, "axisTitleSize": 13,
+        "legendLabelSize": 11, "legendTitleSize": 12,
+        "domainColor": "#888888", "tickColor": "#888888", "labelColor": "#cccccc",
+        "domainWidth": 1, "tickSize": 5,
+        "legendOrient": "right",
+        "padding": 12,
+        "strokeWidth": 2, "lineOpacity": 1.0,
+        "barOpacity": 1.0,
+        "areaOpacity": 0.7,
+        "primaryColor": "#4c72ff",
+    },
+    "palette": "vivid",
+}
+
+
+PRINT: Dict[str, Any] = {
+    "name": "print",
+    "label": "Print / Report",
+    "description": "Black on white, thicker lines, large fonts",
+    "values": {
+        "background": "#ffffff",
+        "fontFamily": "Georgia",
+        "titleSize": 18, "titleColor": "#000000", "titleWeight": "bold",
+        "labelSize": 14, "axisTitleSize": 15,
+        "legendLabelSize": 13, "legendTitleSize": 14,
+        "domainColor": "#000000", "tickColor": "#000000", "labelColor": "#000000",
+        "domainWidth": 1.5, "tickSize": 6,
+        "legendOrient": "right",
+        "padding": 16,
+        "strokeWidth": 3, "lineOpacity": 1.0,
+        "barOpacity": 1.0,
+        "primaryColor": "#003359",
+    },
+    "palette": "gs_primary",
+}
 
 
 THEMES: Dict[str, Dict[str, Any]] = {
-    name: _studio_theme(_house.get_house_style(name))
-    for name in _house.house_style_names()
+    GS_CLEAN["name"]: GS_CLEAN,
+    MINIMAL["name"]:  MINIMAL,
+    DARK["name"]:     DARK,
+    PRINT["name"]:    PRINT,
 }
-
-GS_CLEAN: Dict[str, Any] = THEMES["gs_clean"]
 
 
 def get_theme(name: str) -> Dict[str, Any]:
@@ -840,59 +847,76 @@ def list_themes() -> List[Dict[str, Any]]:
 # =============================================================================
 # PALETTES
 # =============================================================================
-#
-# Categorical palettes come straight from the house style. Gradient entries
-# are Vega scheme names rather than hex lists because Vega generates those
-# colours itself; they appear here so the editor's palette picker can offer
-# them for heatmaps and continuous encodings.
-#
-# Only canonical names are registered. Provenance spellings (``okabe_ito``
-# for ``colorblind``, ``vivid`` for ``bold``) resolve through ``get_palette``
-# but are deliberately absent from the registry so the picker shows each
-# palette exactly once.
-# =============================================================================
 
-GS_PRIMARY = _house.GS_PRIMARY
-GS_DIVERGING = _house.GS_DIVERGING
-MONO_BLUE = _house.MONO_NAVY
-MONO_GREY = _house.MONO_GREY
-VIVID = _house.BOLD
-TABLEAU = _house.BUSINESS
-OKABE_ITO = _house.COLORBLIND
-PASTEL = _house.PASTEL
 
-# Gradients the picker offers. The full set the engine accepts is
-# ``chart_house_style.GRADIENTS``; these are the ones worth a menu row.
-_PICKER_GRADIENTS = ("viridis", "blues", "reds", "greens", "redblue", "spectral")
+GS_PRIMARY: Dict[str, Any] = {
+    "name": "gs_primary", "label": "GS Primary (PRISM default)", "kind": "categorical",
+    "colors":       ["#003359", "#94C7DD", "#5C92CB", "#A6A6A6", "#C00000",
+                     "#4F81BD", "#9BBB59", "#8064A2", "#F79646", "#4BACC6"],
+    # Per-slot LastValueLabel hex. Identical to ``colors`` for slots that
+    # are readable as 15pt text on white (slots 0 navy, 4 red, 5 cobalt,
+    # 7 purple, 8 orange, 9 teal). Darker derived hex (HSL L * 0.55,
+    # hue/sat preserved) for the readability-weak slots (1 light blue,
+    # 2 mid blue, 3 grey, 6 olive). Engine reads via
+    # ``skin['label_color_scheme']``; falls back to ``colors`` when
+    # not set so other palettes keep today's match-line behaviour.
+    "label_colors": ["#003359", "#307A9A", "#274F7B", "#5B5B5B", "#C00000",
+                     "#4F81BD", "#566B2C", "#8064A2", "#F79646", "#4BACC6"],
+}
+GS_DIVERGING: Dict[str, Any] = {
+    "name": "gs_diverging", "label": "GS Diverging", "kind": "diverging",
+    "colors": ["#C00000", "#F79646", "#FFFFFF", "#5C92CB", "#003359"],
+}
+MONO_BLUE: Dict[str, Any] = {
+    "name": "mono_blue", "label": "Monochrome Blue", "kind": "categorical",
+    "colors": ["#08306b", "#2171b5", "#6baed6", "#c6dbef", "#deebf7"],
+}
+MONO_GREY: Dict[str, Any] = {
+    "name": "mono_grey", "label": "Monochrome Grey", "kind": "categorical",
+    "colors": ["#111111", "#444444", "#777777", "#aaaaaa", "#dddddd"],
+}
+VIVID: Dict[str, Any] = {
+    "name": "vivid", "label": "Vivid", "kind": "categorical",
+    "colors": ["#4c72ff", "#ffb347", "#ff6b6b", "#2ecc71", "#9b59b6",
+               "#f39c12", "#1abc9c"],
+}
+TABLEAU: Dict[str, Any] = {
+    "name": "tableau", "label": "Tableau 10", "kind": "categorical",
+    "colors": ["#4c78a8", "#f58518", "#e45756", "#72b7b2", "#54a24b",
+               "#eeca3b", "#b279a2", "#ff9da6", "#9d755d", "#bab0ac"],
+}
+OKABE_ITO: Dict[str, Any] = {
+    "name": "okabe_ito", "label": "Okabe-Ito (colorblind-safe)", "kind": "categorical",
+    "colors": ["#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2",
+               "#D55E00", "#CC79A7", "#000000"],
+}
+PASTEL: Dict[str, Any] = {
+    "name": "pastel", "label": "Pastel (soft, low-saturation)", "kind": "categorical",
+    "colors": ["#A8DADC", "#FFB4A2", "#B5EAEA", "#FCE38A", "#C1A7E2",
+               "#F8B5C8", "#A0D2DB", "#FFCFD2"],
+}
+VIRIDIS: Dict[str, Any]  = {"name": "viridis",  "label": "Viridis",  "kind": "sequential", "scheme": "viridis"}
+BLUES: Dict[str, Any]    = {"name": "blues",    "label": "Blues",    "kind": "sequential", "scheme": "blues"}
+REDS: Dict[str, Any]     = {"name": "reds",     "label": "Reds",     "kind": "sequential", "scheme": "reds"}
+GREENS: Dict[str, Any]   = {"name": "greens",   "label": "Greens",   "kind": "sequential", "scheme": "greens"}
+REDBLUE: Dict[str, Any]  = {"name": "redblue",  "label": "Red-Blue", "kind": "diverging",  "scheme": "redblue"}
+SPECTRAL: Dict[str, Any] = {"name": "spectral", "label": "Spectral", "kind": "diverging",  "scheme": "spectral"}
 
-PALETTES: Dict[str, Dict[str, Any]] = {}
-for _p in _house.list_palettes():
-    PALETTES[_p["name"]] = {
-        "name": _p["name"],
-        "label": _p["label"],
-        "kind": _p["kind"],
-        "colors": list(_p["colors"]),
-    }
-for _g in _PICKER_GRADIENTS:
-    PALETTES[_g] = {
-        "name": _g,
-        "label": _g.replace("_", " ").title(),
-        "kind": _house.GRADIENTS[_g],
-        "scheme": _g,
-    }
+
+PALETTES: Dict[str, Dict[str, Any]] = {
+    p["name"]: p for p in [
+        GS_PRIMARY, GS_DIVERGING, MONO_BLUE, MONO_GREY,
+        VIVID, TABLEAU, OKABE_ITO, PASTEL,
+        VIRIDIS, BLUES, REDS, GREENS, REDBLUE, SPECTRAL,
+    ]
+}
 
 
 def get_palette(name: str) -> Dict[str, Any]:
-    """Palette record for ``name``, accepting canonical names and aliases."""
-    if name in PALETTES:
-        return PALETTES[name]
-    try:
-        return PALETTES[_house.resolve_palette(name)]
-    except (ValueError, KeyError):
+    if name not in PALETTES:
         available = ", ".join(sorted(PALETTES.keys()))
-        raise ValueError(
-            f"Unknown palette '{name}'. Available: {available}"
-        ) from None
+        raise ValueError(f"Unknown palette '{name}'. Available: {available}")
+    return PALETTES[name]
 
 
 def list_palettes() -> List[Dict[str, Any]]:
@@ -1177,18 +1201,6 @@ textarea { width: 100%; font-family: monospace; font-size: 10px; box-sizing: bor
 .cfs-chip:hover { background: #eaf2fb; border-color: #1d6fc4; }
 .cfs-chip.cfs-cur { background: #1d6fc4; border-color: #1d6fc4; color: #fff; }
 
-/* ---- The lines and annotations panels ---- */
-.cfs-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
-  vertical-align: middle; }
-.cfs-panel-tools { display: inline-flex; gap: 4px; justify-content: flex-end; }
-.cfs-panel-tools button { border: 1px solid #c3ccd8; background: #fff;
-  border-radius: 5px; padding: 1px 7px; font-size: 11.5px; cursor: pointer;
-  line-height: 1.5; }
-.cfs-panel-tools button:hover { background: #eaf2fb; border-color: #1d6fc4; }
-/* Armed for a click-placed annotation: the crosshair is the only cue
-   that the next click means something other than a pan. */
-#chart.cfs-placing, #chart.cfs-placing * { cursor: crosshair !important; }
-
 /* ---- Direct manipulation: drag-to-resize ------------------------------
    The wrapper is sized in JS to the rendered SVG's exact box, so the
    frame and its handles trace the chart's own circumference rather than
@@ -1292,17 +1304,11 @@ body.cfs-resizing #chart svg { pointer-events: none; }
 
     <div class="tab-content hidden" id="tab-code">
       <div class="code-subtabs">
-        <button class="code-sub-btn active" data-codetab="call" onclick="switchCodeSubtab('call')">make_chart(...)</button>
-        <button class="code-sub-btn" data-codetab="vl" onclick="switchCodeSubtab('vl')">Vega-Lite JSON</button>
+        <button class="code-sub-btn active" data-codetab="vl" onclick="switchCodeSubtab('vl')">Vega-Lite JSON</button>
         <button class="code-sub-btn" data-codetab="altair" onclick="switchCodeSubtab('altair')">Altair Python</button>
         <button class="code-sub-btn" data-codetab="data" onclick="switchCodeSubtab('data')">Data (pd.DataFrame)</button>
       </div>
-      <div id="code-call" class="code-pane">
-        <button onclick="copyText('callCode')">Copy</button>
-        <button onclick="downloadText('callCode', FILENAME + '_call.py', 'text/x-python')">Download .py</button>
-        <pre class="code-block" id="callCode"></pre>
-      </div>
-      <div id="code-vl" class="code-pane hidden">
+      <div id="code-vl" class="code-pane">
         <button onclick="copyText('vegaLiteCode')">Copy</button>
         <button onclick="downloadText('vegaLiteCode', FILENAME + '_spec.json', 'application/json')">Download</button>
         <pre class="code-block" id="vegaLiteCode"></pre>
@@ -1435,11 +1441,6 @@ const INITIAL_ACTIVE_SHEET = __INITIAL_ACTIVE_SHEET__;
 const PREF_KEY = "__PREF_KEY__";
 const SHEETS_KEY = "__SHEETS_KEY__";
 const FILENAME = "__FILENAME__";
-/* The make_chart(...) arguments that produced this chart, or {} where
-   the producer was a facet grid or a composite pack rather than a
-   single call. The Code tab edits these rather than reverse-engineering
-   the call back out of the Vega-Lite. */
-const CALL_KWARGS = __CALL_KWARGS_JSON__;
 
 /* ============================================================
    STATE
@@ -2934,45 +2935,35 @@ function isLvlNode(node) {
   return markTypeOf(node) === "text" && encFieldOf(node, "y") === CFS_LVL_FIELD;
 }
 
-/* What is this panel actually plotting, whatever its x axis is made of?
-   `kind` is the x encoding's own type, which is what decides whether a
-   reader is offered a date window, a value range, or a set of
-   categories. Everything else in the report is the same three fields
-   and the same list of data-mark nodes regardless. */
-function panelPlotInfo(root, want) {
-  let xField = null, yField = null, colorField = null, kind = null;
+/* What is this panel actually plotting? Returns null when the panel
+   has no temporal x, which is how a bar-by-category or a scatter
+   opts out of the whole feature. */
+function temporalPlotInfo(root) {
+  let xField = null, yField = null, colorField = null;
+  let width = null, height = null;
   const seriesNodes = [];
-  walkDataNodes(root, (node, rows, key) => {
+  walkDataNodes(root, (node, rows) => {
     const xe = node.encoding && node.encoding.x;
-    if (!xe || Array.isArray(xe) || !xe.field) return;
-    const type = xe.type || (typeof xe.timeUnit === "string" ? "temporal" : null);
-    if (!type) return;
-    if (want && type !== want) return;
+    if (!xe || Array.isArray(xe) || xe.type !== "temporal" || !xe.field) return;
     if (CFS_DATA_MARKS.indexOf(markTypeOf(node)) < 0) return;
     if (!rows || !rows.length) return;
-    if (xField === null) { xField = xe.field; kind = type; }
+    if (xField === null) xField = xe.field;
     if (xe.field !== xField) return;
     const yf = encFieldOf(node, "y");
     if (yf && yf !== CFS_LVL_FIELD && yField === null) yField = yf;
     const cf = encFieldOf(node, "color");
     if (cf && colorField === null) colorField = cf;
-    seriesNodes.push({ node: node, rows: rows, key: key });
+    seriesNodes.push({ node: node, rows: rows });
   });
   if (xField === null || !seriesNodes.length) return null;
-  const width = walkExtractSize(root, "width");
-  const height = walkExtractSize(root, "height");
+  width = walkExtractSize(root, "width");
+  height = walkExtractSize(root, "height");
   return {
-    kind: kind, xField: xField, yField: yField, colorField: colorField,
+    xField: xField, yField: yField, colorField: colorField,
     seriesNodes: seriesNodes,
     width: (typeof width === "number") ? width : 600,
     height: (typeof height === "number") ? height : 350,
   };
-}
-
-/* Returns null when the panel has no temporal x, which is how a
-   bar-by-category or a scatter opts out of the window feature. */
-function temporalPlotInfo(root) {
-  return panelPlotInfo(root, "temporal");
 }
 
 /* Full extent of the plotted data, ignoring any window in force --
@@ -3226,13 +3217,8 @@ function axisLabelFontSize() {
 function rebaseAnnotationFurniture(root, info, inWindow) {
   if (!info.yField) return 0;
   let oldMax = null, newMax = null;
-  // Against the UNTRANSFORMED rows. The anchors were captured from data
-  // the producer emitted, so a transformed maximum would match none of
-  // them and every vline label would stay behind at the old top.
-  const st = currentSpec.usermeta && currentSpec.usermeta.cfsTransform;
   for (const s of info.seriesNodes) {
-    const base = (st && st.pristine && st.pristine[s.key]) || s.rows;
-    for (const r of base) {
+    for (const r of s.rows) {
       const v = cfsNum(r[info.yField]);
       if (v !== null && (oldMax === null || v > oldMax)) oldMax = v;
     }
@@ -3395,1340 +3381,6 @@ function refitYRange(root, opts) {
   // even though the window did not.
   relocateEndlineLabels(root, info, inWindow, domain);
   return { ok: true, yDomain: domain };
-}
-
-/* ============================================================
-   THE OTHER TWO KINDS OF X AXIS
-
-   The time-window work built its six-step repair around dates. A
-   scatter's x is a number and a bar chart's is a set of names, and
-   neither could reach any of it -- right-clicking either axis offered
-   ticks, gridlines and a format string, and nothing that changed what
-   the chart showed.
-
-   Neither needs all six steps. A numeric window needs the clamp, the
-   clip and the y refit; the calendar tick ladder and the vline
-   re-anchoring are date machinery with nothing to do here. A set of
-   categories does not have a domain to clamp at all -- it has an order
-   and a membership, and both are the reader's to set.
-   ============================================================ */
-
-function numericXExtent(info) {
-  let lo = null, hi = null;
-  for (const s of info.seriesNodes) {
-    for (const r of s.rows) {
-      const v = cfsNum(r[info.xField]);
-      if (v === null || !isFinite(v)) continue;
-      if (lo === null || v < lo) lo = v;
-      if (hi === null || v > hi) hi = v;
-    }
-  }
-  return lo === null ? null : [lo, hi];
-}
-
-function explicitNumericWindow(root, info) {
-  let win = null;
-  walkEncoding(root, "x", enc => {
-    if (win || !enc || enc.field !== info.xField) return;
-    const d = enc.scale && enc.scale.domain;
-    if (!Array.isArray(d) || d.length !== 2) return;
-    const a = cfsNum(d[0]), b = cfsNum(d[1]);
-    if (a !== null && b !== null) win = [a, b];
-  });
-  return win;
-}
-
-/**
- * Clamp a numeric x axis and repair what that strands.
- *
- * The y domain is the part a reader would otherwise have to fix by
- * hand: cutting the x range to the left half of a scatter leaves the y
- * axis spanning points that are no longer drawn, so the visible cloud
- * sits in a corner.
- */
-function applyValueWindow(root, lo, hi, opts) {
-  opts = opts || {};
-  const info = opts.info || panelPlotInfo(root, "quantitative");
-  if (!info) return { ok: false, reason: "no numeric x axis in this panel" };
-  if (!(hi > lo)) return { ok: false, reason: "the low end has to come first" };
-
-  const inside = [];
-  for (const s of info.seriesNodes) {
-    for (const r of s.rows) {
-      const v = cfsNum(r[info.xField]);
-      if (v !== null && v >= lo && v <= hi) inside.push(r);
-    }
-  }
-  if (!inside.length) return { ok: false, reason: "no data inside that range" };
-
-  // The producer's own domain is usually padded past the data, and
-  // "All" has to mean that rather than the bare extent -- otherwise
-  // clearing a window crops the cloud tighter than it started.
-  const st = transformStore();
-  if (!st.xdom) st.xdom = {};
-  if (!(info.xField in st.xdom)) {
-    st.xdom[info.xField] = explicitNumericWindow(root, info);
-  }
-
-  let clamped = 0;
-  walkEncoding(root, "x", enc => {
-    if (!enc || enc.field !== info.xField) return;
-    if (!enc.scale) enc.scale = {};
-    enc.scale.domain = [lo, hi];
-    clamped++;
-  });
-  let clipped = 0;
-  for (const s of info.seriesNodes) {
-    if (typeof s.node.mark === "string") s.node.mark = { type: s.node.mark };
-    s.node.mark.clip = true;
-    clipped++;
-  }
-
-  const report = { ok: true, window: [lo, hi], clamped: clamped, clipped: clipped };
-  if (info.yField && !nonLinearYScale(root, info.yField)) {
-    const vals = [];
-    for (const r of inside) {
-      const v = cfsNum(r[info.yField]);
-      if (v !== null) vals.push(v);
-    }
-    if (vals.length) {
-      report.yDomain = calcYAxisDomain(vals, { includeZero: !!opts.includeZero });
-      setYDomain(root, info.yField, report.yDomain);
-    }
-  }
-  return report;
-}
-
-function clearValueWindow(root, info) {
-  const st = transformStore();
-  const was = st.xdom && st.xdom[info.xField];
-  const span = was || numericXExtent(info);
-  if (!span) return { ok: false, reason: "no numeric rows in this panel" };
-  const rep = applyValueWindow(root, span[0], span[1], { info: info });
-  if (rep.ok && !was) {
-    // Nothing to go back to, so leave the axis on auto rather than
-    // pinning it to the extent of today's rows.
-    walkEncoding(root, "x", enc => {
-      if (!enc || enc.field !== info.xField || !enc.scale) return;
-      delete enc.scale.domain;
-    });
-  }
-  return rep;
-}
-
-/* ---- categories ---------------------------------------------------- */
-
-/* In the order vega will draw them: the explicit sort array where the
-   studio has written one, otherwise first appearance in the data. */
-function categoryOrder(root, info) {
-  let sort = null;
-  walkEncoding(root, "x", enc => {
-    if (sort || !enc || enc.field !== info.xField) return;
-    if (Array.isArray(enc.sort)) sort = enc.sort.map(String);
-  });
-  const seen = [];
-  for (const s of info.seriesNodes) {
-    for (const r of s.rows) {
-      const v = String(r[info.xField]);
-      if (seen.indexOf(v) < 0) seen.push(v);
-    }
-  }
-  if (!sort) return seen;
-  return sort.filter((c) => seen.indexOf(c) >= 0)
-             .concat(seen.filter((c) => sort.indexOf(c) < 0));
-}
-
-function categoryStore() {
-  const st = transformStore();
-  if (!st.catHidden) st.catHidden = {};   // x field -> [category]
-  if (!st.catRows) st.catRows = {};       // dataset key -> rows before hiding
-  return st;
-}
-
-function writeCategoryOrder(root, info, order) {
-  walkEncoding(root, "x", enc => {
-    if (!enc || enc.field !== info.xField) return;
-    enc.sort = order.slice();
-  });
-}
-
-/**
- * Take categories off the chart, or put them back.
- *
- * Unlike a numeric window there is nothing to clamp: a band scale's
- * domain is whatever the data still contains, so a category leaves by
- * having its rows removed. The rows are remembered first, because that
- * makes the removal a set rather than a sequence -- asking for a
- * different set later starts from all of them rather than from what
- * the last call happened to leave.
- */
-function setHiddenCategories(root, names) {
-  const info = panelPlotInfo(root, "nominal") || panelPlotInfo(root, "ordinal");
-  if (!info) return { ok: false, reason: "no categorical x axis in this panel" };
-  const st = categoryStore();
-  const hide = (names || []).map(String);
-
-  for (const s of info.seriesNodes) {
-    if (!st.catRows[s.key]) st.catRows[s.key] = deepClone(s.rows);
-    const all = st.catRows[s.key];
-    const kept = all.filter((r) => hide.indexOf(String(r[info.xField])) < 0);
-    if (!kept.length) return { ok: false, reason: "that would empty the chart" };
-    s.rows.length = 0;
-    for (const r of kept) s.rows.push(deepClone(r));
-  }
-  st.catHidden[info.xField] = hide;
-
-  const order = categoryOrder(root, info).filter((c) => hide.indexOf(c) < 0);
-  writeCategoryOrder(root, info, order);
-  return { ok: true, shown: order.length, hidden: hide.length };
-}
-
-function hiddenCategories(root, info) {
-  const st = currentSpec.usermeta && currentSpec.usermeta.cfsTransform;
-  return ((st && st.catHidden && st.catHidden[info.xField]) || []).slice();
-}
-
-/* Sorting by the bar height rather than by the label, which is what a
-   reader means by "biggest first". Written as an explicit array rather
-   than vega's "-y" so that it survives the values changing underneath
-   it -- an order that silently re-sorts is an order nobody chose. */
-function sortCategoriesByValue(root, info, descending) {
-  if (!info.yField) return { ok: false, reason: "nothing here to sort by" };
-  const total = Object.create(null);
-  for (const s of info.seriesNodes) {
-    for (const r of s.rows) {
-      const v = cfsNum(r[info.yField]);
-      if (v === null) continue;
-      const k = String(r[info.xField]);
-      total[k] = (total[k] || 0) + v;
-    }
-  }
-  const order = categoryOrder(root, info).slice().sort(
-    (a, b) => (descending ? 1 : -1) * ((total[b] || 0) - (total[a] || 0)));
-  writeCategoryOrder(root, info, order);
-  return { ok: true, order: order };
-}
-
-function sortCategoriesByName(root, info, ascending) {
-  const order = categoryOrder(root, info).slice().sort(
-    (a, b) => (ascending ? 1 : -1) * String(a).localeCompare(String(b)));
-  writeCategoryOrder(root, info, order);
-  return { ok: true, order: order };
-}
-
-function moveCategory(root, info, name, delta) {
-  const order = categoryOrder(root, info).slice();
-  const at = order.indexOf(String(name));
-  const to = at + delta;
-  if (at < 0 || to < 0 || to >= order.length) {
-    return { ok: false, reason: "already at the " + (delta < 0 ? "start" : "end") };
-  }
-  order.splice(to, 0, order.splice(at, 1)[0]);
-  writeCategoryOrder(root, info, order);
-  return { ok: true, order: order };
-}
-
-/* ============================================================
-   SERIES TRANSFORMS
-
-   A transform is the same SHAPE of operation as a time window: it
-   changes what the data marks say, and then every derived layer the
-   producer baked is wrong until it is repaired. So it reuses the six
-   steps rather than reimplementing them -- recompute the values, then
-   hand the panel to applyTimeWindow.
-
-   What it cannot borrow is losslessness. A window clamps and leaves
-   whole data in the spec; a transform has to overwrite the y values,
-   and a second transform computed from the first would be nonsense
-   (YoY of an index of a rolling mean). So the untransformed rows are
-   remembered in usermeta and EVERY apply starts by restoring them.
-   That is what makes a transform replaceable, stackable in one step,
-   and removable.
-
-   Vega-Lite `transform` blocks are deliberately not used. The engine
-   bakes end-of-line labels and annotation rows as separate data nodes
-   with pre-computed values, so a transform block on the series layer
-   would move the line and leave the label printing last month's
-   number at last month's height.
-   ============================================================ */
-
-function transformStore() {
-  if (!currentSpec.usermeta) currentSpec.usermeta = {};
-  const m = currentSpec.usermeta;
-  if (!m.cfsTransform) m.cfsTransform = {};
-  const t = m.cfsTransform;
-  if (!t.pristine) t.pristine = {};   // dataset key -> rows as the engine emitted them
-  if (!t.byKey) t.byKey = {};         // dataset key -> { series | "__all__": spec }
-  if (!t.titles) t.titles = {};       // y field -> the producer's own axis title
-  if (!t.cols) t.cols = [];           // [{column, name, color}] lifted from the frame
-  if (!t.hidden) t.hidden = [];       // series taken off the chart
-  if (!t.names) t.names = {};         // data name -> the name the reader sees
-  if (!t.order) t.order = null;       // legend order, by data name
-  if (!t.annoGone) t.annoGone = [];   // producer annotations taken off
-  return t;
-}
-
-const CFS_ALL_SERIES = "__all__";
-
-/* Every data-mark node that a transform could act on, with the y field
-   it draws and the dataset it draws from. Label and annotation layers
-   are excluded -- they are repaired afterwards, not transformed. */
-function transformTargets(root) {
-  const out = [];
-  const seen = Object.create(null);
-  walkDataNodes(root, (node, rows, key) => {
-    if (!rows || !rows.length || !key) return;
-    if (isLvlNode(node) || isTextPanelNode(node)) return;
-    if (CFS_DATA_MARKS.indexOf(markTypeOf(node)) < 0) return;
-    const yf = encFieldOf(node, "y");
-    const xf = encFieldOf(node, "x");
-    if (!yf || yf === CFS_LVL_FIELD || !xf) return;
-    const id = key + "|" + yf;
-    if (seen[id]) return;
-    seen[id] = true;
-    out.push({ rows: rows, key: key, yField: yf, xField: xf,
-               colorField: encFieldOf(node, "color") });
-  });
-  return out;
-}
-
-function seriesOnYField(root, yField) {
-  const names = [];
-  for (const t of transformTargets(root)) {
-    if (t.yField !== yField) continue;
-    if (!t.colorField) { if (names.indexOf("") < 0) names.push(""); continue; }
-    for (const r of t.rows) {
-      const s = String(r[t.colorField]);
-      if (names.indexOf(s) < 0) names.push(s);
-    }
-  }
-  return names;
-}
-
-/* ---- the catalogue -------------------------------------------------
-   Each entry turns one series -- already sorted by date -- into the
-   same number of values, null where the transform has no answer yet.
-   A null row is dropped, which is how a 12-month change loses its
-   first year and a resample keeps one row per period.
-
-   `units: "changed"` marks the transforms that stop the axis meaning
-   what it used to. Those may only be applied to every series sharing
-   the axis, because half an axis in per cent and half in levels is a
-   chart that lies. */
-function cfsShiftMonths(date, back) {
-  const d = new Date(date.getTime());
-  const day = d.getUTCDate();
-  d.setUTCDate(1);
-  d.setUTCMonth(d.getUTCMonth() - back);
-  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
-  d.setUTCDate(Math.min(day, last));
-  return d;
-}
-
-/* The observation a calendar step back, or -1 when the series does not
-   reach that far or has a hole where it should be. Nearest-on-or-before
-   with a tolerance of one cadence, so a month-end series answers "a year
-   ago" with the right month rather than with whatever row is 12 slots
-   back after a gap. */
-function cfsLookback(pts, i, months) {
-  const target = cfsShiftMonths(pts[i].date, months).getTime();
-  let lo = 0, hi = i, best = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (pts[mid].date.getTime() <= target) { best = mid; lo = mid + 1; }
-    else hi = mid - 1;
-  }
-  if (best < 0) return -1;
-  let tol = 0;
-  if (i > 0) {
-    const gaps = [];
-    for (let k = 1; k <= i; k++) gaps.push(pts[k].date - pts[k - 1].date);
-    tol = cfsMedian(gaps) * 1.5;
-  }
-  if (tol && Math.abs(pts[best].date.getTime() - target) > tol) return -1;
-  return best;
-}
-
-/* Annualising divides by a count of periods in a year, and dividing the
-   calendar by the median gap gets that subtly wrong: month-end dates are
-   31 days apart more often than not, which reads as 11.8 months in a
-   year and lands the vol about 1% light. Snap to the cadence a reader
-   would name instead -- 252 for daily, 12 for monthly -- so the studio
-   annualises the way the pandas it emits will. */
-function cfsPeriodsPerYear(pts) {
-  if (pts.length < 3) return 1;
-  const gaps = [];
-  for (let k = 1; k < pts.length; k++) gaps.push(pts[k].date - pts[k - 1].date);
-  const days = cfsMedian(gaps) / 864e5;
-  if (!(days > 0)) return 1;
-  if (days <= 3) return 252;
-  if (days <= 10) return 52;
-  if (days <= 20) return 26;
-  if (days <= 45) return 12;
-  if (days <= 130) return 4;
-  if (days <= 220) return 2;
-  return 1;
-}
-
-function cfsPctOver(pts, back) {
-  return pts.map((p, i) => {
-    const j = cfsLookback(pts, i, back);
-    if (j < 0 || pts[j].v === null || pts[j].v === 0 || p.v === null) return null;
-    return (p.v / pts[j].v - 1) * 100;
-  });
-}
-
-function cfsRolling(pts, w, fn) {
-  return pts.map((p, i) => {
-    if (i + 1 < w) return null;
-    const win = [];
-    for (let k = i - w + 1; k <= i; k++) {
-      if (pts[k].v === null) return null;
-      win.push(pts[k].v);
-    }
-    return fn(win, i);
-  });
-}
-
-const cfsMeanOf = (a) => a.reduce((x, y) => x + y, 0) / a.length;
-function cfsStdOf(a) {
-  if (a.length < 2) return null;
-  const m = cfsMeanOf(a);
-  return Math.sqrt(a.reduce((s, v) => s + (v - m) * (v - m), 0) / (a.length - 1));
-}
-
-const CFS_TRANSFORMS = [
-  { id: "yoy", label: "Year-on-year % change", units: "changed",
-    suffix: "% YoY", run: (pts) => cfsPctOver(pts, 12) },
-  { id: "qoq", label: "Quarter-on-quarter % change", units: "changed",
-    suffix: "% QoQ", run: (pts) => cfsPctOver(pts, 3) },
-  { id: "mom", label: "Month-on-month % change", units: "changed",
-    suffix: "% MoM", run: (pts) => cfsPctOver(pts, 1) },
-  { id: "rebase", label: "Rebase to 100 at the start", units: "changed",
-    param: { key: "base", label: "base value", def: 100, min: 1, max: 10000 },
-    suffix: (p) => "index, start = " + p.base,
-    run: (pts, p) => {
-      const first = pts.find((q) => q.v !== null && q.v !== 0);
-      if (!first) return pts.map(() => null);
-      return pts.map((q) => (q.v === null ? null : q.v / first.v * p.base));
-    } },
-  { id: "pct_start", label: "% change from the start", units: "changed",
-    suffix: "% change from start",
-    run: (pts) => {
-      const first = pts.find((q) => q.v !== null && q.v !== 0);
-      if (!first) return pts.map(() => null);
-      return pts.map((q) => (q.v === null ? null : (q.v / first.v - 1) * 100));
-    } },
-  { id: "diff", label: "Change over n periods", units: "changed",
-    param: { key: "n", label: "periods", def: 1, min: 1, max: 60 },
-    suffix: (p) => p.n + "-period change",
-    run: (pts, p) => pts.map((q, i) => {
-      const j = i - p.n;
-      return (j < 0 || pts[j].v === null || q.v === null) ? null : q.v - pts[j].v;
-    }) },
-  { id: "diff_bp", label: "Change over n periods, in bp", units: "changed",
-    param: { key: "n", label: "periods", def: 1, min: 1, max: 60 },
-    suffix: (p) => p.n + "-period change, bp",
-    run: (pts, p) => pts.map((q, i) => {
-      const j = i - p.n;
-      return (j < 0 || pts[j].v === null || q.v === null)
-        ? null : (q.v - pts[j].v) * 100;
-    }) },
-  { id: "roll_mean", label: "Rolling average", units: "same",
-    param: { key: "w", label: "window", def: 3, min: 2, max: 120 },
-    suffix: (p) => p.w + "-period average",
-    run: (pts, p) => cfsRolling(pts, p.w, cfsMeanOf) },
-  { id: "roll_std", label: "Rolling standard deviation", units: "changed",
-    param: { key: "w", label: "window", def: 12, min: 3, max: 250 },
-    suffix: (p) => p.w + "-period stdev",
-    run: (pts, p) => cfsRolling(pts, p.w, cfsStdOf) },
-  { id: "roll_vol", label: "Rolling annualised volatility", units: "changed",
-    param: { key: "w", label: "window", def: 20, min: 3, max: 250 },
-    suffix: (p) => p.w + "-period annualised vol, %",
-    run: (pts, p) => {
-      const ann = Math.sqrt(cfsPeriodsPerYear(pts));
-      const rets = pts.map((q, i) => {
-        const prev = i > 0 ? pts[i - 1].v : null;
-        return (prev === null || prev === 0 || q.v === null) ? null : q.v / prev - 1;
-      });
-      return pts.map((q, i) => {
-        if (i + 1 < p.w + 1) return null;
-        const win = [];
-        for (let k = i - p.w + 1; k <= i; k++) {
-          if (rets[k] === null) return null;
-          win.push(rets[k]);
-        }
-        const s = cfsStdOf(win);
-        return s === null ? null : s * ann * 100;
-      });
-    } },
-  { id: "roll_z", label: "Rolling z-score", units: "changed",
-    param: { key: "w", label: "window", def: 24, min: 3, max: 250 },
-    suffix: (p) => p.w + "-period z-score",
-    run: (pts, p) => cfsRolling(pts, p.w, (win) => {
-      const s = cfsStdOf(win);
-      return (s === null || s === 0) ? null : (win[win.length - 1] - cfsMeanOf(win)) / s;
-    }) },
-  { id: "resample", label: "Resample", units: "same",
-    choice: { key: "freq", label: "period",
-              options: [["W", "weekly"], ["M", "monthly"],
-                        ["Q", "quarterly"], ["A", "annual"]], def: "M" },
-    suffix: "",
-    run: (pts, p) => {
-      const bucket = (d) => {
-        const y = d.getUTCFullYear(), m = d.getUTCMonth();
-        if (p.freq === "A") return String(y);
-        if (p.freq === "Q") return y + "Q" + Math.floor(m / 3);
-        if (p.freq === "M") return y + "-" + m;
-        const t = Date.UTC(y, m, d.getUTCDate());
-        return String(Math.floor(t / (7 * 864e5)));
-      };
-      // Last observation in each period, which is what a level series
-      // means by "monthly" and what pandas resample().last() gives.
-      const keep = Object.create(null);
-      pts.forEach((q, i) => { if (q.v !== null) keep[bucket(q.date)] = i; });
-      const wanted = new Set(Object.keys(keep).map((k) => keep[k]));
-      return pts.map((q, i) => (wanted.has(i) ? q.v : null));
-    } },
-  { id: "log", label: "Natural log", units: "changed", suffix: "log",
-    run: (pts) => pts.map((q) => (q.v === null || q.v <= 0 ? null : Math.log(q.v))) },
-  { id: "cumsum", label: "Cumulative sum", units: "changed", suffix: "cumulative",
-    run: (pts) => {
-      let acc = 0;
-      return pts.map((q) => (q.v === null ? null : (acc += q.v)));
-    } },
-  { id: "detrend", label: "Remove the linear trend", units: "changed",
-    suffix: "detrended",
-    run: (pts) => {
-      const xs = [], ys = [];
-      pts.forEach((q, i) => { if (q.v !== null) { xs.push(i); ys.push(q.v); } });
-      if (xs.length < 3) return pts.map(() => null);
-      const mx = cfsMeanOf(xs), my = cfsMeanOf(ys);
-      let num = 0, den = 0;
-      xs.forEach((x, k) => { num += (x - mx) * (ys[k] - my); den += (x - mx) * (x - mx); });
-      const b = den === 0 ? 0 : num / den;
-      return pts.map((q, i) => (q.v === null ? null : q.v - (my + b * (i - mx))));
-    } },
-  { id: "shift", label: "Shift forward n periods", units: "same",
-    param: { key: "n", label: "periods", def: 1, min: 1, max: 60 },
-    suffix: (p) => "lagged " + p.n,
-    run: (pts, p) => pts.map((q, i) => {
-      const j = i - p.n;
-      return j < 0 ? null : pts[j].v;
-    }) },
-];
-
-const transformById = (id) => CFS_TRANSFORMS.find((t) => t.id === id) || null;
-
-function transformSuffix(spec) {
-  const def = transformById(spec.id);
-  if (!def) return "";
-  return (typeof def.suffix === "function") ? def.suffix(spec) : def.suffix;
-}
-
-function transformLabel(spec) {
-  const def = transformById(spec.id);
-  if (!def) return spec.id;
-  const s = transformSuffix(spec);
-  return s ? def.label + " (" + s + ")" : def.label;
-}
-
-/* ---- applying ------------------------------------------------------ */
-
-function restorePristine(target) {
-  const st = transformStore();
-  if (!st.pristine[target.key]) st.pristine[target.key] = deepClone(target.rows);
-  const p = st.pristine[target.key];
-  target.rows.length = 0;
-  for (const r of p) target.rows.push(deepClone(r));
-}
-
-/* Rebuild every transformed dataset from the remembered rows. Called
-   for its side effect on the spec; the caller repairs afterwards. */
-function applySeriesTransforms(root) {
-  const st = transformStore();
-  let applied = 0;
-  for (const t of transformTargets(root)) {
-    const reg = st.byKey[t.key];
-    restorePristine(t);
-    // Before the transforms, because a column lifted out of the frame
-    // is a series like any other and a rolling average has to reach it.
-    liftColumnSeries(t);
-    if (!reg || !Object.keys(reg).length) continue;
-
-    const groups = new Map();
-    t.rows.forEach((row, idx) => {
-      const d = parseSpecDate(row[t.xField]);
-      if (!d) return;
-      const s = t.colorField ? String(row[t.colorField]) : "";
-      if (!groups.has(s)) groups.set(s, []);
-      groups.get(s).push({ idx: idx, date: d, v: cfsNum(row[t.yField]) });
-    });
-
-    const drop = new Set();
-    groups.forEach((pts, name) => {
-      const spec = reg[name] || reg[CFS_ALL_SERIES];
-      if (!spec) return;
-      const def = transformById(spec.id);
-      if (!def) return;
-      pts.sort((a, b) => a.date - b.date);
-      const vals = def.run(pts, spec);
-      pts.forEach((p, k) => {
-        const v = vals[k];
-        if (v === null || v === undefined || !isFinite(v)) { drop.add(p.idx); return; }
-        t.rows[p.idx][t.yField] = v;
-      });
-      applied++;
-    });
-    if (drop.size) {
-      const kept = t.rows.filter((_, i) => !drop.has(i));
-      t.rows.length = 0;
-      for (const r of kept) t.rows.push(r);
-    }
-  }
-  return applied;
-}
-
-/* ---- series algebra -------------------------------------------------
-   Four things a reader wants to do to the set of lines itself, as
-   opposed to the values inside one: take one off, call one something
-   else, put them in a different order, and plot a column the producer
-   left out of the chart.
-
-   All four are stored as intent and replayed on every rebuild, for the
-   same reason the transforms are: the pristine rows are the only copy
-   of the producer's data, and an edit written straight into the live
-   rows would be gone the next time anything restored them.
-
-   The names in the store are always the DATA names. A rename is the
-   last thing applied, a relabelling on the way out, so a transform
-   registered against "Fed funds" keeps working after the legend starts
-   saying "Policy rate". */
-
-/* Columns in the frame that are numbers and are not already the x, the
-   y, or the series column -- the candidates for a new line. */
-function unplottedColumns(root) {
-  const t = primaryTarget(root);
-  if (!t) return [];
-  const rows = (transformStore().pristine[t.key]) || t.rows;
-  const taken = [t.xField, t.yField, t.colorField, CFS_LVL_FIELD,
-                 "_label", "_y_text"];
-  const lifted = (transformStore().cols || []).map((c) => c.column);
-  const out = [];
-  for (const col of Object.keys(rows[0] || {})) {
-    if (taken.indexOf(col) >= 0 || lifted.indexOf(col) >= 0) continue;
-    let numeric = 0;
-    for (const r of rows) {
-      const v = cfsNum(r[col]);
-      if (v !== null && isFinite(v)) numeric++;
-    }
-    if (numeric >= Math.max(2, rows.length * 0.5)) out.push(col);
-  }
-  return out;
-}
-
-/* One row per x value, so a long-form frame that repeats each date once
-   per series does not produce one copy of the new line per series. */
-function liftColumnSeries(t) {
-  const specs = transformStore().cols || [];
-  if (!specs.length || !t.colorField) return;
-  const base = t.rows.slice();
-  for (const spec of specs) {
-    const seen = Object.create(null);
-    for (const r of base) {
-      const at = String(r[t.xField]);
-      if (seen[at]) continue;
-      const v = cfsNum(r[spec.column]);
-      if (v === null || !isFinite(v)) continue;
-      seen[at] = true;
-      const row = Object.assign({}, r);
-      row[t.colorField] = spec.name;
-      row[t.yField] = v;
-      t.rows.push(row);
-    }
-  }
-}
-
-/* Everything a hidden series leaves behind: its rows, its end-of-line
-   label, and its slot in the colour scale. Leaving the slot would keep
-   it in the legend, which is the whole thing the reader asked to undo. */
-function applySeriesHiding(root) {
-  const st = transformStore();
-  const hide = st.hidden || [];
-  const t = primaryTarget(root);
-  if (!hide.length || !t || !t.colorField) return;
-  const gone = (name) => hide.indexOf(String(name)) >= 0;
-  for (const tt of transformTargets(root)) {
-    if (!tt.colorField) continue;
-    const kept = tt.rows.filter((r) => !gone(r[tt.colorField]));
-    tt.rows.length = 0;
-    for (const r of kept) tt.rows.push(r);
-  }
-  const store = windowStore();
-  walkDataNodes(root, (node, rows, key) => {
-    if (!isLvlNode(node) || !rows) return;
-    const kept = rows.filter((r) => !gone(r[t.colorField]));
-    rows.length = 0;
-    for (const r of kept) rows.push(r);
-    if (store.labels && store.labels[key]) {
-      store.labels[key] = store.labels[key].filter((r) => !gone(r[t.colorField]));
-    }
-  });
-  const info = specColorScale(t.colorField);
-  const domain = [], range = [];
-  info.domain.forEach((d, i) => {
-    if (gone(d)) return;
-    domain.push(d);
-    range.push(info.colors[i]);
-  });
-  writeColorScale(t.colorField, domain, range);
-}
-
-/* The legend reads off the colour-scale domain, so the order lives
-   there. Names the store does not mention keep their relative order
-   behind the ones it does. */
-function applySeriesOrder(root) {
-  const st = transformStore();
-  const want = st.order;
-  const t = primaryTarget(root);
-  if (!want || !want.length || !t || !t.colorField) return;
-  const info = specColorScale(t.colorField);
-  const rank = (n) => {
-    const k = want.indexOf(String(n));
-    return k < 0 ? want.length + info.domain.indexOf(n) : k;
-  };
-  const pairs = info.domain.map((d, i) => [d, info.colors[i]]);
-  pairs.sort((a, b) => rank(a[0]) - rank(b[0]));
-  writeColorScale(t.colorField,
-                  pairs.map((p) => p[0]), pairs.map((p) => p[1]));
-}
-
-/* The last pass: swap the data names for the ones the reader chose,
-   everywhere a name is visible. */
-function applySeriesRenames(root) {
-  const st = transformStore();
-  const map = st.names || {};
-  if (!Object.keys(map).length) return;
-  const t = primaryTarget(root);
-  if (!t || !t.colorField) return;
-  const show = (v) => (map[String(v)] !== undefined ? map[String(v)] : v);
-  for (const tt of transformTargets(root)) {
-    if (!tt.colorField) continue;
-    for (const r of tt.rows) r[tt.colorField] = show(r[tt.colorField]);
-  }
-  const store = windowStore();
-  const relabel = (rows) => {
-    for (const r of rows) {
-      const to = show(r[t.colorField]);
-      if (r._label !== undefined && String(r._label) === String(r[t.colorField])) {
-        r._label = to;
-      }
-      r[t.colorField] = to;
-    }
-  };
-  walkDataNodes(root, (node, rows, key) => {
-    if (!isLvlNode(node) || !rows) return;
-    relabel(rows);
-    if (store.labels && store.labels[key]) relabel(store.labels[key]);
-  });
-  const info = specColorScale(t.colorField);
-  writeColorScale(t.colorField, info.domain.map(show), info.colors);
-}
-
-function writeColorScale(colorField, domain, range) {
-  for (const n of colorNodesFor(colorField)) {
-    if (!n.encoding.color.scale) n.encoding.color.scale = {};
-    n.encoding.color.scale.domain = domain;
-    n.encoding.color.scale.range = range;
-  }
-}
-
-/* The scale as the SPEC has it, not as the last render had it.
-   colorScaleInfo reads the live vega view, which is a frame behind
-   during a rebuild -- the passes below run one after another on the
-   spec, and each has to see what the one before it wrote. */
-function specColorScale(colorField) {
-  for (const n of colorNodesFor(colorField)) {
-    const sc = n.encoding.color.scale;
-    if (sc && Array.isArray(sc.domain) && Array.isArray(sc.range)) {
-      return { domain: sc.domain.slice(), colors: sc.range.slice() };
-    }
-  }
-  return colorScaleInfo(colorField);
-}
-
-/* The one place the whole chain runs, so no caller can forget a step
-   and leave a rename applied to the rows but not to the legend. */
-function reapplySeries(root) {
-  rebuildColorScale(root);
-  applySeriesTransforms(root);
-  applyDerivedSeries(root);
-  applySeriesHiding(root);
-  applySeriesOrder(root);
-  applySeriesRenames(root);
-  refreshYTitles(root);
-  return repairAfterTransform(root);
-}
-
-/* The names as the data carries them -- what every operation below
-   takes, and what the menus translate the reader's click into. */
-function dataSeriesNames(root) {
-  const t = primaryTarget(root);
-  if (!t || !t.colorField) return [];
-  const st = transformStore();
-  const rows = st.pristine[t.key] || t.rows;
-  const out = [];
-  for (const r of rows) {
-    const s = String(r[t.colorField]);
-    if (out.indexOf(s) < 0) out.push(s);
-  }
-  for (const c of st.cols || []) if (out.indexOf(c.name) < 0) out.push(c.name);
-  for (const d of st.derived || []) if (out.indexOf(d.name) < 0) out.push(d.name);
-  return out.filter((n) => (st.hidden || []).indexOf(n) < 0);
-}
-
-function displaySeriesName(name) {
-  const st = currentSpec.usermeta && currentSpec.usermeta.cfsTransform;
-  const map = (st && st.names) || {};
-  return map[String(name)] !== undefined ? map[String(name)] : name;
-}
-
-function dataSeriesName(shown) {
-  const st = currentSpec.usermeta && currentSpec.usermeta.cfsTransform;
-  const map = (st && st.names) || {};
-  for (const k of Object.keys(map)) if (map[k] === shown) return k;
-  return shown;
-}
-
-/**
- * Take a line off the chart.
- *
- * Which of the three kinds it is decides what "off" means. A line this
- * studio derived is forgotten; a column it lifted is put back; a series
- * the producer plotted is hidden, and can be brought back, because the
- * data for it is still in the frame.
- */
-function removeSeries(root, name) {
-  const st = transformStore();
-  const t = primaryTarget(root);
-  if (!t || !t.colorField) {
-    return { ok: false, reason: "this chart draws one unnamed series" };
-  }
-  if (dataSeriesNames(root).length <= 1) {
-    return { ok: false, reason: "that is the only line left" };
-  }
-  if ((st.derived || []).some((d) => d.name === name)) {
-    return removeDerivedSeries(root, name);
-  }
-  if ((st.cols || []).some((c) => c.name === name)) {
-    st.cols = st.cols.filter((c) => c.name !== name);
-    return reapplySeries(root);
-  }
-  if ((st.hidden || []).indexOf(name) >= 0) {
-    return { ok: false, reason: name + " is already off the chart" };
-  }
-  st.hidden = (st.hidden || []).concat([name]);
-  return reapplySeries(root);
-}
-
-function restoreSeries(root, name) {
-  const st = transformStore();
-  if ((st.hidden || []).indexOf(name) < 0) {
-    return { ok: false, reason: name + " is not hidden" };
-  }
-  st.hidden = st.hidden.filter((n) => n !== name);
-  return reapplySeries(root);
-}
-
-/**
- * Rename a line for the reader without renaming it for the machinery.
- *
- * The transforms, the derived series and the hide list are all keyed by
- * the data name, and stay keyed by it. The new name is a label put on
- * at the end -- which is also why renaming twice is not a chain.
- */
-function renameSeries(root, name, to) {
-  const st = transformStore();
-  const text = String(to == null ? "" : to).trim();
-  if (!text) return { ok: false, reason: "a line needs a name" };
-  const clash = dataSeriesNames(root)
-    .filter((n) => n !== name).map(displaySeriesName);
-  if (clash.indexOf(text) >= 0) {
-    return { ok: false, reason: text + " is already on this chart" };
-  }
-  if (text === name) delete st.names[name];
-  else st.names[name] = text;
-  return Object.assign({ name: text }, reapplySeries(root));
-}
-
-function reorderSeries(root, names) {
-  const st = transformStore();
-  st.order = (names || []).slice();
-  return reapplySeries(root);
-}
-
-function moveSeries(root, name, delta) {
-  const order = (transformStore().order || dataSeriesNames(root)).slice();
-  const at = order.indexOf(name);
-  const to = at + delta;
-  if (at < 0 || to < 0 || to >= order.length) {
-    return { ok: false, reason: "already at the " + (delta < 0 ? "top" : "bottom") };
-  }
-  order.splice(to, 0, order.splice(at, 1)[0]);
-  return reorderSeries(root, order);
-}
-
-/**
- * Plot a column the producer did not.
- *
- * The frame usually carries more than the chart shows -- a second rate,
- * a volume, a forecast. Lifting one adds rows to the long-form data
- * rather than a second y encoding, so it inherits the transforms, the
- * time window and the labelling that the other lines already have. The
- * cost of that is the units: it lands on the shared axis, so a column
- * measured in something else will read as a flat rail.
- */
-function addSeriesFromColumn(root, column, name) {
-  const t = primaryTarget(root);
-  if (!t) return { ok: false, reason: "nothing here to add to" };
-  if (!t.colorField) {
-    return { ok: false, reason: "this chart draws one unnamed series, so "
-      + "there is no series column for a second line to sit in" };
-  }
-  if (unplottedColumns(root).indexOf(column) < 0) {
-    return { ok: false, reason: column + " is not a spare numeric column" };
-  }
-  const lines = dataSeriesNames(root).length;
-  if (lines >= 6) {
-    return { ok: false, reason: "six lines is the readable limit, and this "
-      + "chart already has " + lines };
-  }
-  const st = transformStore();
-  const label = name || column;
-  if (dataSeriesNames(root).map(displaySeriesName).indexOf(label) >= 0) {
-    return { ok: false, reason: label + " is already on this chart" };
-  }
-  baseColorScale(root);
-  const color = nextSeriesColor(root);
-  st.cols = (st.cols || []).concat([{ column: column, name: label, color: color }]);
-  return Object.assign({ name: label }, reapplySeries(root));
-}
-
-/* ---- derived series -------------------------------------------------
-   A line the data never carried: the same series with a rolling average
-   over it, or the gap between two of them. Same machinery as a
-   transform -- recompute from the remembered rows on every apply -- with
-   two extra jobs a transform does not have. The colour scale has to gain
-   an entry, or vega gives the new line whatever is left over and the
-   legend disagrees with the chart; and the end-of-line label layer is a
-   separate dataset with one row per series, so an unlabelled line would
-   sit beside labelled ones.
-
-   Computed from what is ON SCREEN rather than from the pristine rows: if
-   everything has been rebased to 100, the spread the reader asks for is
-   the spread of the rebased lines. */
-
-const CFS_DERIVED = [
-  { id: "dup", label: "the same series, transformed", arity: 1 },
-  { id: "spread", label: "the gap between two series", arity: 2, units: "same",
-    suffix: "spread", run: (a, b) => a.map((v, i) =>
-      (v === null || b[i] === null) ? null : v - b[i]) },
-  { id: "ratio", label: "the ratio of two series", arity: 2, units: "changed",
-    suffix: "ratio", run: (a, b) => a.map((v, i) =>
-      (v === null || b[i] === null || b[i] === 0) ? null : v / b[i]) },
-  { id: "corr", label: "rolling correlation of two series", arity: 2,
-    units: "changed", suffix: "rolling correlation",
-    param: { key: "w", label: "window", def: 24, min: 4, max: 250 },
-    run: (a, b, p) => a.map((_, i) => {
-      if (i + 1 < p.w) return null;
-      const xs = [], ys = [];
-      for (let k = i - p.w + 1; k <= i; k++) {
-        if (a[k] === null || b[k] === null) return null;
-        xs.push(a[k]); ys.push(b[k]);
-      }
-      const mx = cfsMeanOf(xs), my = cfsMeanOf(ys);
-      let num = 0, dx = 0, dy = 0;
-      xs.forEach((x, k) => {
-        num += (x - mx) * (ys[k] - my);
-        dx += (x - mx) * (x - mx); dy += (ys[k] - my) * (ys[k] - my);
-      });
-      return (dx === 0 || dy === 0) ? null : num / Math.sqrt(dx * dy);
-    }) },
-];
-
-const derivedById = (id) => CFS_DERIVED.find((d) => d.id === id) || null;
-
-/* The panel's main dataset -- the one the plotted series live in, which
-   is where a derived line has to be appended to share their scales. */
-function primaryTarget(root) {
-  const targets = transformTargets(root);
-  if (!targets.length) return null;
-  let best = targets[0];
-  for (const t of targets) if (t.rows.length > best.rows.length) best = t;
-  return best;
-}
-
-/* One series as [{date, v}] in date order, read off the rows as they
-   currently stand. */
-function seriesPoints(target, name) {
-  const out = [];
-  for (const r of target.rows) {
-    if (target.colorField && String(r[target.colorField]) !== name) continue;
-    const d = parseSpecDate(r[target.xField]);
-    if (!d) continue;
-    out.push({ date: d, v: cfsNum(r[target.yField]), row: r });
-  }
-  out.sort((a, b) => a.date - b.date);
-  return out;
-}
-
-/* The label rows the producer emitted, before any derived line was
-   added to them. relocateEndlineLabels rebuilds from its own pristine
-   copy every repair, so a row appended to the live array alone would
-   vanish on the next one. */
-function lvlOriginals(root) {
-  const st = transformStore();
-  if (!st.lvl) st.lvl = {};
-  const out = [];
-  const seen = Object.create(null);
-  walkDataNodes(root, (node, rows, key) => {
-    if (!isLvlNode(node) || !rows || !key || seen[key]) return;
-    seen[key] = true;
-    const store = windowStore();
-    const live = (store.labels && store.labels[key]) || rows;
-    if (!st.lvl[key]) st.lvl[key] = deepClone(live);
-    out.push({ key: key, rows: rows, original: st.lvl[key] });
-  });
-  return out;
-}
-
-function applyDerivedSeries(root) {
-  const st = transformStore();
-  const specs = st.derived || [];
-  const target = primaryTarget(root);
-  if (!target) return 0;
-
-  // The label layer goes back to what the producer emitted, then gains
-  // one row per derived line -- so removing a line removes its label.
-  const lvls = lvlOriginals(root);
-  const store = windowStore();
-  if (!store.labels) store.labels = {};
-  for (const l of lvls) store.labels[l.key] = deepClone(l.original);
-
-  if (!specs.length || !target.colorField) return 0;
-
-  let made = 0;
-  for (const spec of specs) {
-    const def = derivedById(spec.kind);
-    if (!def) continue;
-    const src = spec.sources.map((n) => seriesPoints(target, n));
-    if (src.some((p) => !p.length)) continue;
-
-    const dates = src[0].map((p) => p.date.getTime());
-    const align = (pts) => {
-      const by = new Map(pts.map((p) => [p.date.getTime(), p.v]));
-      return dates.map((t) => (by.has(t) ? by.get(t) : null));
-    };
-    let vals;
-    if (def.arity === 1) {
-      const tdef = transformById(spec.id);
-      if (!tdef) continue;
-      vals = tdef.run(src[0], spec);
-    } else {
-      vals = def.run(align(src[0]), align(src[1]), spec);
-    }
-
-    const template = src[0];
-    vals.forEach((v, i) => {
-      if (v === null || v === undefined || !isFinite(v)) return;
-      const row = Object.assign({}, template[i].row);
-      row[target.colorField] = spec.name;
-      row[target.yField] = v;
-      target.rows.push(row);
-    });
-    made++;
-
-    // A label of its own, cloned off the series it came from so it
-    // keeps whatever extra columns the producer's label layer carries.
-    for (const l of lvls) {
-      const seed = l.original.find(
-        (r) => String(r[target.colorField]) === spec.sources[0]);
-      if (!seed) continue;
-      const row = Object.assign({}, seed);
-      row[target.colorField] = spec.name;
-      if (row._label !== undefined) row._label = spec.name;
-      for (const col of Object.keys(row)) {
-        if (/colou?r/i.test(col) && spec.color) row[col] = spec.color;
-      }
-      store.labels[l.key].push(row);
-    }
-  }
-  return made;
-}
-
-/* The colour scale the producer shipped. Remembered once, because every
-   rebuild rewrites the live one -- a line added, a line hidden, a line
-   renamed and the legend all read off the same domain, and each of those
-   has to start from the same place or the second rename finds a name
-   that is no longer there. */
-function baseColorScale(root) {
-  const st = transformStore();
-  const t = primaryTarget(root);
-  if (!t || !t.colorField) return null;
-  if (!st.scale) {
-    const info = colorScaleInfo(t.colorField);
-    st.scale = { domain: info.domain.slice(), colors: info.colors.slice() };
-  }
-  return st.scale;
-}
-
-/* Producer's scale, plus one slot for every line this studio added.
-   Without the slot vega hands the new line whatever colour is left over
-   and the legend disagrees with the chart. */
-function rebuildColorScale(root) {
-  const st = transformStore();
-  const t = primaryTarget(root);
-  const base = baseColorScale(root);
-  if (!base) return;
-  const domain = base.domain.slice();
-  const range = base.colors.slice();
-  for (const s of (st.cols || []).concat(st.derived || [])) {
-    if (domain.indexOf(s.name) < 0) { domain.push(s.name); range.push(s.color); }
-  }
-  writeColorScale(t.colorField, domain, range);
-}
-
-function nextSeriesColor(root) {
-  const target = primaryTarget(root);
-  const used = target && target.colorField
-    ? colorScaleInfo(target.colorField).colors.map((c) => String(c).toLowerCase())
-    : [];
-  for (const c of paletteColors()) {
-    if (used.indexOf(String(c).toLowerCase()) < 0) return c;
-  }
-  return "#6B7B8F";
-}
-
-/**
- * Add a line the data did not carry.
- *
- * The six-line gate is the engine's, not the studio's invention: past six
- * lines a reader cannot hold the legend, and the palette starts repeating
- * hues. The unit guard is the same one a transform obeys -- a ratio or a
- * correlation is not in the units of the axis it would be drawn against.
- */
-function addDerivedSeries(root, kind, sources, params, name) {
-  const def = derivedById(kind);
-  if (!def) return { ok: false, reason: "no such derived series" };
-  const target = primaryTarget(root);
-  if (!target) return { ok: false, reason: "nothing here to derive from" };
-  if (!target.colorField) {
-    return { ok: false, reason: "this chart draws one unnamed series, so "
-      + "there is no series column for a second line to sit in" };
-  }
-  const st = transformStore();
-  const existing = st.derived || [];
-  const lines = seriesOnYField(root, target.yField).length;
-  if (lines >= 6) {
-    return { ok: false, reason: "six lines is the readable limit, and this "
-      + "chart already has " + lines };
-  }
-
-  baseColorScale(root);
-  const units = def.arity === 1
-    ? ((transformById(params.id) || {}).units || "same") : def.units;
-  if (units === "changed" && lines > 1) {
-    return { ok: false, reason: (def.arity === 1 ? "that transform" : def.label)
-      + " is not in the units of the axis it would be drawn against, and the "
-      + "other " + lines + " lines are" };
-  }
-
-  const spec = Object.assign({ kind: kind, sources: sources.slice() }, params);
-  spec.name = name || defaultDerivedName(spec, def);
-  if (seriesOnYField(root, target.yField).indexOf(spec.name) >= 0) {
-    return { ok: false, reason: spec.name + " is already on this chart" };
-  }
-  spec.color = nextSeriesColor(root);
-
-  st.derived = existing.concat([spec]);
-  return Object.assign({ name: spec.name }, reapplySeries(root));
-}
-
-function defaultDerivedName(spec, def) {
-  if (def.arity === 1) {
-    const t = transformById(spec.id);
-    return spec.sources[0] + ", " + (t ? transformSuffix(spec) || t.label : spec.id);
-  }
-  if (spec.kind === "spread") return spec.sources[0] + " \u2212 " + spec.sources[1];
-  if (spec.kind === "ratio") return spec.sources[0] + " / " + spec.sources[1];
-  return spec.sources.join(" vs ") + ", " + spec.w + "-period corr";
-}
-
-function removeDerivedSeries(root, name) {
-  const st = transformStore();
-  const before = (st.derived || []).length;
-  st.derived = (st.derived || []).filter((d) => d.name !== name);
-  if (st.derived.length === before) {
-    return { ok: false, reason: name + " is not a line this studio added" };
-  }
-  return reapplySeries(root);
-}
-
-function derivedSeriesNames() {
-  const st = currentSpec.usermeta && currentSpec.usermeta.cfsTransform;
-  return ((st && st.derived) || []).map((d) => d.name);
-}
-
-/* ---- the axis title ------------------------------------------------ */
-
-function yTitleOf(root, yField) {
-  let title = null;
-  walkEncoding(root, "y", enc => {
-    if (title !== null || !enc || enc.field !== yField) return;
-    if (enc.axis && typeof enc.axis.title === "string") title = enc.axis.title;
-    else if (typeof enc.title === "string") title = enc.title;
-  });
-  return title;
-}
-
-function setYTitle(root, yField, text) {
-  walkEncoding(root, "y", enc => {
-    if (!enc || enc.field !== yField || enc.axis === null) return;
-    if (typeof enc.axis !== "object" || enc.axis === undefined) enc.axis = {};
-    enc.axis.title = text;
-    delete enc.title;
-  });
-}
-
-/* The house style's cap on a y-axis title, substituted in rather than
-   restated, so a title this studio composes is always one make_chart
-   will take back. */
-const Y_TITLE_MAX = __Y_TITLE_MAX__;
-
-/* "Yield (%), 12-period annualised vol, %" is a true description and
-   too long to be a label. Where the qualified form does not fit, the
-   qualifier alone is the honest shortening: the axis is not showing a
-   yield any more, so dropping "Yield (%)" loses nothing the reader
-   needed. Never truncated -- a clipped word is worse than a short
-   phrase. */
-function composeYTitle(base, suffix) {
-  if (!suffix) return base;
-  const full = base + ", " + suffix;
-  return full.length <= Y_TITLE_MAX ? full : suffix;
-}
-
-/* The axis has to say what it is now showing. The producer's own title
-   is remembered on the first transform so that clearing them all puts
-   it back rather than leaving "Policy rate, % YoY" over a level. */
-function refreshYTitles(root) {
-  const st = transformStore();
-  const byField = {};
-  for (const t of transformTargets(root)) {
-    const reg = st.byKey[t.key] || {};
-    const spec = reg[CFS_ALL_SERIES];
-    if (!byField[t.yField]) byField[t.yField] = { spec: spec, mixed: false };
-    else if (JSON.stringify(byField[t.yField].spec) !== JSON.stringify(spec))
-      byField[t.yField].mixed = true;
-  }
-  Object.keys(byField).forEach((yf) => {
-    if (!(yf in st.titles)) st.titles[yf] = yTitleOf(root, yf) || yf;
-    const base = st.titles[yf];
-    const spec = byField[yf].mixed ? null : byField[yf].spec;
-    const sfx = spec ? transformSuffix(spec) : "";
-    setYTitle(root, yf, composeYTitle(base, sfx));
-  });
-}
-
-/* ---- the gesture --------------------------------------------------- */
-
-/* Recompute, then hand the panel to the window pipeline. The window in
-   force is kept; with none, the extent is re-read from the transformed
-   data, because a year-on-year series starts a year later than the one
-   it came from. */
-function repairAfterTransform(root) {
-  const win = explicitXWindow(root, temporalPlotInfo(root) || {});
-  const info = temporalPlotInfo(root);
-  if (!info) return { ok: false, reason: "no temporal x axis in this panel" };
-  const span = win || dataExtent(info);
-  if (!span) return { ok: false, reason: "no dated rows left after that transform" };
-  return applyTimeWindow(root, span[0], span[1], { info: info });
-}
-
-/**
- * Put a transform on one series, or on every series sharing the axis.
- *
- * The unit guard is the only refusal. A transform that changes what the
- * axis measures cannot be applied to a subset of the series drawn
- * against it -- the reader has no way to tell which line is in per cent
- * and which is still in levels, and the axis title can only name one of
- * them.
- */
-function setSeriesTransform(root, seriesName, id, params) {
-  const def = transformById(id);
-  if (!def) return { ok: false, reason: "no such transform" };
-  const spec = Object.assign({ id: id }, params || {});
-  const st = transformStore();
-  const targets = transformTargets(root);
-  if (!targets.length) return { ok: false, reason: "nothing here to transform" };
-
-  if (seriesName != null && def.units === "changed") {
-    const yf = targets.find((t) => !t.colorField
-      || t.rows.some((r) => String(r[t.colorField]) === seriesName));
-    const siblings = yf ? seriesOnYField(root, yf.yField) : [];
-    if (siblings.length > 1) {
-      return { ok: false, reason: def.label.toLowerCase() + " changes what the "
-        + "axis measures, so it has to go on all " + siblings.length
-        + " series sharing it rather than on " + seriesName + " alone" };
-    }
-  }
-
-  targets.forEach((t) => {
-    if (!st.byKey[t.key]) st.byKey[t.key] = {};
-    if (seriesName == null) {
-      st.byKey[t.key] = { [CFS_ALL_SERIES]: spec };
-    } else {
-      delete st.byKey[t.key][CFS_ALL_SERIES];
-      st.byKey[t.key][seriesName] = spec;
-    }
-  });
-
-  return Object.assign({ label: transformLabel(spec) }, reapplySeries(root));
-}
-
-function clearSeriesTransforms(root, seriesName) {
-  const st = transformStore();
-  let had = 0;
-  transformTargets(root).forEach((t) => {
-    const reg = st.byKey[t.key];
-    if (!reg) return;
-    if (seriesName == null) { had += Object.keys(reg).length; delete st.byKey[t.key]; }
-    else if (reg[seriesName]) { had++; delete reg[seriesName]; }
-    else if (reg[CFS_ALL_SERIES]) { had++; delete reg[CFS_ALL_SERIES]; }
-  });
-  if (!had) return { ok: false, reason: "there is no transform on this chart" };
-  return reapplySeries(root);
-}
-
-/* What is on this series right now, for the menu to tick and the
-   codegen to emit. */
-function transformOn(root, seriesName) {
-  const st = transformStore();
-  for (const t of transformTargets(root)) {
-    const reg = st.byKey[t.key];
-    if (!reg) continue;
-    const s = (seriesName != null && reg[seriesName]) || reg[CFS_ALL_SERIES];
-    if (s) return s;
-  }
-  return null;
-}
-
-function anyTransform(root) {
-  const st = transformStore();
-  for (const t of transformTargets(root)) {
-    const reg = st.byKey[t.key];
-    if (reg && Object.keys(reg).length) return true;
-  }
-  return false;
 }
 
 /* Named windows. Anchored on the data's own right edge rather than
@@ -4915,214 +3567,6 @@ function initializeKnobs() {
     for (const k of groups[gname]) details.appendChild(renderKnob(k));
     container.appendChild(details);
   }
-
-  renderSeriesPanel();
-  renderAnnotationPanel();
-}
-
-/* ============================================================
-   THE TWO PANELS
-
-   Both of these divs have existed since the editor was written and
-   neither was ever filled. What belongs in them is the work that is
-   awkward as a right-click: the right-click menu answers "this line",
-   and these answer "the lines" -- seeing all of them at once, and
-   editing one without having to find its pixels first.
-   ============================================================ */
-
-function panelCard(id, title) {
-  const d = document.createElement("details");
-  d.className = "knob-card";
-  d.open = true;
-  const s = document.createElement("summary");
-  s.textContent = title;
-  d.appendChild(s);
-  const host = document.getElementById(id);
-  host.innerHTML = "";
-  host.appendChild(d);
-  return d;
-}
-
-function panelRow(label) {
-  const wrap = document.createElement("div");
-  wrap.className = "knob";
-  const l = document.createElement("label");
-  l.textContent = label;
-  wrap.appendChild(l);
-  return wrap;
-}
-
-function panelButton(text, title, onClick) {
-  const b = document.createElement("button");
-  b.textContent = text;
-  if (title) b.title = title;
-  b.addEventListener("click", onClick);
-  return b;
-}
-
-function renderSeriesPanel() {
-  const host = document.getElementById("perSeriesSection");
-  if (!host) return;
-  host.innerHTML = "";
-  const target = primaryTarget(currentSpec);
-  if (!target || !target.colorField) return;
-  const names = dataSeriesNames(currentSpec);
-  const hidden = ((currentSpec.usermeta && currentSpec.usermeta.cfsTransform
-                   && currentSpec.usermeta.cfsTransform.hidden) || []).slice();
-  if (!names.length && !hidden.length) return;
-
-  const card = panelCard("perSeriesSection",
-                         "Lines (" + names.length + " drawn"
-                         + (hidden.length ? ", " + hidden.length + " off" : "") + ")");
-  const scale = specColorScale(target.colorField);
-  const after = (fn) => {
-    commitEdit("Series edit", () => {
-      const r = fn();
-      if (!r.ok) { cfsToast(r.reason); return false; }
-      return true;
-    });
-    renderSeriesPanel();
-  };
-
-  names.forEach((name, i) => {
-    const shown = displaySeriesName(name);
-    const row = panelRow("");
-    const dot = document.createElement("span");
-    dot.className = "cfs-dot";
-    dot.style.background = scale.colors[scale.domain.indexOf(shown)] || "#888";
-    row.firstChild.appendChild(dot);
-    row.firstChild.appendChild(document.createTextNode(" " + shown));
-
-    const box = document.createElement("input");
-    box.type = "text";
-    box.value = shown;
-    box.title = "rename this line";
-    box.addEventListener("change", () => {
-      if (box.value.trim() === shown) return;
-      after(() => renameSeries(currentSpec, name, box.value));
-    });
-    row.appendChild(box);
-
-    const tools = document.createElement("span");
-    tools.className = "val cfs-panel-tools";
-    if (i > 0) {
-      tools.appendChild(panelButton("\u2191", "earlier in the legend",
-        () => after(() => moveSeries(currentSpec, name, -1))));
-    }
-    if (i < names.length - 1) {
-      tools.appendChild(panelButton("\u2193", "later in the legend",
-        () => after(() => moveSeries(currentSpec, name, 1))));
-    }
-    tools.appendChild(panelButton("\u00d7", "take this line off",
-      () => after(() => removeSeries(currentSpec, name))));
-    row.appendChild(tools);
-    card.appendChild(row);
-  });
-
-  for (const name of hidden) {
-    const row = panelRow(displaySeriesName(name) + " (off)");
-    const tools = document.createElement("span");
-    tools.className = "val cfs-panel-tools";
-    tools.appendChild(panelButton("Bring back", null,
-      () => after(() => restoreSeries(currentSpec, name))));
-    row.appendChild(tools);
-    card.appendChild(row);
-  }
-
-  const spare = unplottedColumns(currentSpec);
-  if (spare.length) {
-    const row = panelRow("Plot another column");
-    const sel = document.createElement("select");
-    const none = document.createElement("option");
-    none.value = ""; none.textContent = "\u2014";
-    sel.appendChild(none);
-    for (const c of spare) {
-      const o = document.createElement("option");
-      o.value = c; o.textContent = c;
-      sel.appendChild(o);
-    }
-    sel.addEventListener("change", () => {
-      if (!sel.value) return;
-      after(() => addSeriesFromColumn(currentSpec, sel.value));
-    });
-    row.appendChild(sel);
-    card.appendChild(row);
-  }
-}
-
-function renderAnnotationPanel() {
-  const host = document.getElementById("annotationSection");
-  if (!host) return;
-  host.innerHTML = "";
-  const info = panelPlotInfo(currentSpec);
-  if (!info) return;
-  const lines = annotationLayers(currentSpec);
-  const card = panelCard("annotationSection",
-                         "Annotations" + (lines.length ? " (" + lines.length + ")" : ""));
-
-  const after = (label, fn) => {
-    commitEdit(label, () => {
-      const r = fn();
-      if (!r.ok) { cfsToast(r.reason); return false; }
-      return true;
-    });
-    renderAnnotationPanel();
-  };
-
-  for (const a of lines) {
-    const at = a.value === null || a.value === undefined ? ""
-      : (" at " + String(a.value).slice(0, 10));
-    const row = panelRow((a.kind === "vline" ? "Vertical" : "Horizontal") + at);
-    const txt = document.createElement("span");
-    txt.className = "val";
-    txt.textContent = a.label || "(no label)";
-    row.appendChild(txt);
-    const tools = document.createElement("span");
-    tools.className = "val cfs-panel-tools";
-    tools.appendChild(panelButton("\u00d7", "remove this annotation",
-      () => after("Annotation removed", () => removeAnnotation(currentSpec, a.node))));
-    row.appendChild(tools);
-    card.appendChild(row);
-  }
-
-  const add = panelRow("Add a line");
-  const tools = document.createElement("span");
-  tools.className = "val cfs-panel-tools";
-  tools.appendChild(panelButton("Click to place \u2502", "click the chart to place a vertical line",
-    () => beginAnnotationPlacement("vline")));
-  tools.appendChild(panelButton("Click to place \u2500", "click the chart to place a horizontal line",
-    () => beginAnnotationPlacement("hline")));
-  add.appendChild(tools);
-  card.appendChild(add);
-
-  // Typing the value is the path that always works: a band scale has no
-  // pixel-to-value mapping, and a date is easier to type than to hit.
-  const typed = panelRow("or type a value");
-  const box = document.createElement("input");
-  box.type = "text";
-  box.placeholder = info.kind === "temporal" ? "2020-03-31" : "2.5";
-  typed.appendChild(box);
-  const lbl = document.createElement("input");
-  lbl.type = "text";
-  lbl.placeholder = "label";
-  lbl.className = "val";
-  typed.appendChild(lbl);
-  const go = document.createElement("span");
-  go.className = "val cfs-panel-tools";
-  go.appendChild(panelButton("\u2502", "add a vertical line there", () => {
-    if (!box.value.trim()) { cfsToast("Type a value first."); return; }
-    after("Annotation added", () => addAnnotationLine(
-      currentSpec, "vline",
-      info.kind === "temporal" ? parseSpecDate(box.value) : Number(box.value),
-      lbl.value));
-  }));
-  go.appendChild(panelButton("\u2500", "add a horizontal line there", () => {
-    if (!box.value.trim()) { cfsToast("Type a value first."); return; }
-    after("Annotation added",
-          () => addAnnotationLine(currentSpec, "hline", Number(box.value), lbl.value));
-  }));
-  typed.appendChild(go);
-  card.appendChild(typed);
 }
 
 function renderPresetRow(label, id, options, current, onChange) {
@@ -6544,73 +4988,6 @@ function menuChips(label, options, current, onPick) {
   return wrap;
 }
 
-/* A text box and an Apply, in the same shape as the date range so a
-   rename reads like the rest of the menu rather than a browser prompt. */
-function menuTextEntry(label, value, onApply) {
-  const wrap = document.createElement("div");
-  wrap.className = "cfs-sub";
-  const l = document.createElement("div");
-  l.className = "cfs-sub-label";
-  l.textContent = label;
-  wrap.appendChild(l);
-  const row = document.createElement("div");
-  row.className = "cfs-dates";
-  const box = document.createElement("input");
-  box.type = "text";
-  box.value = value || "";
-  const go = document.createElement("button");
-  go.textContent = "Apply";
-  const commit = () => {
-    const v = box.value.trim();
-    if (!v) { cfsToast("A line needs a name."); return; }
-    closeMenu();
-    onApply(v);
-  };
-  go.addEventListener("click", commit);
-  box.addEventListener("keydown", e => {
-    if (e.key === "Enter") { e.preventDefault(); commit(); }
-  });
-  row.appendChild(box); row.appendChild(go);
-  wrap.appendChild(row);
-  setTimeout(() => { box.focus(); box.select(); }, 0);
-  return wrap;
-}
-
-/* The numeric twin of the date range. Same not-live-on-change reason:
-   a half-typed number is a valid input value and windowing on it would
-   throw away the axis the reader is still typing about. */
-function menuNumberRange(label, lo, hi, onApply) {
-  const wrap = document.createElement("div");
-  wrap.className = "cfs-sub";
-  const l = document.createElement("div");
-  l.className = "cfs-sub-label";
-  l.textContent = label;
-  wrap.appendChild(l);
-  const row = document.createElement("div");
-  row.className = "cfs-dates";
-  const a = document.createElement("input");
-  const b = document.createElement("input");
-  for (const el of [a, b]) el.type = "number";
-  a.value = String(lo);
-  b.value = String(hi);
-  const go = document.createElement("button");
-  go.textContent = "Apply";
-  const commit = () => {
-    const x = Number(a.value), y = Number(b.value);
-    if (!isFinite(x) || !isFinite(y)) { cfsToast("Both ends have to be numbers."); return; }
-    if (!(y > x)) { cfsToast("The low end has to come first."); return; }
-    closeMenu();
-    onApply(x, y);
-  };
-  go.addEventListener("click", commit);
-  for (const el of [a, b]) {
-    el.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); commit(); } });
-  }
-  row.appendChild(a); row.appendChild(b); row.appendChild(go);
-  wrap.appendChild(row);
-  return wrap;
-}
-
 /* Two native date inputs plus an Apply. Deliberately not live-on-change:
    a half-typed year is a valid date input value, and windowing on it
    would rewrite the labels against a nonsense span. */
@@ -6774,286 +5151,6 @@ function buildSeriesMenu(t, m) {
       openPaletteMenu();
     }));
   }
-
-  // The click reports the name the reader sees; everything downstream
-  // is keyed on the name the data carries.
-  appendTransformSection(m, panelScopeOf(t),
-                         hasSeries ? dataSeriesName(String(t.series)) : null);
-}
-
-/* An edit aimed at one panel of a pack has to stay inside it; a
-   single-panel chart keeps the document-wide write. Same rule the axis
-   menu applies, so a transform and a time window scope alike. */
-function panelScopeOf(t) {
-  const panels = leafPanels(currentSpec);
-  return (panels.length > 1 && t.scope && t.scope.node &&
-          t.scope.node !== currentSpec) ? t.scope.node : currentSpec;
-}
-
-function menuAnchor() {
-  const r = menuRoot().getBoundingClientRect();
-  return [r.left + window.scrollX, r.top + window.scrollY];
-}
-
-/* ---- the transform menu --------------------------------------------
-   Offered on a series and on the y axis, which are the two places a
-   reader would look for "show this differently". The axis entry scopes
-   to every series; the series entry scopes to one, and the unit guard
-   turns it down where that would put two units on one axis. */
-function appendTransformSection(m, root, seriesName) {
-  const info = temporalPlotInfo(root);
-  if (!info || !transformTargets(root).length) return;
-  const cur = transformOn(root, seriesName);
-  const scope = seriesName == null ? "every series" : displaySeriesName(seriesName);
-
-  m.appendChild(menuSep());
-  m.appendChild(menuRow(cur ? "Showing: " + transformLabel(cur)
-                            : "Showing the level", null, null,
-                        { disabled: true }));
-
-  const run = (def, params) => {
-    commitEdit("Transform " + scope, () => {
-      const rep = setSeriesTransform(root, seriesName, def.id, params);
-      if (!rep.ok) { cfsToast(rep.reason); return false; }
-      cfsToast(scope + ": " + rep.label);
-      return true;
-    });
-  };
-
-  m.appendChild(menuRow(seriesName == null
-      ? "Transform every series\u2026" : "Transform this series\u2026",
-    seriesName == null ? "all" : null, () => {
-      const [ax, ay] = menuAnchor();
-      openMenu(ax, ay, "Transform", scope, (mm) => {
-        for (const def of CFS_TRANSFORMS) {
-          const on = !!(cur && cur.id === def.id);
-          if (!def.param && !def.choice) {
-            mm.appendChild(menuRow(def.label, on ? "\u2713" : null,
-                                   () => run(def, {}), { on: on }));
-            continue;
-          }
-          mm.appendChild(menuRow(def.label + "\u2026", on ? "\u2713" : null, () => {
-            const [bx, by] = menuAnchor();
-            openMenu(bx, by, def.label, scope, (m3) => {
-              if (def.choice) {
-                m3.appendChild(menuChips(def.choice.label,
-                  def.choice.options.map(([v, l]) => ({ label: l, value: v })),
-                  (cur && cur[def.choice.key]) || def.choice.def,
-                  (v) => run(def, { [def.choice.key]: v })));
-                return;
-              }
-              const p = def.param;
-              let n = (cur && cur[p.key]) || p.def;
-              m3.appendChild(menuStepper(p.label, String(n),
-                () => { n = Math.max(p.min, n - 1); return String(n); },
-                () => { n = Math.min(p.max, n + 1); return String(n); }));
-              m3.appendChild(menuRow("Apply", null, () => run(def, { [p.key]: n })));
-            });
-          }, { on: on }));
-        }
-      });
-    }));
-
-  if (anyTransform(root)) {
-    m.appendChild(menuRow("Back to the level", null, () => {
-      commitEdit("Cleared transform", () => {
-        const rep = clearSeriesTransforms(root, seriesName);
-        if (!rep.ok) { cfsToast(rep.reason); return false; }
-        cfsToast("Back to the level");
-        return true;
-      });
-    }));
-  }
-  appendDerivedSection(m, root, seriesName);
-  appendSeriesAlgebraSection(m, root, seriesName);
-}
-
-/* ---- the set of lines itself ---------------------------------------
-   Offered wherever the transform menu is, because "show this
-   differently" and "show a different set of these" are the same
-   question asked one level up. Every entry here works on data names and
-   shows display names. */
-function appendSeriesAlgebraSection(m, root, seriesName) {
-  const target = primaryTarget(root);
-  if (!target || !target.colorField) return;
-  const st = transformStore();
-  const live = dataSeriesNames(root);
-  const spare = unplottedColumns(root);
-  const hidden = (st.hidden || []).slice();
-  if (!live.length && !spare.length && !hidden.length) return;
-
-  const run = (label, fn) => {
-    commitEdit(label, () => {
-      const rep = fn();
-      if (!rep.ok) { cfsToast(rep.reason); return false; }
-      return true;
-    });
-  };
-
-  m.appendChild(menuSep());
-
-  if (seriesName != null) {
-    const shown = displaySeriesName(seriesName);
-    m.appendChild(menuRow("Rename this line\u2026", null, () => {
-      const [ax, ay] = menuAnchor();
-      openMenu(ax, ay, "Rename", shown, (mm) => {
-        mm.appendChild(menuTextEntry("Shown as", shown, (v) => run(
-          "Renamed " + shown, () => renameSeries(root, seriesName, v))));
-      });
-    }));
-    if (live.length > 1) {
-      m.appendChild(menuRow("Take this line off", null, () => run(
-        "Removed " + shown, () => removeSeries(root, seriesName))));
-    }
-    const order = (st.order || live).slice();
-    const at = order.indexOf(seriesName);
-    if (order.length > 1 && at >= 0) {
-      m.appendChild(menuRow("Move it earlier in the legend", at > 0 ? null : "\u2014",
-        at > 0 ? () => run("Moved " + shown, () => moveSeries(root, seriesName, -1))
-               : null, { disabled: at <= 0 }));
-      m.appendChild(menuRow("Move it later in the legend",
-        at < order.length - 1 ? null : "\u2014",
-        at < order.length - 1
-          ? () => run("Moved " + shown, () => moveSeries(root, seriesName, 1))
-          : null, { disabled: at >= order.length - 1 }));
-    }
-  } else if (live.length > 1) {
-    m.appendChild(menuRow("Take a line off\u2026", String(live.length), () => {
-      const [ax, ay] = menuAnchor();
-      openMenu(ax, ay, "Take off", "the chart keeps the data", (mm) => {
-        for (const n of live) {
-          mm.appendChild(menuRow(displaySeriesName(n), null, () => run(
-            "Removed " + displaySeriesName(n), () => removeSeries(root, n))));
-        }
-      });
-    }));
-  }
-
-  if (spare.length) {
-    m.appendChild(menuRow("Plot another column\u2026", String(spare.length), () => {
-      const [ax, ay] = menuAnchor();
-      openMenu(ax, ay, "Plot a column", "on the same axis as the rest", (mm) => {
-        for (const col of spare) {
-          mm.appendChild(menuRow(col, null, () => run(
-            "Plotted " + col, () => addSeriesFromColumn(root, col))));
-        }
-      });
-    }));
-  }
-
-  if (hidden.length) {
-    m.appendChild(menuRow("Bring a line back\u2026", String(hidden.length), () => {
-      const [ax, ay] = menuAnchor();
-      openMenu(ax, ay, "Bring back", "lines taken off in this studio", (mm) => {
-        for (const n of hidden) {
-          mm.appendChild(menuRow(displaySeriesName(n), null, () => run(
-            "Brought back " + displaySeriesName(n),
-            () => restoreSeries(root, n))));
-        }
-      });
-    }));
-  }
-}
-
-/* ---- adding a line the data did not carry -------------------------- */
-/* Why a unit-changing derived line cannot go on this chart, or null if
-   it can. A ratio of two yields runs around 0.5 and a correlation from
-   -1 to 1; drawn against yields of 1 to 5 they are flat lines along the
-   floor. One line on the axis and there is nothing to clash with, which
-   is the only case where these are honest today -- a second axis is
-   what would make them generally available, and the studio has none. */
-function derivedBlocked(root) {
-  const t = primaryTarget(root);
-  if (!t) return null;
-  const lines = seriesOnYField(root, t.yField).length;
-  return lines > 1
-    ? "needs an axis of its own, and there are " + lines + " lines on this one"
-    : null;
-}
-
-function appendDerivedSection(m, root, seriesName) {
-  const target = primaryTarget(root);
-  if (!target || !target.colorField) return;
-  const derived = derivedSeriesNames();
-  const base = dataSeriesNames(root).filter((n) => derived.indexOf(n) < 0);
-  const src = seriesName != null ? seriesName : base[0];
-  if (!src) return;
-
-  const run = (label, fn) => {
-    commitEdit(label, () => {
-      const rep = fn();
-      if (!rep.ok) { cfsToast(rep.reason); return false; }
-      cfsToast("Added " + rep.name);
-      return true;
-    });
-  };
-
-  const shown = displaySeriesName(src);
-  // A derived line that is not in the units of the axis cannot be drawn
-  // against lines that are, so the menu says so on the row rather than
-  // offering it and refusing afterwards.
-  const blocked = derivedBlocked(root);
-  m.appendChild(menuSep());
-  m.appendChild(menuRow("Add " + shown + " again, transformed\u2026", null, () => {
-    const [ax, ay] = menuAnchor();
-    openMenu(ax, ay, "Alongside " + shown, "a second line, not a replacement", (mm) => {
-      for (const def of CFS_TRANSFORMS) {
-        if (def.choice) continue;         // resampling a copy draws the same line
-        const stop = def.units === "changed" ? blocked : null;
-        const go = (params) => run("Added a derived line",
-          () => addDerivedSeries(root, "dup", [src],
-                                 Object.assign({ id: def.id }, params)));
-        if (stop) {
-          mm.appendChild(menuRow(def.label, stop, null, { disabled: true }));
-          continue;
-        }
-        if (!def.param) { mm.appendChild(menuRow(def.label, null, () => go({}))); continue; }
-        mm.appendChild(menuRow(def.label + "\u2026", null, () => {
-          const [bx, by] = menuAnchor();
-          openMenu(bx, by, def.label, "alongside " + shown, (m3) => {
-            let n = def.param.def;
-            m3.appendChild(menuStepper(def.param.label, String(n),
-              () => { n = Math.max(def.param.min, n - 1); return String(n); },
-              () => { n = Math.min(def.param.max, n + 1); return String(n); }));
-            m3.appendChild(menuRow("Add it", null,
-                                   () => go({ [def.param.key]: n })));
-          });
-        }));
-      }
-    });
-  }));
-
-  if (base.length > 1) {
-    m.appendChild(menuRow("Combine two series into a new line\u2026", null, () => {
-      const [ax, ay] = menuAnchor();
-      openMenu(ax, ay, "Combine", "against " + shown, (mm) => {
-        const others = base.filter((n) => n !== src);
-        for (const def of CFS_DERIVED) {
-          if (def.arity !== 2) continue;
-          const stop = def.units === "changed" ? blocked : null;
-          if (stop) {
-            mm.appendChild(menuRow(def.label, stop, null, { disabled: true }));
-            continue;
-          }
-          mm.appendChild(menuRow(def.label + "\u2026", null, () => {
-            const [bx, by] = menuAnchor();
-            openMenu(bx, by, def.label, shown + " against\u2026", (m3) => {
-              for (const other of others) {
-                m3.appendChild(menuRow(displaySeriesName(other), null, () => run(
-                  "Added " + def.label,
-                  () => addDerivedSeries(root, def.id, [src, other],
-                    def.param ? { [def.param.key]: def.param.def } : {}))));
-              }
-            });
-          }));
-        }
-      });
-    }));
-  }
-
-  // Removing a derived line is not offered here; the series-algebra
-  // section below takes a line off whatever kind it is, and two doors
-  // onto the same room is one too many.
 }
 
 function currentLineWidth(t) {
@@ -7171,25 +5268,9 @@ function buildAxisMenu(t, m) {
   const root = scopeNode || currentSpec;
   const readRoot = scopeNode || currentSpec;
   const info = temporalPlotInfo(root);
-  // Whatever this panel plots against, for the rows that are not about
-  // dates: the y range fits a scatter as well as it fits a time series.
-  const any = info || panelPlotInfo(root);
 
   if (ch === "x" && info) appendTimeWindowSection(t, m, root, info, scopeNode);
-  if (ch === "x" && !info && any && any.kind === "quantitative") {
-    appendValueWindowSection(m, root, any);
-  }
-  if (ch === "x" && !info && any &&
-      (any.kind === "nominal" || any.kind === "ordinal")) {
-    appendCategorySection(m, root, any);
-  }
-  if (ch === "y" && any) {
-    appendValueRangeSection(t, m, root, any);
-    // Chart-wide, because the y axis is the thing a transform changes
-    // the meaning of; the per-series entry lives on the series itself.
-    if (info) appendTransformSection(m, root, null);
-    m.appendChild(menuSep());
-  }
+  if (ch === "y" && info) appendValueRangeSection(t, m, root, info);
 
   let ticks = currentTickCount(t, readRoot);
   m.appendChild(menuStepper("Number of ticks", String(ticks),
@@ -7344,14 +5425,9 @@ function appendValueRangeSection(t, m, root, info) {
     m.appendChild(menuSep());
     return;
   }
-  // Only a temporal panel has a window to fit inside; everywhere else
-  // "visible" means every row, and the simpler refit below says so.
-  const fit = (includeZero) => (info.kind === "temporal"
-    ? refitYRange(root, { info: info, includeZero: includeZero })
-    : refitYRangeAll(root, info, includeZero));
   m.appendChild(menuRow("Fit range to visible data", "auto", () => {
     commitEdit("Range fitted to view", () => {
-      const r = fit(false);
+      const r = refitYRange(root, { info: info });
       if (!r.ok) { cfsToast("Could not fit the range: " + r.reason); return false; }
       return true;
     });
@@ -7360,149 +5436,11 @@ function appendValueRangeSection(t, m, root, info) {
   const atZero = Array.isArray(dom) && Number(dom[0]) <= 0 && Number(dom[1]) >= 0;
   m.appendChild(menuRow("Start range at zero", atZero ? "on" : "off", () => {
     commitEdit("Range starts at zero", () => {
-      const r = fit(true);
+      const r = refitYRange(root, { info: info, includeZero: true });
       if (!r.ok) { cfsToast("Could not fit the range: " + r.reason); return false; }
       return true;
     });
   }, { on: atZero }));
-  m.appendChild(menuSep());
-}
-
-/* The y refit for a panel with no window to be inside. Same domain
-   arithmetic as the temporal path, over every row the marks draw. */
-function refitYRangeAll(root, info, includeZero) {
-  if (!info.yField) return { ok: false, reason: "no quantitative y axis here" };
-  if (nonLinearYScale(root, info.yField)) {
-    return { ok: false, reason: "this y axis is not linear, so a linear refit would break it" };
-  }
-  const win = info.kind === "quantitative" ? explicitNumericWindow(root, info) : null;
-  const vals = [];
-  for (const s of info.seriesNodes) {
-    for (const r of s.rows) {
-      if (win) {
-        const x = cfsNum(r[info.xField]);
-        if (x === null || x < win[0] || x > win[1]) continue;
-      }
-      const v = cfsNum(r[info.yField]);
-      if (v !== null) vals.push(v);
-    }
-  }
-  if (!vals.length) return { ok: false, reason: "no numeric values on this axis" };
-  const domain = calcYAxisDomain(vals, { includeZero: !!includeZero });
-  setYDomain(root, info.yField, domain);
-  return { ok: true, yDomain: domain };
-}
-
-/* ---- the range rows on a numeric x axis ---- */
-function appendValueWindowSection(m, root, info) {
-  const ext = numericXExtent(info);
-  if (!ext) return;
-  const win = explicitNumericWindow(root, info) || ext;
-  const run = (label, lo, hi) => {
-    commitEdit(label, () => {
-      const r = applyValueWindow(root, lo, hi, { info: info });
-      if (!r.ok) { cfsToast("Could not set that range: " + r.reason); return false; }
-      return true;
-    });
-  };
-
-  m.appendChild(menuRow("Showing " + cfsFmtNum(win[0]) + " to " + cfsFmtNum(win[1]),
-                        null, null, { disabled: true }));
-  m.appendChild(menuNumberRange("Range", win[0], win[1],
-                                (lo, hi) => run("Range " + lo + " to " + hi, lo, hi)));
-
-  // The halves and the middle, which is what a reader reaches for when
-  // one end of a cloud is the interesting one.
-  const mid = (ext[0] + ext[1]) / 2;
-  const q = (ext[1] - ext[0]) / 4;
-  m.appendChild(menuChips("Jump to", [
-    { label: "Lower half", value: [ext[0], mid] },
-    { label: "Upper half", value: [mid, ext[1]] },
-    { label: "Middle", value: [ext[0] + q, ext[1] - q] },
-    { label: "All", value: null },
-  ], null, (v) => {
-    if (!v) {
-      commitEdit("Range cleared", () => {
-        const r = clearValueWindow(root, info);
-        if (!r.ok) { cfsToast(r.reason); return false; }
-        return true;
-      });
-      return;
-    }
-    run("Range " + cfsFmtNum(v[0]) + " to " + cfsFmtNum(v[1]), v[0], v[1]);
-  }));
-  m.appendChild(menuSep());
-}
-
-function cfsFmtNum(v) {
-  const n = Number(v);
-  if (!isFinite(n)) return String(v);
-  const a = Math.abs(n);
-  if (a >= 1000) return n.toFixed(0);
-  if (a >= 10) return n.toFixed(1);
-  return n.toFixed(a >= 1 ? 2 : 3);
-}
-
-/* ---- the category rows on a nominal x axis ---- */
-function appendCategorySection(m, root, info) {
-  const order = categoryOrder(root, info);
-  const hidden = hiddenCategories(root, info);
-  if (!order.length && !hidden.length) return;
-
-  const run = (label, fn) => {
-    commitEdit(label, () => {
-      const r = fn();
-      if (!r.ok) { cfsToast(r.reason); return false; }
-      return true;
-    });
-  };
-
-  m.appendChild(menuRow(order.length + " categories"
-                        + (hidden.length ? ", " + hidden.length + " hidden" : ""),
-                        null, null, { disabled: true }));
-  m.appendChild(menuChips("Order", [
-    { label: "Biggest first", value: "desc" },
-    { label: "Smallest first", value: "asc" },
-    { label: "A to Z", value: "az" },
-    { label: "Z to A", value: "za" },
-  ], null, (v) => run("Reordered categories", () => (
-    v === "desc" ? sortCategoriesByValue(root, info, true)
-    : v === "asc" ? sortCategoriesByValue(root, info, false)
-    : sortCategoriesByName(root, info, v === "az")))));
-
-  if (order.length > 1) {
-    m.appendChild(menuRow("Move one along\u2026", null, () => {
-      const [ax, ay] = menuAnchor();
-      openMenu(ax, ay, "Move", "one step at a time", (mm) => {
-        for (const c of order) {
-          mm.appendChild(menuRow(c, "\u2190", () => run(
-            "Moved " + c, () => moveCategory(root, info, c, -1))));
-          mm.appendChild(menuRow(c, "\u2192", () => run(
-            "Moved " + c, () => moveCategory(root, info, c, 1))));
-        }
-      });
-    }));
-    m.appendChild(menuRow("Take one off\u2026", String(order.length), () => {
-      const [ax, ay] = menuAnchor();
-      openMenu(ax, ay, "Take off", "the data stays in the frame", (mm) => {
-        for (const c of order) {
-          mm.appendChild(menuRow(c, null, () => run("Took off " + c,
-            () => setHiddenCategories(root, hidden.concat([c])))));
-        }
-      });
-    }));
-  }
-  if (hidden.length) {
-    m.appendChild(menuRow("Bring one back\u2026", String(hidden.length), () => {
-      const [ax, ay] = menuAnchor();
-      openMenu(ax, ay, "Bring back", "categories taken off here", (mm) => {
-        for (const c of hidden) {
-          mm.appendChild(menuRow(c, null, () => run("Brought back " + c,
-            () => setHiddenCategories(root, hidden.filter((h) => h !== c)))));
-        }
-      });
-    }));
-  }
   m.appendChild(menuSep());
 }
 
@@ -7654,358 +5592,6 @@ function buildAnnotationMenu(t, m) {
   }));
 }
 
-/* ============================================================
-   ANNOTATIONS THE STUDIO ADDS
-
-   The producer's annotations could be recoloured and removed but not
-   created, so noticing a date worth marking meant going back to the
-   make_chart call. Two things make that avoidable: somewhere to put a
-   new layer, and a way to turn a click into a value.
-
-   The second is the awkward one. PRISM's charts are concat specs --
-   every chart with a source strip or a caption is -- and vega only
-   resolves scales at the root of a single view, so `view.scale("x")`
-   throws on exactly the charts this has to work on. The rendered axis
-   ticks are the way through: each is a scenegraph item carrying both
-   its pixel position and the value it stands for, which is two points
-   on the mapping the reader is pointing at.
-   ============================================================ */
-
-/* Where a new layer goes: the outermost layer array that already holds
-   this panel's data marks, so the annotation shares their scales. */
-function annotationHost(root, markNode) {
-  let found = null;
-  const holds = (n) => {
-    if (n === markNode) return true;
-    if (!n || typeof n !== "object") return false;
-    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
-      if (Array.isArray(n[k]) && n[k].some(holds)) return true;
-    }
-    return !!(n.spec && holds(n.spec));
-  };
-  (function walk(n) {
-    if (!n || typeof n !== "object" || found) return;
-    if (Array.isArray(n.layer) && n.layer.some(holds)) { found = n.layer; return; }
-    for (const k of ["concat", "hconcat", "vconcat"]) {
-      if (Array.isArray(n[k])) n[k].forEach(walk);
-    }
-    if (n.spec) walk(n.spec);
-  })(root);
-  return found;
-}
-
-const CFS_ANNO_TAG = "cfsAnnotation";
-
-/**
- * Draw a line across the chart at a value, with an optional label.
- *
- * The label is parked in pixels rather than bound to the y field, which
- * the producer's own vline labels are not. That is deliberate: a bound
- * label has to be re-anchored every time the y domain moves, and a
- * transform moves it on every apply. Ten pixels from the top means ten
- * pixels from the top whatever the axis is showing.
- */
-function addAnnotationLine(root, kind, value, label, color) {
-  const info = panelPlotInfo(root);
-  if (!info) return { ok: false, reason: "nothing plotted here to annotate" };
-  const vertical = kind === "vline";
-  const field = vertical ? info.xField : info.yField;
-  if (!field) {
-    return { ok: false, reason: "this chart has no " + (vertical ? "x" : "y")
-      + " field to place a line against" };
-  }
-  const type = vertical ? (info.kind || "quantitative") : "quantitative";
-  if (!vertical && (value === null || !isFinite(Number(value)))) {
-    return { ok: false, reason: "a horizontal line needs a number" };
-  }
-  const host = annotationHost(root, info.seriesNodes[0].node);
-  if (!host) return { ok: false, reason: "this chart has no layer to add to" };
-
-  const at = vertical && type === "temporal"
-    ? formatSpecDate(value instanceof Date ? value : parseSpecDate(value), true)
-    : (type === "nominal" || type === "ordinal") ? String(value) : Number(value);
-  const paint = color || "#666666";
-  const enc = {};
-  enc[vertical ? "x" : "y"] = { field: field, type: type };
-
-  const rule = {
-    data: { values: [{ [field]: at }] },
-    mark: { type: "rule", color: paint, strokeDash: [4, 4], strokeWidth: 1.5 },
-    encoding: deepClone(enc),
-  };
-  rule[CFS_ANNO_TAG] = { kind: kind, field: field, value: at, label: label || "" };
-  host.push(rule);
-
-  const text = String(label == null ? "" : label).trim();
-  if (text) {
-    const tenc = deepClone(enc);
-    tenc.text = { value: text };
-    // The other channel in pixels, so nothing has to move it later.
-    tenc[vertical ? "y" : "x"] = { value: vertical ? 12 : 6 };
-    const node = {
-      data: { values: [{ [field]: at }] },
-      mark: { type: "text", align: "left", color: paint,
-              dx: vertical ? 5 : 0, dy: vertical ? 0 : -6, fontSize: 10 },
-      encoding: tenc,
-    };
-    node[CFS_ANNO_TAG] = { kind: kind, field: field, value: at, label: text,
-                           text: true };
-    host.push(node);
-  }
-  return { ok: true, kind: kind, value: at, label: text };
-}
-
-/* Every annotation the studio can act on: the ones it added, tagged,
-   plus the producer's rule layers, which it can recolour and remove
-   even though it did not build them. */
-function annotationLayers(root) {
-  const out = [];
-  (function walk(n) {
-    if (!n || typeof n !== "object") return;
-    const mt = markTypeOf(n);
-    const tag = n[CFS_ANNO_TAG];
-    if (tag && !tag.text) {
-      out.push({ node: n, kind: tag.kind, label: tag.label,
-                 value: tag.value, mine: true });
-    } else if (!tag && mt === "rule" && n.encoding
-               && !(n.encoding.color && n.encoding.color.field)) {
-      const vertical = !!(n.encoding.x && n.encoding.x.field);
-      out.push({ node: n, kind: vertical ? "vline" : "hline",
-                 label: annotationLabelNear(root, n), value: null, mine: false });
-    }
-    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
-      if (Array.isArray(n[k])) n[k].forEach(walk);
-    }
-    if (n.spec) walk(n.spec);
-  })(root);
-  return out;
-}
-
-/* The producer emits a rule and its caption as siblings, so the text
-   beside a rule is that rule's label. */
-function annotationLabelNear(root, rule) {
-  let label = "";
-  (function walk(n) {
-    if (!n || typeof n !== "object" || label) return;
-    for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
-      if (!Array.isArray(n[k])) continue;
-      const i = n[k].indexOf(rule);
-      if (i >= 0) {
-        for (const sib of n[k]) {
-          const t = sib !== rule && sib.encoding && sib.encoding.text;
-          if (t && typeof t.value === "string") { label = t.value; return; }
-        }
-      }
-      n[k].forEach(walk);
-    }
-    if (n.spec) walk(n.spec);
-  })(root);
-  return label;
-}
-
-/* Remove the rule and, when it is one of ours, the label that came
-   with it -- the two were added together and read as one thing. */
-function removeAnnotation(root, node) {
-  const tag = node[CFS_ANNO_TAG];
-  // A producer annotation came in through the call, so taking it off
-  // has to be remembered to be taken back out of the call.
-  if (!tag) {
-    const vertical = !!(node.encoding && node.encoding.x && node.encoding.x.field);
-    const field = vertical ? node.encoding.x.field : node.encoding.y.field;
-    const rows = (node.data && node.data.values) || [];
-    transformStore().annoGone.push({
-      kind: vertical ? "vline" : "hline",
-      label: annotationLabelNear(root, node),
-      value: rows.length ? String(rows[0][field]) : null,
-    });
-  }
-  let gone = removeNodeFromSpec(node);
-  if (tag) {
-    (function walk(n) {
-      if (!n || typeof n !== "object") return;
-      for (const k of ["layer", "concat", "hconcat", "vconcat"]) {
-        if (!Array.isArray(n[k])) continue;
-        const twin = n[k].find((c) => c[CFS_ANNO_TAG] && c[CFS_ANNO_TAG].text
-          && c[CFS_ANNO_TAG].kind === tag.kind
-          && String(c[CFS_ANNO_TAG].value) === String(tag.value));
-        if (twin) { n[k].splice(n[k].indexOf(twin), 1); gone = true; return; }
-        n[k].forEach(walk);
-      }
-      if (n.spec) walk(n.spec);
-    })(root);
-  }
-  return gone ? { ok: true } : { ok: false, reason: "that layer is not removable" };
-}
-
-/* ---- turning a click into a value ---------------------------------- */
-
-/* The rendered ticks of one axis as (pixel, value) pairs. Read off the
-   scenegraph rather than the DOM because the item carries the value the
-   tick stands for, which the label text has already formatted away. */
-function axisTickPairs(channel) {
-  const out = [];
-  const sg = vegaView && vegaView.scenegraph && vegaView.scenegraph();
-  if (!sg || !sg.root) return out;
-  (function walk(n, ox, oy) {
-    if (!n || typeof n !== "object") return;
-    const items = n.items;
-    if (!Array.isArray(items)) return;
-    if (n.marktype === "rule" && n.role === "axis-tick") {
-      for (const it of items) {
-        const v = it.datum && it.datum.value;
-        if (v === undefined || v === null) continue;
-        const px = channel === "x" ? ox + (it.x || 0) : oy + (it.y || 0);
-        out.push({ px: px, value: v });
-      }
-      return;
-    }
-    for (const it of items) {
-      const nx = ox + (typeof it.x === "number" ? it.x : 0);
-      const ny = oy + (typeof it.y === "number" ? it.y : 0);
-      if (n.marktype === "group" && it.datum && it.datum.scale) {
-        const nm = String(it.datum.scale);
-        if (!(nm === channel || nm.endsWith("_" + channel))) continue;
-      }
-      for (const child of (it.items || [])) walk(child, nx, ny);
-    }
-  })(sg.root, 0, 0);
-  return out;
-}
-
-/* px -> data value, least-squares fitted through every tick.
-
-   Linear and time scales are both straight lines in pixel space, so a
-   line through the ticks is the scale. Two ticks would define it, but
-   vega snaps each one to a half pixel so the line renders crisp, and
-   picking two means inheriting both their rounding errors; fitting all
-   of them averages the rounding down instead. Returns null for a band
-   scale, where a pixel does not name a value at all. */
-function pixelToValue(channel) {
-  const pairs = axisTickPairs(channel)
-    .map((p) => ({ px: p.px, v: p.value instanceof Date
-      ? p.value.getTime() : Number(p.value) }))
-    .filter((p) => isFinite(p.px) && isFinite(p.v));
-  if (pairs.length < 2) return null;
-  const n = pairs.length;
-  let sx = 0, sv = 0;
-  for (const p of pairs) { sx += p.px; sv += p.v; }
-  const mx = sx / n, mv = sv / n;
-  let num = 0, den = 0;
-  for (const p of pairs) { num += (p.px - mx) * (p.v - mv); den += (p.px - mx) ** 2; }
-  if (!den || !num) return null;
-  const slope = num / den;
-  return (px) => mv + (px - mx) * slope;
-}
-
-/* One pixel's worth of value on this axis -- the finest a click can
-   honestly mean, and so the size of the step a placed line snaps to. */
-function pixelWorth(channel) {
-  const f = pixelToValue(channel);
-  return f ? Math.abs(f(1) - f(0)) : 0;
-}
-
-let _placingAnnotation = null;
-
-function beginAnnotationPlacement(kind) {
-  closeMenu();
-  const channel = kind === "vline" ? "x" : "y";
-  if (!pixelToValue(channel)) {
-    cfsToast("This axis does not map pixels to values, so a line cannot be "
-             + "placed by clicking. Type the value instead.");
-    return false;
-  }
-  _placingAnnotation = kind;
-  const host = document.getElementById("chart");
-  if (host) host.classList.add("cfs-placing");
-  setStatus("click the chart to place the line, or press Escape");
-  return true;
-}
-
-function cancelAnnotationPlacement() {
-  _placingAnnotation = null;
-  const host = document.getElementById("chart");
-  if (host) host.classList.remove("cfs-placing");
-}
-
-function handlePlacementClick(evt) {
-  const kind = _placingAnnotation;
-  if (!kind) return false;
-  const svg = document.querySelector("#chart svg");
-  if (!svg) return false;
-  const box = svg.getBoundingClientRect();
-  // The SVG is scaled to fit the pane, so the click has to come back
-  // into the coordinate system the scenegraph measured itself in.
-  const sx = box.width ? (svg.width.baseVal.value || box.width) / box.width : 1;
-  const sy = box.height ? (svg.height.baseVal.value || box.height) / box.height : 1;
-  const invert = pixelToValue(kind === "vline" ? "x" : "y");
-  cancelAnnotationPlacement();
-  if (!invert) return false;
-  const px = kind === "vline" ? (evt.clientX - box.left) * sx
-                              : (evt.clientY - box.top) * sy;
-  const raw = invert(px);
-  const info = panelPlotInfo(currentSpec);
-  const temporal = kind === "vline" && info && info.kind === "temporal";
-  // A click is worth a pixel, and on these charts a pixel is worth
-  // days, so the raw number is precision the reader never had. Snap it
-  // to something they can see: on a date axis, an observation the chart
-  // actually draws; elsewhere, a round step no finer than a pixel.
-  const value = temporal
-    ? snapToObservation(info, raw)
-    : snapToPixel(raw, pixelWorth(kind === "vline" ? "x" : "y"));
-  promptForAnnotationLabel(kind, value);
-  return true;
-}
-
-/* The drawn x value nearest a clicked one. Monthly data on an eight
-   year axis puts four days inside a pixel, so a click cannot mean a
-   particular day -- but it can mean a particular observation, and that
-   is the date worth writing into the annotation. */
-function snapToObservation(info, ms) {
-  let best = null, gap = Infinity;
-  for (const s of (info ? info.seriesNodes : [])) {
-    for (const r of s.rows) {
-      const t = parseSpecDate(r[info.xField]);
-      if (!t) continue;
-      const d = Math.abs(t.getTime() - ms);
-      if (d < gap) { gap = d; best = t; }
-    }
-  }
-  return best || new Date(Math.round(ms / 864e5) * 864e5);
-}
-
-/* Round to the largest 1/2/5 x 10^k step that is still finer than what
-   the reader can see, so the number that comes back is one they would
-   have typed. */
-function snapToPixel(v, worth) {
-  if (!isFinite(worth) || worth <= 0) return Math.round(v * 1e6) / 1e6;
-  const mag = Math.pow(10, Math.floor(Math.log10(worth)));
-  const step = [1, 2, 5, 10].map((m) => m * mag).filter((s) => s <= worth).pop() || mag;
-  return Math.round(v / step) * step;
-}
-
-function promptForAnnotationLabel(kind, value) {
-  const shown = value instanceof Date
-    ? formatSpecDate(value).slice(0, 10) : cfsFmtNum(value);
-  openMenu(window.scrollX + 60, window.scrollY + 90,
-           kind === "vline" ? "Vertical line" : "Horizontal line", "at " + shown,
-           (m) => {
-    m.appendChild(menuTextEntry("Label (optional)", "", (text) => {
-      commitEdit("Annotation added", () => {
-        const r = addAnnotationLine(currentSpec, kind, value, text);
-        if (!r.ok) { cfsToast(r.reason); return false; }
-        return true;
-      });
-    }));
-    m.appendChild(menuRow("No label", null, () => {
-      commitEdit("Annotation added", () => {
-        const r = addAnnotationLine(currentSpec, kind, value, "");
-        if (!r.ok) { cfsToast(r.reason); return false; }
-        return true;
-      });
-    }));
-  });
-}
-
 /* Drop a layer out of whichever array holds it. */
 function removeNodeFromSpec(target) {
   let removed = false;
@@ -8023,61 +5609,6 @@ function removeNodeFromSpec(target) {
   return removed;
 }
 
-/* Drawing a line where the menu was opened.
-
-   The right-click already carries the position, so the ordinary path is
-   one gesture: right-click the date, pick the row, type the label. The
-   arm-and-click path in the annotations panel is for the second line
-   and the third, when the menu is in the way of the place to click. */
-function appendAnnotationSection(m, t) {
-  const info = panelPlotInfo(currentSpec);
-  if (!info || t.clientX === undefined) return;
-  const shownAt = (kind) => {
-    const v = valueAtClient(kind, t);
-    if (v === null) return null;
-    return v instanceof Date ? formatSpecDate(v).slice(0, 10) : cfsFmtNum(v);
-  };
-  const rows = [["vline", "Draw a vertical line here"],
-                ["hline", "Draw a horizontal line here"]];
-  let added = false;
-  for (const [kind, label] of rows) {
-    const at = shownAt(kind);
-    if (at === null) continue;
-    if (!added) { m.appendChild(menuSep()); added = true; }
-    m.appendChild(menuRow(label + "\u2026", at, () => {
-      promptForAnnotationLabel(kind, valueAtClient(kind, t));
-    }));
-  }
-  const mine = annotationLayers(currentSpec).filter((a) => a.mine);
-  if (mine.length) {
-    m.appendChild(menuRow("Remove the lines this studio drew",
-                          String(mine.length), () => {
-      commitEdit("Annotations removed", () => {
-        for (const a of mine) removeAnnotation(currentSpec, a.node);
-        return true;
-      });
-    }));
-  }
-}
-
-/* The data value under a client-space point, snapped the same way a
-   placement click is -- the two are the same gesture. */
-function valueAtClient(kind, t) {
-  const svg = document.querySelector("#chart svg");
-  const invert = pixelToValue(kind === "vline" ? "x" : "y");
-  if (!svg || !invert) return null;
-  const box = svg.getBoundingClientRect();
-  const info = panelPlotInfo(currentSpec);
-  if (kind === "vline") {
-    const sx = box.width ? (svg.width.baseVal.value || box.width) / box.width : 1;
-    const raw = invert((t.clientX - box.left) * sx);
-    return info && info.kind === "temporal"
-      ? snapToObservation(info, raw) : snapToPixel(raw, pixelWorth("x"));
-  }
-  const sy = box.height ? (svg.height.baseVal.value || box.height) / box.height : 1;
-  return snapToPixel(invert((t.clientY - box.top) * sy), pixelWorth("y"));
-}
-
 function buildCanvasMenu(t, m) {
   const w = walkExtractSize(currentSpec, "width");
   const h = walkExtractSize(currentSpec, "height");
@@ -8092,8 +5623,6 @@ function buildCanvasMenu(t, m) {
     currentDimPreset, v => {
       commitEdit("Size: " + v, () => { applyDimensionPreset(v, true); return true; });
     }));
-
-  appendAnnotationSection(m, t);
 
   m.appendChild(menuSep());
   m.appendChild(menuRow("Edit the title\u2026", "double-click", () => {
@@ -8144,10 +5673,6 @@ function onChartContextMenu(e) {
   e.stopPropagation();
   closeInlineEditor();
   const t = resolveHitTarget(el);
-  // Where the right-click landed, so a menu row can act on the spot
-  // rather than asking for a second click to name it.
-  t.clientX = e.clientX;
-  t.clientY = e.clientY;
   const x = e.clientX + window.scrollX;
   const y = e.clientY + window.scrollY;
   let sub = {
@@ -9182,385 +6707,9 @@ function renderCodeTab() {
   const vlEl = document.getElementById("vegaLiteCode");
   const altairEl = document.getElementById("altairCode");
   const dataEl = document.getElementById("dataCode");
-  const callEl = document.getElementById("callCode");
   if (vlEl) vlEl.textContent = JSON.stringify(currentSpec, null, 2);
   if (altairEl) altairEl.textContent = generateAltairCode(currentSpec);
   if (dataEl) dataEl.textContent = generateDataCode(currentSpec);
-  if (callEl) callEl.textContent = generateCallCode();
-}
-
-/* ============================================================
-   REGENERATING THE make_chart CALL
-
-   A studio edit is a delta on the call that produced the chart, so the
-   call itself is injected as CALL_KWARGS and edited rather than
-   reverse-engineered out of the Vega-Lite. Reverse-engineering is what
-   the Altair tab does and it is best-effort by construction; this is
-   exact for everything make_chart can express.
-
-   The transforms do not go in the call. They go ABOVE it, as pandas
-   over the original frame -- which is what makes them survive a data
-   refresh. Two consequences worth naming: the frame emitted is the
-   UNTRANSFORMED one, and the studio edits that make_chart has no
-   argument for are listed rather than dropped in silence.
-   ============================================================ */
-
-const CFS_CALL_ORDER = ["chart_type", "mapping", "title", "subtitle",
-                        "annotations", "caption", "source", "side_left",
-                        "side_right", "layers", "skin", "intent",
-                        "dimensions", "save_as"];
-
-/* Transform ids to the pandas that reproduces them, over a frame in
-   long form: one row per (date, series).
-
-   Both shapes are written against a frame called `g` -- the whole frame
-   where there is one line, one group of it where there are several --
-   so a chart that gains a colour column later does not need a different
-   rule, only a different wrapper. Every body returns a series carrying
-   `g`'s own index, which is what lets the result be assigned straight
-   back into the column it came from. */
-function transformPandas(spec, xf, yf, cf, ann) {
-  const y = "g[" + pyStr(yf) + "]";
-  const body = {
-    yoy: "cfs_pct_over(g, 12, " + pyStr(xf) + ", " + pyStr(yf) + ")",
-    qoq: "cfs_pct_over(g, 3, " + pyStr(xf) + ", " + pyStr(yf) + ")",
-    mom: "cfs_pct_over(g, 1, " + pyStr(xf) + ", " + pyStr(yf) + ")",
-    rebase: "(" + y + " / " + y + ".iloc[0] * " + spec.base + ")",
-    pct_start: "(" + y + " / " + y + ".iloc[0] - 1) * 100",
-    diff: y + ".diff(" + spec.n + ")",
-    diff_bp: y + ".diff(" + spec.n + ") * 100",
-    roll_mean: y + ".rolling(" + spec.w + ").mean()",
-    roll_std: y + ".rolling(" + spec.w + ").std()",
-    roll_vol: y + ".pct_change().rolling(" + spec.w + ").std() * ("
-              + ann + " ** 0.5) * 100",
-    roll_z: "(" + y + " - " + y + ".rolling(" + spec.w + ").mean()) / "
-            + y + ".rolling(" + spec.w + ").std()",
-    log: "np.log(" + y + ")",
-    cumsum: y + ".cumsum()",
-    detrend: "cfs_detrend(" + y + ")",
-    shift: y + ".shift(" + spec.n + ")",
-    resample: null,
-  }[spec.id];
-  if (!body) return null;
-  if (!cf) {
-    return ["df[" + pyStr(yf) + "] = (lambda g: " + body + ")(df)"];
-  }
-  return ["df[" + pyStr(yf) + "] = df.groupby(" + pyStr(cf)
-          + ", group_keys=False).apply(lambda g: " + body + ")"];
-}
-
-/* The two transforms with no one-liner. Both take the group frame so
-   they read the same way as the rest, and both hand back `g`'s index.
-   Emitted one at a time: a definition the generated code never calls is
-   noise in a block the caller is told to keep whole, and cfs_detrend
-   would fail on a numpy import that a pct-over chart has no reason to
-   carry. */
-const CFS_PANDAS_HELPERS = {
-  cfs_pct_over: [
-    "def cfs_pct_over(g, months, x, y):",
-    "    s = g.set_index(x)[y]",
-    "    prev = s.reindex(s.index - pd.DateOffset(months=months), method=\"ffill\")",
-    "    return pd.Series((s.to_numpy() / prev.to_numpy() - 1) * 100, index=g.index)",
-  ],
-  cfs_detrend: [
-    "def cfs_detrend(s):",
-    "    x = np.arange(len(s), dtype=float)",
-    "    b, a = np.polyfit(x, s.to_numpy(), 1)",
-    "    return s - (a + b * x)",
-  ],
-};
-
-function pyStr(s) { return JSON.stringify(String(s)); }
-
-/* The frame as the producer handed it over, from the remembered rows
-   rather than from what is on screen -- the transforms below it are the
-   thing that turns one into the other. */
-function pristineRowsFor(target) {
-  const st = currentSpec.usermeta && currentSpec.usermeta.cfsTransform;
-  return (st && st.pristine && st.pristine[target.key]) || target.rows;
-}
-
-/* One series' worth of dates, in order, for reading the cadence off. */
-function cadencePoints(target) {
-  if (!target) return [];
-  const rows = pristineRowsFor(target);
-  const first = target.colorField && rows.length
-    ? String(rows[0][target.colorField]) : null;
-  const out = [];
-  for (const r of rows) {
-    if (first !== null && String(r[target.colorField]) !== first) continue;
-    const d = parseSpecDate(r[target.xField]);
-    if (d) out.push({ date: d });
-  }
-  out.sort((a, b) => a.date - b.date);
-  return out;
-}
-
-function generateCallCode() {
-  const L = [];
-  if (!CALL_KWARGS || !CALL_KWARGS.chart_type) {
-    return "# This chart was not produced by a single make_chart(...) call,\n"
-         + "# so there is no call to regenerate. Use the Vega-Lite JSON tab \u2014\n"
-         + "# it is the full-fidelity export and always current.";
-  }
-  const kw = deepClone(CALL_KWARGS);
-  const target = primaryTarget(currentSpec);
-  const st = currentSpec.usermeta && currentSpec.usermeta.cfsTransform;
-  const derived = (st && st.derived) || [];
-  const xf = target && target.xField;
-  const yf = target && target.yField;
-  const cf = target && target.colorField;
-
-  const trans = [];
-  if (target) {
-    const reg = (st && st.byKey && st.byKey[target.key]) || {};
-    Object.keys(reg).forEach((k) => trans.push([k, reg[k]]));
-  }
-  const ids = trans.map(([, s]) => s.id);
-  const usesNumpy = ids.indexOf("log") >= 0 || ids.indexOf("detrend") >= 0;
-  const helpers = [];
-  if (["yoy", "qoq", "mom"].some((k) => ids.indexOf(k) >= 0)) {
-    helpers.push("cfs_pct_over");
-  }
-  if (ids.indexOf("detrend") >= 0) helpers.push("cfs_detrend");
-  const unrepeatable = trans.filter(([, s]) => s.id === "resample")
-    .map(([, s]) => s.id);
-
-  L.push("import pandas as pd");
-  if (usesNumpy) L.push("import numpy as np");
-  L.push("");
-  for (const name of helpers) {
-    L.push.apply(L, CFS_PANDAS_HELPERS[name]);
-    L.push("");
-  }
-
-  if (target) {
-    const rows = pristineRowsFor(target);
-    L.push("df = pd.DataFrame([");
-    for (const r of rows) L.push("    " + JSON.stringify(r) + ",");
-    L.push("])");
-    L.push("df[" + pyStr(xf) + "] = pd.to_datetime(df[" + pyStr(xf) + "])");
-  }
-
-  // The series algebra, in the order the studio applies it. All of it
-  // is frame work, so all of it survives being pointed at fresh data.
-  for (const c of (st && st.cols) || []) {
-    L.push("");
-    L.push("# " + c.name + ", lifted out of the frame onto the chart");
-    L.push("lifted = df.drop_duplicates(" + pyStr(xf) + ")[["
-           + pyStr(xf) + ", " + pyStr(c.column) + "]].rename(columns={"
-           + pyStr(c.column) + ": " + pyStr(yf) + "})");
-    L.push("lifted[" + pyStr(cf) + "] = " + pyStr(c.name));
-    L.push("df = pd.concat([df, lifted], ignore_index=True)");
-  }
-  const hidden = (st && st.hidden) || [];
-  if (hidden.length && cf) {
-    L.push("");
-    L.push("df = df[~df[" + pyStr(cf) + "].isin(["
-           + hidden.map(pyStr).join(", ") + "])]");
-  }
-
-  if (trans.length) {
-    L.push("");
-    L.push("# The studio's transforms, as rules rather than as values.");
-    // Every rule below reads its neighbours -- a difference, a rolling
-    // window, a lookback -- so the frame has to be in date order first.
-    L.push("df = df.sort_values(" + (cf ? "[" + pyStr(cf) + ", " + pyStr(xf) + "]"
-                                        : pyStr(xf))
-           + ").reset_index(drop=True)");
-    for (const [who, spec] of trans) {
-      const lines = transformPandas(spec, xf, yf, cf,
-                                    cfsPeriodsPerYear(cadencePoints(target)));
-      if (!lines) {
-        L.push("# " + spec.id + " on " + (who === CFS_ALL_SERIES ? "every series" : who)
-               + " has no one-line pandas form; it keeps the last observation "
-               + "of each period.");
-        continue;
-      }
-      if (who !== CFS_ALL_SERIES) {
-        L.push("# only " + who + " carries this, so it is applied to that slice");
-      }
-      L.push.apply(L, lines);
-    }
-    L.push("df = df.dropna(subset=[" + pyStr(yf) + "])");
-  }
-
-  for (const d of derived) {
-    L.push("");
-    L.push("# " + d.name);
-    L.push("# added in the studio from " + d.sources.join(" and ")
-           + "; reproduce it upstream and pass it in with the rest.");
-  }
-
-  const win = target ? explicitXWindow(currentSpec, temporalPlotInfo(currentSpec) || {}) : null;
-  if (win) {
-    L.push("");
-    L.push("df = df[(df[" + pyStr(xf) + "] >= " + pyStr(formatSpecDate(win[0]).slice(0, 10))
-           + ") & (df[" + pyStr(xf) + "] <= "
-           + pyStr(formatSpecDate(win[1]).slice(0, 10)) + ")]");
-  }
-
-  // The text the studio can put back into the call rather than lose.
-  const host = findTitleHost(currentSpec);
-  const ttl = host && host.node && host.node.title;
-  if (ttl !== undefined) {
-    kw.title = typeof ttl === "string" ? ttl : (ttl && ttl.text) || null;
-    if (ttl && ttl.subtitle) kw.subtitle = ttl.subtitle;
-  }
-  if (yf && st && st.titles && yf in st.titles) {
-    kw.mapping = Object.assign({}, kw.mapping,
-                               { y_title: yTitleOf(currentSpec, yf) });
-  }
-  if (currentTheme && currentTheme !== INITIAL_THEME) kw.skin = currentTheme;
-  if (currentDimPreset && currentDimPreset !== INITIAL_DIM_PRESET) {
-    kw.dimensions = currentDimPreset;
-  }
-
-  // A rename is the last thing the studio does, so it is the last thing
-  // the frame does too -- the groupby above is keyed on the old names.
-  const names = (st && st.names) || {};
-  if (cf && Object.keys(names).length) {
-    L.push("");
-    L.push("df[" + pyStr(cf) + "] = df[" + pyStr(cf) + "].replace("
-           + pyValue(names, 0) + ")");
-  }
-
-  // Order and colour are mapping arguments rather than frame work, and
-  // both have to be pinned or the engine re-derives them from the data.
-  if (cf && st && st.order && st.order.length) {
-    kw.mapping = Object.assign({}, kw.mapping,
-                               { color_sort: st.order.map(displaySeriesName) });
-  }
-  const cmap = pinnedColorMap();
-  if (cmap) kw.mapping = Object.assign({}, kw.mapping, { color_map: cmap });
-
-  const anno = annotationsForCall();
-  if (anno.length) kw.annotations = anno; else delete kw.annotations;
-
-  L.push("");
-  L.push("res = make_chart(");
-  L.push("    df=df,");
-  for (const k of CFS_CALL_ORDER) {
-    if (!(k in kw) || kw[k] === null || kw[k] === undefined) continue;
-    L.push("    " + k + "=" + pyValue(kw[k], 4) + ",");
-  }
-  L.push(")");
-
-  const lost = studioEditsWithoutAKwarg();
-  if (lost.length) {
-    L.push("");
-    L.push("# make_chart has no argument for these, so they are in the");
-    L.push("# Vega-Lite JSON tab and not in the call above:");
-    for (const s of lost) L.push("#   \u2022 " + s);
-  }
-  if (unrepeatable.length) {
-    L.push("#   \u2022 the resample, which the studio does in place");
-  }
-  return L.join("\n");
-}
-
-/* The annotations argument as it now stands: the producer's, minus the
-   ones taken off in the studio, plus the ones added here.
-
-   make_chart takes dict-form annotations as readily as the dataclasses,
-   so the studio's own lines go back as dicts and land in the same place
-   they are drawn now. The producer's are passed through untouched --
-   theirs may be a band or a callout that this editor cannot rebuild
-   from the layers it rendered into, and re-deriving would lose it. */
-function annotationsForCall() {
-  const st = currentSpec.usermeta && currentSpec.usermeta.cfsTransform;
-  const gone = (st && st.annoGone) || [];
-  const kept = ((CALL_KWARGS && CALL_KWARGS.annotations) || [])
-    .filter((a) => !gone.some((g) => annotationMatches(a, g)));
-
-  const info = panelPlotInfo(currentSpec);
-  for (const a of annotationLayers(currentSpec)) {
-    if (!a.mine) continue;
-    const d = { type: a.kind };
-    d[a.kind === "vline" ? "x" : "y"] = a.kind === "vline"
-      && info && info.kind === "temporal"
-      ? String(a.value).slice(0, 10) : a.value;
-    if (a.label) d.label = a.label;
-    kept.push(d);
-  }
-  return kept;
-}
-
-/* Does a call-side annotation dict name the layer that was removed?
-   Label first, because it is the part a caller writes deliberately;
-   the coordinate only when there is no label to go on. */
-function annotationMatches(dict, gone) {
-  const type = String(dict.type || "").toLowerCase().replace(/[^a-z]/g, "");
-  const vertical = type.indexOf("v") === 0 || type === "eventline";
-  if ((vertical ? "vline" : "hline") !== gone.kind) return false;
-  if (gone.label && dict.label) return String(dict.label) === gone.label;
-  const at = vertical ? dict.x : dict.y;
-  if (at === undefined || gone.value === null) return false;
-  return String(gone.value).slice(0, 10) === String(at).slice(0, 10);
-}
-
-/* The colours as they now stand, but only when they are no longer the
-   ones the producer chose -- pinning an untouched palette would freeze
-   the chart against a future skin change for no reason. */
-function pinnedColorMap() {
-  const t = primaryTarget(currentSpec);
-  if (!t || !t.colorField) return null;
-  const st = currentSpec.usermeta && currentSpec.usermeta.cfsTransform;
-  const base = st && st.scale;
-  const info = specColorScale(t.colorField);
-  if (!info.domain.length || !info.colors.length) return null;
-  const same = base && base.domain.length === info.domain.length
-    && base.domain.every((d, i) => d === info.domain[i]
-      && String(base.colors[i]).toLowerCase()
-         === String(info.colors[i]).toLowerCase());
-  if (!base || same) return null;
-  const out = {};
-  info.domain.forEach((d, i) => {
-    if (info.colors[i]) out[String(d)] = String(info.colors[i]);
-  });
-  return Object.keys(out).length ? out : null;
-}
-
-/* The edits worth naming when they cannot survive the round-trip. Read
-   off the spec rather than journalled, so an edit made and then undone
-   does not linger in the list. */
-function studioEditsWithoutAKwarg() {
-  const out = [];
-  const style = currentSpec.usermeta && currentSpec.usermeta.cfsSeriesStyle;
-  if (style && (Object.keys(style.strokeWidth || {}).length
-                || Object.keys(style.strokeDash || {}).length)) {
-    out.push("per-series line weight or dash");
-  }
-  const derived = derivedSeriesNames();
-  if (derived.length) out.push("the added line" + (derived.length > 1 ? "s " : " ")
-                               + derived.map(displaySeriesName).join(", "));
-  for (const k of ["axisX", "axisY", "axis", "view", "legend"]) {
-    if (currentSpec.config && currentSpec.config[k]) {
-      out.push("axis, legend or view styling from the knobs");
-      break;
-    }
-  }
-  return out;
-}
-
-/* Python-literal rendering for the call arguments, indented so a nested
-   mapping or annotation list reads as one. */
-function pyValue(v, indent) {
-  const pad = " ".repeat(indent);
-  if (v === null || v === undefined) return "None";
-  if (typeof v === "boolean") return v ? "True" : "False";
-  if (typeof v === "number") return String(v);
-  if (typeof v === "string") return pyStr(v);
-  if (Array.isArray(v)) {
-    if (!v.length) return "[]";
-    return "[\n" + v.map((x) => pad + "    " + pyValue(x, indent + 4)).join(",\n")
-           + ",\n" + pad + "]";
-  }
-  const keys = Object.keys(v);
-  if (!keys.length) return "{}";
-  return "{\n" + keys.map((k) => pad + "    " + pyStr(k) + ": "
-                                 + pyValue(v[k], indent + 4)).join(",\n")
-         + ",\n" + pad + "}";
 }
 
 function _largestDataset(spec) {
@@ -10342,15 +7491,6 @@ function installDirectManipulation() {
   const host = document.getElementById("chart");
   if (host) {
     host.addEventListener("contextmenu", onChartContextMenu);
-    // Placement runs before the pan, and swallows the event when it is
-    // armed -- otherwise the click that places a line also drags the
-    // window it was placed in.
-    host.addEventListener("pointerdown", e => {
-      if (!_placingAnnotation) return;
-      e.preventDefault();
-      e.stopPropagation();
-      handlePlacementClick(e);
-    }, true);
     host.addEventListener("pointerdown", beginPan);
   }
   installResizeGrips();
@@ -10360,7 +7500,7 @@ function installDirectManipulation() {
     if (m && m.classList.contains("on") && !m.contains(e.target)) closeMenu();
   });
   window.addEventListener("keydown", e => {
-    if (e.key === "Escape") { closeMenu(); cancelAnnotationPlacement(); }
+    if (e.key === "Escape") closeMenu();
     const meta = e.metaKey || e.ctrlKey;
     if (meta && e.key.toLowerCase() === "z" && !e.shiftKey) {
       const tag = (e.target && e.target.tagName) || "";
@@ -10398,10 +7538,8 @@ def _render_template(
     filename: str,
     pref_key: str,
     sheets_key: str,
-    call_kwargs_json: str = "{}",
 ) -> str:
     replacements = {
-        "__CALL_KWARGS_JSON__":          call_kwargs_json,
         "__SPEC_JSON__":                 spec_json,
         "__KNOBS_JSON__":                knobs_json,
         "__THEMES_JSON__":               themes_json,
@@ -10418,10 +7556,6 @@ def _render_template(
         "__FILENAME__":                  filename,
         "__PREF_KEY__":                  pref_key,
         "__SHEETS_KEY__":                sheets_key,
-        # From the house style rather than repeated here, so a title the
-        # studio composes cannot drift past the limit the regenerated
-        # call is validated against.
-        "__Y_TITLE_MAX__":               str(_house.Y_AXIS_TITLE_MAX_CHARS),
     }
     out = HTML_TEMPLATE
     for token, value in replacements.items():
@@ -11165,7 +8299,6 @@ def wrap_interactive(
     sheets_key: Optional[str] = None,
     spec_sheets: Optional[Dict[str, Dict[str, Any]]] = None,
     active_spec_sheet: Optional[str] = None,
-    call: Optional[Dict[str, Any]] = None,
 ) -> InteractiveResult:
     """Wrap a vega-lite spec into an interactive HTML editor.
 
@@ -11271,7 +8404,6 @@ def wrap_interactive(
         filename=filename_base,
         pref_key=pref_key,
         sheets_key=sheets_key,
-        call_kwargs_json=json.dumps(call or {}, default=str),
     )
 
     html_path: Optional[str] = None
@@ -11358,9 +8490,6 @@ def wrap_interactive_prism(
     save_as: Optional[str] = None,
     spec_sheets: Optional[Dict[str, Dict[str, Any]]] = None,
     active_spec_sheet: Optional[str] = None,
-    skin: str = "gs_clean",
-    write_local: bool = False,
-    call: Optional[Dict[str, Any]] = None,
 ) -> PrismInteractiveResult:
     """PRISM-facing wrapper. Maps PRISM's make_chart conventions onto
     chart_functions_studio's generic wrap_interactive().
@@ -11381,7 +8510,7 @@ def wrap_interactive_prism(
     user_id : str, optional
         Used to build the localStorage key so preferences isolate per user.
     session_path : str|Path
-        PRISM session folder. Names the editor
+        PRISM session folder. Editor HTML is written to
         {session_path}/charts/{chart_name}_editor.html
     chart_name : str, optional
         Base name for the saved HTML. Defaults to timestamped name.
@@ -11391,20 +8520,6 @@ def wrap_interactive_prism(
         Pre-loaded spec sheets from user's preference store.
     active_spec_sheet : str, optional
         ID of the user's active spec sheet.
-    skin : str (default 'gs_clean')
-        The house style the chart was rendered in. The editor opens on the
-        same one, so a ``slate`` chart does not reopen as ``gs_clean`` and
-        recolour itself the moment a knob is touched.
-    write_local : bool (default False)
-        Write the HTML to the local filesystem. PRISM stores through the S3
-        manager instead (see ``chart_functions._persist_editable_spec``), so
-        this stays off in production and is used by the dev harness.
-    call : dict, optional
-        The JSON-safe ``make_chart(...)`` arguments that produced the chart.
-        The Code tab edits these into a runnable call rather than
-        reverse-engineering one out of the Vega-Lite. Omitted for facet
-        grids and composite packs, where no single call exists; the tab
-        says so and points at the JSON export.
 
     Returns
     -------
@@ -11439,19 +8554,18 @@ def wrap_interactive_prism(
 
     # determine output path following PRISM session convention
     html_path: Optional[Path] = None
-    if write_local:
-        if save_as:
-            html_path = Path(save_as)
-        elif session_path:
-            sp = Path(session_path)
-            name = chart_name or f"chart_{int(datetime.now(timezone.utc).timestamp())}"
-            html_path = sp / "charts" / f"{name}_editor.html"
+    if save_as:
+        html_path = Path(save_as)
+    elif session_path:
+        sp = Path(session_path)
+        name = chart_name or f"chart_{int(datetime.now(timezone.utc).timestamp())}"
+        html_path = sp / "charts" / f"{name}_editor.html"
 
     result = wrap_interactive(
         spec=altair_chart,
         chart_type=chart_type_for_knobs,
-        theme=skin,
-        palette=None,  # uses the theme's own default
+        theme="gs_clean",
+        palette=None,  # uses gs_primary default
         dimension_preset=dimensions,
         overrides=None,
         title=None,
@@ -11461,7 +8575,6 @@ def wrap_interactive_prism(
         sheets_key=sheets_key,
         spec_sheets=spec_sheets,
         active_spec_sheet=active_spec_sheet,
-        call=call,
     )
 
     return PrismInteractiveResult(
