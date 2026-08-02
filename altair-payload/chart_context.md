@@ -132,11 +132,11 @@ result = make_chart(
 `publish` (700×400), or `monitor` (500×300). Canvas dimensions are otherwise
 engine-selected.
 
-`skin` is `gs_clean` (default), `slate`, `mono`, `print`, or `dark`. Stay on
+`skin` is `gs_clean` (default), `slate`, `mono`, or `print`. Stay on
 the default unless the request names a constraint that another one answers:
 `print` for a black-and-white handout, `mono` when colour would imply a
-distinction the data does not support, `dark` for on-screen viewing only.
-The same five names are table skins — pass one skin to every artifact in an
+distinction the data does not support.
+The same four names are table skins — pass one skin to every artifact in an
 exhibit so they share a frame.
 
 Axis titles live only in `mapping`: `mapping['x_title']`,

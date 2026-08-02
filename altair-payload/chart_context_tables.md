@@ -95,9 +95,8 @@ either `reset_index()` so it becomes a named column (preferred) or set
 | `slate` | Softer blue-grey alternative to the default |
 | `mono` | Greyscale, including gains and losses |
 | `print` | Black and white, no row banding; for printed handouts |
-| `dark` | Light-on-dark, for screen viewing only; never for a printed or emailed exhibit |
 
-The same five names are chart skins. Pass one skin to every artifact in an
+The same four names are chart skins. Pass one skin to every artifact in an
 exhibit and the table and the charts share a frame; mix them and they read
 as pasted from different documents.
 
