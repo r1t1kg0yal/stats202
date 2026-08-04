@@ -1,6 +1,6 @@
 # Altair dual-axis and lead-lag charts
 
-Fetch this spoke for two metrics or unit families on one shared x axis, any
+Fetch this spoke for two metrics or unit families on one timeline, any
 `dual_axis_*` / `y_title_right` / inverted-RHS request, a y-scale mismatch
 error, or a time-shifted lead-lag chart. Dual axis is supported on
 `multi_line` / `timeseries`.
@@ -19,12 +19,6 @@ different units or materially different scales. Otherwise prefer:
 Different units require explicit dual-axis intent even when their numerical
 ranges happen to overlap. The engine can detect magnitude mismatch; it cannot
 infer economic units.
-
-The x axis does not have to be time. A datetime x plots as a date axis, and a
-measured x — threshold sweep, tenor ladder, strike grid — keeps its own values
-and takes its label from `mapping['x_title']`. Never convert a measured x with
-`pd.to_datetime()`: those values are read as nanoseconds and the chart is
-rejected.
 
 **Every dual-axis chart requires a short semantic `y_title_right` naming the
 right metric and unit.** Empty values and placeholders such as `Right Axis`,

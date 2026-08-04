@@ -130,8 +130,6 @@ ChartType = Literal[
     "bar_horizontal",   # Horizontal bar chart
     "bullet",           # Range dot plot / percentile position chart
     "waterfall",        # Waterfall / decomposition / attribution chart
-    "contribution",     # Signed stacked contributions with a net-total line
-    "band",             # Central path with a shaded interval (fan / envelope)
     "heatmap",          # 2D heatmap / correlation matrix
     "histogram",        # Distribution histogram
     "boxplot",          # Box and whisker plot
@@ -509,14 +507,13 @@ _PUBLIC_CHART_MAPPING_KEYS: frozenset = frozenset({
     "dual_axis_legend_tags", "dual_axis_series",
     "extent", "facet", "facet_order", "invert_right_axis",
     "label", "legend", "marker_size", "maxbins",
-    "net", "net_label",
     "opacity", "opacity_map", "order", "orientation", "scale_type",
     "size", "stack", "strokeDash", "strokeDashLegend",
     "strokeDashScale", "theta", "trendline", "trendlines",
     "type", "value", "value_sort",
     "x", "x_high", "x_low", "x_sort", "x_timezone", "x_title",
     "x_type",
-    "y", "y_high", "y_low", "y_ref", "y_sort", "y_title", "y_title_right",
+    "y", "y_sort", "y_title", "y_title_right",
     "zero_fill", "zero_fill_baseline", "zero_fill_negative",
     "zero_fill_positive",
 })
@@ -1633,17 +1630,11 @@ def _extract_fields(mapping: Dict[str, Any]) -> List[str]:
     """Collect every column name referenced by an encoding key in mapping.
 
     Walks the standard encoding keys (``x``, ``y``, ``color``, ``size``,
-    ``facet``, ``theta``, ``value``, plus the band interval keys) and
-    returns the union of column names they reference. List-valued ``y``
-    (auto-melt shortcut) and list-valued ``y_low`` / ``y_high`` (nested
-    band levels) are expanded. ``net`` is included because it accepts a
-    column name; its boolean form is skipped by the ``str`` guard below.
+    ``facet``, ``theta``, ``value``) and returns the union of column
+    names they reference. List-valued ``y`` (auto-melt shortcut) is expanded.
     """
     fields: List[str] = []
-    for key in (
-        "x", "y", "color", "size", "facet", "theta", "value",
-        "y_low", "y_high", "y_ref", "net",
-    ):
+    for key in ("x", "y", "color", "size", "facet", "theta", "value"):
         if key not in mapping:
             continue
         val = mapping[key]
@@ -1699,8 +1690,7 @@ def _sanitize_column_names(
     mapping = dict(mapping)
     for key in (
         "y", "x", "color", "size", "facet", "theta", "value",
-        "x_low", "x_high", "y_low", "y_high", "y_ref", "net",
-        "color_by", "label",
+        "x_low", "x_high", "color_by", "label",
     ):
         if key in mapping:
             val = mapping[key]
@@ -2601,7 +2591,7 @@ def _coerce_string_x_to_datetime(
       - x column is already datetime or numeric
       - parsing raises (yield-curve tenors, ratings, regions, etc.)
     """
-    if chart_type not in {"multi_line", "timeseries", "band"}:
+    if chart_type not in {"multi_line", "timeseries"}:
         return df
     if mapping.get("x_type") == "ordinal":
         return df
@@ -2708,431 +2698,6 @@ def _materialize_ordinal_datetime_x(
         x_field, len(labels), chart_type,
     )
     return df
-
-
-def _materialize_band_path(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    chart_type: str,
-) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Join an actual column and a forecast column into one band subject.
-
-    A forecast frame almost never arrives as one series. The desk has the
-    realised path in one column and the projection in another, each NaN
-    where the other has values, and a fan needs them as a single
-    continuous line. Making the caller write the ``.where(...).fillna()``
-    preamble is friction the engine can absorb: ``mapping['y']`` accepts a
-    list, and the columns are coalesced left to right, so the earlier
-    column wins wherever both are populated and the actual therefore
-    survives the handoff row.
-
-    The result keeps the FIRST column's name, so the axis label, the
-    tooltip and the studio all read as the series the reader knows.
-
-    Returns ``(df, audit_note)``; the note is ``None`` when nothing changed.
-    """
-    if chart_type != "band":
-        return df, None
-    y_spec = mapping.get("y")
-    if not isinstance(y_spec, (list, tuple)):
-        return df, None
-
-    cols = [c for c in y_spec if isinstance(c, str)]
-    if len(cols) < 2:
-        raise ValidationError(
-            "mapping['y'] on a band chart is a list of columns to join into "
-            "one path (actuals first, then the forecast). Got "
-            f"{list(y_spec)!r}. Pass the single column name directly when "
-            f"the path is already one series."
-        )
-    missing = [c for c in cols if c not in df.columns]
-    if missing:
-        raise ValidationError(
-            f"mapping['y']={cols!r} names column(s) not in df: {missing}. "
-            f"Available: {list(df.columns)}."
-        )
-
-    df = df.copy()
-    target = cols[0]
-    path = pd.to_numeric(df[target], errors="coerce")
-    for col in cols[1:]:
-        path = path.fillna(pd.to_numeric(df[col], errors="coerce"))
-    if path.notna().sum() == 0:
-        raise ValidationError(
-            f"mapping['y']={cols!r} has no numeric values in any of its "
-            f"columns, so there is no path to draw."
-        )
-    df[target] = path
-    mapping["y"] = target
-
-    return df, (
-        f"Band y coalesced {len(cols)} columns ({', '.join(cols)}) into one "
-        f"path on {target!r}; earlier columns win where both are populated."
-    )
-
-
-def _materialize_contribution_periods(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    chart_type: str,
-    annotations: Optional[List[Any]] = None,
-) -> Tuple[pd.DataFrame, Optional[str], Optional[List[Any]]]:
-    """Turn a datetime x column into period labels for ``contribution``.
-
-    Contribution bars sit on a band scale, so a datetime x would render as
-    a clock or as raw ISO tokens. Attribution data almost always arrives
-    with a real date column, so requiring the caller to pre-format it is
-    friction the engine can absorb: infer the spacing and emit the house
-    spelling (``24Q1`` quarterly, ``Jan 24`` monthly, ``2024`` annual,
-    ``03 Mar`` otherwise), then publish chronological order through
-    ``mapping['x_sort']``.
-
-    Any date-like annotation ``x`` is translated to the same label. A band
-    scale silently ADMITS an unknown category, so a caller who marks the
-    easing turn with the date they have would otherwise get a rule parked
-    off the end of the bars and a raw ISO token printed on the axis --
-    no error, no warning, just a wrong picture.
-
-    Returns ``(df, audit_note, annotations)``; the note is ``None`` when
-    nothing changed.
-    """
-    if chart_type != "contribution":
-        return df, None, annotations
-
-    x_field = _get_field(mapping, "x")
-    if not x_field or x_field not in df.columns:
-        return df, None, annotations
-    if not pd.api.types.is_datetime64_any_dtype(df[x_field]):
-        return df, None, annotations
-
-    stamps = df[x_field].dropna()
-    if stamps.empty:
-        return df, None, annotations
-
-    chronological = sorted(pd.Series(stamps.unique()))
-    ordered = pd.DatetimeIndex(chronological)
-    if len(ordered) > 1:
-        median_gap_days = float(
-            pd.Series(ordered).diff().dropna().dt.days.median() or 0.0
-        )
-    else:
-        median_gap_days = 0.0
-
-    if median_gap_days >= 300:
-        formatter = lambda ts: f"{ts.year}"  # noqa: E731
-        grain = "annual"
-    elif median_gap_days >= 75:
-        formatter = lambda ts: f"{str(ts.year)[-2:]}Q{ts.quarter}"  # noqa: E731
-        grain = "quarterly"
-    elif median_gap_days >= 20:
-        formatter = lambda ts: ts.strftime("%b %y")  # noqa: E731
-        grain = "monthly"
-    else:
-        formatter = lambda ts: ts.strftime("%d %b")  # noqa: E731
-        grain = "sub-monthly"
-
-    labels = [formatter(pd.Timestamp(ts)) for ts in chronological]
-    if len(set(labels)) != len(labels):
-        labels = [pd.Timestamp(ts).strftime("%d %b %y") for ts in chronological]
-        grain = "dated"
-
-    label_by_stamp = dict(zip(chronological, labels))
-    df = df.copy()
-    df[x_field] = df[x_field].map(label_by_stamp)
-
-    explicit_sort = mapping.get("x_sort")
-    if explicit_sort is None:
-        mapping["x_sort"] = labels
-    else:
-        mapping["x_sort"] = [
-            label_by_stamp.get(item, item) for item in explicit_sort
-        ]
-
-    if annotations:
-        annotations = [
-            _relabel_annotation_x(a, label_by_stamp, formatter)
-            for a in annotations
-        ]
-
-    return df, (
-        f"Contribution x_field {x_field!r} was datetime; materialised "
-        f"{len(labels)} {grain} period labels for the categorical axis."
-    ), annotations
-
-
-def _relabel_annotation_x(
-    annotation: Any,
-    label_by_stamp: Dict[Any, str],
-    formatter: Callable[[pd.Timestamp], str],
-) -> Any:
-    """Rewrite a date-like annotation ``x`` to its rendered period label.
-
-    Falls back to formatting the stamp directly when the caller names a
-    date between two plotted periods -- the label it lands on is the
-    period the reader would have picked.
-    """
-    x_attrs = [
-        name for name in ("x", "x1", "x2")
-        if getattr(annotation, name, None) is not None
-    ]
-    if not x_attrs:
-        return annotation
-
-    changes: Dict[str, str] = {}
-    for name in x_attrs:
-        value = getattr(annotation, name)
-        if isinstance(value, str) and value in label_by_stamp.values():
-            continue
-        try:
-            stamp = pd.Timestamp(value)
-        except (TypeError, ValueError):
-            continue
-        if pd.isna(stamp):
-            continue
-        changes[name] = label_by_stamp.get(stamp) or formatter(stamp)
-
-    if not changes:
-        return annotation
-    try:
-        return replace(annotation, **changes)
-    except TypeError:
-        return annotation
-
-
-def _band_level_fields(mapping: Dict[str, Any]) -> Tuple[List[str], List[str]]:
-    """Normalise ``y_low`` / ``y_high`` to parallel lists of column names.
-
-    Both keys accept a single column (one interval) or a list (nested
-    intervals such as a 50% band inside a 90% band). Ordering is
-    normalised to innermost-first so the renderer can grade opacity
-    without the caller having to think about draw order.
-    """
-    def _as_list(val: Any) -> List[str]:
-        if isinstance(val, str):
-            return [val]
-        if isinstance(val, (list, tuple)):
-            return [v for v in val if isinstance(v, str)]
-        return []
-
-    return _as_list(mapping.get("y_low")), _as_list(mapping.get("y_high"))
-
-
-# Chart types whose builder pins an explicit y-scale on every layer it
-# emits. Anything downstream that needs the visible domain must ask the
-# builder's helper rather than re-deriving it from the ``y`` column.
-_BUILDER_OWNED_Y_DOMAIN = frozenset({"band", "contribution"})
-
-
-def _band_y_domain(
-    df: pd.DataFrame, mapping: Dict[str, Any],
-) -> Optional[List[float]]:
-    """Vertical extent of a band chart, padded the way the builder pads it.
-
-    The ribbon routinely overshoots the subject line, so a domain read off
-    ``y`` alone clips the interval and makes any annotation gate reject
-    thresholds that are plainly on the canvas. Shared by ``_build_band``
-    and ``render_annotations`` so the axis and the gate never disagree.
-    """
-    y_field = _get_field(mapping, "y")
-    lows, highs = _band_level_fields(mapping)
-    ref_field = _get_field(mapping, "y_ref")
-    cols = [
-        c for c in [y_field, *lows, *highs, ref_field]
-        if isinstance(c, str) and c in df.columns
-    ]
-    if not cols:
-        return None
-    vals = pd.concat(
-        [pd.to_numeric(df[c], errors="coerce") for c in cols]
-    ).dropna()
-    if vals.empty:
-        return None
-    lo, hi = float(vals.min()), float(vals.max())
-    pad = (hi - lo) * 0.08 if hi > lo else max(abs(hi) * 0.1, 1.0)
-    return [lo - pad, hi + pad]
-
-
-def _contribution_net_values(
-    df: pd.DataFrame, mapping: Dict[str, Any], y_col: Optional[str] = None,
-) -> Optional[pd.Series]:
-    """Per-period total for a contribution chart, indexed by period.
-
-    ``mapping['net']`` is ``True`` (sum the components), a column name (use
-    a published total), or ``False`` (no total line at all).
-    """
-    net_spec = mapping.get("net", True)
-    if net_spec is False:
-        return None
-    x_field = _get_field(mapping, "x")
-    y_col = y_col or _get_field(mapping, "y")
-    if not isinstance(x_field, str) or x_field not in df.columns:
-        return None
-    grouped = df.groupby(x_field, sort=False)
-    if isinstance(net_spec, str):
-        if net_spec not in df.columns:
-            return None
-        return pd.to_numeric(grouped[net_spec].first(), errors="coerce")
-    if not isinstance(y_col, str) or y_col not in df.columns:
-        return None
-    return pd.to_numeric(grouped[y_col].sum(), errors="coerce")
-
-
-def _contribution_y_domain(
-    df: pd.DataFrame, mapping: Dict[str, Any], y_col: Optional[str] = None,
-) -> Optional[List[float]]:
-    """Signed-stack extent plus the net line, always including zero.
-
-    A stacked bar's visible top is the per-period sum, not the largest
-    single component, and zero is the baseline the whole chart is read
-    against. Extra headroom goes to the side that carries the total's
-    name label. Shared by ``_build_contribution`` and
-    ``render_annotations``.
-    """
-    x_field = _get_field(mapping, "x")
-    y_col = y_col or _get_field(mapping, "y")
-    if (
-        not isinstance(x_field, str) or x_field not in df.columns
-        or not isinstance(y_col, str) or y_col not in df.columns
-    ):
-        return None
-    frame = pd.DataFrame({
-        "_x": df[x_field].astype(str),
-        "_y": pd.to_numeric(df[y_col], errors="coerce"),
-    }).dropna()
-    if frame.empty:
-        return None
-    grouped = frame.groupby("_x", sort=False)["_y"]
-    pos_top = float(grouped.apply(lambda s: s[s > 0].sum()).max() or 0.0)
-    neg_bottom = float(grouped.apply(lambda s: s[s < 0].sum()).min() or 0.0)
-    lo, hi = min(neg_bottom, 0.0), max(pos_top, 0.0)
-    net = _contribution_net_values(df, mapping, y_col)
-    if net is not None and not net.dropna().empty:
-        lo = min(lo, float(net.min()))
-        hi = max(hi, float(net.max()))
-    span = hi - lo if hi > lo else max(abs(hi), 1.0)
-    return [lo - span * 0.08, hi + span * 0.16]
-
-
-def _collect_band_findings(
-    df: pd.DataFrame, mapping: Dict[str, Any],
-) -> List[ValidationError]:
-    """Structural gates unique to ``chart_type='band'``."""
-    findings: List[ValidationError] = []
-    lows, highs = _band_level_fields(mapping)
-
-    if not lows or not highs:
-        findings.append(ValidationError(
-            "chart_type='band' requires mapping['y_low'] and "
-            "mapping['y_high'] naming the interval bounds alongside "
-            "mapping['y'] (the central path). For nested intervals pass "
-            "parallel lists, e.g. mapping['y_low']=['p25','p05'] with "
-            "mapping['y_high']=['p75','p95']. With no interval to shade, "
-            "use chart_type='multi_line' instead."
-        ))
-        return findings
-
-    if len(lows) != len(highs):
-        findings.append(ValidationError(
-            f"mapping['y_low'] names {len(lows)} column(s) but "
-            f"mapping['y_high'] names {len(highs)}. Every band level needs "
-            f"both bounds -- pass parallel lists of equal length."
-        ))
-
-    if _get_field(mapping, "color"):
-        findings.append(ValidationError(
-            "chart_type='band' renders one central path and its interval; "
-            "mapping['color'] would stack translucent bands into an "
-            "unreadable overlap. Drop the colour column and chart one "
-            "series, or put each series in its own panel with a composite "
-            "helper (make_2pack_horizontal / make_4pack_grid)."
-        ))
-
-    for col in [*lows, *highs]:
-        if col in df.columns and not pd.api.types.is_numeric_dtype(df[col]):
-            findings.append(ValidationError(
-                f"Band bound '{col}' must be numeric. Current type: "
-                f"{df[col].dtype}. Convert with: df['{col}'] = "
-                f"pd.to_numeric(df['{col}'], errors='coerce')"
-            ))
-
-    # An inverted bound renders as a zero-height or self-crossing ribbon,
-    # which reads as a rendering fault rather than as the data error it is.
-    for low, high in zip(lows, highs):
-        if low in df.columns and high in df.columns:
-            both = df[[low, high]].dropna()
-            if not both.empty and (both[low] > both[high]).any():
-                n_bad = int((both[low] > both[high]).sum())
-                findings.append(ValidationError(
-                    f"mapping['y_low']='{low}' exceeds "
-                    f"mapping['y_high']='{high}' on {n_bad} row(s). The low "
-                    f"bound must be the lower one -- check whether the two "
-                    f"columns are swapped."
-                ))
-    return findings
-
-
-def _collect_contribution_findings(
-    df: pd.DataFrame, mapping: Dict[str, Any],
-) -> Tuple[List[ValidationError], List[str]]:
-    """Structural gates unique to ``chart_type='contribution'``.
-
-    Returns ``(findings, warnings)``. A supplied ``net`` column that does
-    not tie out to the components is a warning rather than an error --
-    published headlines legitimately differ from the sum of rounded
-    contributions, which is the whole reason the key exists.
-    """
-    findings: List[ValidationError] = []
-    warnings: List[str] = []
-
-    if not _get_field(mapping, "color"):
-        findings.append(ValidationError(
-            "chart_type='contribution' decomposes a total into components, "
-            "so mapping['color'] must name the component column. For a "
-            "single undecomposed series use chart_type='bar'; for a "
-            "one-period bridge use chart_type='waterfall'."
-        ))
-
-    net = mapping.get("net")
-    if net is not None and not isinstance(net, (bool, str)):
-        findings.append(ValidationError(
-            f"mapping['net'] must be True (engine sums the components), "
-            f"False (no total line), or a column name holding a published "
-            f"total. Got {type(net).__name__}."
-        ))
-    elif isinstance(net, str) and net not in df.columns:
-        findings.append(ValidationError(
-            f"mapping['net']='{net}' is not a column in df. Available: "
-            f"{list(df.columns)}. Omit mapping['net'] to have the engine "
-            f"sum the components instead."
-        ))
-
-    # A published total sits on the same axis as the components it decomposes.
-    # Far enough off that sum and the column is almost always the wrong one --
-    # a level where contributions were meant, or a differently-scaled series.
-    x_field = _get_field(mapping, "x")
-    y_field = _get_field(mapping, "y")
-    if (
-        isinstance(net, str) and net in df.columns
-        and x_field in df.columns and y_field in df.columns
-        and pd.api.types.is_numeric_dtype(df[net])
-        and pd.api.types.is_numeric_dtype(df[y_field])
-    ):
-        by_x = df.groupby(x_field, sort=False)
-        summed = by_x[y_field].sum()
-        published = by_x[net].first()
-        scale = float(summed.abs().max() or 0.0)
-        if scale > 1e-9:
-            gap = float((published - summed).abs().max() or 0.0)
-            if gap > scale * 0.5:
-                warnings.append(
-                    f"mapping['net']='{net}' differs from the sum of the "
-                    f"components by up to {gap:.2f} against a component scale "
-                    f"of {scale:.2f}. Rounding residuals are expected; a gap "
-                    f"this large usually means '{net}' is a level rather than "
-                    f"a contribution, or is on a different unit. Omit "
-                    f"mapping['net'] to plot the summed total."
-                )
-    return findings, warnings
 
 
 def _collect_plot_ready_findings(
@@ -3276,10 +2841,7 @@ def _collect_plot_ready_findings(
                 ))
             elif (
                 non_null_count < 2
-                and chart_type in {
-                    "timeseries", "multi_line", "scatter", "area",
-                    "scatter_multi", "band",
-                }
+                and chart_type in {"timeseries", "multi_line", "scatter", "area", "scatter_multi"}
             ):
                 flagged_fields.add(field_name)
                 tier0.append(ValidationError(
@@ -3314,10 +2876,7 @@ def _collect_plot_ready_findings(
     # with an opaque ``TypeError`` instead of this clean, actionable message.
     # (Wide-format auto-melt passes a list y; ``_get_field`` returns None for a
     # list, so this check is skipped for that path and handled post-melt.)
-    if chart_type in {
-        "timeseries", "multi_line", "scatter", "bar", "area", "histogram",
-        "boxplot", "band", "contribution",
-    }:
+    if chart_type in {"timeseries", "multi_line", "scatter", "bar", "area", "histogram", "boxplot"}:
         y_field = _get_field(mapping, "y")
         if y_field and y_field in df.columns and not pd.api.types.is_numeric_dtype(df[y_field]):
             tier0.append(ValidationError(
@@ -3325,15 +2884,6 @@ def _collect_plot_ready_findings(
                 f"Current type: {df[y_field].dtype}. "
                 f"Convert with: df['{y_field}'] = pd.to_numeric(df['{y_field}'], errors='coerce')"
             ))
-
-    if chart_type == "band":
-        tier0.extend(_collect_band_findings(df, mapping))
-    elif chart_type == "contribution":
-        contrib_findings, contrib_warnings = _collect_contribution_findings(
-            df, mapping,
-        )
-        tier0.extend(contrib_findings)
-        warnings.extend(contrib_warnings)
 
     # ---- cardinality guards ------------------------------------------------
     # Color cardinality is a HARD error: the default GS_PRIMARY palette has
@@ -3441,16 +2991,8 @@ def _collect_plot_ready_findings(
             f"Example: df.sample(n={MAX_ROWS_INTERACTIVE}, random_state=42)"
         )
 
-    # A band's bound columns are NaN over history BY DESIGN -- that is how
-    # the builder infers the forecast split -- so telling the caller to
-    # fill them is advice against the type's own contract.
-    sparse_by_design: Set[str] = set()
-    if chart_type == "band":
-        band_lows, band_highs = _band_level_fields(mapping)
-        sparse_by_design = set(band_lows) | set(band_highs)
-
     for field_name in fields_to_check:
-        if field_name in df.columns and field_name not in sparse_by_design:
+        if field_name in df.columns:
             missing_pct = df[field_name].isna().mean() * 100
             if missing_pct > 50:
                 warnings.append(
@@ -3883,17 +3425,6 @@ def _collect_content_findings(
     # ---- bar category labels ---------------------------------------------
     bar_would_flip = False
     if (
-        chart_type == "contribution"
-        and isinstance(x_field, str)
-        and x_field in df.columns
-    ):
-        try:
-            _validate_bar_category_labels(
-                [str(v) for v in df[x_field].unique()], x_field, mapping,
-            )
-        except ValidationError as exc:
-            findings.append(exc)
-    elif (
         chart_type == "bar"
         and isinstance(x_field, str)
         and x_field in df.columns
@@ -4043,7 +3574,7 @@ def _validate_line_coverage(
         PRISM's correct path -- passing a tidy long frame with no NaN rows --
         is unaffected.
     """
-    if chart_type not in {"multi_line", "timeseries", "area", "band"}:
+    if chart_type not in {"multi_line", "timeseries", "area"}:
         return
 
     y_field = _get_field(mapping, "y")
@@ -4242,7 +3773,7 @@ def _validate_x_extent(
       - Ordered (datetime / numeric) x measures span share; categorical x
         measures distinct-category share.
     """
-    if chart_type not in {"multi_line", "timeseries", "area", "line", "band"}:
+    if chart_type not in {"multi_line", "timeseries", "area", "line"}:
         return
 
     x_field = _get_field(mapping, "x")
@@ -9531,18 +9062,7 @@ def render_annotations(
             and x_field in df.columns
             and x_field != y_field
         )
-        # ``band`` and ``contribution`` pin an explicit scale on every layer
-        # they emit, computed from the ribbon bounds / stack totals rather
-        # than the raw ``y`` column. Re-deriving the domain here would put
-        # the annotation gate at odds with the axis the reader sees, so
-        # both reuse the builders' own helpers and the base chart is left
-        # untouched below.
-        if chart_type in _BUILDER_OWNED_Y_DOMAIN:
-            clamped_domain = (
-                _band_y_domain(df, mapping) if chart_type == "band"
-                else _contribution_y_domain(df, mapping)
-            )
-        elif is_stacked:
+        if is_stacked:
             try:
                 pos = df[df[y_field] > 0]
                 neg = df[df[y_field] < 0]
@@ -9575,7 +9095,7 @@ def render_annotations(
             )
             clamped_domain = [float(d_lo), float(d_hi)]
 
-        if not is_dual_axis and chart_type not in _BUILDER_OWNED_Y_DOMAIN:
+        if not is_dual_axis:
             y_title_override = mapping.get("y_title")
             y_display = (
                 y_title_override
@@ -12899,13 +12419,7 @@ def get_axis_beautification(
     # based on the largest single value, which is wrong for stacked bars
     # (the chart needs room for the *stacked total*) and adds spurious
     # padding that pushes bars off the floor on standard bars.
-    # ``contribution`` owns its domain for the same reason as stacked bars
-    # (the axis must clear the signed stack total and the net line, neither
-    # of which is a raw row value). ``band`` owns its domain because the
-    # ribbon extends past ``y`` on both sides.
-    skip_y_domain = chart_type in {
-        "bar", "bar_horizontal", "waterfall", "contribution", "band",
-    }
+    skip_y_domain = chart_type in {"bar", "bar_horizontal", "waterfall"}
 
     if y_field and y_field in df.columns and not skip_y_domain:
         y_data = df[y_field]
@@ -13383,13 +12897,6 @@ _SHARED_MARK_CONFIG: Dict[str, Any] = {
 # Interactive sliders exposed by chart_functions_studio (humans only, not the
 # LLM). Identical across skins -- a slider range is a property of the mark,
 # not of the palette it is drawn in.
-#
-# The editor does NOT read this. It builds its panel from its own
-# ``MARK_KNOB_MAP``, which is where a knob has to be registered to appear.
-# This copy survives only as the ``publish`` intent's switch: emptying it is
-# how ``get_skin`` says "no sliders". Add nothing here expecting it to show
-# up in the studio -- ``band`` and ``contribution`` are absent for that
-# reason.
 _INTERACTIVE_PARAMS: Dict[str, Any] = {
     "multi_line": [
         {"name": "strokeWidth", "label": "Line Width", "min": 0.5, "max": 5, "step": 0.5, "default": 2},
@@ -13476,14 +12983,6 @@ def _build_skin(style: Dict[str, Any]) -> Dict[str, Any]:
         # caption and side-panel prose, and the composite super-subtitle.
         "muted_color":        style["muted_ink"],
         "subtitle_color":     style["subtitle_ink"],
-        # Semantic ink. Sign-coded marks (waterfall bars, contribution
-        # components) and overlay rules resolve from the house style rather
-        # than from literals, so a greyscale skin stays greyscale instead of
-        # emitting green and red through a monochrome frame.
-        "ink_color":          ink,
-        "positive_color":     style["positive"],
-        "negative_color":     style["negative"],
-        "rule_color":         style["rule"],
         "mark_config": mark_config,
         "config": {
             # Vega-Lite default is "%b %d, %Y" (month+day+year). House rule:
@@ -13843,23 +13342,17 @@ def _validate_color_map_kwarg(
             "On heatmap, override the ramp with mapping['color_scheme'] "
             "(e.g. 'blues', 'redblue')."
         )
-    if chart_type in {"bullet", "waterfall", "band"} and isinstance(color_map, dict):
+    if chart_type in {"bullet", "waterfall"} and isinstance(color_map, dict):
         # These builders have no categorical colour encoding for dict keys
         # to match -- a dict here silently changed nothing before this
         # gate. List form stays valid (entry [0] sets the primary colour).
-        _keyed_by = {
-            "waterfall": "bar type (totals, positive, negative), taking the "
-                         "skin's own sign colours",
-            "bullet": "'color_by'",
-            "band": "a single series -- the ribbon inherits the line colour",
-        }[chart_type]
         raise ValidationError(
             f"mapping['color_map'] dict form has no effect on "
-            f"chart_type={chart_type!r}: colours there are keyed by "
-            f"{_keyed_by}. Use the single-entry list form (['#hex'] sets "
-            f"the primary colour) or drop the kwarg. For a per-component "
-            f"dict, chart_type='contribution' has a real categorical "
-            f"colour encoding."
+            f"chart_type={chart_type!r}: waterfall colours are keyed by "
+            f"bar type (positive green / negative red / totals brand "
+            f"primary) and bullet by 'color_by'. Use the single-entry "
+            f"list form (['#hex'] sets the primary colour) or drop the "
+            f"kwarg."
         )
     if isinstance(color_map, dict):
         for key, hex_val in color_map.items():
@@ -14200,7 +13693,7 @@ def _validate_opacity_map_kwarg(
     _categorical_opacity_types = {
         "multi_line", "timeseries", "scatter", "scatter_multi",
         "bar", "bar_horizontal", "area", "boxplot", "donut",
-        "histogram", "contribution",
+        "histogram",
     }
     if chart_type in _categorical_opacity_types and not color_field:
         raise ValidationError(
@@ -14788,18 +14281,6 @@ def _build_tooltip(
                 title=y_field.replace("_", " ").title(),
             )
         )
-
-    if chart_type == "band":
-        lows, highs = _band_level_fields(mapping)
-        for low, high in zip(lows, highs):
-            for col, role in ((low, "Low"), (high, "High")):
-                if col in df.columns:
-                    tooltips.append(
-                        alt.Tooltip(
-                            _safe_field(col), type="quantitative", format=".2f",
-                            title=f"{col.replace('_', ' ').title()} ({role})",
-                        )
-                    )
 
     color_field = _safe_field(_get_field(mapping, "color"))
     if color_field and color_field in df.columns:
@@ -15934,11 +15415,8 @@ def _build_multi_line_dual_axis(
     Pipeline:
       1. Validate ``color`` field exists (required: dual-axis splits on
          color).
-      2. Resolve the x axis type from the column dtype (temporal for a
-         real timeline, quantitative / ordinal for a measured x such as a
-         threshold sweep or tenor ladder); coerce color values to strings
-         (so series names with mixed types still match the
-         dual_axis_series list).
+      2. Coerce x to datetime; coerce color values to strings (so series
+         names with mixed types still match the dual_axis_series list).
       3. Validate every series in ``dual_axis_series`` is present in
          ``df[color]``. Trailing whitespace or rename-mismatch is the
          #1 dual-axis failure mode -- error message points the user at
@@ -15983,74 +15461,18 @@ def _build_multi_line_dual_axis(
         )
 
     df = df.copy()
-
-    # Resolve the x type from the data instead of assuming a timeline.
-    # Date strings and unix-epoch integers are already datetime by now
-    # (``_normalize_intraday_x_column`` / ``_coerce_string_x_to_datetime``
-    # run before dispatch), so a column that is still non-datetime here is
-    # a measured axis -- a threshold sweep, a tenor ladder, a strike grid.
-    # ``pd.to_datetime()`` on one of those reads the values as NANOSECONDS
-    # since the epoch (T=10 -> 1970-01-01T00:00:00.000000010), collapsing
-    # the whole domain into a sub-second window on 1970-01-01: two 20-point
-    # lines paint as a single vertical sliver under one ``1970`` tick, with
-    # ``success=True`` and no warnings. Delegating to
-    # ``_profile_x_axis_type`` gives the same quantitative / ordinal split
-    # ``_build_profile_line`` uses, so a numeric x reaches both builders
-    # with identical semantics.
-    if mapping.get("x_type") == "ordinal":
-        x_axis_type = "ordinal"
-    elif pd.api.types.is_datetime64_any_dtype(df[x_field]):
-        x_axis_type = "temporal"
-    else:
-        x_axis_type = _profile_x_axis_type(df, x_field)
+    if (
+        not pd.api.types.is_datetime64_any_dtype(df[x_field])
+        and mapping.get("x_type") != "ordinal"
+    ):
+        df[x_field] = pd.to_datetime(df[x_field])
 
     # Publish the x type so annotation layers inherit it (see
-    # ``_annotation_x_axis_type``) and ride the same x scale as the base
-    # layers -- a base/annotation type disagreement paints a spurious
-    # second x axis.
-    mapping["_x_axis_type"] = x_axis_type
-
-    x_sort = mapping.get("x_sort")
-    if x_axis_type == "ordinal" and x_sort is None:
-        x_sort = _infer_tenor_sort(df[x_field].unique())
-
-    def _x_encoding() -> alt.X:
-        """The x encoding shared by both layers.
-
-        Built per layer rather than shared as one object: the two layers
-        must agree exactly, or Vega-Lite resolves them onto independent x
-        scales. A temporal axis stays untitled (the date axis is
-        self-evident, house rule); a measured axis carries its title and,
-        when ordinal, the profile tick plan that keeps labels off vertical.
-        """
-        if x_axis_type == "temporal":
-            return alt.X(x_field, type="temporal", axis=alt.Axis(title=None))
-        x_title = _format_label(x_field, mapping, "x")
-        if x_axis_type == "quantitative":
-            return alt.X(
-                x_field,
-                type="quantitative",
-                axis=alt.Axis(title=x_title, titleFontWeight="normal"),
-            )
-        label_angle, tick_values = _profile_ordinal_axis_plan(
-            _resolve_profile_x_order(df, x_field, mapping), width,
-        )
-        x_axis_kwargs: Dict[str, Any] = dict(
-            title=x_title,
-            titleFontWeight="normal",
-            labelAngle=label_angle,
-            labelOverlap="greedy",
-            labelSeparation=8,
-        )
-        if tick_values is not None:
-            x_axis_kwargs["values"] = tick_values
-        return alt.X(
-            x_field, type="ordinal", sort=x_sort, axis=alt.Axis(**x_axis_kwargs),
-        )
-
-    logger.debug(
-        "[_build_multi_line_dual_axis] x_field=%r dtype=%s -> x_axis_type=%s",
-        x_field, df[x_field].dtype, x_axis_type,
+    # ``_annotation_x_axis_type``). Dual-axis x is temporal unless the
+    # caller forced ordinal; mirror that so VLine / HLine / Band labels
+    # ride the same x scale as the base layers.
+    mapping["_x_axis_type"] = (
+        "ordinal" if mapping.get("x_type") == "ordinal" else "temporal"
     )
 
     # Series-name matching is the #1 dual-axis failure mode. Strip
@@ -16181,7 +15603,7 @@ def _build_multi_line_dual_axis(
             opacity=line_opacity,
         )
         .encode(
-            x=_x_encoding(),
+            x=alt.X(x_field, type="temporal", axis=alt.Axis(title=None)),
             y=alt.Y(
                 safe_left_field,
                 type="quantitative",
@@ -16216,7 +15638,7 @@ def _build_multi_line_dual_axis(
             opacity=line_opacity,
         )
         .encode(
-            x=_x_encoding(),
+            x=alt.X(x_field, type="temporal", axis=alt.Axis(title=None)),
             y=alt.Y(
                 safe_right_field,
                 type="quantitative",
@@ -20103,14 +19525,11 @@ def _build_waterfall(
     df["_wf_y_end"] = y_ends
 
     # ---- color by type --------------------------------------------------
-    # Sign colours come from the skin, not from literals: ``mono`` and
-    # ``print`` set positive == negative == ink, so a greyscale waterfall
-    # separates the bars by position and label rather than by hue.
     primary_color = _resolve_single_series_color(mapping, skin_config)
     color_map = {
         "total": primary_color,
-        "positive": skin_config.get("positive_color", "#0E7A28"),
-        "negative": skin_config.get("negative_color", "#C00000"),
+        "positive": "#2EB857",
+        "negative": "#DC143C",
     }
     df["_wf_color"] = df["_wf_type"].map(color_map).fillna(primary_color)
 
@@ -20232,520 +19651,6 @@ def _build_waterfall(
 
     chart = _force_data_embedding(chart, df)
     logger.debug("[_build_waterfall] DONE")
-    return chart
-
-
-# Total alpha the innermost band should reach once nested levels overlap.
-# Per-level alpha is solved back from this so a 1-level and a 3-level fan
-# read at the same weight against the same line.
-_BAND_TARGET_ALPHA = 0.42
-
-
-def _band_x_encoding(
-    df: pd.DataFrame, x_field: str, mapping: Dict[str, Any], title: Optional[str],
-) -> alt.X:
-    """Shared x encoding for every ``band`` layer.
-
-    All layers must agree on field name, type and sort or Vega-Lite
-    concatenates their axis titles and draws two scales.
-    """
-    if pd.api.types.is_datetime64_any_dtype(df[x_field]):
-        return alt.X(x_field, type="temporal", axis=alt.Axis(title=title))
-    if pd.api.types.is_numeric_dtype(df[x_field]):
-        return alt.X(x_field, type="quantitative", axis=alt.Axis(title=title))
-    sort = mapping.get("x_sort") or list(dict.fromkeys(df[x_field].astype(str)))
-    return alt.X(
-        x_field, type="ordinal", sort=list(sort), axis=alt.Axis(title=title),
-    )
-
-
-def _build_band(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    skin_config: Dict[str, Any],
-    width: int,
-    height: int,
-) -> alt.Chart:
-    """Central path with a shaded interval -- forecast fan or historical envelope.
-
-    One series only. The ribbon between ``y_low`` and ``y_high`` carries
-    the uncertainty or the range; the ``y`` line carries the point the
-    reader is meant to take away.
-
-    Mapping keys:
-      - ``x`` (required): date, numeric offset, or ordered category.
-      - ``y`` (required): the central / subject path, drawn solid.
-      - ``y_low`` / ``y_high`` (required): interval bounds. Pass parallel
-        lists for nested levels (``['p25','p05']`` with ``['p75','p95']``);
-        overlapping fills grade the shading automatically.
-      - ``y_ref`` (optional): a second, dashed reference path inside the
-        band -- the historical median an event study is measured against.
-        Its presence switches on a two-entry legend.
-      - ``net``-style extras do not apply; ``color`` is rejected upstream.
-
-    History / forecast is inferred, not declared: rows whose bounds are
-    all NaN are history, so PRISM passes one frame with the interval
-    columns left empty over the actuals and the engine solids the line
-    there, dashes it under the band, and drops a divider at the handoff.
-    An all-bounded frame (an event-study envelope) simply skips all three.
-
-    Pipeline structure:
-      Layer 1..n (bands): mark_area y/y2 per level, outermost first.
-      Layer n+1 (divider): mark_rule at the history/forecast handoff.
-      Layer n+2 (ref): dashed mark_line for ``y_ref``.
-      Layer n+3 (subject): mark_line for ``y``, split solid/dashed when
-        the frame carries both history and forecast.
-    """
-    logger.info("[_build_band] START: df.shape=%s", df.shape)
-
-    x_field = _get_field(mapping, "x")
-    y_field = _get_field(mapping, "y")
-    ref_field = _get_field(mapping, "y_ref")
-    lows, highs = _band_level_fields(mapping)
-
-    for fname, fval in [("x", x_field), ("y", y_field)]:
-        if fval is None or fval not in df.columns:
-            raise ValidationError(
-                f"Required mapping key '{fname}' (value={fval!r}) not found "
-                f"in DataFrame columns: {list(df.columns)}"
-            )
-    for col in [*lows, *highs] + ([ref_field] if ref_field else []):
-        if col not in df.columns:
-            raise ValidationError(
-                f"Band column '{col}' not found in DataFrame columns: "
-                f"{list(df.columns)}"
-            )
-
-    df = df.copy()
-    for col in [y_field, *lows, *highs] + ([ref_field] if ref_field else []):
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-    # A numeric x is a real axis (months from an event, tenor in years), not
-    # an unparsed date. ``pd.to_datetime`` would read those integers as
-    # nanoseconds since the epoch and collapse the whole series into 1970.
-    if not (
-        pd.api.types.is_datetime64_any_dtype(df[x_field])
-        or pd.api.types.is_numeric_dtype(df[x_field])
-    ):
-        try:
-            df[x_field] = pd.to_datetime(df[x_field])
-        except Exception:  # noqa: BLE001 - ordinal x stays as-is
-            pass
-    if pd.api.types.is_datetime64_any_dtype(df[x_field]) or pd.api.types.is_numeric_dtype(df[x_field]):
-        df = df.sort_values(x_field)
-    # The history/forecast split below slices positionally, so the frame must
-    # not carry a filtered caller index.
-    df = df.reset_index(drop=True)
-
-    # Widest level last so the fill order runs outermost -> innermost and
-    # the overlap does the grading.
-    spans = [
-        (low, high, float((df[high] - df[low]).abs().mean(skipna=True) or 0.0))
-        for low, high in zip(lows, highs)
-    ]
-    spans.sort(key=lambda t: t[2], reverse=True)
-
-    n_levels = max(len(spans), 1)
-    target = float(mapping.get("opacity", _BAND_TARGET_ALPHA))
-    target = min(max(target, 0.05), 0.95)
-    level_alpha = 1.0 - (1.0 - target) ** (1.0 / n_levels)
-
-    line_color = _resolve_single_series_color(mapping, skin_config)
-    mark_config = skin_config.get("mark_config", {}).get("line", {})
-    muted = skin_config.get("muted_color", "#6B6B6B")
-
-    x_title = mapping.get("x_title")
-    y_title = _format_label(y_field, mapping, "y")
-    _validate_y_axis_label(y_title, mapping)
-
-    # ---- y domain (the builder owns it; the ribbon overshoots ``y``) ----
-    domain = _band_y_domain(df, mapping)
-    if domain is None:
-        raise ValidationError(
-            "Band chart has no numeric values across y, y_low and y_high."
-        )
-    y_scale = alt.Scale(domain=domain, nice=False)
-
-    def _y(field: str, *, title: Optional[str]) -> alt.Y:
-        return alt.Y(
-            field, type="quantitative", scale=y_scale,
-            axis=alt.Axis(title=title, titleFontWeight="normal"),
-        )
-
-    layers: List[alt.Chart] = []
-
-    # ---- Layer 1..n: nested ribbons -------------------------------------
-    for low, high, _span in spans:
-        layers.append(
-            alt.Chart(df)
-            .mark_area(opacity=level_alpha, color=line_color, clip=True)
-            .encode(
-                x=_band_x_encoding(df, x_field, mapping, x_title),
-                y=_y(low, title=y_title),
-                y2=alt.Y2(high),
-                tooltip=_build_tooltip(mapping, "band", df),
-            )
-            .properties(width=width, height=height)
-        )
-
-    # ---- history / forecast handoff -------------------------------------
-    bounded = df[[*lows, *highs]].notna().any(axis=1) if spans else pd.Series(
-        False, index=df.index
-    )
-    has_history = bool((~bounded).any()) and bool(bounded.any())
-    split_idx = int(bounded.to_numpy().argmax()) if has_history else -1
-
-    if has_history and split_idx > 0:
-        anchor = df.iloc[split_idx - 1]
-        divider_df = pd.DataFrame({x_field: [anchor[x_field]]})
-        layers.append(
-            alt.Chart(divider_df)
-            .mark_rule(color=muted, strokeWidth=1, strokeDash=[4, 4], opacity=0.9)
-            .encode(x=_band_x_encoding(divider_df, x_field, mapping, None))
-            .properties(width=width, height=height)
-        )
-
-    # ---- reference path + subject path ----------------------------------
-    stroke_width = mark_config.get("strokeWidth", 2)
-
-    if ref_field:
-        # Two named series get a real Vega legend rather than hand-placed
-        # end labels: the swatch carries the dash pattern, so "which line
-        # is which" survives resizing and greyscale.
-        subject_name = _format_label(y_field, {}, "")
-        ref_name = _format_label(ref_field, {}, "")
-        long = pd.concat([
-            df[[x_field, y_field]].rename(columns={y_field: "_band_value"}).assign(
-                _band_series=subject_name
-            ),
-            df[[x_field, ref_field]].rename(columns={ref_field: "_band_value"}).assign(
-                _band_series=ref_name
-            ),
-        ], ignore_index=True)
-        layers.append(
-            alt.Chart(long)
-            .mark_line(
-                strokeWidth=stroke_width,
-                interpolate=mark_config.get("interpolate", "linear"),
-                clip=True,
-            )
-            .encode(
-                x=_band_x_encoding(long, x_field, mapping, x_title),
-                y=_y("_band_value", title=y_title),
-                color=alt.Color(
-                    "_band_series:N",
-                    scale=alt.Scale(
-                        domain=[subject_name, ref_name],
-                        range=[line_color, muted],
-                    ),
-                    legend=alt.Legend(title=None, orient="top-left", direction="vertical"),
-                ),
-                strokeDash=alt.StrokeDash(
-                    "_band_series:N",
-                    scale=alt.Scale(
-                        domain=[subject_name, ref_name], range=[[1, 0], [5, 3]],
-                    ),
-                    legend=None,
-                ),
-            )
-            .properties(width=width, height=height)
-        )
-    elif has_history:
-        # Solid over the actuals, dashed under the band. The handoff row
-        # belongs to both segments so the path stays continuous.
-        hist = df.iloc[: split_idx].copy()
-        fcast = df.iloc[max(split_idx - 1, 0):].copy()
-        for segment, dash in ((hist, None), (fcast, [5, 3])):
-            if len(segment) < 2:
-                continue
-            layers.append(
-                alt.Chart(segment)
-                .mark_line(
-                    color=line_color,
-                    strokeWidth=stroke_width,
-                    strokeDash=dash if dash else alt.Undefined,
-                    interpolate=mark_config.get("interpolate", "linear"),
-                    clip=True,
-                )
-                .encode(
-                    x=_band_x_encoding(segment, x_field, mapping, x_title),
-                    y=_y(y_field, title=y_title),
-                )
-                .properties(width=width, height=height)
-            )
-    else:
-        layers.append(
-            alt.Chart(df)
-            .mark_line(
-                color=line_color,
-                strokeWidth=stroke_width,
-                interpolate=mark_config.get("interpolate", "linear"),
-                clip=True,
-            )
-            .encode(
-                x=_band_x_encoding(df, x_field, mapping, x_title),
-                y=_y(y_field, title=y_title),
-                tooltip=_build_tooltip(mapping, "band", df),
-            )
-            .properties(width=width, height=height)
-        )
-
-    chart = layers[0]
-    for extra in layers[1:]:
-        chart = chart + extra
-
-    chart = _force_data_embedding(chart, df)
-    logger.debug(
-        "[_build_band] DONE: %d level(s), history_split=%s",
-        len(spans), has_history,
-    )
-    return chart
-
-
-# Above this many periods the per-period net value labels stop being
-# readable and start being a texture; the line alone carries the shape.
-_CONTRIB_MAX_VALUE_LABELS = 14
-
-
-def _build_contribution(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    skin_config: Dict[str, Any],
-    width: int,
-    height: int,
-) -> alt.Chart:
-    """Signed stacked contributions per period with a net-total line.
-
-    The running counterpart to ``waterfall``: where a waterfall bridges
-    one start to one end, a contribution chart shows the same
-    decomposition repeating across periods, so the reader can see which
-    component turned from driver to drag and when.
-
-    Mapping keys:
-      - ``x`` (required): the period. A datetime column is converted to
-        house period labels upstream (``_materialize_contribution_periods``).
-      - ``y`` (required): the signed contribution value.
-      - ``color`` (required): the component column.
-      - ``net`` (optional): ``True`` (default) sums the components into an
-        overlaid total line; a column name uses a published total instead
-        (headline prints rarely equal the sum of rounded contributions);
-        ``False`` suppresses the line.
-      - ``net_label`` (optional): name for the total line. Defaults to
-        ``'Total'``, or the ``net`` column name when one is given.
-      - ``color_sort`` (optional): stacking / legend order.
-
-    Used for: CPI and PCE contribution-to-YoY, GDP expenditure
-    contributions, index attribution by sector, FCI impulse by component,
-    and any decomposition where the sign flips over time.
-
-    Pipeline structure:
-      Layer 1 (bars): signed mark_bar with stack='zero'.
-      Layer 2 (zero rule): the baseline every signed stack is read against.
-      Layer 3 (net line + points): the total the components sum to.
-      Layer 4 (labels): per-period net values + the total's name.
-
-    Every layer encodes y as ``_contrib_y`` so Vega-Lite merges the axes
-    instead of concatenating four titles.
-    """
-    logger.info("[_build_contribution] START: df.shape=%s", df.shape)
-
-    if len(df) == 0:
-        raise ValidationError(
-            "DataFrame is empty. Cannot create contribution chart from empty data."
-        )
-
-    x_field = _get_field(mapping, "x")
-    y_field = _get_field(mapping, "y")
-    color_field = _get_field(mapping, "color")
-
-    for fname, fval in [("x", x_field), ("y", y_field), ("color", color_field)]:
-        if fval is None or fval not in df.columns:
-            raise ValidationError(
-                f"Required mapping key '{fname}' (value={fval!r}) not found "
-                f"in DataFrame columns: {list(df.columns)}"
-            )
-
-    df = df.copy()
-    df[y_field] = pd.to_numeric(df[y_field], errors="coerce")
-    if df[y_field].notna().sum() == 0:
-        raise ValidationError(f"Column '{y_field}' has no valid numeric values.")
-    df["_contrib_y"] = df[y_field]
-    df[x_field] = df[x_field].astype(str)
-
-    x_order = [
-        str(v) for v in (mapping.get("x_sort") or dict.fromkeys(df[x_field]))
-    ]
-    color_sort = _resolve_color_sort(df, color_field, mapping.get("color_sort"))
-    if color_sort:
-        rank = {name: i for i, name in enumerate(color_sort)}
-        df["_contrib_order"] = df[color_field].map(rank).fillna(len(rank))
-    else:
-        df["_contrib_order"] = 0
-
-    # ---- net total -------------------------------------------------------
-    net_spec = mapping.get("net", True)
-    net_label = mapping.get("net_label")
-    net_df: Optional[pd.DataFrame] = None
-    if net_spec is not False:
-        if isinstance(net_spec, str):
-            net_series = (
-                df.groupby(x_field, sort=False)[net_spec].first().reindex(x_order)
-            )
-            net_label = net_label or _format_label(net_spec, {}, "")
-        else:
-            net_series = (
-                df.groupby(x_field, sort=False)["_contrib_y"].sum().reindex(x_order)
-            )
-            net_label = net_label or "Total"
-        net_df = pd.DataFrame({
-            x_field: x_order,
-            "_contrib_y": pd.to_numeric(net_series.values, errors="coerce"),
-        }).dropna(subset=["_contrib_y"])
-
-    # ---- y domain (signed stack totals, not raw row values) --------------
-    domain = _contribution_y_domain(df, mapping, "_contrib_y")
-    if domain is None:
-        raise ValidationError(
-            f"Column '{y_field}' has no valid numeric values."
-        )
-    y_scale = alt.Scale(domain=domain, nice=False)
-
-    x_title = mapping.get("x_title")
-    y_title = _format_label(y_field, mapping, "y")
-    _validate_y_axis_label(y_title, mapping)
-
-    def _x(frame: pd.DataFrame, *, title: Optional[str]) -> alt.X:
-        return alt.X(
-            x_field, type="nominal", sort=x_order,
-            axis=alt.Axis(title=title, titleFontWeight="normal"),
-        )
-
-    def _y(*, title: Optional[str], stack: Any = None) -> alt.Y:
-        return alt.Y(
-            "_contrib_y", type="quantitative", scale=y_scale, stack=stack,
-            axis=alt.Axis(title=title, titleFontWeight="normal"),
-        )
-
-    mark_config = skin_config.get("mark_config", {}).get("bar", {})
-    bar_opacity, opacity_enc = _prepare_categorical_opacity(
-        mapping, color_field, df, mark_config.get("opacity", 1.0),
-    )
-
-    # ---- Layer 1: signed stacked bars ------------------------------------
-    bars = (
-        alt.Chart(df)
-        .mark_bar(
-            opacity=bar_opacity,
-            cornerRadius=mark_config.get("cornerRadius", 0),
-        )
-        .encode(
-            x=_x(df, title=x_title),
-            y=_y(title=y_title, stack="zero"),
-            order=alt.Order("_contrib_order:Q"),
-            tooltip=_build_tooltip(mapping, "contribution", df),
-        )
-        .properties(width=width, height=height)
-    )
-    bars = _encode_categorical_color_and_opacity(
-        bars, mapping, skin_config, color_field, df,
-        color_sort=color_sort,
-        opacity_encoding=opacity_enc,
-    )
-    layers: List[alt.Chart] = [bars]
-
-    # ---- Layer 2: the zero baseline --------------------------------------
-    # A signed stack is meaningless without a visible zero: it is the line
-    # that says which components added and which subtracted.
-    zero_df = pd.DataFrame({"_contrib_y": [0.0]})
-    layers.append(
-        alt.Chart(zero_df)
-        .mark_rule(
-            color=skin_config.get("ink_color", "#000000"),
-            strokeWidth=1, opacity=0.55,
-        )
-        .encode(y=_y(title=None))
-        .properties(width=width, height=height)
-    )
-
-    # ---- Layer 3 + 4: net line, points, labels ---------------------------
-    if net_df is not None and not net_df.empty:
-        ink = skin_config.get("ink_color", "#000000")
-        layers.append(
-            alt.Chart(net_df)
-            .mark_line(color=ink, strokeWidth=2, clip=True)
-            .encode(x=_x(net_df, title=None), y=_y(title=None))
-            .properties(width=width, height=height)
-        )
-        layers.append(
-            alt.Chart(net_df)
-            .mark_point(color=ink, filled=True, size=45, opacity=1.0)
-            .encode(x=_x(net_df, title=None), y=_y(title=None))
-            .properties(width=width, height=height)
-        )
-
-        # The net line runs THROUGH the stack, so its labels land on top of
-        # bars as often as on whitespace. Each one is drawn twice -- a fat
-        # background-coloured stroke underneath, the glyphs on top -- which
-        # is the only way to get a halo out of Vega-Lite (mark stroke paints
-        # over fill, so a single layer would just outline the text away).
-        halo = skin_config.get("background_color", "#FFFFFF")
-
-        def _labelled(
-            frame: pd.DataFrame, text_col: str, *,
-            align: str, dx: int, dy: int, font_size: int,
-        ) -> None:
-            for stroke_width, fill in ((3.5, halo), (0.0, ink)):
-                layers.append(
-                    alt.Chart(frame)
-                    .mark_text(
-                        align=align, baseline="bottom", dx=dx, dy=dy,
-                        fontSize=font_size, fontWeight="bold",
-                        color=fill,
-                        stroke=halo if stroke_width else alt.Undefined,
-                        strokeWidth=stroke_width or alt.Undefined,
-                        strokeJoin="round",
-                    )
-                    .encode(
-                        x=_x(frame, title=None),
-                        y=_y(title=None),
-                        text=alt.Text(f"{text_col}:N"),
-                    )
-                    .properties(width=width, height=height)
-                )
-
-        show_values = len(net_df) <= _CONTRIB_MAX_VALUE_LABELS
-        if show_values:
-            template = _smart_format_template(net_df["_contrib_y"])
-            value_df = net_df.copy()
-            value_df["_contrib_text"] = value_df["_contrib_y"].apply(
-                lambda v: template.format(v)
-            )
-            _labelled(
-                value_df, "_contrib_text",
-                align="center", dx=0, dy=-9, font_size=10,
-            )
-
-        # Name the line where it ends, inside the plot, so the reader is
-        # not left guessing what a dark line over coloured bars means.
-        last = net_df.iloc[-1]
-        name_df = pd.DataFrame({
-            x_field: [last[x_field]],
-            "_contrib_y": [last["_contrib_y"]],
-            "_contrib_name": [net_label],
-        })
-        _labelled(
-            name_df, "_contrib_name",
-            align="right", dx=-7, dy=-23 if show_values else -10, font_size=11,
-        )
-
-    chart = layers[0]
-    for extra in layers[1:]:
-        chart = chart + extra
-
-    chart = _force_data_embedding(chart, df)
-    logger.debug(
-        "[_build_contribution] DONE: %d period(s), net=%s",
-        len(x_order), net_spec,
-    )
     return chart
 
 
@@ -22261,14 +21166,14 @@ def _make_chart(
     structural_findings.extend(_collect_layer_findings(layers))
     if chart_type not in (
         "scatter", "scatter_multi", "bar", "bar_horizontal", "bullet",
-        "waterfall", "contribution", "band", "heatmap", "histogram",
-        "boxplot", "area", "donut", "multi_line", "timeseries",
+        "waterfall", "heatmap", "histogram", "boxplot", "area", "donut",
+        "multi_line", "timeseries",
     ):
         structural_findings.append(ValidationError(
             f"Unknown chart_type {chart_type!r}. "
-            f"Valid options: multi_line, timeseries, scatter, scatter_multi, "
-            f"bar, bar_horizontal, bullet, waterfall, contribution, band, "
-            f"heatmap, histogram, boxplot, area, donut."
+            f"Valid options: multi_line, scatter, scatter_multi, bar, "
+            f"bar_horizontal, bullet, waterfall, heatmap, histogram, "
+            f"boxplot, area, donut."
         ))
 
     if skin not in AVAILABLE_SKINS:
@@ -22420,11 +21325,6 @@ def _make_chart(
             edge_only_axis_titles=edge_only_axis_titles,
         )
 
-    # ---- Coalesce a listed band y into one path --------------------------
-    df, band_path_note = _materialize_band_path(df, mapping, chart_type)
-    if band_path_note:
-        audit_trail.append(band_path_note)
-
     # ---- Auto-melt for multi_line / area --------------------------------
     if chart_type in {"multi_line", "area"}:
         try:
@@ -22459,11 +21359,6 @@ def _make_chart(
         df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
     df = _materialize_ordinal_datetime_x(df, mapping, chart_type)
-    df, period_note, annotations = _materialize_contribution_periods(
-        df, mapping, chart_type, annotations,
-    )
-    if period_note:
-        audit_trail.append(period_note)
 
     # ---- Heatmap auto-reshape -------------------------------------------
     # PRISM passes the intended x / y / value names and whatever shape the
@@ -22570,7 +21465,7 @@ def _make_chart(
                 )
 
     # ---- Auto-downsample large time series ------------------------------
-    if chart_type in {"timeseries", "multi_line", "area", "band"}:
+    if chart_type in {"timeseries", "multi_line", "area"}:
         x_field = _get_field(mapping, "x")
         if x_field and x_field in df.columns:
             original_len = len(df)
@@ -23366,10 +22261,6 @@ def _dispatch_builder(
         return _build_bullet(df, mapping, skin_config, width, height)
     if chart_type == "waterfall":
         return _build_waterfall(df, mapping, skin_config, width, height)
-    if chart_type == "contribution":
-        return _build_contribution(df, mapping, skin_config, width, height)
-    if chart_type == "band":
-        return _build_band(df, mapping, skin_config, width, height)
     raise ValidationError(f"No builder registered for chart_type {chart_type!r}.")
 
 
@@ -23751,10 +22642,6 @@ def _build_single_chart(
     df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
     df = _materialize_ordinal_datetime_x(df, mapping, chart_type)
-    df, _ = _materialize_band_path(df, mapping, chart_type)
-    df, _, spec_annotations = _materialize_contribution_periods(
-        df, mapping, chart_type, spec.annotations,
-    )
 
     # Validation (single-pass aggregation, mirroring ``_make_chart``):
     # tier-0 structural findings gate tier-1; every independent tier-1
@@ -23877,7 +22764,7 @@ def _build_single_chart(
     # the composite caller) win against PlotText that targets the
     # same slot -- next-available fallback per
     # ``_route_plottext_to_panels`` semantics.
-    cell_annotations = spec_annotations
+    cell_annotations = spec.annotations
     if suppress_lvl:
         cell_annotations = _strip_lvl_annotations(cell_annotations)
     cell_annotations, _lvl_stripped = _strip_dual_axis_lvl_annotations(
@@ -25492,10 +24379,8 @@ def _render_facet_grid(
                 f"chart_type {chart_type!r} does not support mapping['facet']. "
                 f"Valid: {sorted(_FACET_VALID_CHART_TYPES)}. "
                 f"For matrix-shaped data, drop facet and use chart_type="
-                f"'heatmap'. For donut / boxplot / bullet / waterfall / "
-                f"contribution / band, the natural expression is a single "
-                f"canvas -- put several on one page with a composite helper "
-                f"(make_2pack_horizontal / make_4pack_grid) instead."
+                f"'heatmap'. For donut / boxplot / bullet / waterfall, "
+                f"the natural expression is a single canvas."
             ),
         )
 
@@ -27254,8 +26139,6 @@ _AUTO_DIMENSIONS: Dict[str, str] = {
     "histogram":       "wide",     # distributions read better wide
     "boxplot":         "wide",
     "waterfall":       "wide",     # decomposition needs horizontal room
-    "contribution":    "wide",     # one stacked column per period
-    "band":            "wide",     # the interval needs a long x to open up
     "bullet":          "wide",
     "scatter":         "wide",
     "scatter_multi":   "wide",

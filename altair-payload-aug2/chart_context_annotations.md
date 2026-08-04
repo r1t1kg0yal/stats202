@@ -89,8 +89,6 @@ There are four distinct trend surfaces; choose one and do not combine them:
 | Grouped bar (`stack=False`) | Annotations do not render; use title/subtitle or stack/split |
 | `multi_line` / `timeseries` | Rules, bands, segments, arrows, point classes, and callouts are supported; engine auto-injects `LastValueLabel` on a single axis |
 | Dual axis | Fetch dual-axis spoke; y-bearing annotations need the correct `axis` |
-| `band` | Rules, bands, segments, arrows, and callouts read against the ribbon, not just the subject line; the forecast divider is already drawn, so skip a `VLine` at the handoff |
-| `contribution` | `HLine` reads against stacked totals and zero is always in domain; a rule at zero is already drawn. Pass `VLine.x` as the date you have — the engine maps it to the rendered period label |
 | Facet grid | `LastValueLabel` is removed; panel headers identify facets |
 | Donut / bullet | Do not use plot annotations; rule-style classes are suppressed with a warning |
 

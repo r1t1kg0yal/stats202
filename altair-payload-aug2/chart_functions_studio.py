@@ -634,51 +634,6 @@ BULLET_KNOBS: List[Dict[str, Any]] = BAR_KNOBS + [
 ]
 
 
-# ``band`` and ``contribution`` pin the properties a plain config knob would
-# write, so a ``config.<mark>.<prop>`` path silently loses to the mark and the
-# slider moves without changing the chart. Both sets therefore reach the marks
-# through apply functions, the same way the waterfall's sign colours do.
-#
-# Band deliberately offers no stroke-dash knob: the dash is what separates the
-# forecast segment from the history, so it is the builder's to own.
-BAND_KNOBS: List[Dict[str, Any]] = [
-    {"name": "bandFillOpacity", "label": "Interval opacity", "type": "range",
-     "min": 0.05, "max": 0.9, "step": 0.05, "default": 0.18,
-     "apply": "setBandFillOpacity", "group": "Band"},
-    {"name": "bandLineWidth", "label": "Subject line width", "type": "range",
-     "min": 0.5, "max": 5, "step": 0.5, "default": 2,
-     "apply": "setBandLineWidth", "group": "Band"},
-    {"name": "bandInterpolate", "label": "Interpolation", "type": "select",
-     "options": ["linear", "monotone", "basis", "step", "step-after",
-                 "step-before"],
-     "default": "linear",
-     "apply": "setBandInterpolate", "group": "Band"},
-]
-
-
-CONTRIBUTION_KNOBS: List[Dict[str, Any]] = [
-    {"name": "contribBarOpacity", "label": "Bar opacity", "type": "range",
-     "min": 0.2, "max": 1, "step": 0.05, "default": 1.0,
-     "apply": "setContributionBarOpacity", "group": "Contribution"},
-    {"name": "contribCornerRadius", "label": "Corner radius", "type": "range",
-     "min": 0, "max": 12, "step": 1, "default": 0,
-     "apply": "setContributionCornerRadius", "group": "Contribution"},
-    {"name": "contribNetWidth", "label": "Net line width", "type": "range",
-     "min": 0, "max": 5, "step": 0.5, "default": 2,
-     "apply": "setContributionNetWidth", "group": "Contribution"},
-    # These two the builder leaves alone, so the plain config path works.
-    {"name": "barStroke", "label": "Bar outline color", "type": "color",
-     "default": "#ffffff",
-     "path": "config.bar.stroke", "group": "Contribution"},
-    {"name": "barStrokeWidth", "label": "Outline width", "type": "range",
-     "min": 0, "max": 3, "step": 0.5, "default": 0,
-     "path": "config.bar.strokeWidth", "group": "Contribution"},
-    {"name": "barBandPaddingInner", "label": "Bar gap", "type": "range",
-     "min": 0, "max": 0.9, "step": 0.05, "default": 0.1,
-     "path": "config.scale.bandPaddingInner", "group": "Contribution"},
-]
-
-
 WATERFALL_KNOBS: List[Dict[str, Any]] = BAR_KNOBS + [
     {"name": "connectorStrokeWidth", "label": "Connector width", "type": "range",
      "min": 0.5, "max": 3, "step": 0.5, "default": 1,
@@ -709,8 +664,6 @@ MARK_KNOB_MAP: Dict[str, List[Dict[str, Any]]] = {
     "boxplot":        BOXPLOT_KNOBS,
     "bullet":         BULLET_KNOBS,
     "waterfall":      WATERFALL_KNOBS,
-    "band":           BAND_KNOBS,
-    "contribution":   CONTRIBUTION_KNOBS,
 }
 
 
@@ -1035,72 +988,14 @@ def list_all_marks(spec: Dict[str, Any]) -> List[str]:
     return [MARK_ALIAS.get(m, m) for m in raw]
 
 
-_CONCAT_KEYS = ("hconcat", "vconcat", "concat")
-
-
-def detect_concat(spec: Dict[str, Any]) -> Optional[str]:
-    """Return 'hconcat' | 'vconcat' | 'concat', or None for a single panel.
-
-    Concatenation is the thing that makes a spec more than one chart. A
-    layered spec is still one chart, so it is not reported here -- see
-    ``detect_composite`` for the wider test that includes layers.
-    """
-    if not isinstance(spec, dict):
-        return None
-    for key in _CONCAT_KEYS:
-        if key in spec and isinstance(spec[key], list) and len(spec[key]) > 1:
-            return key
-    return None
-
-
-def _plots_data(node: Any) -> bool:
-    """Does this sub-chart draw anything other than text?
-
-    A source line and a side narrative are ``mark_text`` panels sitting in
-    the same concat as the chart. They are furniture, and counting them as
-    panels is what makes a plain chart with a source line look like a
-    two-panel pack.
-    """
-    if not isinstance(node, dict):
-        return False
-    mark = node.get("mark")
-    if mark is not None:
-        mark_type = mark if isinstance(mark, str) else mark.get("type")
-        if mark_type and mark_type != "text":
-            return True
-    for key in ("layer", *_CONCAT_KEYS):
-        for child in node.get(key, []) or []:
-            if _plots_data(child):
-                return True
-    return _plots_data(node.get("spec")) if node.get("spec") else False
-
-
-def count_plotting_panels(spec: Dict[str, Any]) -> int:
-    """How many sub-charts in a concat actually plot data.
-
-    One means a single chart, however much furniture is concatenated
-    around it. Two or more means a pack, where no single knob set or
-    single ``make_chart`` call describes the whole thing.
-    """
-    if not isinstance(spec, dict):
-        return 0
-    for key in _CONCAT_KEYS:
-        children = spec.get(key)
-        if isinstance(children, list) and len(children) > 1:
-            return sum(
-                max(count_plotting_panels(c), 1 if _plots_data(c) else 0)
-                for c in children
-            )
-    return 1 if _plots_data(spec) else 0
-
-
 def detect_composite(spec: Dict[str, Any]) -> Optional[str]:
     """Return 'hconcat' | 'vconcat' | 'concat' | 'layer' | None if not composite."""
-    concat = detect_concat(spec)
-    if concat:
-        return concat
-    if (isinstance(spec, dict) and isinstance(spec.get("layer"), list)
-            and len(spec["layer"]) > 1):
+    if not isinstance(spec, dict):
+        return None
+    for key in ("hconcat", "vconcat", "concat"):
+        if key in spec and isinstance(spec[key], list) and len(spec[key]) > 1:
+            return key
+    if "layer" in spec and isinstance(spec["layer"], list) and len(spec["layer"]) > 1:
         return "layer"
     return None
 
@@ -1734,40 +1629,6 @@ function findCaptionPanel(spec) {
   return panels.find(p => p.role === "caption") || null;
 }
 
-/* ---- Reaching a mark past its config -------------------------------
-   A knob with a `path` writes config.<mark>.<prop>, which vega-lite lets
-   the mark itself override. Where a builder has pinned the property --
-   the band's ribbon opacity, the contribution's bar corner radius -- the
-   config write is silently discarded and the slider does nothing. These
-   set the property on every matching mark instead, which is the only
-   place that wins.
-
-   Callers name the mark type, which is what keeps a label layer out of
-   it: every label these two builders emit is a `text` mark, so asking
-   for `line` or `bar` cannot reach one.
-
-   Not to be confused with `setMarkProp`, which writes one property on
-   one node the caller already has in hand. */
-function setEveryMarkProp(spec, markType, prop, value) {
-  let touched = 0;
-  (function walk(node) {
-    if (!node || typeof node !== "object") return;
-    if (node.mark) {
-      if (typeof node.mark === "string") node.mark = { type: node.mark };
-      if (node.mark.type === markType) {
-        if (value === undefined || value === null) delete node.mark[prop];
-        else node.mark[prop] = value;
-        touched++;
-      }
-    }
-    for (const key of ["layer", "hconcat", "vconcat", "concat"]) {
-      if (Array.isArray(node[key])) node[key].forEach(walk);
-    }
-    if (node.spec) walk(node.spec);
-  })(spec);
-  return touched;
-}
-
 /* ---- Text-panel re-wrap ------------------------------------
    Producer text panels carry text pre-wrapped with literal "\n" and a
    height derived from the resulting line count (there is no width-aware
@@ -1993,36 +1854,6 @@ const APPLY_FUNCTIONS = {
     setPath(spec, "config.range.category", arr);
   },
 
-  // --- band / contribution -------------------------------------------
-  // Both builders write these properties onto the mark, where they beat
-  // anything config says, so these reach the mark directly.
-  setBandFillOpacity: (spec, value) => {
-    // The grading across nested intervals comes from the ribbons
-    // overlapping, not from different alphas, so one value per ribbon is
-    // what the builder emits and one value is what this restores.
-    setEveryMarkProp(spec, "area", "opacity", value);
-  },
-  setBandLineWidth: (spec, value) => {
-    setEveryMarkProp(spec, "line", "strokeWidth", value);
-  },
-  setBandInterpolate: (spec, value) => {
-    setEveryMarkProp(spec, "line", "interpolate", value);
-    setEveryMarkProp(spec, "area", "interpolate", value);
-  },
-  setContributionBarOpacity: (spec, value) => {
-    setEveryMarkProp(spec, "bar", "opacity", value);
-  },
-  setContributionCornerRadius: (spec, value) => {
-    setEveryMarkProp(spec, "bar", "cornerRadius", value);
-  },
-  setContributionNetWidth: (spec, value) => {
-    // Zero reads as "hide the net line", which is the only way to take it
-    // off from the studio -- the mapping that suppresses it is a rebuild.
-    setEveryMarkProp(spec, "line", "strokeWidth", value);
-    setEveryMarkProp(spec, "line", "opacity", value > 0 ? 1 : 0);
-    setEveryMarkProp(spec, "point", "opacity", value > 0 ? 1 : 0);
-  },
-
   // --- Interactivity ---
   // Tooltip handling must cope with THREE places a tooltip can live:
   //   1. encoding.tooltip          (producer-set, common in PRISM)
@@ -2124,11 +1955,7 @@ function findEncodingField(spec, channel) {
   function walk(node) {
     if (result || !node || typeof node !== "object") return;
     if (node.encoding && node.encoding[channel] && node.encoding[channel].field) {
-      const enc = node.encoding[channel];
-      // The axis rides along so callers can fall back to what the reader
-      // is shown when the field name itself is the engine's business.
-      result = { field: enc.field, type: enc.type || "nominal",
-                 axis: enc.axis || null };
+      result = { field: node.encoding[channel].field, type: node.encoding[channel].type || "nominal" };
       return;
     }
     for (const key of ["layer", "concat", "hconcat", "vconcat"]) {
@@ -3865,26 +3692,6 @@ function transformTargets(root) {
   return out;
 }
 
-/* Chart types a transform cannot be expressed on, and the reason to show
-   in place of the menu.
-
-   A transform rewrites ONE y field on ONE data node. That is the right
-   model for a long-form chart, where every series shares a y column and
-   is told apart by a colour field. A band spreads its subject and its
-   interval bounds across parallel columns, so rewriting the widest node
-   transforms whichever column happens to have the most rows -- in
-   practice an outer bound, since the subject is split in two by the
-   history/forecast break -- and leaves the rest of the chart in the old
-   units underneath a y domain that has moved to the new ones. */
-const CFS_TRANSFORM_REFUSALS = {
-  band: "A transform would apply to one bound, not the whole interval",
-};
-
-function transformRefusal(root) {
-  const declared = (currentSpec.usermeta || {}).cfsChartType;
-  return CFS_TRANSFORM_REFUSALS[declared] || null;
-}
-
 function seriesOnYField(root, yField) {
   const names = [];
   for (const t of transformTargets(root)) {
@@ -4200,30 +4007,16 @@ function applySeriesTransforms(root) {
 
 /* Columns in the frame that are numbers and are not already the x, the
    y, or the series column -- the candidates for a new line. */
-/* Columns the engine materialises for its own use: the label text a
-   line's end tag reads, the sort key a signed stack orders on, the
-   coalesced path a band draws. They live in the same rows as the
-   caller's data but mean nothing to the reader, and offering one as
-   something to plot draws a nonsense line.
-
-   The leading underscore is the engine's own convention for these
-   (`_y_text`, `_label`, `_contrib_order`, `_band_series`), so the rule
-   is the convention rather than a list that goes stale each time a
-   builder adds a column. */
-function isEnginePrivateColumn(col) {
-  return typeof col === "string" && col.charAt(0) === "_";
-}
-
 function unplottedColumns(root) {
   const t = primaryTarget(root);
   if (!t) return [];
   const rows = (transformStore().pristine[t.key]) || t.rows;
-  const taken = [t.xField, t.yField, t.colorField];
+  const taken = [t.xField, t.yField, t.colorField, CFS_LVL_FIELD,
+                 "_label", "_y_text"];
   const lifted = (transformStore().cols || []).map((c) => c.column);
   const out = [];
   for (const col of Object.keys(rows[0] || {})) {
     if (taken.indexOf(col) >= 0 || lifted.indexOf(col) >= 0) continue;
-    if (isEnginePrivateColumn(col)) continue;
     let numeric = 0;
     for (const r of rows) {
       const v = cfsNum(r[col]);
@@ -7010,21 +6803,6 @@ function menuAnchor() {
 function appendTransformSection(m, root, seriesName) {
   const info = temporalPlotInfo(root);
   if (!info || !transformTargets(root).length) return;
-
-  // A transform rewrites one y field on the widest data node. On a chart
-  // whose series are spread across parallel columns -- a band's subject,
-  // its bounds -- that node is whichever column happens to have the most
-  // rows, and transforming it alone leaves the rest of the chart in the
-  // old units while the y domain moves to the new ones. Say so rather
-  // than offering a control that reports success and produces a chart
-  // nobody asked for.
-  const refusal = transformRefusal(root);
-  if (refusal) {
-    m.appendChild(menuSep());
-    m.appendChild(menuRow(refusal, null, null, { disabled: true }));
-    return;
-  }
-
   const cur = transformOn(root, seriesName);
   const scope = seriesName == null ? "every series" : displaySeriesName(seriesName);
 
@@ -9933,18 +9711,6 @@ function downloadDataPython() {
   downloadBlob(generateDataCode(currentSpec), FILENAME + "_data.py", "text/x-python");
 }
 
-/* An encoding bound to a column the engine built has nothing useful to
-   report -- `_contrib_y` names the signed stack's value, which the reader
-   knows as whatever the axis calls it. Say what the axis says. */
-function _describeEncoding(enc) {
-  if (!enc || !enc.field) return "(none)";
-  if (!isEnginePrivateColumn(enc.field)) return enc.field + " : " + enc.type;
-  const title = enc.axis && enc.axis.title;
-  return (typeof title === "string" && title)
-    ? title + " : " + enc.type + " (built by the engine)"
-    : "(built by the engine)";
-}
-
 /* ============================================================
    METADATA TAB
    ============================================================ */
@@ -9961,17 +9727,10 @@ function renderMetadata() {
   const xField = findEncodingField(currentSpec, "x");
   const yField = findEncodingField(currentSpec, "y");
 
-  // The engine materialises its own columns -- a stack's sort key, a
-  // label's text -- in the same rows as the caller's data. Reporting them
-  // as the frame's columns makes a four-column frame look like a
-  // nine-column one, so they are counted separately rather than listed.
-  const userCols = _dataColumns.filter(c => !isEnginePrivateColumn(c));
-  const engineColCount = _dataColumns.length - userCols.length;
-
   const numericCols = [];
   const categoricalCols = [];
   const temporalCols = [];
-  for (const col of userCols) {
+  for (const col of _dataColumns) {
     const sample = _dataRows.slice(0, 50).map(r => r[col]);
     const numeric = sample.filter(v => typeof v === "number" && !isNaN(v)).length;
     const dateLike = sample.filter(v => typeof v === "string" && /^\d{4}-\d{2}(-\d{2})?/.test(v)).length;
@@ -10002,18 +9761,17 @@ function renderMetadata() {
     ]},
     { title: "Data", rows: [
       ["Rows", String(_dataRows.length)],
-      ["Columns", String(userCols.length)
-        + (engineColCount ? " (+" + engineColCount + " built by the engine)" : "")],
-      ["Column names", userCols.join(", ") || "(none)"],
+      ["Columns", String(_dataColumns.length)],
+      ["Column names", _dataColumns.join(", ") || "(none)"],
       ["Temporal columns", temporalCols.join(", ") || "(none)"],
       ["Numeric columns", numericCols.join(", ") || "(none)"],
       ["Categorical columns", categoricalCols.join(", ") || "(none)"],
       ["Size", _approxSize(_dataRows) + " KB (approx)"],
     ]},
     { title: "Encoding", rows: [
-      ["X field", _describeEncoding(xField)],
-      ["Y field", _describeEncoding(yField)],
-      ["Color field", _describeEncoding(colorField)],
+      ["X field", xField ? (xField.field + " : " + xField.type) : "(none)"],
+      ["Y field", yField ? (yField.field + " : " + yField.type) : "(none)"],
+      ["Color field", colorField ? (colorField.field + " : " + colorField.type) : "(none)"],
     ]},
     { title: "Interactivity enabled", rows: [
       ["Tooltips", currentKnobValues.tooltipEnabled ? "on" : "off"],
@@ -11614,9 +11372,7 @@ def wrap_interactive_prism(
     chart_type : str
         PRISM chart_type: multi_line, scatter, scatter_multi, bar,
         bar_horizontal, heatmap, histogram, boxplot, area, donut,
-        bullet, waterfall, band, contribution. Recorded on the spec as
-        ``usermeta.cfsChartType`` so the editor can reason about what it
-        was asked to draw rather than inferring it from the marks.
+        bullet, waterfall.
     dimensions : str (default 'wide')
         PRISM dimension preset name.
     annotations : list, optional
@@ -11654,38 +11410,21 @@ def wrap_interactive_prism(
     -------
     PrismInteractiveResult
     """
-    # Composite chart_types (``<layout>_composite``) and concatenated specs
-    # bypass the single-mark whitelist. The studio's ``detect_chart_type``
-    # walks the spec tree and picks the dominant mark from the sub-charts,
-    # which is the correct knob set to load.
-    #
-    # Neither layering nor concatenation makes a spec a composite here.
-    # Almost every builder layers -- an end-of-line label, a zero rule, a
-    # forecast segment -- and any chart with a ``source`` is concatenated
-    # with its caption panel. Counting either as a composite handed the
-    # whole catalogue to auto-detect and made the mapping below near-dead.
-    # Auto-detect picks the dominant mark rather than the one the caller
-    # asked for, which served a ``bar_horizontal`` the vertical bar knobs
-    # and a ``band`` the ribbon's area knobs instead of its subject line's.
-    # What makes a pack a pack is two sub-charts that both plot.
+    # Composite chart_types (``<layout>_composite``) and composite specs
+    # (top-level ``hconcat`` / ``vconcat`` / ``concat``) bypass the
+    # single-mark whitelist. The studio's ``detect_chart_type`` walks the
+    # spec tree and picks the dominant mark from the sub-charts, which is
+    # the correct knob set to load.
     spec_for_detect = _coerce_spec(altair_chart)
     is_composite = (
         chart_type.endswith("_composite")
-        or count_plotting_panels(spec_for_detect) > 1
+        or detect_composite(spec_for_detect) is not None
     )
 
     if is_composite:
         chart_type_for_knobs = None  # let wrap_interactive auto-detect
     else:
         chart_type_for_knobs = _prism_chart_type_to_mark(chart_type)
-
-    # The editor otherwise only knows the marks it can see, which is not
-    # enough to tell a band's ribbon from a plain area or a contribution's
-    # signed stack from an ordinary bar. Recording what PRISM asked for
-    # lets the panels refuse an edit that would only make sense on a
-    # different shape of chart.
-    spec_for_detect.setdefault("usermeta", {})["cfsChartType"] = chart_type
-    altair_chart = spec_for_detect
 
     # map PRISM dimensions to chart_functions_studio preset
     if dimensions not in DIMENSION_PRESETS:
@@ -11767,11 +11506,6 @@ def _prism_chart_type_to_mark(prism_chart_type: str) -> str:
         "donut":           "arc",
         "bullet":          "bullet",
         "waterfall":       "waterfall",
-        # Both carry their own knob set rather than borrowing a mark's,
-        # because their builders pin the properties a plain mark knob
-        # would write. See BAND_KNOBS / CONTRIBUTION_KNOBS.
-        "contribution":    "contribution",
-        "band":            "band",
     }
     if prism_chart_type not in mapping:
         raise ValueError(
