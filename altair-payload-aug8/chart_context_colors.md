@@ -142,8 +142,13 @@ continuous encoding.
 ## 7. Chart-specific restrictions
 
 - Heatmap rejects `color_map` / `opacity_map`.
-- `bullet` and `waterfall` reject dictionary `color_map`; their semantic
-  colours are engine-owned. A one-entry list may set the primary mark.
+- `bullet`, `waterfall`, and `band` reject dictionary `color_map`; their
+  colours are engine-owned — keyed by `color_by`, by bar sign, and by the
+  single series whose colour the ribbon inherits. A one-entry list may set
+  the primary mark. `contribution` has a real per-component encoding, so the
+  dictionary form works there.
+- Sign colours on `waterfall` and the net line on `contribution` come from
+  the skin, so `mono` and `print` render them in ink rather than green/red.
 - `rainbow` is a quantitative ramp, not a categorical palette; use `bold` for
   vivid categories.
 - Do not hand-author ticker colour registries when the user did not request

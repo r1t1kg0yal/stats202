@@ -54,10 +54,13 @@ Fetch the tables spoke before the call.
 | Categorical comparison | `bar` / `bar_horizontal` |
 | Matrix | `heatmap` |
 | Distribution | `histogram` / `boxplot` |
-| Additive time-series components | `area` |
+| Additive time-series components, all same-sign | `area` |
+| Additive components that change sign over time | `contribution` |
+| A single period's decomposition, no time axis | `bar`, one bar per component; `waterfall` when the point is the bridge to a total |
+| Forecast fan, confidence interval, or range around a path | `band` |
 | Part-to-whole | `donut` |
 | Current value inside a range | `bullet` |
-| Additive bridge or attribution | `waterfall` |
+| Additive bridge between two points in time | `waterfall` |
 | Two to six related stories | composite helper; fetch composites |
 | Seven to 36 same-shape entities | facet grid; fetch grids |
 | Structured watchlist, tape, calendar, snapshot, or trade list | `make_table`; fetch tables |
@@ -213,11 +216,11 @@ The engine raises rather than truncating. These are ceilings, not targets.
 | Lines per `multi_line` / `timeseries` / `area` panel | 6 | Aim for ≤4; split, facet, or aggregate |
 | Value-axis title (`y_title`, `y_title_right`; `x_title` on horizontal bars) | 28 characters | Aim for concise metric + unit |
 | Auto end-label series name | 32 characters | Rename categories before charting |
-| Bar category label | 22 characters | Abbreviate in the DataFrame |
+| Bar / `contribution` category label | 22 characters | Abbreviate in the DataFrame |
 | Bar / `bar_horizontal` category count vs canvas | Every category must be labelled; the engine rotates and shrinks to fit but never hides a name | Aggregate or take the top-N, render standalone instead of in a composite cell, or switch to `bar_horizontal` for long lists |
 | Heatmap row or column label | 20 characters | Abbreviate in the DataFrame |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
-| Series horizontal extent (`multi_line` / `timeseries` / `area` / `line`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
+| Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
 | Categorical colour / donut slices | 10 categories | Filter or aggregate to `Other` |
 | Composite / facet count | Packs 2–6; facets 7–36 | Fetch the matching spoke |
 | `PlotText.text` | 10 words (aim ≤8) | Use caption/side text for longer prose |
@@ -246,6 +249,8 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `histogram` | `x` | Distribution of one numeric field |
 | `boxplot` | categorical `x`, numeric `y` | Compare distributions |
 | `area` | `x`, `y`; optional `color` | Stacked series require common x coverage and non-negative values |
+| `contribution` | `x`, numeric `y`, `color` | Signed stack per period plus an automatic net-total line; `color` is the component |
+| `band` | `x`, `y`, `y_low`, `y_high` | One subject line plus its interval; `x` may be a date, a numeric offset, or an ordered category |
 | `donut` | `theta`, `color` | Part-to-whole; at most 10 slices |
 | `bullet` | `y`, `x`, `x_low`, `x_high` | Current value within a range |
 | `waterfall` | categorical `x`, numeric `y`; optional `type` | Additive bridge |
@@ -272,11 +277,27 @@ become nanoseconds after 1970 and the axis renders as a clock.
 # Range-dot / percentile screen: use chart_type="bullet"
 {"y": "metric", "x": "current", "x_low": "low", "x_high": "high",
  "color_by": "zscore", "label": "display_value"}
+
+# Contribution: one row per (period, component); net line is automatic
+{"x": "date", "y": "contribution", "color": "component",
+ "y_title": "Contribution (pp)"}
+
+# Forecast fan: leave the interval columns NaN over history
+{"x": "date", "y": "core_cpi",
+ "y_low": ["p25", "p05"], "y_high": ["p75", "p95"]}
+
+# Same fan when actuals and forecast arrive as separate columns
+{"x": "date", "y": ["cpi_yoy", "fc_median"],
+ "y_low": ["p25", "p05"], "y_high": ["p75", "p95"]}
+
+# Envelope vs a reference path (event study, seasonal range)
+{"x": "month", "y": "current_cycle", "y_ref": "prior_median",
+ "y_low": "prior_min", "y_high": "prior_max"}
 ```
 
 | Mapping key | Meaning |
 |---|---|
-| `x`, `y`, `color` | Primary fields; `y` may be a list for line/area auto-melt |
+| `x`, `y`, `color` | Primary fields; `y` may be a list for line/area auto-melt, or for `band` to join actuals and forecast into one path |
 | `x_title`, `y_title`, `y_title_right` | Semantic axis title, including unit |
 | `x_sort`, `y_sort`, `color_sort`, `value_sort` | Explicit display order; use `color_sort` as the canonical legend/category order |
 | `x_type` | Force ordinal for genuine categories such as tenors; on a datetime column the engine materialises house-style date labels on evenly spaced bands |
@@ -288,6 +309,10 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `stack` | `bar`/`area` with colour: stacked by default; `False` groups/layers |
 | `strokeDash`, `strokeDashScale`, `strokeDashLegend` | Single-axis line-style encoding |
 | `value`, `theta`, `type` | Heatmap value, donut magnitude, waterfall type |
+| `y_low`, `y_high` | `band` interval bounds; equal-length lists give nested levels, paired by position (`y_low[0]` with `y_high[0]`) |
+| `y_ref` | `band`: optional dashed reference path inside the interval |
+| `net`, `net_label` | `contribution`: `True` sums the components (default), a column name uses a published total, `False` drops the line; `net_label` names it (default `Total`) |
+| `color_sort` on `contribution` | Sets stack order as well as legend order — first entry sits nearest the zero line |
 | `bins` / `maxbins`, `bin_extent` | Histogram bins and range |
 | `extent` | Boxplot whisker IQR multiplier; default 1.5 |
 | `scale_type` | `linear` / `log` for line/timeseries/scatter only |
@@ -312,9 +337,41 @@ become nanoseconds after 1970 and the axis renders as a clock.
 - `heatmap` accepts tidy long data, an unambiguous wide frame, or a meaningful
   indexed matrix. Numeric values use a quantitative scale; categorical bins
   may have at most 10 ordered labels via `value_sort`.
-- `area` stacks by default when `color` is present. Misaligned calendars or
-  negative stacked values raise; align the series, use `stack=False`, switch
-  to `multi_line`, or use `waterfall` as the error directs.
+- `area` stacks by default when `color` is present, and only holds for
+  same-sign components. Misaligned calendars or negative stacked values
+  raise; align the series, use `stack=False`, switch to `multi_line`, or move
+  to `contribution`, which is built for components that cross zero.
+- `contribution` is the running counterpart to `waterfall`: a waterfall
+  bridges one start to one end, a contribution chart repeats the
+  decomposition every period. Pass tidy long data, one row per
+  `(period, component)`. A datetime `x` is converted to house period labels
+  automatically — do not pre-format it. The net line, the zero rule, and the
+  per-period value labels are engine-supplied; `net` only needs naming when
+  the published total differs from the sum of the components. A named `net`
+  column sits on the components' own axis — repeat the period's total on
+  every row of that period, and keep it in the same unit as `y`, since a
+  level plotted over contributions warns and reads wrong.
+- `band` carries one subject line. It is the right type whenever the frame
+  already contains bounds — percentiles, min/max, standard-error legs. Do not
+  plot the bounds as extra `multi_line` series; that is the shape `band`
+  replaces. Bounds may be a single pair or equal-length lists for nested
+  intervals, paired by position and drawn widest-first, so the levels grade
+  themselves and their order in the list does not matter. Rows whose bounds
+  are all NaN are read as history, which is what splits a forecast fan into a
+  solid actual segment, a dashed projection, and a divider; an all-bounded
+  frame is simply an envelope. Leave those bounds NaN — the sparse-column
+  warning does not apply to them. When the actual path and the projection
+  arrive as separate columns, pass both to `y` as a list, actuals first, and
+  the engine joins them into one line; no pandas preamble. Add `y_ref` when the reader needs the band's
+  own centre alongside the subject line — that is still one subject, not two
+  series. Band levels are not labelled on the canvas, so name them in the
+  subtitle ("shaded 50% and 90% intervals"). The forecast divider is drawn
+  for you, so do not add a `VLine` at the handoff. For several banded
+  series, use one panel each via a composite.
+- Annotations work normally on both types and read against the axis the
+  builder drew, so a threshold inside the ribbon or a rule at zero survives.
+  On `contribution` an annotation's `x` may be the date you have; the engine
+  translates it to the rendered period label.
 - `bullet.color_by` interprets 0–100-like values as percentile distance from
   50 and other numeric values as z-score magnitude. Omit `color_by` for one
   marker colour.

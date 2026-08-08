@@ -57,7 +57,7 @@ Allowed:
 
 Rejected:
 
-`heatmap`, `donut`, `boxplot`, `bullet`, `waterfall`.
+`heatmap`, `donut`, `boxplot`, `bullet`, `waterfall`, `contribution`, `band`.
 
 For a long frame where each facet value is also the former series identifier,
 set `facet` and drop `color` unless each panel genuinely contains a second
