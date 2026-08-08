@@ -1,0 +1,18 @@
+"""Closure-safe chart render core.
+
+This package holds the chart / table rendering primitives that the
+secure-execution sandbox needs. It imports only the DS stack (pandas / numpy /
+matplotlib / altair / vl-convert / PIL) and the standard library -- never
+``core``, ``prism_mcp.utils``, boto3 or the network -- so it can drop into the
+minimal sandbox image and be consumed unchanged by the trusted-side chart tools.
+
+The rendering API lives in ``core``; it is re-exported here so the sandbox can
+``from prism_mcp.chart_render import core, house_style, units``. Trusted-side
+extensions (presigned URLs, the studio editor, vision QC) are bolted on top by
+``prism_mcp.utils.chart_functions`` via ``core.register_trusted_extensions``.
+"""
+
+from prism_mcp.chart_render import core  # noqa: F401 (public API re-export)
+from prism_mcp.chart_render import house_style, units  # noqa: F401
+
+__all__ = ["core", "house_style", "units"]
