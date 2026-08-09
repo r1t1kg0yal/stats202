@@ -8,7 +8,7 @@ minimal sandbox image and be consumed unchanged by the trusted-side chart tools.
 
 The rendering API lives in ``core`` and is star-exported here, so the sandbox
 can ``from prism_mcp.chart_render import make_chart, make_table``. Trusted-side
-extensions (presigned URLs, the studio editor) are bolted on top by
+extensions (presigned URLs, the studio editor, vision QC) are bolted on top by
 ``prism_mcp.utils.chart_functions`` via ``core.register_trusted_extensions``.
 """
 

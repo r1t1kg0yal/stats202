@@ -56,7 +56,7 @@ ChartSpec(
 ```
 
 The first three arguments may be positional or keyword. Metadata is
-keyword-only. `ChartSpec` accepts per-cell content only;
+keyword-only. `ChartSpec` accepts per-cell content only; `skin`,
 `dimension_preset`, spacing, filenames, and save paths belong on the pack
 helper. Unknown kwargs and unknown keys inside its `mapping` raise with the
 valid placement. Axis titles go inside the cell's `mapping` as `x_title`,
@@ -94,7 +94,7 @@ Author one of the five named `make_*pack_*` helpers so the slot count and
 layout are explicit.
 
 All helpers accept composite-level `title`, `subtitle`, `caption`, `source`,
-`side_left`, `side_right`, `dimension_preset`, `spacing`, `save_as`,
+`side_left`, `side_right`, `skin`, `dimension_preset`, `spacing`, `save_as`,
 and filename prefix/suffix. Put attribution on each
 `ChartSpec`: identical panel sources collapse into one pack footer, while
 different sources stay beneath their panels and suppress an outer source.
@@ -127,7 +127,8 @@ needs two axes, declare its binding and semantic `y_title_right` inside that
 
 The returned `CompositeResult` has the normal chart fields plus `layout`,
 `n_charts`, and `chart_errors`. A returned result is successful; failures
-raise.
+raise. Foreground post-script QC evaluates the composite PNG once, not its
+individual cells.
 
 ## 5. `build_charts()` for two or more chart calls
 

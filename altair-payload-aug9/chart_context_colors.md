@@ -147,8 +147,8 @@ continuous encoding.
   single series whose colour the ribbon inherits. A one-entry list may set
   the primary mark. `contribution` has a real per-component encoding, so the
   dictionary form works there.
-- Sign colours on `waterfall` and the net line on `contribution` are
-  house-owned and not settable.
+- Sign colours on `waterfall` and the net line on `contribution` come from
+  the skin, so `mono` and `print` render them in ink rather than green/red.
 - `rainbow` is a quantitative ramp, not a categorical palette; use `bold` for
   vivid categories.
 - Do not hand-author ticker colour registries when the user did not request

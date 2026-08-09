@@ -115,4 +115,5 @@ Unsupported annotations and other non-fatal adjustments appear in
 
 If any panel fails validation, the complete grid raises and names every
 offending panel with its findings. A successful call returns one `ChartResult`
-whose `chart_type` is suffixed `_facet`.
+whose `chart_type` is suffixed `_facet`. Foreground post-script QC evaluates
+the single grid PNG automatically.

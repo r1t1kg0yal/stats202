@@ -24,7 +24,7 @@ Vega/Altair chart engine for PRISM. Single-file consolidation of the
 LLM-facing specification for this surface; keep them in step with any
 change here.
 
-PRISM-coupled helpers (S3, presigned URLs) are
+PRISM-coupled helpers (S3, presigned URLs, Gemini vision QC) are
 imported from ``prism_mcp.utils.*`` -- the same paths PRISM uses in
 production. In this staging repo the same import paths resolve to the
 colocated ``prism_mcp/`` stub package, which provides filesystem-backed
@@ -50,6 +50,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 # Standard library
 # ---------------------------------------------------------------------------
+import concurrent.futures
 import copy
 import hashlib
 import io
@@ -112,17 +113,17 @@ if not logger.handlers:
 # (altair / numpy / pandas / PIL) + the stdlib, never boto3 / requests / the
 # GS network modules, so it can ship in the minimal secure-execution sandbox
 # image. The features that would couple it to the trusted tier -- presigned
-# download URLs, the interactive studio editor, render-failure alerting, and
-# the GS font root -- are therefore NOT imported here. They are supplied at
-# runtime by the trusted wrapper (``prism_mcp.utils.chart_functions``) via
-# ``register_trusted_extensions``.
+# download URLs, the interactive studio editor, vision quality-check,
+# render-failure alerting, and the GS font root -- are therefore NOT imported
+# here. They are supplied at runtime by the trusted wrapper
+# (``prism_mcp.utils.chart_functions``) via ``register_trusted_extensions``.
 #
 # Unregistered (the sandbox), these stay as the no-ops below: the core renders
 # a chart/table, writes the PNG through the injected bucket manager, and returns
-# a bare S3 handle -- studio and presign simply do not fire. That handle-only
-# result is exactly the sandbox's contract. The trusted wrapper installs the
-# real implementations so an interactive PRISM session is byte-for-byte
-# unchanged.
+# a bare S3 handle -- studio / presign / vision simply do not fire. That
+# handle-only result is exactly the sandbox's contract. The trusted wrapper
+# installs the real implementations so an interactive PRISM session is
+# byte-for-byte unchanged.
 
 
 class _NullDownload:
@@ -133,6 +134,12 @@ class _NullDownload:
 def generate_presigned_download_url(path):  # noqa: D401 - injected trusted-side
     """No-op default; the trusted wrapper installs the real S3 presigner."""
     return _NullDownload()
+
+
+def check_chart_quality(png_bytes):  # injected trusted-side
+    """No-op default: pass the vision gate when no checker is registered."""
+    return {"passed": True, "reason": "vision quality-check not available",
+            "description": ""}
 
 
 def _send_err(*args, **kwargs):  # injected trusted-side
@@ -152,7 +159,7 @@ _compute_chart_id = None        # studio content-addressed id fn; injected
 _FONT_REPO_ROOT = None          # GS font root; injected (else system fonts)
 
 
-def register_trusted_extensions(*, presign=None,
+def register_trusted_extensions(*, presign=None, chart_quality=None,
                                 send_error=None, chart_studio=None,
                                 table_studio=None, studio_dimension_presets=None,
                                 compute_chart_id=None, font_repo_root=None):
@@ -162,11 +169,13 @@ def register_trusted_extensions(*, presign=None,
     is optional; an unset one leaves the import-closed no-op default in place, so
     the sandbox (which never calls this) keeps its handle-only behaviour.
     """
-    global generate_presigned_download_url, _send_err
+    global generate_presigned_download_url, check_chart_quality, _send_err
     global _chart_studio, _table_studio, _STUDIO_DIMENSION_PRESETS
     global _compute_chart_id, _FONT_REPO_ROOT
     if presign is not None:
         generate_presigned_download_url = presign
+    if chart_quality is not None:
+        check_chart_quality = chart_quality
     if send_error is not None:
         _send_err = send_error
     if chart_studio is not None:
@@ -589,7 +598,6 @@ _ENGINE_ONLY_CHART_MAPPING_KEYS: frozenset = frozenset({
     "_chart_height_px",
     "_chart_width_px",
     "_facet_panel",
-    "_grad_color_bounds",
     "_histogram_bin_extent",
     "_suppress_bar_total_in_y_range",
     "_suppress_bar_value_at_x",
@@ -1109,6 +1117,34 @@ class BarCategoryLabelTooLongError(ValidationError):
         }
 
 
+class SeasonalJaggednessError(ValidationError):
+    """Raised when a line/area time-series series is strongly seasonal.
+
+    SOFT, easy-to-fix rejection (not a hard crash): a weekly/monthly/
+    quarterly series whose every-period oscillation is both REGULAR (high
+    Hyndman seasonal strength) AND LARGE (meaningful peak-to-trough vs the
+    plotted range) renders as an unreadable sawtooth. The engine refuses it
+    up-front and routes PRISM toward seasonal adjustment / normalisation /
+    a moving average (or fixing a data-frequency / alignment issue) before
+    re-charting. The message prefix is deliberately distinct from the
+    y-scale gates so the dual-axis auto-recovery never tries to "fix" it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        offending_series: Optional[List[str]] = None,
+        period: Optional[int] = None,
+        mapping: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        Exception.__init__(self, message)
+        self.context = {
+            "offending_series": list(offending_series or []),
+            "period": period,
+            "mapping": mapping,
+        }
+
+
 class SeriesMisalignmentError(ValidationError):
     """Raised when a stacked area's series sit on disjoint x-grids.
 
@@ -1141,11 +1177,9 @@ class SeriesOscillationError(ValidationError):
     SOFT rejection: two or more series merged without ``mapping['color']``
     (or duplicate x-rows for the same panel) make ``mark_line`` connect
     alternating high/low points sequentially. The panel fills with vertical
-    zig-zags that read as solid shading. Distinct from the seasonality
-    diagnostic (a warning about a regular sawtooth on one series) -- this
-    gate catches interleaved merge / alignment failures, and it is the one
-    that hard-rejects, because an interleaved merge is a data-prep defect
-    rather than a property of the series.
+    zig-zags that read as solid shading. Distinct from ``SeasonalJaggednessError``
+    (regular seasonal sawtooth on one series) -- this gate catches interleaved
+    merge / alignment failures.
     """
 
     def __init__(
@@ -1293,18 +1327,17 @@ _MIN_SERIES_VERTICAL_SHARE = 0.10
 # 60 bp with span ~7 each -- ratio ~4x.
 _LEVEL_DISPARITY_RATIO_THRESHOLD = 3.0
 
-# Seasonality diagnostic (multi_line / timeseries / line / area). A series
-# is NAMED IN A WARNING -- never rejected -- when it is BOTH regular AND has
-# visually meaningful amplitude; neither axis alone is enough (seasonal
-# strength alone over-flags tiny-but-regular waves; amplitude alone
-# over-flags near-zero-level rate-of-change series like gdp_qoq).
-# Calibrated in dev/calibrate_jaggedness.py against the line/area fixture
-# corpus. Seasonality is only assessed at the horizons the statistic can
-# reason about -- weekly (period 52), monthly (12), quarterly (4);
-# daily/business-daily/annual data infer period 0 and are never evaluated.
-# These thresholds decide who gets NAMED, not who gets blocked, so they are
-# tuned for recall: a strongly seasonal series the caller already knows
-# about costs one warning line, not a failed render.
+# Seasonality / jaggedness gate (multi_line / timeseries / line / area).
+# A series is rejected as "seasonally jagged" only when it is BOTH regular
+# AND has visually meaningful amplitude -- neither axis alone is enough
+# (seasonal strength alone over-flags tiny-but-regular waves; amplitude
+# alone over-flags near-zero-level rate-of-change series like gdp_qoq).
+# Calibrated in dev/calibrate_jaggedness.py against the full line/area
+# fixture corpus: 0 false positives, 0 misses, and the separation is wide
+# enough that the exact thresholds are not sensitive. Seasonality is only
+# assessed at the horizons the gate can reason about -- weekly (period 52),
+# monthly (12), quarterly (4); daily/business-daily/annual data infer
+# period 0 and are never evaluated.
 _SEASONAL_STRENGTH_THRESHOLD = 0.65      # Hyndman F_S (regularity), [0, 1]
 _SEASONAL_SWING_LEVEL_THRESHOLD = 25.0   # seasonal peak-to-trough as % of median |level|
 _SEASONAL_SWING_RANGE_THRESHOLD = 30.0   # seasonal peak-to-trough as % of series min-max range
@@ -3650,7 +3683,6 @@ def _collect_integrity_findings(
     chart_type: str,
     *,
     skip_pair_checks: bool = False,
-    warnings_out: Optional[List[str]] = None,
 ) -> List[ValidationError]:
     """Collect every data-integrity finding in one pass (no raising).
 
@@ -3663,20 +3695,17 @@ def _collect_integrity_findings(
       - coverage failure (empty body) -> skip the y-scale gates (they
         assume there is readable data to assess)
       - x-extent failure (no horizontal extent) -> skip the y-scale gates
-        AND the line-profile gates (alignment, seasonality, oscillation):
+        AND the line-profile gates (alignment, jaggedness, oscillation):
         all of them describe the shape of a line that cannot be drawn
       - flatness failure -> skip level disparity (alternative diagnoses
         of the same shape problem; at most one fires, matching the
         serial behavior)
-      - alignment failure (area) -> skip the seasonality diagnostic
+      - alignment failure (area) -> skip seasonal jaggedness
         (misalignment is the dominant defect for stacked areas)
 
     ``skip_pair_checks=True`` is passed by the chart pipeline when
     ``_collect_encoding_findings`` already ran -- its pair gates are a
     superset of Validation 1, so re-running would duplicate findings.
-
-    ``warnings_out`` receives the non-fatal seasonality diagnostic; pass a
-    list from any caller with a warnings channel to surface it.
     """
     findings: List[ValidationError] = []
 
@@ -3809,19 +3838,18 @@ def _collect_integrity_findings(
             alignment_failed = True
             findings.append(exc)
 
-        # Validation 8: seasonality diagnostic -- a WARNING, not a finding.
-        # Skipped when alignment failed: misalignment is the dominant defect
-        # for stacked areas and the seasonality verdict on misaligned data
-        # is noise.
-        if not alignment_failed and warnings_out is not None:
-            seasonal_note = _seasonal_jaggedness_warning(df, mapping, chart_type)
-            if seasonal_note:
-                warnings_out.append(seasonal_note)
+        # Validation 8: seasonal jaggedness. Skipped when alignment failed
+        # -- misalignment is the dominant defect for stacked areas and the
+        # jaggedness verdict on misaligned data is noise.
+        if not alignment_failed:
+            try:
+                _validate_seasonal_jaggedness(df, mapping, chart_type)
+            except ValidationError as exc:
+                findings.append(exc)
 
         # Validation 9: interleaved-series oscillation. Distinct from
-        # Validation 8 -- a seasonal swing reverses slowly and stays
-        # readable; interleaved merges reverse on nearly every step with
-        # large vertical jumps, which is why this one still rejects.
+        # Validation 8 -- seasonal sawteeth reverse slowly; interleaved
+        # merges reverse on nearly every step with large vertical jumps.
         try:
             _validate_series_oscillation(df, mapping, chart_type)
         except ValidationError as exc:
@@ -4776,41 +4804,36 @@ def _seasonal_diagnostics(
     return f_s, swing_level, swing_range
 
 
-def _seasonal_jaggedness_warning(
+def _validate_seasonal_jaggedness(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
     chart_type: str,
-) -> Optional[str]:
-    """Report line/area series carrying a strong, regular seasonal swing.
+) -> None:
+    """Reject line/area series with a strong, regular seasonal sawtooth.
 
     Scope: ``multi_line`` / ``timeseries`` / ``line`` / ``area``. Evaluated
     PER SERIES (including a single-series panel, e.g. one cell of a
-    ``make_4pack_grid``). A series is named only when it clears ALL THREE
+    ``make_4pack_grid``). A series trips only when it clears ALL THREE
     calibrated thresholds -- regularity (``F_S``) AND at least one amplitude
-    view (swing vs level OR swing vs range).
-
-    This is a WARNING, not a gate. The statistic answers "is this series
-    seasonal", which is a question about the data; whether a recurring swing
-    is noise to strip or the finding itself is a question about the analysis,
-    and the caller is the one who can answer it. Quad-witching turnover,
-    December retail, and quarterly issuance settlement all score as strongly
-    seasonal and all render perfectly well. The readability failure the
-    engine CAN see -- a line that reverses direction on nearly every step
-    with large vertical jumps -- belongs to ``_validate_series_oscillation``,
-    which still hard-rejects.
+    view (swing vs level OR swing vs range) -- so smooth-but-regular series
+    and near-zero-level rate series do not false-trigger, while regime-shift
+    series with a strong seasonal overlay (where the full-history range
+    deflates swing/range but swing/level stays high) still trip. Raises
+    ``SeasonalJaggednessError`` (a ``ValidationError`` subclass with a
+    distinct message prefix so the dual-axis auto-recovery ignores it).
     """
     if chart_type not in {"multi_line", "timeseries", "line", "area"}:
-        return None
+        return
     x_field = _get_field(mapping, "x")
     y_field = _get_field(mapping, "y")
     if not (x_field and y_field):
-        return None
+        return
     if x_field not in df.columns or y_field not in df.columns:
-        return None
+        return
     if not pd.api.types.is_datetime64_any_dtype(df[x_field]):
-        return None
+        return
     if not pd.api.types.is_numeric_dtype(df[y_field]):
-        return None
+        return
 
     color_field = _get_field(mapping, "color")
     if color_field and color_field in df.columns:
@@ -4837,7 +4860,7 @@ def _seasonal_jaggedness_warning(
             flagged.append((name, period, f_s, swing_level, swing_range))
 
     if not flagged:
-        return None
+        return
 
     period = flagged[0][1]
     freq_word = {52: "weekly", 12: "monthly", 4: "quarterly"}.get(period, "periodic")
@@ -4848,17 +4871,27 @@ def _seasonal_jaggedness_warning(
         who = f"'{nm}'" if nm is not None else f"the {single_label}"
         return f"{who} (F_S={f_s:.2f}, swing={sl:.0f}% of level)"
 
-    return (
-        f"Seasonality: {len(flagged)} {freq_word} series carry a strong, "
-        f"regular every-period swing -- {'; '.join(_describe(it) for it in flagged[:5])}. "
-        f"Chart rendered as asked. If the swing is the finding (expiry, "
-        f"rebalance, issuance, holiday demand), say so in the title and "
-        f"ignore this. If it is obscuring the trend you meant to show, plot "
-        f"year-over-year change or a rolling window of one full period "
-        f"({period} points) -- a shorter window removes noise faster than it "
-        f"removes the cycle and raises F_S rather than lowering it. A swing "
-        f"you did not expect at all points at mixed reporting calendars or "
-        f"duplicated periods in the frame."
+    offenders_desc = "; ".join(_describe(it) for it in flagged[:5])
+    offending_names = [it[0] for it in flagged if it[0] is not None]
+    full_period_pts = period
+
+    raise SeasonalJaggednessError(
+        f"SEASONAL JAGGEDNESS: {len(flagged)} {freq_word} series have a "
+        f"strong, regular every-period swing that renders as an unreadable "
+        f"sawtooth: {offenders_desc}. This is an easy fix -- pick one:\n"
+        f"  (a) Seasonally adjust the series (remove the recurring "
+        f"{freq_word} pattern) before charting.\n"
+        f"  (b) Normalise: plot year-over-year % change, which removes the "
+        f"seasonal cycle, instead of the raw level.\n"
+        f"  (c) Smooth: plot a trailing rolling mean / rolling sum over one "
+        f"full period ({full_period_pts} points) -- e.g. a 4-quarter "
+        f"rolling sum for quarterly revenue.\n"
+        f"  (d) Check for a data-frequency or alignment issue (mixed "
+        f"reporting calendars, duplicated periods) manufacturing the "
+        f"sawtooth.",
+        offending_series=offending_names,
+        period=period,
+        mapping=mapping,
     )
 
 
@@ -9420,10 +9453,10 @@ def render_annotations(
             dropped_log.append(f"Annotation dropped: {msg}")
 
     # On a heatmap, every cell carries its own value label. A halo-style
-    # Callout overlapped by that cell label produces unreadable mud, so
-    # force ``background='box'`` for any Callout on a heatmap: the opaque
-    # white rectangle masks the cell label underneath, leaving only the
-    # callout's own text visible.
+    # Callout overlapped by that cell label produces unreadable mud
+    # (vision audit 22/C1). Force ``background='box'`` for any Callout
+    # on a heatmap so the opaque white rectangle masks the cell label
+    # underneath, leaving only the callout's own text visible.
     if chart_type == "heatmap":
         annotations = [
             (
@@ -10942,15 +10975,9 @@ _PROFILE_LABEL_CHAR_PX = 11         # real per-char width at the 18px skin label
 _PROFILE_LABEL_PAD_PX = 12          # inter-label padding when horizontal
 _PROFILE_MIN_PITCH_45_PX = 22       # min horizontal pitch for non-overlapping -45 labels
 _PROFILE_MIN_HORIZONTAL_TICKS = 8   # keep horizontal while >= this many fit; else rotate to -45
-# Smallest heatmap column-label font the engine will shrink to before it
-# stops trying to fit every category. PNGs export at scale 2.0, so this is
-# 22 device px. Rotation is the first concession, shrinking the second, and
-# only a name axis gets the second -- a calendar axis thins instead.
-_HEATMAP_MIN_LABEL_FONT_PX = 11
-# Labelled ticks a calendar heatmap axis shows at most. Dates read as a
-# cadence rather than a list, so an axis of them thins once it passes this
-# many even where the labels would still physically clear each other.
-_HEATMAP_CALENDAR_MAX_TICKS = 12
+# Heatmap column labels are sparser than profile lines: 2x pitch -> ~half the
+# tick count at -45 (intraday 15-min grids stay legible on 700px wide).
+_HEATMAP_MIN_PITCH_45_PX = _PROFILE_MIN_PITCH_45_PX * 2
 # Calendar-year integers on heatmap x (e.g. ``df.groupby('year')``) — same
 # band as ``"2008"`` strings; enables annual cadence + chronological sort.
 _HEATMAP_CALENDAR_YEAR_MIN = 1900
@@ -16513,13 +16540,13 @@ def _scatter_gradient_legend(
     df: pd.DataFrame,
     color_field: str,
     color_type: str,
-    bounds: Optional[Tuple[Any, Any]] = None,
 ) -> alt.Legend:
     """Gradient legend with only the first and last scale endpoints."""
     series = df[color_field].dropna()
     if series.empty:
         return alt.Legend(title=None)
-    lo, hi = bounds if bounds is not None else (series.min(), series.max())
+    lo = series.min()
+    hi = series.max()
     if color_type == "temporal":
         fmt = _temporal_house_strftime(series)
         lo_label = pd.Timestamp(lo).strftime(fmt).replace("'", "\\'")
@@ -16536,55 +16563,24 @@ def _scatter_gradient_legend(
     )
 
 
-def _is_gradient_color_column(series: pd.Series) -> bool:
-    """True when a scatter colour column renders as a gradient, not a palette."""
-    return bool(
-        pd.api.types.is_datetime64_any_dtype(series)
-        or (
-            pd.api.types.is_numeric_dtype(series)
-            and not pd.api.types.is_bool_dtype(series)
-        )
-    )
-
-
-def _scatter_gradient_bounds(series: pd.Series) -> Optional[Tuple[Any, Any]]:
-    """``(lo, hi)`` of a gradient colour column, or None when unusable."""
-    if pd.api.types.is_datetime64_any_dtype(series):
-        t = pd.to_datetime(series).dropna()
-        return (t.min(), t.max()) if len(t) else None
-    vals = pd.to_numeric(series, errors="coerce").dropna()
-    return (float(vals.min()), float(vals.max())) if len(vals) else None
-
-
-def _scatter_gradient_norm_series(
-    series: pd.Series,
-    bounds: Optional[Tuple[Any, Any]] = None,
-) -> pd.Series:
+def _scatter_gradient_norm_series(series: pd.Series) -> pd.Series:
     """Map a temporal/numeric color column to ``[0, 1]`` for gradient scales.
 
     Vega-Lite temporal color scales only interpolate between the first two
     entries of a multi-stop ``range``; encoding normalized position as
     quantitative avoids that and uses the full HSV rainbow.
-
-    ``bounds`` overrides the endpoints the position is measured against.
-    Because the normalisation -- not the scale domain -- is what carries the
-    colour meaning, sharing a colour scale across facet panels means sharing
-    these bounds; a panel left to normalise against its own sub-frame paints
-    its own first observation the same colour as every other panel's.
     """
     if pd.api.types.is_datetime64_any_dtype(series):
         t = pd.to_datetime(series)
-        lo, hi = bounds if bounds is not None else (t.min(), t.max())
-        lo, hi = pd.Timestamp(lo), pd.Timestamp(hi)
+        lo, hi = t.min(), t.max()
         if lo == hi:
             return pd.Series(0.0, index=series.index)
-        return ((t - lo) / (hi - lo)).astype(float).clip(0.0, 1.0)
+        return ((t - lo) / (hi - lo)).astype(float)
     vals = pd.to_numeric(series, errors="coerce")
-    lo, hi = bounds if bounds is not None else (vals.min(), vals.max())
-    lo, hi = float(lo), float(hi)
+    lo, hi = float(vals.min()), float(vals.max())
     if lo == hi:
         return pd.Series(0.0, index=series.index)
-    return ((vals - lo) / (hi - lo)).astype(float).clip(0.0, 1.0)
+    return ((vals - lo) / (hi - lo)).astype(float)
 
 
 _SCATTER_GRADIENT_DEFAULT_START = "#DC143C"
@@ -16732,7 +16728,6 @@ def _expand_scatter_path_segments(
     y_field: str,
     order_field: str,
     color_field: Optional[str],
-    bounds: Optional[Tuple[Any, Any]] = None,
 ) -> pd.DataFrame:
     """One row per consecutive (x, y) pair for gradient path segments.
 
@@ -16744,9 +16739,7 @@ def _expand_scatter_path_segments(
     sorted_df = df.sort_values(order_field).reset_index(drop=True)
     grad_norm: Optional[pd.Series] = None
     if color_field and color_field in sorted_df.columns:
-        grad_norm = _scatter_gradient_norm_series(
-            sorted_df[color_field], bounds,
-        )
+        grad_norm = _scatter_gradient_norm_series(sorted_df[color_field])
     rows: List[Dict[str, Any]] = []
     for i in range(len(sorted_df) - 1):
         start = sorted_df.iloc[i]
@@ -17034,9 +17027,17 @@ def _build_scatter(
     # phase-space plots are typically sparse enough that opaque dots
     # read fine and the gradient itself carries the density story.
     has_color = bool(color_field) and color_field in df.columns
-    _is_gradient_color = (
-        has_color and _is_gradient_color_column(df[color_field])
-    )
+    if has_color:
+        _color_series = df[color_field]
+        _is_gradient_color = (
+            pd.api.types.is_datetime64_any_dtype(_color_series)
+            or (
+                pd.api.types.is_numeric_dtype(_color_series)
+                and not pd.api.types.is_bool_dtype(_color_series)
+            )
+        )
+    else:
+        _is_gradient_color = False
 
     if has_color and not _is_gradient_color:
         base_opacity = _scatter_multi_color_opacity(len(df))
@@ -17095,11 +17096,10 @@ def _build_scatter(
             # own series (disconnected dots). Render one mark_rule per edge.
             grad_df = df.copy()
             grad_df["_grad_norm"] = _scatter_gradient_norm_series(
-                grad_df[color_field], mapping.get("_grad_color_bounds"),
+                grad_df[color_field],
             )
             seg_df = _expand_scatter_path_segments(
                 grad_df, x_field, y_field, order_field, color_field,
-                bounds=mapping.get("_grad_color_bounds"),
             )
             color_series = df[color_field]
             color_is_temporal = pd.api.types.is_datetime64_any_dtype(color_series)
@@ -17122,7 +17122,6 @@ def _build_scatter(
                         scale=grad_scale,
                         legend=_scatter_gradient_legend(
                             df, color_field, color_type,
-                            mapping.get("_grad_color_bounds"),
                         ),
                     ),
                     order=alt.Order("_seg_idx:Q", sort="ascending"),
@@ -17207,7 +17206,7 @@ def _build_scatter(
             color_type = "temporal" if color_is_temporal else "quantitative"
             grad_df = df.copy()
             grad_df["_grad_norm"] = _scatter_gradient_norm_series(
-                grad_df[color_field], mapping.get("_grad_color_bounds"),
+                grad_df[color_field],
             )
             embed_df = grad_df
             grad_scale = _scatter_gradient_color_scale(mapping)
@@ -17227,7 +17226,6 @@ def _build_scatter(
                     scale=grad_scale,
                     legend=_scatter_gradient_legend(
                         df, color_field, color_type,
-                        mapping.get("_grad_color_bounds"),
                     ),
                 )
             )
@@ -18748,111 +18746,111 @@ def _validate_heatmap_row_labels(
     )
 
 
-def _heatmap_column_label_pitch_px(
-    max_label_chars: int,
+def _heatmap_column_label_span_px(
+    label: str,
     label_font_size: int,
     label_angle: int,
 ) -> float:
-    """Band pitch two adjacent heatmap column labels need to clear each other.
-
-    At 0 deg the constraint is the text's own width. At -45 it is NOT: two
-    diagonal labels are offset along their own baselines, so only the
-    perpendicular gap between baselines can close, and that is set by line
-    height over ``sin(angle)`` no matter how long the text is. Sizing the
-    rotated case off text width (or off a flat minimum pitch) over-states
-    the requirement by 40%+ on short tickers, which is what made an 8-column
-    correlation matrix drop half its names the moment it moved into a
-    composite panel. Label LENGTH is policed separately by the character cap.
-    """
+    """Horizontal span a heatmap column tick label needs at ``label_angle``."""
+    text_px = len(str(label)) * _axis_label_px_per_char(label_font_size)
     if label_angle == 0:
-        return (
-            max_label_chars * _axis_label_px_per_char(label_font_size)
-            + _PROFILE_LABEL_PAD_PX
-        )
-    return (label_font_size + 4) / math.sin(math.radians(abs(label_angle)))
+        return text_px + _PROFILE_LABEL_PAD_PX
+    label_h = label_font_size + 4
+    rad = math.radians(abs(label_angle))
+    return text_px * math.cos(rad) + label_h * math.sin(rad)
 
 
-def _heatmap_labels_are_calendar(ordered_vals: List[Any]) -> bool:
-    """True when the column labels read as dates / periods rather than names.
+def _heatmap_min_column_index_gap(
+    ordered_vals: List[Any],
+    n_cols: int,
+    chart_width: int,
+    label_font_size: int,
+    label_angle: int,
+) -> int:
+    """Minimum column-index gap so band-centre pitch clears label spans."""
+    if n_cols <= 1:
+        return 1
+    col_pitch = chart_width / n_cols
+    max_span = max(
+        _heatmap_column_label_span_px(str(v), label_font_size, label_angle)
+        for v in ordered_vals
+    )
+    return max(
+        1,
+        math.ceil(max_span * _HEATMAP_COLUMN_PITCH_MARGIN / col_pitch),
+    )
 
-    Only a calendar axis may show a subset of its ticks: "every third month"
-    is a normal axis, "every third sector" is a missing name.
-    """
-    if not ordered_vals:
-        return False
-    default_year: Optional[int] = None
-    parsed = 0
-    for v in ordered_vals:
-        ts = _coerce_heatmap_x_value_to_timestamp(v)
-        if ts is None:
-            ts = _parse_heatmap_display_label_to_timestamp(
-                str(v), default_year=default_year,
-            )
-        if ts is not None:
-            parsed += 1
-            if default_year is None:
-                default_year = int(ts.year)
-    return parsed >= max(1, int(len(ordered_vals) * 0.9))
+
+def _heatmap_max_ticks_for_column_pitch(
+    n_cols: int,
+    min_index_gap: int,
+) -> int:
+    """How many ticks fit when adjacent labels must be ``min_index_gap`` cols apart."""
+    if min_index_gap <= 1:
+        return n_cols
+    return max(1, math.ceil(n_cols / min_index_gap))
 
 
 def _heatmap_x_axis_plan(
     ordered_vals: List[Any],
     chart_width: int,
     label_font_size: Optional[int] = None,
-) -> Tuple[int, Optional[List[Any]], int, int]:
-    """Pick heatmap column (x) ``(angle, tick_values, font_px, unlabelled)``.
+) -> Tuple[int, Optional[List[Any]]]:
+    """Pick heatmap column (x) ``(label_angle, tick_values)``.
 
-    The two label families disagree about what an unlabelled column means,
-    so they get different concessions. Vertical (90 deg) is never used.
-
-    A CALENDAR axis thins to a subset (Q1 anchors, month starts, midnights)
-    at one constant interval, capped at ``_HEATMAP_CALENDAR_MAX_TICKS``
-    labels: dates read as a cadence, and an unlabelled month is still
-    legible from its neighbours. A NOMINAL axis never thins -- a dropped
-    category name is unrecoverable, the same defect the bar gates refuse --
-    so it rotates and then shrinks the tick font as far as
-    ``_HEATMAP_MIN_LABEL_FONT_PX`` to keep every name on the axis. Past that
-    floor it reports how many columns it could not label and the caller
-    raises. Every cell renders either way; this decides only the tick text.
+    Vertical (90 deg) labels are forbidden on heatmaps. Uses the skin's
+    real axis-label font size for pitch math (post-normalization labels),
+    and calendar-aware thinning (Q1 anchors, month starts, midnights) when
+    tick labels parse as temporal. Band-scale column pitch feeds the
+    thinner as a minimum step so adjacent column labels never collide.
+    Emitted ticks always sit at one constant column interval. Every cell
+    still renders.
     """
     vals = [str(v) for v in ordered_vals]
     n = len(vals)
-    base_font = int(label_font_size or _SKIN_AXIS_LABEL_FONT_PX)
     if n == 0:
-        return 0, None, base_font, 0
+        return 0, None
+    font_px = label_font_size or _SKIN_AXIS_LABEL_FONT_PX
+    px_per_char = _axis_label_px_per_char(font_px)
     max_len = max(len(v) for v in vals)
+    needed_h = max_len * px_per_char + _PROFILE_LABEL_PAD_PX
+
+    horiz_capacity = max(1, int(chart_width // needed_h))
+    diag_capacity = max(1, int(chart_width // _HEATMAP_MIN_PITCH_45_PX))
+
+    gap_h = _heatmap_min_column_index_gap(
+        ordered_vals, n, chart_width, font_px, 0,
+    )
+    gap_d = _heatmap_min_column_index_gap(
+        ordered_vals, n, chart_width, font_px, -45,
+    )
+    horiz_capacity = min(
+        horiz_capacity, _heatmap_max_ticks_for_column_pitch(n, gap_h),
+    )
+    diag_capacity = min(
+        diag_capacity, _heatmap_max_ticks_for_column_pitch(n, gap_d),
+    )
+
+    def _thin(k: int, min_gap: int) -> List[Any]:
+        return _heatmap_calendar_tick_subset(
+            ordered_vals, k, min_step=min_gap,
+        )
+
     col_pitch = chart_width / n
-
-    def _fits(font_px: int, angle: int, pitch: Optional[float] = None) -> bool:
-        need = _heatmap_column_label_pitch_px(max_len, font_px, angle)
-        return need * _HEATMAP_COLUMN_PITCH_MARGIN <= (
-            col_pitch if pitch is None else pitch
-        )
-
-    if _heatmap_labels_are_calendar(ordered_vals):
-        collision_gap = max(1, math.ceil(
-            _heatmap_column_label_pitch_px(max_len, base_font, -45)
-            * _HEATMAP_COLUMN_PITCH_MARGIN / col_pitch
-        ))
-        gap = max(collision_gap, math.ceil(n / _HEATMAP_CALENDAR_MAX_TICKS))
-        if gap == 1:
-            return (0 if _fits(base_font, 0) else -45), None, base_font, 0
-        ticks = _heatmap_calendar_tick_subset(
-            ordered_vals, max(1, n // gap), min_step=gap,
-        )
-        angle = 0 if _fits(base_font, 0, col_pitch * gap) else -45
-        return angle, ticks, base_font, 0
-
-    if _fits(base_font, 0):
-        return 0, None, base_font, 0
-    for font_px in range(base_font, _HEATMAP_MIN_LABEL_FONT_PX - 1, -1):
-        if _fits(font_px, -45):
-            return -45, None, font_px, 0
-
-    floor_font = _HEATMAP_MIN_LABEL_FONT_PX
-    need = _heatmap_column_label_pitch_px(max_len, floor_font, -45)
-    capacity = max(1, int(chart_width // (need * _HEATMAP_COLUMN_PITCH_MARGIN)))
-    return -45, None, floor_font, n - capacity
+    max_span_h = max(
+        _heatmap_column_label_span_px(str(v), font_px, 0) for v in ordered_vals
+    )
+    if (
+        gap_h <= 1
+        and horiz_capacity >= n
+        and max_span_h * _HEATMAP_COLUMN_PITCH_MARGIN <= col_pitch
+    ):
+        return 0, None
+    if horiz_capacity >= _PROFILE_MIN_HORIZONTAL_TICKS:
+        return 0, _thin(horiz_capacity, gap_h)
+    if gap_d <= 1 and diag_capacity >= n:
+        return -45, None
+    return -45, _thin(diag_capacity, gap_d)
 
 
 def _heatmap_column_label_plan(
@@ -18945,39 +18943,6 @@ def _validate_heatmap_column_labels(
         max_chars=_HEATMAP_COLUMN_LABEL_MAX_CHARS,
         chart_width=chart_width,
         label_angle=label_angle,
-    )
-
-
-def _heatmap_column_crowding_error(
-    ordered_vals: List[Any],
-    x_field: Optional[str],
-    *,
-    chart_width: int,
-    n_unlabelled: int,
-    mapping: Optional[Dict[str, Any]] = None,
-    composite_cell: bool = False,
-) -> HeatmapColumnLabelTooLongError:
-    """Too many named columns to label, after rotating and shrinking."""
-    n_cols = len(ordered_vals)
-    fits = n_cols - n_unlabelled
-    tail = (
-        ", or render this heatmap on its own -- one composite cell is "
-        "roughly half the width of a standalone canvas"
-        if composite_cell
-        else ""
-    )
-    return HeatmapColumnLabelTooLongError(
-        f"Heatmap has {n_cols} named columns but only {fits} fit on a "
-        f"{chart_width}px axis at -45 deg with the smallest label font, and "
-        f"a category name is never hidden. Aggregate {x_field!r} to at most "
-        f"{fits} groups, take the top {fits}, transpose so the long side "
-        f"becomes rows{tail}.",
-        offending_labels=[str(v) for v in ordered_vals],
-        x_field=x_field,
-        mapping=mapping,
-        max_chars=_HEATMAP_COLUMN_LABEL_MAX_CHARS,
-        chart_width=chart_width,
-        label_angle=-45,
     )
 
 
@@ -19113,24 +19078,13 @@ def _build_heatmap(
         _label_findings.append(_exc)
 
     # ---- column (x) axis plan -------------------------------------------
-    # Heatmap column labels NEVER render vertical (90 deg) and a named
-    # category is never dropped: the plan rotates, then shrinks, and only a
-    # calendar axis is allowed to show a tick subset. ``x_unlabelled`` is
-    # non-zero only when a nominal axis cannot fit even at the minimum font.
+    # Heatmap column labels NEVER render vertical (90 deg). When the x
+    # grid is dense (intraday 15-min bars over several sessions), show a
+    # calendar-aligned tick subset so labels stay legible at -45.
     x_ordered = _resolve_profile_x_order(df, x_field, mapping)
-    x_label_angle, x_tick_values, x_label_font_size, x_unlabelled = (
-        _heatmap_x_axis_plan(
-            x_ordered, width, label_font_size=x_label_font_size,
-        )
+    x_label_angle, x_tick_values = _heatmap_x_axis_plan(
+        x_ordered, width, label_font_size=x_label_font_size,
     )
-    if x_unlabelled:
-        _label_findings.append(_heatmap_column_crowding_error(
-            x_ordered, x_field,
-            chart_width=width,
-            n_unlabelled=x_unlabelled,
-            mapping=mapping,
-            composite_cell=composite_cell,
-        ))
     try:
         column_label_limit_px = _validate_heatmap_column_labels(
             x_ordered,
@@ -21910,42 +21864,6 @@ def _compress_png(png_bytes: bytes) -> bytes:
     return out if len(out) < len(png_bytes) else png_bytes
 
 
-def _json_safe_spec_value(value: Any) -> Any:
-    """Coerce one spec scalar / container into something ``vl_convert`` parses.
-
-    Altair serialises its own charts, but the composite and facet paths
-    assemble raw spec dicts and patch scales, domains, and datasets into
-    them directly. Anything pandas- or numpy-flavoured that survives to the
-    export call fails inside the JSON encoder as ``unsupported type <T>``,
-    with no field name, no chart, and nothing the caller can act on. Fixing
-    it here means every future patch site is safe by construction rather
-    than by remembering.
-    """
-    if isinstance(value, dict):
-        return {str(k): _json_safe_spec_value(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe_spec_value(v) for v in value]
-    if isinstance(value, (str, bool)) or value is None:
-        return value
-    if isinstance(value, (pd.Timestamp, datetime, date)):
-        return pd.Timestamp(value).isoformat()
-    if isinstance(value, pd.Timedelta):
-        return value.isoformat()
-    if value is pd.NaT or (isinstance(value, float) and math.isnan(value)):
-        return None
-    if isinstance(value, np.datetime64):
-        return pd.Timestamp(value).isoformat()
-    if isinstance(value, np.bool_):
-        return bool(value)
-    if isinstance(value, np.integer):
-        return int(value)
-    if isinstance(value, np.floating):
-        return None if np.isnan(value) else float(value)
-    if isinstance(value, np.ndarray):
-        return [_json_safe_spec_value(v) for v in value.tolist()]
-    return value
-
-
 def _render_chart_to_png(
     chart_or_spec: Any,
     scale: float = 2.0,
@@ -21975,7 +21893,7 @@ def _render_chart_to_png(
         ):
             spec = chart_or_spec.to_dict()
         elif isinstance(chart_or_spec, dict):
-            spec = _json_safe_spec_value(chart_or_spec)
+            spec = chart_or_spec
         else:
             spec = chart_or_spec.to_dict()  # last-resort duck typing
 
@@ -22804,7 +22722,6 @@ def _make_chart(
     tier1_findings.extend(
         _collect_integrity_findings(
             df, mapping, chart_type, skip_pair_checks=True,
-            warnings_out=warnings,
         )
     )
     tier1_findings.extend(
@@ -25234,32 +25151,11 @@ def _compute_shared_temporal_domain(
 def _compute_shared_color_domain(
     df: pd.DataFrame, field: str,
 ) -> Optional[List[Any]]:
-    """Compute the shared colour-scale domain for ``share_color=True``.
-
-    Dtype decides the SHAPE of the domain, because a continuous scale wants
-    two endpoints and a categorical one wants every member:
-
-      * datetime  -> ``[min_iso, max_iso]``
-      * numeric   -> ``[min, max]`` as plain floats
-      * anything else -> sorted unique values as strings
-
-    The temporal and numeric branches also guarantee JSON-safe scalars.
-    Facet specs are assembled as raw dicts and handed straight to
-    ``vl_convert``, bypassing Altair's own serialisation, so a ``Timestamp``
-    or a ``numpy`` scalar reaching the domain surfaces to the caller as an
-    opaque "unsupported type" export failure with nothing actionable in it.
-    """
+    """Compute a sorted union of the color column's unique values."""
     if field not in df.columns:
         return None
-    col = df[field].dropna()
-    if len(col) == 0:
-        return None
-    if pd.api.types.is_datetime64_any_dtype(col):
-        return [pd.Timestamp(col.min()).isoformat(),
-                pd.Timestamp(col.max()).isoformat()]
-    if pd.api.types.is_numeric_dtype(col) and not pd.api.types.is_bool_dtype(col):
-        return [float(col.min()), float(col.max())]
-    return sorted({str(v) for v in col.unique()})
+    uniq = df[field].dropna().unique().tolist()
+    return sorted(uniq, key=lambda v: str(v))
 
 
 def _inject_scale_domain_into_spec(
@@ -25815,18 +25711,8 @@ def _render_facet_grid(
             shared_x_domain_temporal = _compute_shared_temporal_domain(df, x_field)
         else:
             shared_x_domain_numeric = _compute_shared_numeric_domain(df, x_field)
-    if share_color and isinstance(color_field, str) and color_field in df.columns:
-        if _is_gradient_color_column(df[color_field]):
-            # Gradient colour carries its meaning in the [0, 1] normalisation
-            # of the ``_grad_norm`` column, not in the scale domain. Pinning
-            # the domain here would clash with that column; sharing the
-            # normalisation endpoints is what actually makes panel colours
-            # comparable.
-            panel_mapping["_grad_color_bounds"] = _scatter_gradient_bounds(
-                df[color_field],
-            )
-        else:
-            shared_color_domain = _compute_shared_color_domain(df, color_field)
+    if share_color and isinstance(color_field, str):
+        shared_color_domain = _compute_shared_color_domain(df, color_field)
 
     # Facet histograms: one bin extent across all panels so x-axes align.
     if chart_type == "histogram" and share_x and isinstance(x_field, str):
@@ -27224,6 +27110,199 @@ def build_charts(
         raise ValidationError("\n".join(lines))
 
     return survivors
+
+
+# ===========================================================================
+# MODULE: QUALITY GATE
+# ===========================================================================
+
+_QC_MAX_WORKERS = 8
+
+
+@dataclass
+class _PngPathResult:
+    """Minimal result-shim for the ``check_charts_quality`` path-string
+    convenience overload. Carries just the attributes ``_qc_one`` reads
+    (``png_path`` / ``success`` / ``error_message``) so a bare S3 PNG
+    path can flow through the QC gate as if it were a ``ChartResult``.
+    """
+
+    png_path: Optional[str] = None
+    success: bool = True
+    error_message: Optional[str] = None
+
+
+def _qc_result_png_path(r: Any) -> Optional[str]:
+    """Extract ``png_path`` from any QC-gate input shape (``ChartResult`` /
+    ``CompositeResult`` / bare path string / ``{'png_path': ...}`` dict)."""
+    if isinstance(r, str):
+        return r
+    if isinstance(r, dict):
+        return r.get("png_path")
+    return getattr(r, "png_path", None)
+
+
+def _is_missing_object_error(exc: Exception) -> bool:
+    """True when an S3 fetch error means the OBJECT (key) isn't there -- a
+    stale or mistyped ``png_path`` -- rather than a transient infra outage.
+
+    Key-level not-found is a bad-input signal (fail closed). Bucket-level
+    or transport errors are infra (fail open) -- a missing bucket would
+    otherwise fail every chart closed, defeating the fail-open intent.
+
+    The local ``S3BucketManager`` raises ``FileNotFoundError``; PRISM's
+    boto-backed manager raises a ``NoSuchKey`` / 404 ``ClientError`` whose
+    code lives in ``exc.response['Error']['Code']``. Anything not matched
+    here (including ``NoSuchBucket``) is treated as infra so a real outage
+    never fails otherwise-fine charts closed.
+    """
+    if isinstance(exc, FileNotFoundError):
+        return True
+    if type(exc).__name__ == "NoSuchKey":
+        return True
+    resp = getattr(exc, "response", None)
+    if isinstance(resp, dict):
+        code = str(resp.get("Error", {}).get("Code", ""))
+        return code in ("NoSuchKey", "NotFound", "404")
+    return False
+
+
+def _qc_one(
+    r: Any, s3_manager: Any,
+) -> Dict[str, Any]:
+    """QC a single result. Used as a worker by ``check_charts_quality``.
+
+    Mirrors PRISM's ``_check_single`` inside ``check_charts_quality_parallel``:
+    fail-open on infrastructure errors (S3 fetch, Gemini timeout); a
+    real BAD verdict from ``check_chart_quality`` propagates through.
+
+    Convenience overload: ``r`` may be a bare S3 PNG path string (or a
+    dict carrying a ``png_path`` key) rather than a ``ChartResult`` /
+    ``CompositeResult``. Multi-step report / dashboard pipelines collect
+    chart artifacts as path strings across ``execute_analysis_script``
+    steps and pass that list straight to ``check_charts_quality``;
+    accepting the string form here lets the QC gate work on those
+    artifacts without the caller reconstructing result objects.
+    """
+    if isinstance(r, str):
+        r = _PngPathResult(png_path=r)
+    elif isinstance(r, dict) and "png_path" in r:
+        r = _PngPathResult(
+            png_path=r.get("png_path"),
+            success=r.get("success", True),
+            error_message=r.get("error_message"),
+        )
+    png_path = getattr(r, "png_path", None)
+    success = getattr(r, "success", True)
+    if not success or not png_path:
+        err = getattr(r, "error_message", None)
+        reason = (
+            f"chart build failed: {err}" if err
+            else "chart build failed: no png_path and no error_message on result"
+        )
+        return {
+            "passed": False,
+            "reason": reason,
+            "description": "",
+            "png_path": png_path,
+        }
+    try:
+        png_bytes = s3_manager.get(png_path)
+        verdict = check_chart_quality(png_bytes)
+        verdict.setdefault("png_path", png_path)
+        # Ensure the Gemini chart description threads through even when an
+        # older verdict shape (pre-description) is returned.
+        verdict.setdefault("description", "")
+        return verdict
+    except Exception as exc:  # noqa: BLE001
+        if _is_missing_object_error(exc):
+            # A missing object is a bad-input signal (stale / mistyped path),
+            # not an infra outage -- fail CLOSED so it's flagged rather than
+            # rubber-stamped by the fail-open path below.
+            logger.warning(
+                "[QualityGate] png not found (fail-closed): %s", png_path,
+            )
+            return {
+                "passed": False,
+                "reason": f"png not found (bad or stale path): {png_path}",
+                "description": "",
+                "png_path": png_path,
+            }
+        logger.warning(
+            "[QualityGate] Quality check error (fail-open): %s -- %s",
+            exc, png_path,
+        )
+        return {
+            "passed": True,
+            "reason": f"infra error (fail-open): {exc}",
+            "description": "",
+            "png_path": png_path,
+        }
+
+
+def check_charts_quality(
+    results: List[Any],
+    s3_manager: Optional[Any] = None,
+    max_workers: int = _QC_MAX_WORKERS,
+) -> List[Dict[str, Any]]:
+    """Run the chart-quality gate over a list of ``ChartResult`` /
+    ``CompositeResult`` objects in parallel.
+
+    Each element may also be a bare S3 PNG path string (or a dict with a
+    ``png_path`` key) -- handy when a multi-step pipeline has only the
+    artifact paths from an earlier step, not the original result objects.
+    Mixed lists (some results, some path strings) are accepted.
+
+    For each result with a valid ``png_path``, fetches the PNG from S3
+    and forwards it to ``check_chart_quality`` (PRISM: Gemini Flash;
+    local: pass-through). Gemini calls are dispatched concurrently via
+    ``ThreadPoolExecutor`` (default 8 workers, capped at chart count)
+    so wall-clock time is one Gemini latency for up to 8 charts. This
+    matches PRISM's ``check_charts_quality_parallel`` shape.
+
+    Returns a list of ``{passed, reason, ...}`` dicts in the same order
+    as ``results``.
+
+    Fail-open vs fail-closed: a genuine infrastructure error (S3 outage,
+    missing bucket, Gemini timeout) treats the chart as passing so a
+    quality-gate outage doesn't suppress otherwise-fine charts. A missing
+    object (stale or mistyped ``png_path``) fails CLOSED instead, so a bad
+    path is flagged rather than rubber-stamped.
+    """
+    if s3_manager is None:
+        raise ValueError(
+            "check_charts_quality() requires an s3_manager. PRISM injects one "
+            "via the code sandbox; for local dev, instantiate "
+            "core.s3_bucket_manager.S3BucketManager and pass it "
+            "explicitly."
+        )
+
+    n = len(results)
+    if n == 0:
+        return []
+
+    out: List[Optional[Dict[str, Any]]] = [None] * n
+    workers = max(1, min(max_workers, n))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {
+            ex.submit(_qc_one, results[i], s3_manager): i for i in range(n)
+        }
+        for fut in concurrent.futures.as_completed(futures):
+            idx = futures[fut]
+            try:
+                out[idx] = fut.result()
+            except Exception as exc:  # noqa: BLE001 - belt-and-suspenders
+                logger.warning(
+                    "[QualityGate] worker %d crashed (fail-open): %s",
+                    idx, exc,
+                )
+                out[idx] = {
+                    "passed": True,
+                    "reason": f"worker crash (fail-open): {exc}",
+                    "description": "",
+                    "png_path": _qc_result_png_path(results[idx]),
+                }
+    return [v if v is not None else {"passed": True, "reason": "no verdict", "description": ""} for v in out]
 
 
 # ===========================================================================
@@ -29876,6 +29955,7 @@ __all__ = [
     "make_4pack_grid",
     "make_6pack_grid",
     "build_charts",
+    "check_charts_quality",
     "profile_df",
     # ---- Annotations ----------------------------------------------
     "Annotation",

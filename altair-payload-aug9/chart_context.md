@@ -135,6 +135,13 @@ result = make_chart(
 `publish` (700×400), or `monitor` (500×300). Canvas dimensions are otherwise
 engine-selected.
 
+`skin` is `gs_clean` (default), `slate`, `mono`, or `print`. Stay on
+the default unless the request names a constraint that another one answers:
+`print` for a black-and-white handout, `mono` when colour would imply a
+distinction the data does not support.
+The same four names are table skins — pass one skin to every artifact in an
+exhibit so they share a frame.
+
 Axis titles live only in `mapping`: `mapping['x_title']`,
 `mapping['y_title']`, `mapping['y_title_right']`. There is no top-level
 axis-title kwarg. Leave `interactive`, `auto_beautify`, `dimension_preset`, and
@@ -190,6 +197,16 @@ Results are dataclasses; use dot notation.
 Independent defects aggregate into one numbered message. Fix **every** item,
 then re-run; never swallow chart errors with `try/except`.
 
+### Quality control
+
+Foreground PRISM execution automatically runs the post-script chart-quality
+sweep over rendered chart/composite PNGs. Do **not** call
+`check_charts_quality()` manually in ordinary scripts. Tables are excluded.
+The callable is foreground-only; background sandboxes do not inject it. Use it
+directly only when a foreground multi-step workflow explicitly needs an
+in-script gate over prior `ChartResult`, PNG-path, or `{"png_path": ...}`
+values.
+
 ## 5. Hard readability gates
 
 The engine raises rather than truncating. These are ceilings, not targets.
@@ -200,8 +217,8 @@ The engine raises rather than truncating. These are ceilings, not targets.
 | Value-axis title (`y_title`, `y_title_right`; `x_title` on horizontal bars) | 28 characters | Aim for concise metric + unit |
 | Auto end-label series name | 32 characters | Rename categories before charting |
 | Bar / `contribution` category label | 22 characters | Abbreviate in the DataFrame |
+| Bar / `bar_horizontal` category count vs canvas | Every category must be labelled; the engine rotates and shrinks to fit but never hides a name | Aggregate or take the top-N, render standalone instead of in a composite cell, or switch to `bar_horizontal` for long lists |
 | Heatmap row or column label | 20 characters | Abbreviate in the DataFrame |
-| Named categories vs canvas (`bar`, `bar_horizontal`, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, and raises when it cannot. Date columns thin instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap, or switch to `bar_horizontal` for long lists |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
 | Categorical colour / donut slices | 10 categories | Filter or aggregate to `Other` |
@@ -308,9 +325,9 @@ become nanoseconds after 1970 and the axis renders as a clock.
 ### 6.3 Type-specific decisions
 
 - `multi_line` / `timeseries` auto-add end-of-line labels on a single axis.
-  Dual-axis and facet charts use legends/headers instead.
-  Alternating-series oscillation, extreme missing coverage, and incompatible
-  y-scales raise with the required reshape.
+  Dual-axis and facet charts use legends/headers instead. Seasonal
+  jaggedness, alternating-series oscillation, extreme missing coverage, and
+  incompatible y-scales raise with the required reshape.
 - Intraday line x values should stay datetime-like. Do not pre-format clock
   strings or force ordinal; set `x_timezone` only when ET is wrong.
 - `scatter` + `connect=True` creates an ordered phase path and needs `order`

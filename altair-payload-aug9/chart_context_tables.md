@@ -59,7 +59,8 @@ not apply.
 | `title`, `subtitle` | Top labels |
 | `caption` | Italic note below the table |
 | `source` | Attribution; fills an unset caption as `Source: ...` |
-| `theme_overrides` | Override individual house-palette colours, e.g. `{'row_band_color': '#FFF4E5'}`; an unknown key raises listing all of them |
+| `skin` | Palette; recolours only, never resizes |
+| `theme_overrides` | Override individual skin colours, e.g. `{'row_band_color': '#FFF4E5'}`; an unknown key raises listing all of them |
 | `column_formats` | `{column: format_hint}` |
 | `column_aligns` | `{column: 'left'|'center'|'right'}` |
 | `header_levels` | Multi-level column headers |
@@ -88,6 +89,17 @@ If a DataFrame index carries a semantic identifier such as country or ticker,
 either `reset_index()` so it becomes a named column (preferred) or set
 `show_index=True`; the default intentionally omits the index.
 
+| Skin | Use |
+|---|---|
+| `gs_clean` | Default house palette; navy headers |
+| `slate` | Softer blue-grey alternative to the default |
+| `mono` | Greyscale, including gains and losses |
+| `print` | Black and white, no row banding; for printed handouts |
+
+The same four names are chart skins. Pass one skin to every artifact in an
+exhibit and the table and the charts share a frame; mix them and they read
+as pasted from different documents.
+
 Canvas dimensions are content-driven. Text columns wrap, every row is kept,
 and the table is never truncated. A table too wide to remain legible on a
 portrait page raises; transpose, split, aggregate, or shorten headers. Reach
@@ -113,7 +125,8 @@ Use dot notation:
 | `interactive`, `editor_url` | Whether an editor was emitted, and its internal link; never surface the URL |
 | `success`, `error_message` | Returned results are successful; failures raise |
 
-Inspect and surface material `result.warnings`.
+Tables are deterministic and excluded from chart vision QC. Inspect and surface
+material `result.warnings`.
 
 ### Editor companion
 
@@ -127,8 +140,8 @@ companion, not a dashboard — a request for live filtering, refresh, or
 cross-widget interaction is a `dashboards` task.
 
 Studio-generated code round-trips exactly and carries both halves of the
-edit — the kwargs and the data. Keep the whole block; dropping any kwarg it
-carries (`theme_overrides`, `column_widths`, `value_overrides`,
+edit — the kwargs and the data. Keep the whole block; dropping a kwarg it
+carries (`skin`, `theme_overrides`, `column_widths`, `value_overrides`,
 `row_height_scale`) silently undoes the styling.
 
 The data half arrives one of two ways and the code says which. Where every
@@ -321,7 +334,7 @@ defect it can evaluate. Common repairs are:
 - keep color-mode values to `rwg`, `bw`, or `rag`;
 - put numeric RAG boundaries in `rag_thresholds` for every `rag` column;
 - pass `heatmap_groups` as a list of dictionaries;
-- keep `theme_overrides` keys to theme keys;
+- name a published `skin`, and keep `theme_overrides` keys to theme keys;
 - keep `row_height_scale` within 0.5–3.0;
 - transpose, split, aggregate, or shorten an over-wide table.
 
