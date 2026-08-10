@@ -1,18 +1,27 @@
 # staging/
 
-> ## Staleness notice for the prism/ pointer below — added 2026-05-15
+> ## Roster refresh in progress — 2026-08-09
 >
-> The references to `prism/` in this README (the three-subtree diagram
-> below, the "counterpart to staging/" paragraph, and the per-project
-> `prism/ refs` column) describe a state that is **no longer current**.
-> As of 2026-05-15, `prism/` is no longer maintained as the source of
-> truth for how PRISM works (see `prism/README.md` for the full
-> notice). The only PRISM-bound SSOTs still actively maintained in
-> this repo are `projects/altair/` and `projects/echarts/`; everything
-> else under `projects/` (`apis/`, `bloomberg/`, `frontend/`,
-> `gs_reference/`, `macro/`, `whitepapers/`) is not load-bearing for
-> ongoing PRISM work. The body below is preserved as-is until a
-> future cleanup pass refreshes the roster.
+> `prism/` is being restored as the PRISM-side source of truth (it was
+> suspended from 2026-05-15 to 2026-08-09), so the `prism/ refs` column
+> and the three-subtree diagram below are live pointers again — but
+> check each cited file's `_as of` stamp, since the refresh lands file
+> by file.
+>
+> Two facts in the altair / echarts rows below are now flatly wrong and
+> are being rewritten:
+>
+> 1. **There is no submodule any more.** `prism-core` was vendored into
+>    `prism-main` as a plain subdirectory on 2026-08-07 (`287311b`,
+>    then `3ec2ace`). Every "gitlink vs checkout" parity blocker in the
+>    rows below is void — parity is now a direct one-repo measurement.
+> 2. **Production is ahead of staging on files staging owns.** Commits
+>    `5ff6e3f` and `a1620b6` edited the chart engine and four
+>    `chart_context_*.md` spokes inside PRISM. The next move on altair
+>    is a housekeeping intake, not a promotion.
+>
+> Byte-level classification of all 35 contract files is out to PRISM in
+> `staging/prompts/open/2026-08-09_recon/` (numbered series).
 >
 > ---
 
@@ -176,12 +185,15 @@ PRISM right now.
 | whitepapers | intake VERIFIED + workshop PLAN LOCKED + frontmatter on all 5 inherited docs | `projects/whitepapers/` | `projects/whitepapers/whitepapers-payload/*.md` | `ai_development/context/white_papers/{whitepaper_data_integrations,whitepaper_user_personalization,whitepaper_world_state_and_reasoning,faq,email_usage_guide}.md` (filenames change to canonical slugs once workshop pass renames per `dev/specs/whitepaper_workshop.md` §8) | — | sourced from `projects/whitepapers/dev/scans/2026-05-02_whitepapers_intake.md` (OCR) + `2026-05-02_whitepapers_s3_verify_reply.md` (S3 verbatim verify). Plan: `projects/whitepapers/dev/specs/whitepaper_workshop.md`. | All 5 inherited docs now have YAML frontmatter (slug + title + format + topic + audience + last_updated + reading_time + summary + related + sequence + featured). Body workshop pass: collapse to 6-doc target set (3 whitepapers + 3 guides; "What is Prism" + "Getting started" are NEW). Spread across whitepapers turns 2-4 (workshop_spec §7). Dual-surface lock DEFERRED — workshop customer-facing first, L2 alignment is follow-up. |
 | bloomberg | hub-and-spoke landed 2026-05-16; flat `bloomberg-payload/` mirrors PRISM `context/modules/static/bloomberg/`; awaits PRISM round-trip | `projects/bloomberg/` | `projects/bloomberg/bloomberg-payload/` — hub `bloomberg_excel.md` + eight sibling `bbg_*.md` files | `ai_development/context/modules/static/bloomberg/` (same nine files byte-identical); registry hub `static/bloomberg/bloomberg_excel.md`; spokes fetched via `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_<spoke>.md"], mode="full")` per hub §10 | — | — | `projects/bloomberg/README.md` — SSOT for mapping, triggers, and registry example. Workshop pass + RBR deferred until first PRISM round-trip surfaces frictions. |
 
-PRISM destinations are expressed against the prism-main split checkout
-(2026-07-07 layout: `prism-main/` root with `core/`, `jobs/`,
-`prism_meta/`, `web/`, containing the `prism-core/` submodule with
-`prism_mcp/`, `context/`, `dashboards/`; there is no `ai_development/`
-tree any more — verbatim map in
-`scans/prism/2026-07-07_prism_main_module_structure.md`). The frontend /
+PRISM destinations are expressed against the single `prism-main`
+repository (2026-08-09 layout: root with `core/`, `jobs/`, `prism_meta/`,
+`web/`, `entrypoint.py`, plus `prism-core/` — a plain vendored
+subdirectory since `287311b`, no longer a submodule — holding
+`prism_mcp/`, `context/`, `dashboards/`, `tests/`; there is still no
+`ai_development/` tree). Current layout in `.cursor/rules/viz-platforms.mdc`
+under "PRISM runtime layout"; the 2026-07-07 split-checkout map in
+`scans/prism/2026-07-07_prism_main_module_structure.md` is superseded on
+the submodule question but still accurate on paths. The frontend /
 whitepapers / bloomberg rows still carry pre-reorg destination paths:
 the scan could not locate `white_papers/` in the new checkout and did
 not enumerate the Django/portal or bloomberg trees, so those
@@ -297,7 +309,7 @@ flows.
 
 | Aspect | Value |
 |---|---|
-| Drag-and-drop status | NOTHING in the payload is installed-byte-verified. What is in PROD is the pre-split flat layout, frozen at `staging/altair-payload-aug2/`; the checkout is ahead of it by the `chart_render/` split plus the Aug 2-3 chart types and the lean context rewrite. The 2026-07-07 introspection still holds for the installed tree (sole-consumer property at `prism-core/prism_mcp/tools/script_exec_tools.py`; injected namespace = wrapped chart builders plus bare annotations) but says nothing about the split. The payload no longer defines `check_charts_quality`, so the same change that installs it must stop `script_exec_tools.py` importing that name. Promote engine + context together, then re-verify. |
+| Drag-and-drop status | **Production runs the split, and is AHEAD of staging.** The `chart_render` refactor merged to `master` via `a9cd506` (2026-08-08), so the pre-split flat layout frozen at `staging/altair-payload-aug2/` is history, and the branch ref `macdist-refactor-chartRender` is stale (tip `97e9b441` is not an ancestor of HEAD; the content arrived through master). Two commits then landed on top **inside PRISM, on files this repo owns**: `5ff6e3f` (2026-08-08, two new chart types) and `a1620b6` (2026-08-09, chart functions improvements — `core.py`, `chart_render/__init__.py`, `utils/chart_functions.py`, and the colors / composites / grids / tables context spokes). Measured 2026-08-09: `chart_render/__init__.py` is byte-identical (889 B / 18 lines); `core.py` differs (PRISM 1,238,859 B / 29,911 lines vs staging 1,233,020 / 29,914). Next move is a housekeeping intake of those hunks, NOT a promotion. The `check_charts_quality` install hazard is void — `72fb925` retired Gemini chart QC entirely and `script_exec_tools.py` no longer imports the name. Per-file classification out to PRISM in `staging/prompts/open/2026-08-09_recon/` (numbered series). |
 | Canonical payload | `projects/altair/altair-payload/` in two subfolders that mirror the two PRISM destinations: `chart_render/{__init__,core,house_style}.py` -> `prism-core/prism_mcp/chart_render/`, and `utils/{chart_functions,chart_functions_studio,chart_functions_studio_tables}.py` -> `prism-core/prism_mcp/utils/`. Plus the 7 flat `chart_context*.md`. `chart_render/units.py` is PRISM-owned (a pure `git mv` we only stub) and does not ship from here. Payload `.py` files carry no trailing newline. |
 | Stub mirror | `projects/altair/{prism_mcp,prism_meta,core,web}/` — stub packages mirroring prism-main's import surface (`prism_mcp/chart_render/` shim + PRISM-owned `units.py` stub, 6 modules under `prism_mcp/utils/`, `prism_meta.REPO_ROOT` anchor, `core.s3_bucket_manager`, fonts dir). The `chart_render/__init__.py` shim prepends the payload dir to `__path__` so `core` and `house_style` resolve to the payload while `units` resolves to the stub. Pre-prism-main trees archived at `dev/archive/2026-07-07_pre_prism_main_stubs/`; pre-split payload and stubs at `dev/archive/2026-08-08_pre_chart_render/`. |
 | Pinned interpreter | `projects/altair/.venv/` (regenerate after the 2026-05-02 restructure — shebangs point at old `GS/viz/altair/.venv/` paths) |
@@ -318,7 +330,7 @@ dependencies at render time.
 
 | Aspect | Value |
 |---|---|
-| Drag-and-drop status | Split architecture re-extracted 2026-07-21. The live Composer/user-input inventory confirms `dashboard_share.py` and `dashboard_user_input.py` now exist at their submodule destinations, superseding the prior "8 installed, both pending" claim; this pass did not rerun a complete payload/context count. Installed-byte parity remains open: checked-out clean `prism-core` `bf4bcd12…` is ahead of parent-recorded gitlink `1e6d3955…`, and all four measured files classify `DIFFERS` — `rendering.py` `913ce12d…` vs candidate `b4d5e4c2…`, `dashboard_user_input.py` `c306c868…` vs `ea680ea6…`, `echart_dashboard.py` `9d4cf5c6…` vs `979d2a6f…`, `__init__.py` `970647c7…` vs `d6b98506…`. |
+| Drag-and-drop status | All 10 Python modules plus the router, kernel, and spokes are installed; `dashboard_share.py` and `dashboard_user_input.py` both exist under `prism-core/dashboards/`. **The gitlink parity blocker is gone** — `prism-core` is no longer a submodule (vendored by `287311b`, 2026-08-07), so there is no parent-recorded SHA to be behind and parity is a direct one-repo measurement. First measurement (2026-08-09, newline-stripped): `config.py`, `dashboards.md` and `dashboard_user_input.py` look identical, while `echart_studio.py`, `echart_dashboard.py`, `refresh_dashboards.py` and `dashboards_hub.md` differ. PRISM also reports **11** files under `context/modules/static/tools/dashboards/` against the 10 spokes this repo ships — the extra file is unidentified. Authoritative per-file classification out to PRISM in `staging/prompts/open/2026-08-09_recon/` (numbered series). |
 | Canonical payload | `projects/echarts/echarts-payload/` — `__init__.py`, `config.py`, `dashboards_time.py`, `echart_dashboard.py`, `echart_studio.py`, `rendering.py`, `dashboard_share.py`, `dashboard_user_input.py`, `refresh_runner.py`, `refresh_dashboards.py`, `dashboards.md`, `dashboards_hub.md`, and `dashboards/*.md`. Python files land in `prism-core/dashboards/` except `refresh_dashboards.py`, which lands in parent-repo `jobs/hourly/`; context files land in `prism-core/context/modules/static/tools/`. `test_prompts/` is always staging-only. |
 | Local runtime mirrors | Production-shaped root packages: `core/` (filesystem-backed S3, common, user-manifest, and NY Fed client stubs), `dashboards/` (links to payload Python), `jobs/hourly/` (link to payload cron entry point), `prism_mcp/utils/` (data/log/completion stubs), `prism_meta/` (`REPO_ROOT`), and one primary asset at `web/backend_django/news/static/js/echarts.js`. The retired `ai_development/` mirror is archived under `dev/archive/` and not active. |
 | Playwright sweep | `projects/echarts/dev/inspect_dashboard.py` plus `dev/live_refresh_harness.py --verify` for live refresh and persisted text/checklist/file input |
