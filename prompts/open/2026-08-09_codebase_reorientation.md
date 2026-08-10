@@ -5,6 +5,12 @@ sent: 2026-08-09
 status: OPEN
 reply_pointer:
 fold_into:
+  - prism/README.md (lift the 2026-05-15 staleness notice; rebuild the routing table)
+  - prism/codebase-tree.md (full rewrite from the §2 walk)
+  - prism/architecture.md, prism/code-sandbox.md, prism/mcp-tools.md, prism/mcp-utils.md
+  - prism/dashboards-portal.md, prism/dashboard-refresh.md, prism/security.md
+  - prism/_changelog.md (one entry per resolved DIFFERS from §8)
+  - .cursor/rules/prism.mdc + .cursor/rules/prism-freshness.mdc (remove staleness notices)
   - staging/README.md (roster: altair + echarts rows, PRISM destination cells)
   - .cursor/rules/viz-platforms.mdc (PRISM runtime layout, drag-and-drop table, import contracts, drag-and-drop status)
   - .cursor/rules/prism.mdc (Repo-to-PRISM Mapping table)
