@@ -8,20 +8,18 @@
 > check each cited file's `_as of` stamp, since the refresh lands file
 > by file.
 >
-> Two facts in the altair / echarts rows below are now flatly wrong and
-> are being rewritten:
+> **There is no submodule any more.** `prism-core` was vendored into
+> `prism-main` as a plain subdirectory on 2026-08-07 (`287311b`, then
+> `3ec2ace`). Every "gitlink vs checkout" parity blocker in the rows
+> below is void — parity is now a direct one-repo measurement.
 >
-> 1. **There is no submodule any more.** `prism-core` was vendored into
->    `prism-main` as a plain subdirectory on 2026-08-07 (`287311b`,
->    then `3ec2ace`). Every "gitlink vs checkout" parity blocker in the
->    rows below is void — parity is now a direct one-repo measurement.
-> 2. **Production is ahead of staging on files staging owns.** Commits
->    `5ff6e3f` and `a1620b6` edited the chart engine and four
->    `chart_context_*.md` spokes inside PRISM. The next move on altair
->    is a housekeeping intake, not a promotion.
->
-> Byte-level classification of all 35 contract files is out to PRISM in
-> `staging/prompts/open/2026-08-09_recon/` (numbered series).
+> **Altair is in sync**, confirmed by direct inspection 2026-08-09: the
+> installed chart engine and chart context are identical to
+> `projects/altair/altair-payload/`. The Ritik-authored commits touching
+> those paths (`5ff6e3f`, `a1620b6`) are promotions landing in PRISM's
+> history, which is what the normal staging→PRISM flow looks like from
+> the PRISM side — not out-of-band edits. Echarts parity has not been
+> re-verified since the vendoring and remains an open measurement.
 >
 > ---
 
@@ -309,7 +307,7 @@ flows.
 
 | Aspect | Value |
 |---|---|
-| Drag-and-drop status | **Production runs the split, and is AHEAD of staging.** The `chart_render` refactor merged to `master` via `a9cd506` (2026-08-08), so the pre-split flat layout frozen at `staging/altair-payload-aug2/` is history, and the branch ref `macdist-refactor-chartRender` is stale (tip `97e9b441` is not an ancestor of HEAD; the content arrived through master). Two commits then landed on top **inside PRISM, on files this repo owns**: `5ff6e3f` (2026-08-08, two new chart types) and `a1620b6` (2026-08-09, chart functions improvements — `core.py`, `chart_render/__init__.py`, `utils/chart_functions.py`, and the colors / composites / grids / tables context spokes). Measured 2026-08-09: `chart_render/__init__.py` is byte-identical (889 B / 18 lines); `core.py` differs (PRISM 1,238,859 B / 29,911 lines vs staging 1,233,020 / 29,914). Next move is a housekeeping intake of those hunks, NOT a promotion. The `check_charts_quality` install hazard is void — `72fb925` retired Gemini chart QC entirely and `script_exec_tools.py` no longer imports the name. Per-file classification out to PRISM in `staging/prompts/open/2026-08-09_recon/` (numbered series). |
+| Drag-and-drop status | **IN SYNC — confirmed by direct inspection 2026-08-09.** The installed chart engine and chart context are identical to `projects/altair/altair-payload/`. Production runs the split: the `chart_render` refactor merged to `master` via `a9cd506` (2026-08-08), so the pre-split flat layout frozen at `staging/altair-payload-aug2/` is history and the branch ref `macdist-refactor-chartRender` is stale (tip `97e9b441` is not an ancestor of HEAD; the content arrived through master). The later Ritik-authored commits on these paths — `5ff6e3f` (2026-08-08, two new chart types) and `a1620b6` (2026-08-09, chart functions improvements) — are promotions landing in PRISM's history, not PRISM-side edits. The `check_charts_quality` install hazard is void: `72fb925` retired Gemini chart QC entirely and `script_exec_tools.py` no longer imports the name. |
 | Canonical payload | `projects/altair/altair-payload/` in two subfolders that mirror the two PRISM destinations: `chart_render/{__init__,core,house_style}.py` -> `prism-core/prism_mcp/chart_render/`, and `utils/{chart_functions,chart_functions_studio,chart_functions_studio_tables}.py` -> `prism-core/prism_mcp/utils/`. Plus the 7 flat `chart_context*.md`. `chart_render/units.py` is PRISM-owned (a pure `git mv` we only stub) and does not ship from here. Payload `.py` files carry no trailing newline. |
 | Stub mirror | `projects/altair/{prism_mcp,prism_meta,core,web}/` — stub packages mirroring prism-main's import surface (`prism_mcp/chart_render/` shim + PRISM-owned `units.py` stub, 6 modules under `prism_mcp/utils/`, `prism_meta.REPO_ROOT` anchor, `core.s3_bucket_manager`, fonts dir). The `chart_render/__init__.py` shim prepends the payload dir to `__path__` so `core` and `house_style` resolve to the payload while `units` resolves to the stub. Pre-prism-main trees archived at `dev/archive/2026-07-07_pre_prism_main_stubs/`; pre-split payload and stubs at `dev/archive/2026-08-08_pre_chart_render/`. |
 | Pinned interpreter | `projects/altair/.venv/` (regenerate after the 2026-05-02 restructure — shebangs point at old `GS/viz/altair/.venv/` paths) |
@@ -330,7 +328,7 @@ dependencies at render time.
 
 | Aspect | Value |
 |---|---|
-| Drag-and-drop status | All 10 Python modules plus the router, kernel, and spokes are installed; `dashboard_share.py` and `dashboard_user_input.py` both exist under `prism-core/dashboards/`. **The gitlink parity blocker is gone** — `prism-core` is no longer a submodule (vendored by `287311b`, 2026-08-07), so there is no parent-recorded SHA to be behind and parity is a direct one-repo measurement. First measurement (2026-08-09, newline-stripped): `config.py`, `dashboards.md` and `dashboard_user_input.py` look identical, while `echart_studio.py`, `echart_dashboard.py`, `refresh_dashboards.py` and `dashboards_hub.md` differ. PRISM also reports **11** files under `context/modules/static/tools/dashboards/` against the 10 spokes this repo ships — the extra file is unidentified. Authoritative per-file classification out to PRISM in `staging/prompts/open/2026-08-09_recon/` (numbered series). |
+| Drag-and-drop status | All 10 Python modules plus the router, kernel, and spokes are installed; `dashboard_share.py` and `dashboard_user_input.py` both exist under `prism-core/dashboards/`. **The gitlink parity blocker is gone** — `prism-core` is no longer a submodule (vendored by `287311b`, 2026-08-07), so there is no parent-recorded SHA to be behind and parity is a direct one-repo measurement. Parity has not been re-verified since the vendoring and remains an open measurement — unlike altair, which was confirmed in sync on 2026-08-09. |
 | Canonical payload | `projects/echarts/echarts-payload/` — `__init__.py`, `config.py`, `dashboards_time.py`, `echart_dashboard.py`, `echart_studio.py`, `rendering.py`, `dashboard_share.py`, `dashboard_user_input.py`, `refresh_runner.py`, `refresh_dashboards.py`, `dashboards.md`, `dashboards_hub.md`, and `dashboards/*.md`. Python files land in `prism-core/dashboards/` except `refresh_dashboards.py`, which lands in parent-repo `jobs/hourly/`; context files land in `prism-core/context/modules/static/tools/`. `test_prompts/` is always staging-only. |
 | Local runtime mirrors | Production-shaped root packages: `core/` (filesystem-backed S3, common, user-manifest, and NY Fed client stubs), `dashboards/` (links to payload Python), `jobs/hourly/` (link to payload cron entry point), `prism_mcp/utils/` (data/log/completion stubs), `prism_meta/` (`REPO_ROOT`), and one primary asset at `web/backend_django/news/static/js/echarts.js`. The retired `ai_development/` mirror is archived under `dev/archive/` and not active. |
 | Playwright sweep | `projects/echarts/dev/inspect_dashboard.py` plus `dev/live_refresh_harness.py --verify` for live refresh and persisted text/checklist/file input |
