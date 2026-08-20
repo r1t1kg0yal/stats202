@@ -62,12 +62,9 @@ Every persisted pull script:
 
 An exact expression, code, or client-call form supplied by the user/test is authoritative and must be copied without normalization. If the request supplies no verified identifier, do not translate a human label into a vendor code. Each pull also has an explicit expected output contract—stem, ordered column names, pandas dtypes, units, and frequency—stated by the request or verified from the response before manifest authoring. Assert required columns after the call and inspect actual dtypes; never guess returned field names.
 
-In-process execution and clean refresh expose the same canonical names:
-`s3_manager`, `save_artifact`, `pd`, `np`, and the retired pull helpers, kept
-bound only so the existing persisted corpus keeps running. `get_data`,
-`asyncio`, and `pydantic` are not among them — import all three. Persisted
-scripts still import every name they use; namespace injection is the parity
-guarantee for execution, not a reason to omit durable imports.
+In-process execution and clean refresh share one namespace, and `get_data`,
+`asyncio`, and `pydantic` are not in it — import all three. Injection is the
+parity guarantee for execution, not a reason to omit durable imports.
 
 Every `PULLS` entry must re-call its source during refresh; an object left in
 the authoring session namespace is not a refreshable producer.
@@ -111,7 +108,7 @@ Stem rules:
 | Producer | Emitted artifact and dataset key |
 |---|---|
 | `get_data` except `lakehouse` | `data/<name>.csv` → `<name>` |
-| `get_data` with `source="lakehouse"` | one `data/<name>_<stem>.csv` per table → `<name>_<stem>`; `<name>` alone is not a dataset key |
+| `get_data` with `source="lakehouse"` | one `data/<name>_<stem>.csv` per table; `<name>` alone is not a key |
 | `save_artifact` with a DataFrame or non-empty list of records | `data/<name>.csv` → `<name>` |
 | `save_artifact` with a dictionary or empty list | JSON artifact; no dataset key |
 | Direct S3 CSV write | literal `data/<stem>.csv` → `<stem>` |
@@ -123,7 +120,7 @@ Read the source's spoke through `market_data_infra_hub.md` before the first `get
 
 Partial resolution never raises: a dead symbol omits its column and records the reason in the sidecar, so `run_pull` raises on the mismatch while authoring, and a scheduled refresh keeps the partial bytes and stamps the pull into `metadata.time.stale_pulls` rather than failing the cycle. The trusted series sources write the index as `timestamp` and the engine renames it to `date` on load, so author manifests, `dateRange` filters, and vintage labels against `date` as with any producer. Series align on the union of their ticks, so mixing cadences in one call leaves NaNs in the sparser column — drop per column, not across the frame.
 
-Two sources need more care. `source="client"` is the only untrusted one: every text cell is rewritten by a summariser before the CSV is written, numeric and datetime columns pass through untouched, and a call that fails quarantine still writes an empty CSV with the reason only in the sidecar — so assert the expected columns after the call rather than trusting a file's existence. Its `arguments` is the client function's own keyword set, passed verbatim. `source="lakehouse"` fans out to one CSV per table named `<name>_<stem>`, where `<stem>` is the table's `label`; give every table an explicit literal `label` so the dataset keys are statically provable, and expect no index column unless the table is datetime-indexed.
+Two sources need care. `source="client"` is the only untrusted one: a summariser rewrites every text cell before the write, numbers and dates pass through, and a failed quarantine still writes an empty CSV with the reason only in the sidecar — assert expected columns rather than trusting that the file exists. Its `arguments` is the client function's own kwargs, verbatim. `source="lakehouse"` fans out to one CSV per table named `<name>_<stem>`; give every table a literal `label` so the keys are statically provable, and expect no index column unless the table is datetime-indexed.
 
 ### Producer visibility
 

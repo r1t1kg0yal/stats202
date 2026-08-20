@@ -237,9 +237,8 @@ Total pull failure is not a partial cycle. Nothing was re-read, so advancing `re
 
 In-process `run_pull` / `build_dashboard` and clean refresh discovery use
 the same namespace: `s3_manager`, `save_artifact`, `pd`, `np`, and the
-retired pull helpers, bound only so the existing persisted corpus keeps
-running. `get_data` is not injected — import it, with `asyncio` and
-`pydantic`.
+retired pull helpers, kept only for the existing persisted corpus.
+`get_data` is not injected — import it, with `asyncio` and `pydantic`.
 
 The refresh-attachment contract is registered-call-graph based. The engine
 starts only from literal module-level `PULLS` / `TRANSFORMS`, follows local

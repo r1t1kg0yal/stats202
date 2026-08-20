@@ -36,17 +36,16 @@ Before authoring a first build:
 3. Every pull writes to `f"{SESSION_PATH}/data"`; the complete emitted CSV stem must match the manifest dataset key byte-for-byte.
 4. Persist `scripts/pull_data.py` and define a module-level `PULLS` mapping. When it is non-empty, run each entry with `run_pull(folder, name)` and require successful current-cycle production of a non-empty CSV with the expected columns. A retained pre-existing CSV is not pull success.
 5. When data is shown, use real data. Never invent identifiers, visible numbers, or successful results; a data-free workspace needs no placeholder dataset.
-6. Only CSV files become datasets. `get_data` writes its own CSV for every source, so nothing follows a pull; metadata sidecars, `df.attrs`, and JSON artifacts do not populate datasets or `field_provenance`.
+6. Only CSV files become datasets. `get_data` writes its own CSV, so nothing follows a pull; metadata sidecars, `df.attrs`, and JSON artifacts do not populate datasets or `field_provenance`.
 
 Pull primitives:
 
 | Function | Required naming result |
 |---|---|
 | `get_data(..., name="rates")` | `data/rates.csv` |
-| `get_data(..., name="lake", details={"source": "lakehouse", ...})` | one `data/lake_<stem>.csv` per table |
 | `save_artifact(DataFrame or non-empty list[dict], name="screen")` | `data/screen.csv` |
 
-`get_data` is the only retrieval primitive: TSDB, ChunkStore, MDAPI, GS Quant, Haver and Lakehouse are its `source` values, and FRED, NY Fed, BIS, FDIC, SDR, Treasury and TreasuryDirect reach it through `source="client"`. It is `async` and never injected. Reach for `save_artifact` only for a frame you computed, never after a pull. `dashboards/pipelines.md` owns the authoring shape.
+`get_data` is the only retrieval primitive: TSDB, ChunkStore, MDAPI, GS Quant, Haver and Lakehouse are its `source` values, and FRED, NY Fed, BIS, FDIC, SDR, Treasury and TreasuryDirect reach it through `source="client"`. It is `async` and never injected. `save_artifact` is for computed frames only. `dashboards/pipelines.md` owns the authoring shape.
 
 ## Route before fetching
 
