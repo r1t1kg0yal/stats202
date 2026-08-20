@@ -1352,10 +1352,6 @@ body.cfs-resizing #chart svg { pointer-events: none; }
     <div class="chart-toolbar">
       <button class="primary" onclick="downloadChart()" id="downloadBtn"
         title="Download the chart exactly as it looks now, as a print-resolution PNG">Download</button>
-      <button onclick="copyDataToClipboard()" id="copyDataBtn"
-        title="Copy the series data to the clipboard -- pastes into Excel as cells">Copy data</button>
-      <button onclick="copyChartPNG()" id="copyPngBtn"
-        title="Copy the chart itself to the clipboard as a picture -- pastes into Outlook or a deck">Copy PNG</button>
       <button onclick="undoLastEdit()" id="undoBtn"
         title="Undo the last edit">Undo</button>
       <button onclick="resetView()" title="Discard every edit and return to the chart as PRISM built it">Reset</button>
@@ -1394,7 +1390,6 @@ body.cfs-resizing #chart svg { pointer-events: none; }
         <button onclick="downloadDataCSV()">CSV</button>
         <button onclick="downloadDataTSV()">TSV</button>
         <button onclick="downloadDataJSON()">JSON</button>
-        <button onclick="copyDataToClipboard()" title="Copy to the clipboard instead of downloading">Copy</button>
         <button onclick="copyDataAsMarkdown()">Copy MD</button>
       </div>
       <div id="dataTableContainer"></div>
@@ -1440,9 +1435,6 @@ body.cfs-resizing #chart svg { pointer-events: none; }
           <button onclick="exportPNG(2)">Download PNG</button>
           <button onclick="exportPNG(4)">Extra large</button>
         </div>
-        <div class="row">
-          <button onclick="copyChartPNG()">Copy to clipboard</button>
-        </div>
         <div class="note">Download matches what you see, including every edit.
           Extra large doubles the resolution for print.</div>
       </fieldset>
@@ -1452,7 +1444,6 @@ body.cfs-resizing #chart svg { pointer-events: none; }
           <button onclick="downloadDataCSV()">CSV</button>
           <button onclick="downloadDataTSV()">TSV</button>
           <button onclick="downloadDataJSON()">JSON</button>
-          <button onclick="copyDataToClipboard()">Copy to clipboard</button>
         </div>
       </fieldset>
       <fieldset>
@@ -8997,27 +8988,6 @@ function exportPNG(scale) {
   vegaView.toImageURL("png", scale).then(url => downloadURL(url, FILENAME + suffix + ".png"));
 }
 
-/* The clipboard twin of downloadChart, at the same 2x, so the picture pasted and
-   the picture downloaded are the same asset. toCanvas rather than toImageURL:
-   the clipboard wants a Blob, and a data: URL would only have to be fetched back
-   into one. The Blob reaches ClipboardItem as a PROMISE -- awaiting it first
-   spends the click's user activation and the write is then refused. There is no
-   execCommand fallback the way _copyRich has one: a browser without
-   ClipboardItem cannot put a picture on the clipboard at all. */
-function copyChartPNG(scale) {
-  if (!vegaView) { cfsToast("The chart is still rendering."); return; }
-  closeMenu();
-  if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) {
-    setStatus("this browser cannot copy images -- use Download");
-    return;
-  }
-  const pending = vegaView.toCanvas(scale || 2)
-    .then(cv => new Promise(resolve => cv.toBlob(resolve, "image/png")));
-  navigator.clipboard.write([new ClipboardItem({ "image/png": pending })]).then(
-    () => setStatus("chart copied as PNG"),
-    (err) => setStatus("copy failed: " + (err && err.message || err)));
-}
-
 function exportSVG() {
   if (!vegaView) return;
   vegaView.toSVG().then(svg => {
@@ -9408,43 +9378,6 @@ function _csvCell(v) {
   const s = String(v);
   if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
   return s;
-}
-
-/* execCommand is the last resort, not dead code: navigator.clipboard does not
-   exist off a secure context, which is how a studio served from a desk box loads. */
-function _copyRich(plain, html, okMsg) {
-  const legacy = () => {
-    const ta = document.createElement("textarea");
-    ta.value = plain;
-    ta.style.cssText = "position:fixed;top:-1000px;opacity:0;";
-    document.body.appendChild(ta);
-    ta.select();
-    const done = document.execCommand("copy");
-    document.body.removeChild(ta);
-    setStatus(done ? okMsg : "copy failed");
-  };
-  if (!window.ClipboardItem || !navigator.clipboard) { legacy(); return; }
-  navigator.clipboard.write([new ClipboardItem({
-    "text/plain": new Blob([plain], { type: "text/plain" }),
-    "text/html": new Blob([html], { type: "text/html" }),
-  })]).then(() => setStatus(okMsg), legacy);
-}
-
-function copyDataToClipboard() {
-  refreshDataCache();
-  if (_dataRows.length === 0) { setStatus("no data"); return; }
-  const cell = (row, c) => {
-    const v = row[c]; return v === undefined || v === null ? "" : String(v);
-  };
-  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  const tsv = [_dataColumns.join("\t")].concat(
-    _dataRows.map((row) => _dataColumns.map((c) => cell(row, c)).join("\t"))).join("\n");
-  const html = "<table><tr>" +
-    _dataColumns.map((c) => "<th>" + esc(String(c)) + "</th>").join("") + "</tr>" +
-    _dataRows.map((row) => "<tr>" +
-      _dataColumns.map((c) => "<td>" + esc(cell(row, c)) + "</td>").join("") + "</tr>").join("") +
-    "</table>";
-  _copyRich(tsv, html, _dataRows.length + " rows copied");
 }
 
 function copyDataAsMarkdown() {

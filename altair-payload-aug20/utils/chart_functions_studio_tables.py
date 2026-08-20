@@ -574,8 +574,6 @@ body.fullscreen .sidebar, body.fullscreen .knobs-section { display: none; }
   <div class="panel" id="tablePanel">
     <div class="table-toolbar">
       <button id="btnPng" class="primary">Download</button>
-      <button id="btnCopy" title="Copy the table data to the clipboard -- pastes into Excel as cells">Copy data</button>
-      <button id="btnCopyPng" title="Copy the table itself to the clipboard as a picture -- pastes into Outlook or a deck">Copy PNG</button>
       <button id="btnUndo" disabled>Undo</button>
       <button id="btnReset">Reset</button>
       <button id="btnFull">Fullscreen</button>
@@ -614,7 +612,6 @@ body.fullscreen .sidebar, body.fullscreen .knobs-section { display: none; }
         <button data-dl="csv">CSV</button>
         <button data-dl="tsv">TSV</button>
         <button data-dl="json">JSON</button>
-        <button data-dl="copy" title="Copy to the clipboard instead of downloading">Copy</button>
       </div>
       <div id="dataTableContainer"></div>
     </div>
@@ -637,7 +634,6 @@ body.fullscreen .sidebar, body.fullscreen .knobs-section { display: none; }
         <button data-x="png2">PNG (2x, what PRISM emits)</button>
         <button data-x="png1">PNG (1x, on-screen size)</button>
         <button data-x="png4">PNG (4x, extra large)</button>
-        <button data-x="copypng">Copy PNG to clipboard (2x)</button>
       </div>
       <div class="export-sec"><h4>Code</h4>
         <button data-x="call">make_table(...) call &mdash; .py</button>
@@ -647,7 +643,6 @@ body.fullscreen .sidebar, body.fullscreen .knobs-section { display: none; }
         <button data-x="csv">CSV</button>
         <button data-x="tsv">TSV</button>
         <button data-x="json">JSON</button>
-        <button data-x="copy">Copy to clipboard</button>
       </div>
       <div class="export-sec"><h4>State</h4>
         <button data-x="kwargs">make_table kwargs &mdash; .json</button>
@@ -766,26 +761,6 @@ function toast(msg) {
             t.className = "toast"; document.body.appendChild(t); }
   t.textContent = msg; t.classList.add("on");
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 1900);
-}
-
-/* execCommand is the last resort, not dead code: navigator.clipboard does not
-   exist off a secure context, which is how a studio served from a desk box loads. */
-function copyRich(plain, html, okMsg) {
-  const legacy = () => {
-    const ta = document.createElement("textarea");
-    ta.value = plain;
-    ta.style.cssText = "position:fixed;top:-1000px;opacity:0;";
-    document.body.appendChild(ta);
-    ta.select();
-    const done = document.execCommand("copy");
-    document.body.removeChild(ta);
-    toast(done ? okMsg : "copy failed");
-  };
-  if (!window.ClipboardItem || !navigator.clipboard) { legacy(); return; }
-  navigator.clipboard.write([new ClipboardItem({
-    "text/plain": new Blob([plain], { type: "text/plain" }),
-    "text/html": new Blob([html], { type: "text/html" }),
-  })]).then(() => toast(okMsg), legacy);
 }
 
 function download(name, text, mime) {
@@ -978,7 +953,7 @@ function grp(n, d) {
   return n.toLocaleString("en-US",
     { minimumFractionDigits: d, maximumFractionDigits: d });
 }
-function fmtNumber(v, hint, intDtype) {
+function fmtNumber(v, hint) {
   const n = Number(v);
   if (!isFinite(n)) return String(v);
   // Python's format spec keeps the sign of -0.0 ("-0.0") where JS toFixed
@@ -1010,9 +985,6 @@ function fmtNumber(v, hint, intDtype) {
   // string means "the default number path", not "guess at years".
   const a = Math.abs(n);
   if (hint == null && Number.isInteger(n) && a >= 1900 && a <= 2200) return String(n);
-  // typeof is the hintless test the engine spells `hint is None`: an explicit
-  // "" is a string and keeps the decimal path on both sides.
-  if (intDtype && typeof hint !== "string") return grp(n, 0);
   if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
   if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
   if (a >= 1e3) return grp(n, 1);
@@ -1020,10 +992,10 @@ function fmtNumber(v, hint, intDtype) {
   if (a === 0) return "0.00";   // engine returns the literal, sign and all
   return fx(3);
 }
-function formatRaw(raw, hint, intDtype) {
+function formatRaw(raw, hint) {
   if (raw == null) return "";
   if (typeof raw === "object" && raw.__date__) return fmtDate(raw.__date__, hint);
-  if (typeof raw === "number") return fmtNumber(raw, hint, intDtype);
+  if (typeof raw === "number") return fmtNumber(raw, hint);
   return String(raw);
 }
 
@@ -1304,8 +1276,7 @@ function rebuild() {
 
       // ---- text ----
       const ov = (K.value_overrides || {})[ck(r, ci)];
-      cell.text = ov !== undefined
-        ? String(ov) : formatRaw(cell.raw, col.fmt, col.int_dtype);
+      cell.text = ov !== undefined ? String(ov) : formatRaw(cell.raw, col.fmt);
 
       // ---- foreground ----
       let fg = cellTexts[ck(r, ci)] || null;
@@ -4385,25 +4356,6 @@ function buildCanvas(scale) {
   return cv;
 }
 
-/* The clipboard twin of downloadPNG, off the same buildCanvas, so the picture
-   pasted and the picture downloaded are the same render. The Blob reaches
-   ClipboardItem as a PROMISE -- awaiting it first spends the click's user
-   activation and the write is then refused. No execCommand fallback the way
-   copyRich has one: a browser without ClipboardItem cannot put a picture on the
-   clipboard at all, and copying the text nobody asked for instead is worse. */
-function copyPNG(scale) {
-  scale = scale || 2;
-  if (!window.ClipboardItem || !navigator.clipboard || !navigator.clipboard.write) {
-    toast("this browser cannot copy images -- use Download");
-    return;
-  }
-  const cv = buildCanvas(scale);
-  const pending = new Promise((resolve) => cv.toBlob(resolve, "image/png"));
-  navigator.clipboard.write([new ClipboardItem({ "image/png": pending })]).then(
-    () => toast("PNG copied at " + scale + "x (" + cv.width + "x" + cv.height + ")"),
-    (err) => toast("copy failed: " + (err && err.message || err)));
-}
-
 function downloadPNG(scale) {
   scale = scale || 2;
   const cv = buildCanvas(scale);
@@ -4684,15 +4636,6 @@ function toJSONRows() {
   const names = M.columns.map((c) => c.name);
   return JSON.stringify(rawMatrix().map(
     (r) => Object.fromEntries(r.map((v, i) => [names[i], v]))), null, 2);
-}
-function toHTMLTable() {
-  const head = "<tr>" + M.columns.map((c) => "<th>" + esc(c.name) + "</th>").join("") + "</tr>";
-  const body = rawMatrix().map(
-    (r) => "<tr>" + r.map((v) => "<td>" + esc(v) + "</td>").join("") + "</tr>").join("");
-  return "<table>" + head + body + "</table>";
-}
-function copyTableData() {
-  copyRich(toDelimited("\t"), toHTMLTable(), M.rows.length + " rows copied");
 }
 
 function renderDataTab() {
@@ -4996,7 +4939,6 @@ document.querySelectorAll("#pane-data [data-dl]").forEach((b) => {
     if (k === "csv") download(FILENAME + ".csv", toDelimited(","), "text/csv");
     if (k === "tsv") download(FILENAME + ".tsv", toDelimited("\t"), "text/tab-separated-values");
     if (k === "json") download(FILENAME + ".json", toJSONRows(), "application/json");
-    if (k === "copy") copyTableData();
   };
 });
 document.querySelectorAll("#pane-export [data-x]").forEach((b) => {
@@ -5005,13 +4947,11 @@ document.querySelectorAll("#pane-export [data-x]").forEach((b) => {
     if (k === "png1") downloadPNG(1);
     if (k === "png2") downloadPNG(2);
     if (k === "png4") downloadPNG(4);
-    if (k === "copypng") copyPNG(2);
     if (k === "call") download(FILENAME + "_make_table.py", generateCall(), "text/x-python");
     if (k === "datapy") download(FILENAME + "_data.py", generateDataCode(), "text/x-python");
     if (k === "csv") download(FILENAME + ".csv", toDelimited(","), "text/csv");
     if (k === "tsv") download(FILENAME + ".tsv", toDelimited("\t"), "text/tab-separated-values");
     if (k === "json") download(FILENAME + ".json", toJSONRows(), "application/json");
-    if (k === "copy") copyTableData();
     if (k === "kwargs") download(FILENAME + "_kwargs.json", JSON.stringify(K, null, 2),
                                  "application/json");
     if (k === "model") download(FILENAME + "_model.json", JSON.stringify(M, null, 2),
@@ -5024,8 +4964,6 @@ document.getElementById("btnCopyCall").onclick = copyCall;
 document.getElementById("btnDlCall").onclick = () =>
   download(FILENAME + "_make_table.py", generateCall(), "text/x-python");
 document.getElementById("btnPng").onclick = () => downloadPNG(2);
-document.getElementById("btnCopy").onclick = () => copyTableData();
-document.getElementById("btnCopyPng").onclick = () => copyPNG(2);
 document.getElementById("btnReset").onclick = () => {
   pushUndo("reset");
   K = clone(BASE_KWARGS); D = extractData(BASE_MODEL);

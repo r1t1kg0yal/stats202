@@ -84,22 +84,18 @@ The engine handles structural mechanics, not economic meaning:
 
 1. Resolve units before plotting. Never guess whether `0.042` means 4.2%,
    0.042%, or 4.2 bp.
-2. Counts are integers everywhere they are written, including a markdown table
-   typed straight into a reply: 171 observations, 2,350 rows. Decimals belong
-   to measured quantities -- levels, yields, ratios -- where 4.00 carries the
-   precision it shows.
-3. Choose the duplicate/revision policy explicitly. Keep one observation per
+2. Choose the duplicate/revision policy explicitly. Keep one observation per
    intended `(x, series)` unless the chosen distribution chart needs raw rows.
-4. Quantitative mapping fields must be numeric. Parse commas, currency,
+3. Quantitative mapping fields must be numeric. Parse commas, currency,
    percentages, and blanks only after choosing the intended unit.
-5. Normalize category identifiers used for joins and exact series binding
+4. Normalize category identifiers used for joins and exact series binding
    (`strip`, case, aliases) before charting.
-6. A single value axis must carry one unit family. Normalize, split into
+5. A single value axis must carry one unit family. Normalize, split into
    panels, or declare a dual axis when units differ.
-7. Check that filters leave rows and valid mapped values. Empty frames raise.
+6. Check that filters leave rows and valid mapped values. Empty frames raise.
    Do not delete outliers or fill missing values merely to make a chart pass.
    Decide whether they are errors, genuine observations, or missing coverage.
-8. Keep sparse projections at native dates; do not forward-fill them onto a
+7. Keep sparse projections at native dates; do not forward-fill them onto a
    denser series and manufacture a step pattern.
 
 The engine already promotes an unambiguous named/date index to `mapping['x']`,
@@ -209,8 +205,6 @@ The engine raises rather than truncating. These are ceilings, not targets.
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
 | Categorical colour / donut slices | 10 categories | Filter or aggregate to `Other` |
-| Composite super-title / super-subtitle | `3 x int(row_px / (font_px x 0.55))` characters, where `row_px = cols x chart_width + (cols - 1) x 20` for the chosen layout and `dimension_preset`, and `font_px` is 32 (title) / 22 (subtitle). Across the presets that runs 63 to 159 characters for the title, 93 to 231 for the subtitle | Write to the 63 / 93 floor and any preset takes it; name a wider preset and spend its full budget |
-| `make_table` printed width | Body text prints at `body_font_size x 468 / canvas_px` and must clear 6pt, so the canvas stays under `78 x body_font_size` px, i.e. about 140 characters across one row (the widest cell of each column, summed), less ~2.5 per column for padding | Transpose, split by column group, drop or aggregate columns, shorten headers; the engine wraps text columns toward their floors to reach it |
 | Composite / facet count | Packs 2–6; facets 7–36 | Fetch the matching spoke |
 | `PlotText.text` | 10 words (aim ≤8) | Use caption/side text for longer prose |
 

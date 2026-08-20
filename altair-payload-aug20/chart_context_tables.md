@@ -89,12 +89,8 @@ either `reset_index()` so it becomes a named column (preferred) or set
 `show_index=True`; the default intentionally omits the index.
 
 Canvas dimensions are content-driven. Text columns wrap, every row is kept,
-and the table is never truncated. Text columns are wrapped toward their
-floors until the canvas fits the width that keeps body text at 6pt on a
-portrait page; a table still too wide after that raises. The budget is about
-140 characters across one row -- the widest cell of each column, summed --
-less roughly 2.5 per column for padding, so transpose, split, aggregate, or
-shorten headers to reach it. Reach
+and the table is never truncated. A table too wide to remain legible on a
+portrait page raises; transpose, split, aggregate, or shorten headers. Reach
 for `column_widths` / `row_height_scale` only to satisfy a stated layout
 request; the engine's own sizing is the default. For "wide enough not to
 wrap" pass `'auto'` rather than guessing a pixel count — the width depends on

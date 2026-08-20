@@ -410,19 +410,7 @@ _TEXT_FONT_SIZE: Dict[str, int] = {
 # slot may produce. Anything that would wrap to more than this is
 # rejected with a helpful ValueError. Two lines is the convention
 # financial-report titles use: title-on-line-1, qualifier-on-line-2.
-# The composite super slots get a third line: they carry the largest
-# fonts in the system (32px / 22px) across the layout's title row,
-# which is frequently the narrowest row on the canvas, so a flat cap of
-# two gives the system's longest text its tightest budget -- 42
-# characters at 4_vertical / teams. A third line lifts that floor to 63
-# and leaves the geometry, the wrap width, and the raise-on-overflow
-# contract untouched. The per-slot budgets are published to authors in
-# chart_context.md's readability-gates section.
 _TEXT_LINE_CAP: int = 2
-_TEXT_LINE_CAP_BY_SLOT: Dict[str, int] = {
-    "composite_super_title":    3,
-    "composite_super_subtitle": 3,
-}
 
 # ``AVAILABLE_SKINS`` is defined later (Stage: SKINS) once the GS_CLEAN
 # config dict is constructed.
@@ -869,7 +857,7 @@ def _make_chart_bind_findings(
             findings.append(ValidationError(
                 "make_chart() is missing required argument 'mapping'. Every "
                 "chart names its fields there, e.g. mapping={'x': 'date', "
-                "'y': 'value', 'color': 'series'}; see chart_context.md's Type Catalog section "
+                "'y': 'value', 'color': 'series'}; see chart_context.md §6.1 "
                 "for the keys each chart_type requires."
             ))
         else:
@@ -12454,7 +12442,6 @@ def _smart_number_format(series_or_value: Any) -> str:
     LastValueLabel value suffixes -- routes through this helper so a
     raw float like ``99.917898193`` never reaches the canvas.
 
-    Integer dtype short-circuits to ``",.0f"`` -- a count is not a level.
     Magnitude buckets (uses ``|value|.max()`` for a Series, or
     ``|value|`` for a scalar):
 
@@ -12474,12 +12461,8 @@ def _smart_number_format(series_or_value: Any) -> str:
             clean = series_or_value.dropna()
             if len(clean) == 0 or not pd.api.types.is_numeric_dtype(clean):
                 return ".2f"
-            if pd.api.types.is_integer_dtype(clean):
-                return ",.0f"
             max_abs = float(clean.abs().max())
         else:
-            if isinstance(series_or_value, (int, np.integer)) and not isinstance(series_or_value, bool):
-                return ",.0f"
             v = float(series_or_value)
             if pd.isna(v):
                 return ".2f"
@@ -12509,8 +12492,6 @@ def _smart_format_value(value: Any) -> str:
     chart's ``mapping['label']`` row, where the user may pass a raw
     float column.
     """
-    if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
-        return f"{int(value):,}"
     try:
         v = float(value)
     except (TypeError, ValueError):
@@ -12655,8 +12636,8 @@ def _validate_and_wrap_text(
 
       * Below ``_chars_per_line(slot_kind, width_px)``: render single
         line.
-      * Above per-line but below ``per_line * line_cap`` total chars:
-        word-wrap into up to ``line_cap`` lines and render multi-line.
+      * Above per-line but below ``per_line * _TEXT_LINE_CAP`` total
+        chars: word-wrap into 1..2 lines and render multi-line.
       * Above the hard cap, OR contains so many explicit ``\\n`` that the
         wrapped output would be more than ``_TEXT_LINE_CAP`` lines:
         raise ``ValueError`` with a message naming the slot, the limit,
@@ -12690,14 +12671,13 @@ def _validate_and_wrap_text(
 
     Raises:
         ValueError: when ``text`` exceeds the slot's hard char limit or
-            wraps to more than the slot's line cap.
+            wraps to more than ``_TEXT_LINE_CAP`` lines.
     """
     if not text:
         return None
     s = str(text)
     cpl = _chars_per_line(slot_kind, width_px)
-    line_cap = _TEXT_LINE_CAP_BY_SLOT.get(slot_kind, _TEXT_LINE_CAP)
-    hard_cap = cpl * line_cap
+    hard_cap = cpl * _TEXT_LINE_CAP
 
     if len(s) > hard_cap:
         suggestions = [
@@ -12714,7 +12694,7 @@ def _validate_and_wrap_text(
         raise ValueError(
             f"{slot_label} is {len(s)} characters; the maximum at "
             f"width {width_px}px is {hard_cap} characters "
-            f"({cpl} per line, max {line_cap} lines after "
+            f"({cpl} per line, max {_TEXT_LINE_CAP} lines after "
             f"auto-wrap). Try one of: " + "; ".join(suggestions) + "."
         )
 
@@ -12723,7 +12703,7 @@ def _validate_and_wrap_text(
     else:
         lines = _wrap_text_at_width(s, cpl)
 
-    if len(lines) > line_cap:
+    if len(lines) > _TEXT_LINE_CAP:
         suggestions = [
             "shorten the text",
             "use fewer explicit \\n breaks",
@@ -12732,7 +12712,7 @@ def _validate_and_wrap_text(
             suggestions.append(widening_hint)
         raise ValueError(
             f"{slot_label} wraps to {len(lines)} lines at width "
-            f"{width_px}px (max {line_cap} lines, "
+            f"{width_px}px (max {_TEXT_LINE_CAP} lines, "
             f"{cpl} chars per line). Try one of: "
             + "; ".join(suggestions) + "."
         )
@@ -14825,8 +14805,7 @@ def _build_tooltip(
         elif pd.api.types.is_numeric_dtype(df[x_field]):
             tooltips.append(
                 alt.Tooltip(
-                    x_field, type="quantitative",
-                    format=_smart_number_format(df[x_field]),
+                    x_field, type="quantitative", format=".2f",
                     title=x_field.replace("_", " ").title(),
                 )
             )
@@ -14840,7 +14819,13 @@ def _build_tooltip(
 
     y_field = _safe_field(_get_field(mapping, "y"))
     if y_field and y_field in df.columns and pd.api.types.is_numeric_dtype(df[y_field]):
-        fmt = _smart_number_format(df[y_field])
+        y_max = df[y_field].abs().max()
+        if pd.notna(y_max) and y_max > 1_000_000:
+            fmt = ".0f"
+        elif pd.notna(y_max) and y_max > 100:
+            fmt = ".1f"
+        else:
+            fmt = ".2f"
         tooltips.append(
             alt.Tooltip(
                 y_field, type="quantitative", format=fmt,
@@ -14855,8 +14840,7 @@ def _build_tooltip(
                 if col in df.columns:
                     tooltips.append(
                         alt.Tooltip(
-                            _safe_field(col), type="quantitative",
-                            format=_smart_number_format(df[col]),
+                            _safe_field(col), type="quantitative", format=".2f",
                             title=f"{col.replace('_', ' ').title()} ({role})",
                         )
                     )
@@ -14869,8 +14853,7 @@ def _build_tooltip(
     if size_field and size_field in df.columns:
         tooltips.append(
             alt.Tooltip(
-                size_field, type="quantitative",
-                format=_smart_number_format(df[size_field]),
+                size_field, type="quantitative", format=".2f",
                 title=size_field.replace("_", " ").title(),
             )
         )
@@ -14887,7 +14870,7 @@ def _build_tooltip(
                 tooltips.append(
                     alt.Tooltip(
                         value_field, type="quantitative",
-                        format=_smart_number_format(df[value_field]), title="Value",
+                        format=".2f", title="Value",
                     )
                 )
             else:
@@ -20049,8 +20032,7 @@ def _build_bullet(
                     ),
                     alt.Tooltip(
                         color_by_field, type="quantitative",
-                        title=color_by_field,
-                        format=_smart_number_format(df[color_by_field]),
+                        title=color_by_field, format=".2f",
                     ),
                 ],
             )
@@ -27711,13 +27693,13 @@ def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
     if not isinstance(value, (int, float, np.integer, np.floating)):
         return str(value)
     v = float(value)
-    # A bare year renders ungrouped; any other integer-dtype scalar renders
-    # grouped with no decimals. Dtype is the gate, never value == int(value),
-    # so a 4.00 yield out of a float column keeps its decimals.
+    # ---- Year-detection heuristic (engine-side fix) ----
+    # When no hint is provided and the value is an integer in the
+    # plausible calendar-year range [1900, 2200], render it as a bare
+    # integer with NO thousands separator and NO decimal point.
+    # This prevents "2024" from rendering as "2,024.0".
     if hint is None and v == int(v) and 1900 <= int(v) <= 2200:
         return str(int(v))
-    if hint is None and isinstance(value, (int, np.integer)) and not isinstance(value, bool):
-        return f"{int(value):,}"
     if hint in ("pct", "percent", "percentage"):
         return f"{v:.1f}%"
     if hint == "pct_signed":
@@ -28067,19 +28049,13 @@ def _tbl_natural_widths(
 
 def _tbl_compress_to_fit(
     widths: List[int], wraps: List[bool], floors: List[int],
-    side_pad: int, body_font_size: int,
+    side_pad: int,
 ) -> List[int]:
-    """Compress wrapping text columns toward their floors uniformly so the
-    canvas honours BOTH the soft ceiling and the paper-legibility width the
-    ``make_table`` gate enforces downstream. The legible width is the tighter
-    of the two at every font tier, so targeting ``_TBL_MAX_TABLE_W`` alone
-    left tables that obeyed the only published ceiling still failing that
-    gate: wrap the width away at source instead. Overflow the floors cannot
-    absorb is still accepted here and named by the gate. No truncation."""
-    legible_w = int(
-        body_font_size * _TBL_LEGIBILITY_USABLE_IN * 72 / _TBL_MIN_LEGIBLE_PT
-    )
-    inner_target = min(_TBL_MAX_TABLE_W, legible_w) - 2 * side_pad
+    """If sum(widths) + 2*side_pad exceeds the soft ceiling, compress
+    wrapping text columns toward their floors uniformly. If the ceiling
+    cannot be honoured even at the floor, the overflow is accepted -
+    the table just renders wider. No truncation."""
+    inner_target = _TBL_MAX_TABLE_W - 2 * side_pad
     cur = sum(widths)
     if cur <= inner_target:
         return list(widths)
@@ -28315,9 +28291,7 @@ def _tbl_layout(
                 wraps[ci] = True
             natural_w[ci] = pinned
             floors[ci] = pinned
-    col_widths = _tbl_compress_to_fit(
-        natural_w, wraps, floors, side_pad, theme["body_font_size"],
-    )
+    col_widths = _tbl_compress_to_fit(natural_w, wraps, floors, side_pad)
 
     canvas_w = 2 * side_pad + sum(col_widths)
     inner_w = canvas_w - 2 * side_pad
@@ -29644,19 +29618,11 @@ def make_table(
     # column count is a poor proxy because numeric columns cannot compress
     # and text columns wrap to a fixed floor. See chart_context_tables.md §2
     # "Width & legibility limits".
-    #
-    # ``_tbl_compress_to_fit`` already targets the legible width, so a table
-    # arriving here is one whose wrap floors could not absorb the overflow.
-    # The message names the pixels that still have to go.
     printed_pt = (
         theme["body_font_size"] * _TBL_LEGIBILITY_USABLE_IN * 72 / geom.canvas_w
         if geom.canvas_w else 0.0
     )
     if printed_pt < _TBL_MIN_LEGIBLE_PT:
-        legible_w = int(
-            theme["body_font_size"] * _TBL_LEGIBILITY_USABLE_IN * 72
-            / _TBL_MIN_LEGIBLE_PT
-        )
         return TableResult(
             success=False,
             error_message=(
@@ -29665,10 +29631,7 @@ def make_table(
                 f"{geom.canvas_w}px wide ({len(df.columns)} columns), which "
                 f"prints body text at ~{printed_pt:.1f}pt across the "
                 f"{_TBL_LEGIBILITY_USABLE_IN:.1f}in usable width -- below the "
-                f"{_TBL_MIN_LEGIBLE_PT:.0f}pt legibility floor. The widest "
-                f"legible canvas at this body font is {legible_w}px, so about "
-                f"{geom.canvas_w - legible_w}px of column width has to go. "
-                f"make_table never "
+                f"{_TBL_MIN_LEGIBLE_PT:.0f}pt legibility floor. make_table never "
                 f"truncates, so an over-wide table would just shrink to an "
                 f"unreadable PNG. Reduce the rendered width by ONE of: "
                 f"(1) TRANSPOSE -- if there are many columns and few rows, swap "
