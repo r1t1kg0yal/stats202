@@ -12423,11 +12423,19 @@ __HEATMAP_SIZE_FRACS__
   // Datasets may carry `field_provenance` (per-column lineage) and
   // `row_provenance` (per-entity overrides keyed by the value of
   // `row_provenance_field`). Each provenance entry is a free-form
-  // dict that should at minimum carry `system` (e.g. "haver",
-  // "market_data", "plottool", "fred", "bloomberg", "computed",
-  // "csv") and `symbol` (canonical identifier in that system),
-  // plus optional `display_name`, `units`, `source_label`,
-  // `recipe`, `as_of`, etc.
+  // dict that should at minimum carry `system` and `symbol` (the
+  // canonical identifier in that system), plus optional
+  // `display_name`, `units`, `source_label`, `recipe`, `as_of`, etc.
+  //
+  // For anything retrieved through `get_data`, `system` is the
+  // `details.source` literal of the call that produced the column:
+  // "chunkstore", "tsdb_eod", "tsdb_intraday", "client", "mdapi_eod",
+  // "mdapi_intraday", "gs_quant_dataset", "haver", "lakehouse". That
+  // keeps a column traceable to the exact backend and request shape
+  // that produced it. Other values in use: "fred", "bloomberg",
+  // "computed" (derived in a transform), and "csv" (hand-supplied).
+  // "market_data" and "plottool" are legacy umbrella values carried by
+  // pre-`get_data` dashboards; do not author new ones.
   //
   // PRISM is responsible for cleaning upstream metadata into this
   // shape -- the compiler does NOT introspect df.attrs or autoload

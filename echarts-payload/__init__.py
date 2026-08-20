@@ -90,8 +90,8 @@ the standard "load template + CSVs + transforms -> compile + write to
 S3" recipe so PRISM doesn't reinvent it per dashboard.
 
 DataFrame contract: PRISM emits Python that builds DataFrames from real
-data functions (``pull_plottool_data``, ``pull_haver_data``, FRED, etc.)
-and stores them as dataset values. Literal numbers never appear in the
+data retrieval (``get_data`` for market / series / lakehouse data,
+``pull_haver_data``, FRED, etc.) and stores them as dataset values. Literal numbers never appear in the
 JSON emitted by PRISM. Three accepted shapes for a dataset entry, all
 normalised to the same on-disk form by the compiler:
 

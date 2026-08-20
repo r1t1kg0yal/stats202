@@ -95,7 +95,10 @@ from dashboards import (
     build_dashboard_data_only,
     run_pull,
 )
-from dashboards.echart_dashboard import _build_dashboard_exec_namespace
+from dashboards.echart_dashboard import (
+    _build_dashboard_exec_namespace,
+    _detect_partial_pulls,
+)
 from dashboards.dashboards_time import (
     format_iso, freq_delta, parse_iso, utcnow,
 )
@@ -397,7 +400,10 @@ def run(
             failing_phase = f"{_PHASE_PULL_PREFIX}::{name}"
             t0 = time.perf_counter()
             try:
-                run_pull(folder, name, s3_manager=s3_manager)
+                run_pull(
+                    folder, name, s3_manager=s3_manager,
+                    strict_series=False,
+                )
             except BaseException as exc:
                 # Isolated: this source is stale for the cycle, the rest
                 # still run. The error carries the same shape as a
@@ -427,6 +433,20 @@ def run(
                     f"    pull {name}  \u2713  {time.perf_counter() - t0:.2f}s",
                     flush=True,
                 )
+
+        # A get_data pull that lost some of its series returned normally
+        # and wrote current bytes, so it counts as fresh for the
+        # all-failed guard below. It is still stamped stale: the reader
+        # must not be told the cycle was clean when a column is absent.
+        partial = _detect_partial_pulls(folder, s3_manager)
+        for name in partial["pulls"]:
+            if name not in stale_pulls:
+                stale_pulls.append(name)
+        if partial["datasets"]:
+            print(
+                f"    partial pull(s): {partial['detail']}",
+                flush=True,
+            )
 
         # Total pull failure is not a partial cycle. Nothing was re-read,
         # so a build would only restamp refresh_cycle_at onto untouched

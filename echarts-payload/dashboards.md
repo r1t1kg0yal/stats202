@@ -47,7 +47,8 @@ Pull primitives:
 | `pull_fred_data(..., name="labor")` | `data/labor.csv` |
 | `result = pull_nyfed_data(...)` then `save_artifact(result, name="nyfed", output_path=...)` | `data/nyfed.csv` only when `result` is a DataFrame or non-empty tabular records |
 | `save_artifact(DataFrame or non-empty list[dict], name="screen")` | `data/screen.csv` |
-| `save_artifact(dict or empty list, name="screen")` | JSON artifact only; not a dataset |
+
+`get_data` is the primitive for market data and every GS internal source. It is `async` and never injected, and `dashboards/pipelines.md` owns its authoring shape.
 
 ## Route before fetching
 
@@ -71,6 +72,9 @@ Classify the request, then issue the smallest applicable `list_ai_repo(file_path
 | `widget: tool` with a sibling/dashboard chart or chart/series output requiring chart specs | `dashboards/widget_tool.md`, `dashboards/widgets.md`, `dashboards/charts.md` |
 | Filters, zoom, click-to-filter, sync, brush | `dashboards/filters.md` |
 | Chart-choice archetype without a pipeline operation | `dashboards/recipes.md` |
+| A `get_data` pull whose `source` has not already been read this session | `market_data_infra_hub.md`, then the per-source spoke it routes to |
+
+That row is the one required fetch outside this family: the `details` shape is per-source and not guessable, so authoring one without its spoke guesses both field names and symbols. Once per source per session. Nothing else loosens — `chart_context.md` stays forbidden.
 
 Every tool build requires the widgets companion: it owns the stat, table, and stat_grid presentation contracts. Add charts only for the charted-tool row above.
 For a first build, fetch each primitive owner required by the requested user-visible widgets before Tool 2 manifest authoring: charts require `dashboards/charts.md`, non-tool widgets require `dashboards/widgets.md`, and filters/links require `dashboards/filters.md`. A data-free productivity build does not fetch pipelines or charts unless the requested surface uses them.

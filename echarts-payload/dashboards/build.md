@@ -101,15 +101,7 @@ PULLS = {"fixture": pull_fixture}
 Replace only `EXACT_USER_SUPPLIED_ROWS` and the stable stem; preserve supplied
 values and nulls without normalization.
 
-Pull primitives and stems:
-
-| Call | Persisted stem |
-|---|---|
-| `pull_haver_data(..., name="cpi")` | `cpi` |
-| `get_data(..., name="rates")` | `rates` |
-| `pull_fred_data(..., name="labor")` | `labor` |
-| `result = pull_nyfed_data(...)` then `save_artifact(result, name="nyfed", output_path=...)` | `nyfed` only when `result` is a DataFrame or non-empty tabular records |
-| `save_artifact(DataFrame or non-empty list[dict], name="screen")` | `screen` |
+Every pull primitive persists `data/<name>.csv` and the stem becomes the dataset key verbatim; `dashboards/pipelines.md` owns the full stem table, including the `save_artifact` return-shape condition and the `get_data` lakehouse exception.
 
 ### Tool-only build
 

@@ -66,6 +66,7 @@ In-process execution and clean refresh expose the same canonical names:
 `s3_manager`, the standard pull helpers, `pull_nyfed_data`,
 `save_artifact`, `pd`, and `np`. Import every other used client module
 explicitly from `core.mcp.clients`.
+`get_data`, `asyncio`, and `pydantic` are not among them — import all three.
 Persisted scripts still import every helper they use; namespace injection is
 the parity guarantee for execution, not a reason to omit durable imports.
 For example, use `from core.mcp.clients import bond_client` when the verified
@@ -110,11 +111,18 @@ Stem rules:
 
 | Producer | Emitted artifact and dataset key |
 |---|---|
-| Haver / PlotTool / FRED | `data/<name>.csv` → `<name>` |
+| Haver / FRED / `get_data` except `lakehouse` | `data/<name>.csv` → `<name>` |
+| `get_data` with `source="lakehouse"` | `data/<name>/<table>.csv`; `<name>` is a directory, not a dataset key |
 | `save_artifact` with a DataFrame or non-empty list of records | `data/<name>.csv` → `<name>` |
 | `save_artifact` with a dictionary or empty list | JSON artifact; no dataset key |
 | Direct S3 CSV write | literal `data/<stem>.csv` → `<stem>` |
 | Direct S3 JSON write | artifact only; no dataset key |
+
+### get_data pulls
+
+Read the source's spoke through `market_data_infra_hub.md` before the first `get_data` call to a given `source` in a session — the `details` shape is per-source and not guessable — and take symbols from the instrument guides it names. Call it directly, not as a tool: the refresh cycle runs `pull_data.py` in a plain Python process with no MCP registry, and the registered tool and the imported symbol are the same object. One `PULLS` entry per source, since per-entry isolation is the cycle's only failure boundary; changing coordinates is then a text edit to that `details` dict plus a re-run.
+
+Two behaviours differ from the other pull helpers. Partial resolution never raises: a dead symbol omits its column and records the reason in the sidecar, so `run_pull` raises on the mismatch while authoring, and a scheduled refresh keeps the partial bytes and stamps the pull into `metadata.time.stale_pulls` rather than failing the cycle. And the index column arrives as `timestamp`: the engine renames it to `date` on load, so author manifests, `dateRange` filters, and vintage labels against `date` as with any producer, and expect `timestamp` only in code reading the raw CSV. Series align on the union of their ticks, so mixing cadences in one call leaves NaNs in the sparser column — drop per column, not across the frame.
 
 ### Producer visibility
 
@@ -325,8 +333,8 @@ Every displayed field identifies its source. `field_provenance` is placed inside
         "source": [],
         "field_provenance": {
             "us_10y": {
-                "system": "plottool",
-                "symbol": "<exact supplied expression>",
+                "system": "tsdb_eod",
+                "symbol": "<exact supplied symbol>",
                 "display_name": "US 10Y swap rate",
                 "units": "percent",
                 "source_label": "GS Market Data",
@@ -348,7 +356,7 @@ Every displayed field identifies its source. `field_provenance` is placed inside
 }
 ```
 
-Each provenance value is a dictionary. Native-source fields use `system` plus the exact supplied identifier (`symbol`, `haver_code`, `fred_series`, or another source-native key). Client-returned fields use the closed shape `{"system":"client","client":<exact imported client name>,"method":<exact called method>}` plus optional `identifier` only when the caller supplied that field/token; do not infer one from a display label. A deterministic user fixture uses `{"system":"fixture","source":"user_supplied","source_label":"User-supplied deterministic fixture"}` and may add supplied units/frequency; it has no invented vendor identifier. `display_name`, `units`, `frequency`, and `source_label` are optional source facts. A computed field uses `system: "computed"`, exact `recipe`, `computed_from`, and `units`. Never invent identifiers. Helper metadata sidecars and `df.attrs` never populate this structure; author it explicitly in the template.
+Each provenance value is a dictionary. Native-source fields use `system` plus the exact supplied identifier (`symbol`, `haver_code`, `fred_series`, or another source-native key). For a field retrieved by `get_data`, `system` is that call's `details.source` literal. Client-returned fields use the closed shape `{"system":"client","client":<exact imported client name>,"method":<exact called method>}` plus optional `identifier` only when the caller supplied that field/token; do not infer one from a display label. A deterministic user fixture uses `{"system":"fixture","source":"user_supplied","source_label":"User-supplied deterministic fixture"}` and may add supplied units/frequency; it has no invented vendor identifier. `display_name`, `units`, `frequency`, and `source_label` are optional source facts. A computed field uses `system: "computed"`, exact `recipe`, `computed_from`, and `units`. Never invent identifiers. Helper metadata sidecars and `df.attrs` never populate this structure; author it explicitly in the template.
 
 ## Refresh-frequency edits
 

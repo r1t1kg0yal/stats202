@@ -17263,19 +17263,27 @@ def compile_dashboard(
 #                                 manifest.datasets key byte-for-byte
 #
 # pull_data.py shape:
-#     from prism_mcp.utils.data_functions import (
-#         pull_plottool_data, pull_haver_data, save_artifact)
+#     import asyncio
+#     import pydantic
+#     from prism_mcp.tools.data_tools import Details, get_data
+#     from prism_mcp.utils.data_functions import pull_haver_data, save_artifact
 #     from core.s3_bucket_manager import s3_manager
 #     SESSION_PATH = "users/<k>/dashboards/<id>"
 #     def pull_rates():
-#         pull_plottool_data(expressions=[...], labels=[...], name='rates',
-#                            output_path=f'{SESSION_PATH}/data',
-#                            s3_manager=s3_manager)
+#         asyncio.run(get_data(
+#             session_path=f'{SESSION_PATH}/data', name='rates',
+#             details=pydantic.TypeAdapter(Details).validate_python({
+#                 'source': 'tsdb_eod', 'start': ..., 'end': ...,
+#                 'symbols': [{'symbol': ..., 'label': ...}]})))
 #     def pull_cpi():
 #         pull_haver_data(codes=[...], name='cpi',
 #                         output_path=f'{SESSION_PATH}/data',
 #                         s3_manager=s3_manager)
 #     PULLS = {'rates': pull_rates, 'cpi': pull_cpi}
+#
+# get_data writes {session_path}/{name}.csv directly -- no output_path, no
+# s3_manager, and the stem is verbatim. Its first column header is
+# 'timestamp', not 'date'.
 #
 # build.py shape:
 #     import pandas as pd
@@ -20706,8 +20714,8 @@ def inspect_dashboard(
                 import io
                 import pandas as pd
 
-                dataframe = pd.read_csv(io.BytesIO(
-                    bytes(s3.get(csv_path)).rstrip(b"\x00")
+                dataframe = _normalize_persisted_index_column(pd.read_csv(
+                    io.BytesIO(bytes(s3.get(csv_path)).rstrip(b"\x00"))
                 ))
                 data_origin = "persisted_csv"
             except Exception as exc:  # noqa: BLE001
@@ -21232,10 +21240,24 @@ def _build_dashboard_exec_namespace(
     Both in-process folder operations and ``refresh_runner`` discovery call
     this helper. A script that loads successfully in one path therefore sees
     the same injected names in every other path.
+
+    ``get_data`` is deliberately absent, along with ``asyncio`` and
+    ``pydantic``. It is a module-level symbol rather than an injected name,
+    so authored scripts import it themselves::
+
+        from prism_mcp.tools.data_tools import Details, get_data
+
+    That is what makes a ``get_data`` pull behave identically here, in the
+    authoring sandbox, and in the clean refresh subprocess. ``ImportError``
+    at author time beats ``NameError`` at refresh time.
+
+    ``pull_plottool_data`` is retained only so the existing persisted-script
+    corpus keeps running; upstream it is now a thin synchronous translator
+    onto ``get_data`` covering TSDB alone. Nothing new should be authored
+    against it.
     """
     from prism_mcp.utils.data_functions import (
-        pull_market_data, pull_haver_data, pull_plottool_data,
-        pull_fred_data, save_artifact,
+        pull_haver_data, pull_plottool_data, pull_fred_data, save_artifact,
     )
     from core.mcp.clients.newyorkfed_client import pull_nyfed_data
     import pandas as pd
@@ -21246,7 +21268,6 @@ def _build_dashboard_exec_namespace(
         "__file__": file_path,
         "__builtins__": __builtins__,
         "s3_manager": s3_manager,
-        "pull_market_data": pull_market_data,
         "pull_haver_data": pull_haver_data,
         "pull_plottool_data": pull_plottool_data,
         "pull_fred_data": pull_fred_data,
@@ -21314,13 +21335,21 @@ class RefreshAttachmentError(ValueError):
         )
 
 
-# Pull primitives recognized by the static-parse stem inference. Current
-# authoring helpers use ``name=`` verbatim; the retained compatibility helper
-# appends mode-specific suffixes for existing persisted scripts.
+# Pull primitives recognized by the static-parse stem inference. ``get_data``
+# is the authoring primitive and writes ``name=`` verbatim. The retired names
+# are kept for inference only, so the existing persisted-script corpus stays
+# attachable; they are not an authoring surface and the injected namespace no
+# longer binds ``pull_market_data`` at all.
 _PULL_PRIMITIVES: frozenset = frozenset({
-    "pull_market_data", "pull_haver_data", "pull_plottool_data",
-    "pull_fred_data", "save_artifact",
+    "get_data", "pull_haver_data", "pull_fred_data", "save_artifact",
+    "pull_market_data", "pull_plottool_data",
 })
+
+# ``get_data(source="lakehouse")`` is the one shape where ``name=`` is a
+# DIRECTORY rather than a CSV stem: each table lands at
+# ``{session_path}/{name}/{table}.csv``, so ``name`` never names a dataset.
+# Inference must refuse it rather than attach a stem that will not exist.
+_GET_DATA_DIRECTORY_SOURCES: frozenset = frozenset({"lakehouse"})
 
 
 def _collect_widget_dataset_refs(template: Dict[str, Any]) -> set:
@@ -21980,6 +22009,43 @@ class _StaticProducerAnalyzer:
         for child in ast.iter_child_nodes(expression):
             self._trace_expr(child, env, root_name, function_name, stack)
 
+    def _static_details_source(
+        self, call: Any, env: Dict[str, Any]
+    ) -> Optional[str]:
+        """Read the literal ``details['source']`` of a ``get_data`` call.
+
+        The canonical authored form wraps a literal dict in
+        ``pydantic.TypeAdapter(Details).validate_python(...)``, so the dict
+        is reachable by walking the ``details=`` subtree even though the
+        wrapper call itself does not evaluate statically. Returns ``None``
+        when no literal source is present, which the caller treats as
+        unresolved rather than guessing a shape.
+        """
+        ast = self.ast
+        details = next(
+            (kw.value for kw in call.keywords if kw.arg == "details"), None
+        )
+        if details is None:
+            return None
+
+        evaluated = self._eval(details, env)
+        if isinstance(evaluated, dict):
+            source = evaluated.get("source")
+            if isinstance(source, str) and _STATIC_DYNAMIC_TOKEN not in source:
+                return source
+
+        for node in ast.walk(details):
+            if not isinstance(node, ast.Dict):
+                continue
+            for key, value in zip(node.keys, node.values):
+                if not isinstance(key, ast.Constant) or key.value != "source":
+                    continue
+                resolved = self._eval(value, env)
+                if isinstance(resolved, str) \
+                        and _STATIC_DYNAMIC_TOKEN not in resolved:
+                    return resolved
+        return None
+
     def _trace_call(
         self,
         call: Any,
@@ -22002,7 +22068,30 @@ class _StaticProducerAnalyzer:
             name = values.get("name", _STATIC_UNKNOWN)
             mode = values.get("mode", "eod")
             if isinstance(name, str) and _STATIC_DYNAMIC_TOKEN not in name:
-                if call_name == "pull_market_data":
+                if call_name == "get_data":
+                    source = self._static_details_source(call, env)
+                    if source is None:
+                        self._record_unresolved(
+                            root_name, function_name, call,
+                            "get_data details= carries no statically "
+                            "readable source; author it as "
+                            "pydantic.TypeAdapter(Details).validate_python("
+                            "{\"source\": \"<literal>\", ...}), because "
+                            "source=\"lakehouse\" makes name= a directory "
+                            "rather than a CSV stem",
+                        )
+                    elif source in _GET_DATA_DIRECTORY_SOURCES:
+                        self._record_unresolved(
+                            root_name, function_name, call,
+                            f"get_data source={source!r} writes one CSV per "
+                            f"table beneath the {name!r} directory, so "
+                            f"{name!r} is not itself a dataset key; give each "
+                            "table its own pull or declare the per-table "
+                            "stems explicitly",
+                        )
+                    else:
+                        self._add_output(root_name, name)
+                elif call_name == "pull_market_data":
                     if mode == "eod":
                         self._add_output(root_name, f"{name}_eod")
                     elif mode in ("iday", "intraday"):
@@ -22590,7 +22679,8 @@ def _audit_refresh_attachment(
         raise RefreshAttachmentError(folder, gaps)
 
 
-def run_pull(folder: str, pull_name: str, *, s3_manager=None) -> None:
+def run_pull(folder: str, pull_name: str, *, s3_manager=None,
+              strict_series: bool = True) -> None:
     """Execute a single named pull from ``<folder>/scripts/pull_data.py``.
 
     Loads the script, reads ``PULLS``, calls ``PULLS[pull_name]()``.
@@ -22601,9 +22691,24 @@ def run_pull(folder: str, pull_name: str, *, s3_manager=None) -> None:
     Use from PRISM ephemeral code to refresh ONE pipeline during dev
     iteration without spawning a subprocess. Use ``refresh_dashboard()``
     for the full pull+build path.
+
+    ``strict_series`` governs what happens when a ``get_data`` pull
+    resolves only some of the series it asked for. ``get_data`` treats a
+    dead symbol as a per-series event and returns normally, so nothing
+    else would surface it until a chart-mapping error much later. Under
+    the default the mismatch raises, which is what an author iterating on
+    a symbol list wants. ``refresh_runner`` passes ``False``: a scheduled
+    cycle serving real traffic should keep the partial bytes and let the
+    caller stamp the dashboard stale instead of skipping the build.
     """
+    from dashboards_time import utcnow, format_iso
+
     s3 = _resolve_s3_manager(s3_manager)
-    ns = _exec_dashboard_script(folder, "pull_data", s3_manager=s3)
+    script_path = f"{folder}/scripts/pull_data.py".replace("//", "/")
+    src = s3.get(script_path).decode("utf-8")
+    ns = _exec_dashboard_script_source(
+        folder, "pull_data", src, s3_manager=s3,
+    )
     pulls = ns.get("PULLS")
     if not isinstance(pulls, dict):
         raise RuntimeError(
@@ -22617,6 +22722,23 @@ def run_pull(folder: str, pull_name: str, *, s3_manager=None) -> None:
         )
     print(f"[run_pull] {folder} :: {pull_name}")
     pulls[pull_name]()
+    _stamp_pull_completion(folder, s3, [pull_name], format_iso(utcnow()))
+    if not strict_series:
+        return
+    stems = None
+    for root in _analyze_pull_producers_from_source(src).get("roots", []):
+        if root.get("name") == pull_name:
+            stems = root.get("outputs") or []
+            break
+    short = _collect_short_pulls(folder, s3, stems)
+    if short:
+        raise RuntimeError(
+            f"run_pull: {pull_name!r} resolved fewer series than it "
+            f"requested -- {_describe_short_pulls(short)} | fix: correct "
+            f"the symbol in the details dict in "
+            f"{folder}/scripts/pull_data.py and re-run, or drop it and "
+            f"the widgets that consume its column"
+        )
 
 
 def _derive_domain_end(datasets: Dict[str, Any]) -> Optional[str]:
@@ -22778,12 +22900,183 @@ def _stamp_compile_provenance(manifest: Dict[str, Any],
         time_block.setdefault("data_domain_freq", _derive_domain_freq(dfs))
 
 
+_PULL_STAMPS_BASENAME = "_pull_stamps.json"
+
+
+def _load_json_key(s3_manager, key: str) -> Optional[Any]:
+    """Return the parsed JSON at ``key``, or ``None`` when it is absent.
+
+    A missing key is the ordinary first-run state for every sidecar this
+    module reads, so absence is a value rather than an error.
+    """
+    try:
+        raw = s3_manager.get(key)
+    except Exception:
+        return None
+    try:
+        return json.loads(raw.rstrip(b"\x00").decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _get_data_sidecar_coverage(sidecar: Any) -> Optional[Dict[str, Any]]:
+    """Return the coverage block of a ``get_data`` ``<stem>_metadata.json``.
+
+    ``get_data`` records ``requested`` / ``resolved`` counts plus a
+    ``series`` list. The curated pull helpers write a different shape to
+    the same filename, so this shape-detects instead of assuming, and
+    returns ``None`` for anything it does not recognise.
+    """
+    if not isinstance(sidecar, dict):
+        return None
+    requested = sidecar.get("requested")
+    resolved = sidecar.get("resolved")
+    series = sidecar.get("series")
+    if not isinstance(requested, int) or not isinstance(resolved, int):
+        return None
+    if not isinstance(series, list):
+        return None
+    return {"requested": requested, "resolved": resolved, "series": series}
+
+
+def _collect_short_pulls(folder: str, s3_manager,
+                          stems: Optional[List[str]] = None,
+                          ) -> List[Dict[str, Any]]:
+    """Return one record per dataset whose ``get_data`` pull came back short.
+
+    ``get_data`` isolates failure per series: one dead symbol never raises,
+    it omits that column and records the reason in the sidecar. This
+    engine isolates per ``PULLS`` entry. Without reconciling the two, a
+    partial pull is indistinguishable from a clean one — the freshness
+    stamp advances and the absent column surfaces much later as a
+    chart-mapping error, or not at all as a quietly thinner chart.
+
+    ``stems`` restricts the walk to one pull's declared outputs; ``None``
+    inspects every dataset in the folder.
+    """
+    wanted = None if stems is None else {str(stem) for stem in stems}
+    data_prefix = f"{folder}/data/".replace("//", "/")
+    try:
+        listing = s3_manager.list(data_prefix)
+    except Exception:
+        return []
+    suffix = "_metadata.json"
+    findings: List[Dict[str, Any]] = []
+    for entry in listing:
+        key = entry.get("Key") if isinstance(entry, dict) else entry
+        if not key or not key.endswith(suffix):
+            continue
+        stem = key.rsplit("/", 1)[-1][:-len(suffix)]
+        if wanted is not None and stem not in wanted:
+            continue
+        coverage = _get_data_sidecar_coverage(_load_json_key(s3_manager, key))
+        if coverage is None or coverage["resolved"] >= coverage["requested"]:
+            continue
+        missing = []
+        for record in coverage["series"]:
+            if not isinstance(record, dict) or "error" not in record:
+                continue
+            missing.append({
+                "label": record.get("label"),
+                "requested": record.get("requested"),
+                "error_class": record.get("error_class"),
+                "error": record.get("error"),
+            })
+        findings.append({
+            "stem": stem,
+            "requested": coverage["requested"],
+            "resolved": coverage["resolved"],
+            "missing": missing,
+        })
+    return sorted(findings, key=lambda item: item["stem"])
+
+
+def _detect_partial_pulls(folder: str, s3_manager,
+                           src: Optional[str] = None) -> Dict[str, Any]:
+    """Map short ``get_data`` datasets back to the ``PULLS`` entries owning them.
+
+    Callers that already hold the ``pull_data.py`` body pass it as ``src``
+    rather than paying for a second fetch. Returns empty lists when every
+    pull resolved in full, so the result is safe to use as a boolean.
+    """
+    short = _collect_short_pulls(folder, s3_manager)
+    if not short:
+        return {"pulls": [], "datasets": [], "detail": ""}
+    if src is None:
+        path = f"{folder}/scripts/pull_data.py".replace("//", "/")
+        src = s3_manager.get(path).decode("utf-8")
+    stems = {finding["stem"] for finding in short}
+    owners = sorted({
+        str(root.get("name"))
+        for root in _analyze_pull_producers_from_source(src).get("roots", [])
+        if root.get("name")
+        and not stems.isdisjoint(root.get("outputs") or [])
+    })
+    return {
+        "pulls": owners,
+        "datasets": sorted(stems),
+        "detail": _describe_short_pulls(short),
+    }
+
+
+def _describe_short_pulls(findings: List[Dict[str, Any]]) -> str:
+    """Render ``_collect_short_pulls`` output as one diagnostic line."""
+    parts = []
+    for finding in findings:
+        named = []
+        for record in finding["missing"]:
+            label = record.get("requested") or record.get("label") or "?"
+            cls = record.get("error_class")
+            named.append(f"{label} ({cls})" if cls else str(label))
+        detail = ", ".join(named) or "no per-series error recorded"
+        parts.append(
+            f"{finding['stem']}: resolved {finding['resolved']}/"
+            f"{finding['requested']} series, missing {detail}"
+        )
+    return "; ".join(parts)
+
+
+def _stamp_pull_completion(folder: str, s3_manager,
+                            pull_names: List[str], when: str) -> None:
+    """Record engine-side pull completion times in ``data/_pull_stamps.json``.
+
+    No producer stamps its own completion time. ``get_data``'s sidecar
+    carries per-series coverage but no wall clock, and it writes its
+    ``_freshness.json`` only for intraday plans; the curated helpers write
+    nothing. The engine is the only party that knows when a pull actually
+    finished, so it records that rather than depending on producer
+    cooperation, which also makes the stamp uniform across every producer.
+
+    Entries are merged so a single-pull ``run_pull`` does not erase the
+    times belonging to the other pulls.
+    """
+    if not pull_names:
+        return
+    key = f"{folder}/data/{_PULL_STAMPS_BASENAME}".replace("//", "/")
+    existing = _load_json_key(s3_manager, key)
+    stamps: Dict[str, str] = {}
+    if isinstance(existing, dict):
+        stamps = {
+            str(name): value for name, value in existing.items()
+            if isinstance(value, str)
+        }
+    for name in pull_names:
+        stamps[str(name)] = when
+    s3_manager.put(
+        json.dumps(stamps, indent=2, sort_keys=True).encode("utf-8"), key,
+    )
+
+
 def _max_pull_time(folder: str, s3_manager) -> Optional[str]:
-    """Walk ``<folder>/data/<stem>_metadata.json`` sidecars, return the
-    max ``pull_completed_at`` field as canonical ISO. Returns ``None``
-    when no sidecar carries the field (pull-helper sidecar stamping
-    is a deferred follow-up — see
-    ``staging/prompts/open/2026-05-12_pull_helpers_sidecar.md``)."""
+    """Return the most recent pull-completion time under ``<folder>/data/``.
+
+    Two sources feed this. A producer sidecar
+    (``<stem>_metadata.json``) is honoured when it carries
+    ``pull_completed_at``, and the engine's own ``_pull_stamps.json``
+    covers every producer that does not stamp itself — which today is all
+    of them, ``get_data`` included. Returns ``None`` only when neither
+    source has anything, meaning no pull has run yet.
+    """
     from dashboards_time import parse_iso, format_iso
 
     data_prefix = f"{folder}/data/".replace("//", "/")
@@ -22792,24 +23085,46 @@ def _max_pull_time(folder: str, s3_manager) -> Optional[str]:
         listing = s3_manager.list(data_prefix)
     except Exception:
         return None
+    candidates: List[Any] = []
     for entry in listing:
         key = entry.get("Key") if isinstance(entry, dict) else entry
-        if not key or not key.endswith("_metadata.json"):
+        if not key:
             continue
-        try:
-            raw = s3_manager.get(key)
-            sidecar = json.loads(raw.rstrip(b"\x00").decode("utf-8"))
-        except Exception:
-            continue
-        if not isinstance(sidecar, dict):
-            continue
-        ts = sidecar.get("pull_completed_at")
-        dt = parse_iso(ts)
+        if key.endswith("_metadata.json"):
+            sidecar = _load_json_key(s3_manager, key)
+            if isinstance(sidecar, dict):
+                candidates.append(sidecar.get("pull_completed_at"))
+        elif key.rsplit("/", 1)[-1] == _PULL_STAMPS_BASENAME:
+            stamps = _load_json_key(s3_manager, key)
+            if isinstance(stamps, dict):
+                candidates.extend(stamps.values())
+    for value in candidates:
+        dt = parse_iso(value)
         if dt is None:
             continue
         if max_dt is None or dt > max_dt:
             max_dt = dt
     return format_iso(max_dt) if max_dt is not None else None
+
+
+def _normalize_persisted_index_column(dataframe: Any) -> Any:
+    """Rename a ``get_data`` index column to the engine's ``date`` convention.
+
+    ``get_data`` writes its index column as ``timestamp``; the curated pull
+    helpers write ``date``. Chart mappings, ``dateRange`` filters, vintage
+    labels, and domain derivation all bind to ``date``, and a CSV read gives
+    a string column that matches neither the datetime-dtype branch nor the
+    ``date`` name. Normalising once here keeps a manifest identical whichever
+    producer wrote the file, rather than making every author remember.
+
+    Only the leading column is considered, and only when the frame has no
+    ``date`` column already, so a measurement column that happens to be named
+    ``timestamp`` is left alone.
+    """
+    columns = list(getattr(dataframe, "columns", []))
+    if not columns or columns[0] != "timestamp" or "date" in columns:
+        return dataframe
+    return dataframe.rename(columns={"timestamp": "date"})
 
 
 def _materialize_recipe_datasets(
@@ -22848,7 +23163,9 @@ def _materialize_recipe_datasets(
         if not key or not key.endswith(".csv"):
             continue
         stem = key.rsplit("/", 1)[-1].rsplit(".", 1)[0]
-        datasets[stem] = pd.read_csv(io.BytesIO(s3_manager.get(key)))
+        datasets[stem] = _normalize_persisted_index_column(
+            pd.read_csv(io.BytesIO(s3_manager.get(key)))
+        )
 
     bld_ns = _exec_dashboard_script_source(
         folder,
@@ -23696,13 +24013,22 @@ def light_refresh(
     ``metadata.time.stale_pulls`` rather than aborting the cycle. Every
     pull failing does raise — nothing was re-read, so advancing the
     freshness stamp would be a lie.
+
+    A ``get_data`` pull that resolves only some of its series returns
+    normally and so counts as a completed pull, but it is stamped stale
+    all the same: serving traffic should survive a symbol outage, and the
+    freshness pill should not call that cycle clean.
     """
     from dashboards_time import utcnow, format_iso
 
     s3 = _resolve_s3_manager(s3_manager)
     _audit_refresh_attachment(folder, s3_manager=s3, strict=True)
 
-    ns = _exec_dashboard_script(folder, "pull_data", s3_manager=s3)
+    script_path = f"{folder}/scripts/pull_data.py".replace("//", "/")
+    src = s3.get(script_path).decode("utf-8")
+    ns = _exec_dashboard_script_source(
+        folder, "pull_data", src, s3_manager=s3,
+    )
     pulls = ns.get("PULLS")
     if not isinstance(pulls, dict):
         raise RuntimeError(
@@ -23710,25 +24036,38 @@ def light_refresh(
             f"a module-level PULLS dict (got {type(pulls).__name__})"
         )
     print(f"[light_refresh] {folder} :: running {len(pulls)} pull(s)")
-    stale: List[str] = []
-    fresh: List[str] = []
+    failed: List[str] = []
+    executed: List[str] = []
     for name, fn in pulls.items():
         print(f"[light_refresh] {folder} :: pull {name}")
         try:
             fn()
         except Exception as exc:
-            stale.append(str(name))
+            failed.append(str(name))
             print(
                 f"[light_refresh] {folder} :: pull {name} FAILED "
                 f"({type(exc).__name__}: {exc}); isolated, dataset keeps "
                 f"last-cycle bytes"
             )
         else:
-            fresh.append(str(name))
-    if pulls and not fresh:
+            executed.append(str(name))
+    _stamp_pull_completion(folder, s3, executed, format_iso(utcnow()))
+    # A get_data pull that lost some of its series returned normally, so it
+    # is in `executed` and its bytes are current. Serving traffic must not
+    # fail over a symbol outage, but the pill must not call the cycle clean
+    # either -- so a partial counts as executed for the all-failed guard
+    # below, and as stale for the reader.
+    partial = _detect_partial_pulls(folder, s3, src)
+    if partial["datasets"]:
+        print(
+            f"[light_refresh] {folder} :: partial pull(s) -- "
+            f"{partial['detail']}; marked stale"
+        )
+    stale = sorted(set(failed) | (set(partial["pulls"]) & set(executed)))
+    if pulls and not executed:
         raise RuntimeError(
             f"light_refresh: all {len(pulls)} pulls failed "
-            f"({', '.join(stale)}); refusing to advance the freshness "
+            f"({', '.join(failed)}); refusing to advance the freshness "
             f"stamp over unchanged data"
         )
     cycle = refresh_cycle_at or format_iso(utcnow())
