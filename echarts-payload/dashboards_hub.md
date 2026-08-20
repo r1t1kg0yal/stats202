@@ -14,7 +14,7 @@ This is the compact cross-cutting contract. It does not own first-build steps, m
 3. **Canonical order.** Pulls produce files, transforms derive datasets, the template is populated, the receipt and flagged panels are reviewed, the exact signature is acknowledged with rationale, the guarded build writes outputs, registry metadata is aligned, then a clean subprocess refresh verifies the persisted artifact.
 4. **Canonical folder.** Persistent dashboards live only at `users/{kerberos}/dashboards/{dashboard_id}`.
 5. **Flat CSV routing.** Every pull writes to `{folder}/data`; only CSV files become datasets, and each dataset key matches the complete emitted stem byte-for-byte.
-6. **Portal handoff.** Surface only `http://reports.prism-ai.url.gs.com:8501/users/{kerberos}/dashboards/{dashboard_id}/`.
+6. **Portal handoff.** Surface only `https://reports.prism-ai.url.gs.com/users/{kerberos}/dashboards/{dashboard_id}/`.
 7. **Atomic work.** Do not return between steps of a build or edit. Once a response is sent, no autonomous work continues.
 8. **Preserve inherited intent.** Describe before mutation on ordinary edits; inspect only for heal/triage. Use typed operations for manifests and evidence-based edits for scripts. Root replacement is forbidden.
 9. **Engine diagnostics are instructions.** Follow each structured `fix_hint`, retry, and expose only product-level residue to the user.

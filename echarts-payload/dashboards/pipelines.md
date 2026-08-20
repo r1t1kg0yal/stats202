@@ -79,10 +79,13 @@ Each `PULLS` entry must re-call its source during refresh; an object left in
 the authoring session namespace is not a refreshable producer.
 
 ```python
+import asyncio
+import datetime
+import pydantic
 from core.s3_bucket_manager import s3_manager
+from prism_mcp.tools.data_tools import Details, get_data
 from prism_mcp.utils.data_functions import (
     pull_haver_data,
-    pull_plottool_data,
     pull_fred_data,
     save_artifact,
 )
@@ -90,14 +93,15 @@ from prism_mcp.utils.data_functions import (
 SESSION_PATH = "users/goyalri/dashboards/rates_monitor"
 
 def pull_rates():
-    pull_plottool_data(
-        expressions=["sofrswp2y", "sofrswp10y"],
-        labels=["us_2y", "us_10y"],
-        start="2020-01-01",
-        name="rates",
-        output_path=f"{SESSION_PATH}/data",
-        s3_manager=s3_manager,
-    )
+    asyncio.run(get_data(
+        session_path=f"{SESSION_PATH}/data", name="rates",
+        details=pydantic.TypeAdapter(Details).validate_python({
+            "source": "tsdb_eod",
+            "start": "2020-01-01",
+            "end": datetime.date.today().isoformat(),
+            "symbols": [{"symbol": "sofrswp2y", "label": "us_2y"},
+                        {"symbol": "sofrswp10y", "label": "us_10y"}],
+        }))
 
 PULLS = {"rates": pull_rates}
 ```

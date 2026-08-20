@@ -33,20 +33,23 @@ KERBEROS = "goyalri"
 DASHBOARD_ID = "rates_monitor"
 FOLDER = f"users/{KERBEROS}/dashboards/{DASHBOARD_ID}"
 
-pull_data_py = '''from core.s3_bucket_manager import s3_manager
-from prism_mcp.utils.data_functions import pull_plottool_data
+pull_data_py = '''import asyncio
+import datetime
+import pydantic
+from prism_mcp.tools.data_tools import Details, get_data
 
 SESSION_PATH = "{{FOLDER}}"
 
 def pull_rates():
-    pull_plottool_data(
-        expressions=["sofrswp2y", "sofrswp10y"],
-        labels=["us_2y", "us_10y"],
-        start="2020-01-01",
-        name="rates",
-        output_path=f"{SESSION_PATH}/data",
-        s3_manager=s3_manager,
-    )
+    asyncio.run(get_data(
+        session_path=f"{SESSION_PATH}/data", name="rates",
+        details=pydantic.TypeAdapter(Details).validate_python({
+            "source": "tsdb_eod",
+            "start": "2020-01-01",
+            "end": datetime.date.today().isoformat(),
+            "symbols": [{"symbol": "sofrswp2y", "label": "us_2y"},
+                        {"symbol": "sofrswp10y", "label": "us_10y"}],
+        }))
 
 PULLS = {"rates": pull_rates}
 '''.replace("{{FOLDER}}", FOLDER)
@@ -103,7 +106,7 @@ Pull primitives and stems:
 | Call | Persisted stem |
 |---|---|
 | `pull_haver_data(..., name="cpi")` | `cpi` |
-| `pull_plottool_data(..., name="rates")` | `rates` |
+| `get_data(..., name="rates")` | `rates` |
 | `pull_fred_data(..., name="labor")` | `labor` |
 | `result = pull_nyfed_data(...)` then `save_artifact(result, name="nyfed", output_path=...)` | `nyfed` only when `result` is a DataFrame or non-empty tabular records |
 | `save_artifact(DataFrame or non-empty list[dict], name="screen")` | `screen` |
@@ -451,7 +454,7 @@ browser check.
 
 After all four tools pass:
 
-`http://reports.prism-ai.url.gs.com:8501/users/{kerberos}/dashboards/{dashboard_id}/`
+`https://reports.prism-ai.url.gs.com/users/{kerberos}/dashboards/{dashboard_id}/`
 
 The user message contains the live URL and a concise product description. Prefer paraphrasing `describe_dashboard(FOLDER)["text"]` so create and edit share the same layout-sync grammar. Do not expose the four-tool transaction, internal files, or engine diagnostics unless explicitly asked.
 

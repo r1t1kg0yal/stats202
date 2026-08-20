@@ -6515,7 +6515,7 @@ class EChartResult:
     """Result of make_echart() / wrap_echart().
 
     Mirrors PRISM's ChartResult shape so it plugs into existing handlers
-    including check_charts_quality() which reads `.png_path`.
+    which read `.png_path`.
     """
     option: Dict[str, Any]
     chart_id: str
@@ -6556,8 +6556,7 @@ class EChartResult:
         background: str = "#ffffff",
     ) -> Path:
         """Render this chart's option to PNG via headless Chrome and record
-        the absolute path on self.png_path for downstream consumers (e.g.
-        check_charts_quality).
+        the absolute path on self.png_path for downstream consumers.
 
         Requires a system Chrome/Chromium binary. Raises RuntimeError if
         Chrome is unavailable.

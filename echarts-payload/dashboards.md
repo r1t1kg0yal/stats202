@@ -23,9 +23,9 @@ Dashboard construction is invisible plumbing. Unless the user explicitly asks fo
 
 Success handoff uses exactly:
 
-`http://reports.prism-ai.url.gs.com:8501/users/{kerberos}/dashboards/{dashboard_id}/`
+`https://reports.prism-ai.url.gs.com/users/{kerberos}/dashboards/{dashboard_id}/`
 
-Use `http`, port `8501`, the author's kerberos, the folder-leaf dashboard id, and the trailing slash. Never hand off an S3 HTML path.
+Use `https`, no port, the author's kerberos, the folder-leaf dashboard id, and the trailing slash. Never hand off an S3 HTML path.
 
 ## Tool 1 prerequisites
 
@@ -43,7 +43,7 @@ Pull primitives:
 | Function | Required naming result |
 |---|---|
 | `pull_haver_data(..., name="cpi")` | `data/cpi.csv` |
-| `pull_plottool_data(..., labels=[...], name="rates")` | `data/rates.csv` |
+| `get_data(..., name="rates")` | `data/rates.csv` |
 | `pull_fred_data(..., name="labor")` | `data/labor.csv` |
 | `result = pull_nyfed_data(...)` then `save_artifact(result, name="nyfed", output_path=...)` | `data/nyfed.csv` only when `result` is a DataFrame or non-empty tabular records |
 | `save_artifact(DataFrame or non-empty list[dict], name="screen")` | `data/screen.csv` |
@@ -51,7 +51,7 @@ Pull primitives:
 
 ## Route before fetching
 
-Classify the request, then issue the smallest applicable `list_ai_repo(file_paths=[...], mode="full")` call. Pass only `file_paths` and `mode`. Never call `get_context()` again during the same user turn.
+Classify the request, then issue the smallest applicable `list_ai_repo(file_paths=[...], mode="full")` call. Pass only `file_paths` and `mode`.
 
 **Initial** means the first context fetch after the user prompt. **Adaptive** means a later fetch at a newly reached phase boundary. Fetch for the current phase only; context needed by a later phase is not an initial requirement unless that later phase is already explicit in the prompt.
 
