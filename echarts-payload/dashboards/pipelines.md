@@ -63,35 +63,23 @@ Every persisted pull script:
 An exact expression, code, or client-call form supplied by the user/test is authoritative and must be copied without normalization. If the request supplies no verified identifier, do not translate a human label into a vendor code. Each pull also has an explicit expected output contract—stem, ordered column names, pandas dtypes, units, and frequency—stated by the request or verified from the response before manifest authoring. Assert required columns after the call and inspect actual dtypes; never guess returned field names.
 
 In-process execution and clean refresh expose the same canonical names:
-`s3_manager`, the standard pull helpers, `pull_nyfed_data`,
-`save_artifact`, `pd`, and `np`. Import every other used client module
-explicitly from `core.mcp.clients`.
-`get_data`, `asyncio`, and `pydantic` are not among them — import all three.
-Persisted scripts still import every helper they use; namespace injection is
-the parity guarantee for execution, not a reason to omit durable imports.
-For example, use `from core.mcp.clients import bond_client` when the verified
-call is `bond_client.get_screen(...)`.
+`s3_manager`, `save_artifact`, `pd`, `np`, and the retired pull helpers, kept
+bound only so the existing persisted corpus keeps running. `get_data`,
+`asyncio`, and `pydantic` are not among them — import all three. Persisted
+scripts still import every name they use; namespace injection is the parity
+guarantee for execution, not a reason to omit durable imports.
 
-NY Fed and client calls return objects rather than dashboard artifacts.
-Persist their output through `save_artifact` or an explicit CSV write. A
-dictionary or empty list is saved as JSON and is not a dataset; require a
-DataFrame or non-empty tabular records for a CSV-backed dataset.
-Each `PULLS` entry must re-call its source during refresh; an object left in
+Every `PULLS` entry must re-call its source during refresh; an object left in
 the authoring session namespace is not a refreshable producer.
 
 ```python
 import asyncio
 import datetime
 import pydantic
-from core.s3_bucket_manager import s3_manager
 from prism_mcp.tools.data_tools import Details, get_data
-from prism_mcp.utils.data_functions import (
-    pull_haver_data,
-    pull_fred_data,
-    save_artifact,
-)
 
 SESSION_PATH = "users/goyalri/dashboards/rates_monitor"
+TODAY = datetime.date.today().isoformat()
 
 def pull_rates():
     asyncio.run(get_data(
@@ -99,20 +87,31 @@ def pull_rates():
         details=pydantic.TypeAdapter(Details).validate_python({
             "source": "tsdb_eod",
             "start": "2020-01-01",
-            "end": datetime.date.today().isoformat(),
+            "end": TODAY,
             "symbols": [{"symbol": "sofrswp2y", "label": "us_2y"},
                         {"symbol": "sofrswp10y", "label": "us_10y"}],
-        }))
+        })))
 
-PULLS = {"rates": pull_rates}
+def pull_labor():
+    asyncio.run(get_data(
+        session_path=f"{SESSION_PATH}/data", name="labor",
+        details=pydantic.TypeAdapter(Details).validate_python({
+            "source": "client",
+            "calls": [{"client": "fred", "function": "pull_fred_data",
+                       "arguments": {"codes": ["UNRATE"],
+                                     "start": "2020-01-01", "end": TODAY},
+                       "label": "unrate"}],
+        })))
+
+PULLS = {"rates": pull_rates, "labor": pull_labor}
 ```
 
 Stem rules:
 
 | Producer | Emitted artifact and dataset key |
 |---|---|
-| Haver / FRED / `get_data` except `lakehouse` | `data/<name>.csv` → `<name>` |
-| `get_data` with `source="lakehouse"` | `data/<name>/<table>.csv`; `<name>` is a directory, not a dataset key |
+| `get_data` except `lakehouse` | `data/<name>.csv` → `<name>` |
+| `get_data` with `source="lakehouse"` | one `data/<name>_<stem>.csv` per table → `<name>_<stem>`; `<name>` alone is not a dataset key |
 | `save_artifact` with a DataFrame or non-empty list of records | `data/<name>.csv` → `<name>` |
 | `save_artifact` with a dictionary or empty list | JSON artifact; no dataset key |
 | Direct S3 CSV write | literal `data/<stem>.csv` → `<stem>` |
@@ -120,9 +119,11 @@ Stem rules:
 
 ### get_data pulls
 
-Read the source's spoke through `market_data_infra_hub.md` before the first `get_data` call to a given `source` in a session — the `details` shape is per-source and not guessable — and take symbols from the instrument guides it names. Call it directly, not as a tool: the refresh cycle runs `pull_data.py` in a plain Python process with no MCP registry, and the registered tool and the imported symbol are the same object. One `PULLS` entry per source, since per-entry isolation is the cycle's only failure boundary; changing coordinates is then a text edit to that `details` dict plus a re-run.
+Read the source's spoke through `market_data_infra_hub.md` before the first `get_data` call to a given `source` in a session — the `details` shape is per-source and not guessable — and take identifiers from the guides it names. Call it directly, not as a tool: the refresh cycle runs `pull_data.py` in a plain Python process with no MCP registry, and the registered tool and the imported symbol are the same object. One `PULLS` entry per source, since per-entry isolation is the cycle's only failure boundary; changing identifiers is then a text edit to that `details` dict plus a re-run.
 
-Two behaviours differ from the other pull helpers. Partial resolution never raises: a dead symbol omits its column and records the reason in the sidecar, so `run_pull` raises on the mismatch while authoring, and a scheduled refresh keeps the partial bytes and stamps the pull into `metadata.time.stale_pulls` rather than failing the cycle. And the index column arrives as `timestamp`: the engine renames it to `date` on load, so author manifests, `dateRange` filters, and vintage labels against `date` as with any producer, and expect `timestamp` only in code reading the raw CSV. Series align on the union of their ticks, so mixing cadences in one call leaves NaNs in the sparser column — drop per column, not across the frame.
+Partial resolution never raises: a dead symbol omits its column and records the reason in the sidecar, so `run_pull` raises on the mismatch while authoring, and a scheduled refresh keeps the partial bytes and stamps the pull into `metadata.time.stale_pulls` rather than failing the cycle. The trusted series sources write the index as `timestamp` and the engine renames it to `date` on load, so author manifests, `dateRange` filters, and vintage labels against `date` as with any producer. Series align on the union of their ticks, so mixing cadences in one call leaves NaNs in the sparser column — drop per column, not across the frame.
+
+Two sources need more care. `source="client"` is the only untrusted one: every text cell is rewritten by a summariser before the CSV is written, numeric and datetime columns pass through untouched, and a call that fails quarantine still writes an empty CSV with the reason only in the sidecar — so assert the expected columns after the call rather than trusting a file's existence. Its `arguments` is the client function's own keyword set, passed verbatim. `source="lakehouse"` fans out to one CSV per table named `<name>_<stem>`, where `<stem>` is the table's `label`; give every table an explicit literal `label` so the dataset keys are statically provable, and expect no index column unless the table is datetime-indexed.
 
 ### Producer visibility
 
@@ -356,7 +357,7 @@ Every displayed field identifies its source. `field_provenance` is placed inside
 }
 ```
 
-Each provenance value is a dictionary. Native-source fields use `system` plus the exact supplied identifier (`symbol`, `haver_code`, `fred_series`, or another source-native key). For a field retrieved by `get_data`, `system` is that call's `details.source` literal. Client-returned fields use the closed shape `{"system":"client","client":<exact imported client name>,"method":<exact called method>}` plus optional `identifier` only when the caller supplied that field/token; do not infer one from a display label. A deterministic user fixture uses `{"system":"fixture","source":"user_supplied","source_label":"User-supplied deterministic fixture"}` and may add supplied units/frequency; it has no invented vendor identifier. `display_name`, `units`, `frequency`, and `source_label` are optional source facts. A computed field uses `system: "computed"`, exact `recipe`, `computed_from`, and `units`. Never invent identifiers. Helper metadata sidecars and `df.attrs` never populate this structure; author it explicitly in the template.
+Each provenance value is a dictionary. `system` is the call's `details.source` literal, and the identifier beside it is the one that call supplied — `symbol` for the TSDB and ChunkStore sources, `coordinate` for MDAPI, `haver_code` for Haver, `dataset` plus `field` for GS Quant, `service_uri` for Lakehouse. A `source="client"` field uses the closed shape `{"system":"client","client":<calls[].client>,"method":<calls[].function>}` plus optional `identifier` only when the caller supplied that field/token; do not infer one from a display label. A deterministic user fixture uses `{"system":"fixture","source":"user_supplied","source_label":"User-supplied deterministic fixture"}` and may add supplied units/frequency; it has no invented vendor identifier. `display_name`, `units`, `frequency`, and `source_label` are optional source facts. A computed field uses `system: "computed"`, exact `recipe`, `computed_from`, and `units`. Never invent identifiers. Helper metadata sidecars and `df.attrs` never populate this structure; author it explicitly in the template.
 
 ## Refresh-frequency edits
 

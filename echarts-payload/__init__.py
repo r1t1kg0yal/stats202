@@ -90,8 +90,9 @@ the standard "load template + CSVs + transforms -> compile + write to
 S3" recipe so PRISM doesn't reinvent it per dashboard.
 
 DataFrame contract: PRISM emits Python that builds DataFrames from real
-data retrieval (``get_data`` for market / series / lakehouse data,
-``pull_haver_data``, FRED, etc.) and stores them as dataset values. Literal numbers never appear in the
+data retrieval (``get_data`` for every source, reaching FRED, NY Fed and
+the other external clients through ``source="client"``) and stores them
+as dataset values. Literal numbers never appear in the
 JSON emitted by PRISM. Three accepted shapes for a dataset entry, all
 normalised to the same on-disk form by the compiler:
 
@@ -102,8 +103,9 @@ normalised to the same on-disk form by the compiler:
 Python runtime dependencies are stdlib + pandas + numpy. Persisted
 dashboard scripts execute through one canonical namespace in both
 in-process folder operations and clean refresh discovery. It exposes
-``s3_manager``, the supported pull helpers, ``pull_nyfed_data``,
-``save_artifact``, ``pd``, and ``np``.
+``s3_manager``, ``save_artifact``, ``pd``, ``np``, and the retired pull
+helpers, bound only so the existing persisted corpus keeps running.
+``get_data`` is not injected; persisted scripts import it.
 
 The emitted HTML inlines ECharts (~1MB) read from the
 local `web/backend_django/news/static/js/echarts.js` mirror. Code retains

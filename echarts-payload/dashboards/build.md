@@ -26,7 +26,7 @@ Use a first build for a new dashboard or an explicitly requested destructive reb
 
 ## Tool 1: pull and verify data
 
-`pull_data.py` is standalone persisted Python. It defines the exact dashboard folder, explicitly imports every name it uses, writes every artifact under `data/`, and exposes a module-level `PULLS` dictionary. Never rely on authoring or in-process injections: import `pandas as pd`, `numpy as np`, `pull_nyfed_data` from `core.mcp.clients.newyorkfed_client`, `save_artifact` from `prism_mcp.utils.data_functions`, and each `core.mcp.clients` module when actually used.
+`pull_data.py` is standalone persisted Python. It defines the exact dashboard folder, explicitly imports every name it uses, writes every artifact under `data/`, and exposes a module-level `PULLS` dictionary. Never rely on authoring or in-process injections: import `pandas as pd`, `numpy as np`, `asyncio`, `pydantic`, `Details` and `get_data` from `prism_mcp.tools.data_tools`, and `save_artifact` from `prism_mcp.utils.data_functions` when actually used.
 
 ```python
 KERBEROS = "goyalri"

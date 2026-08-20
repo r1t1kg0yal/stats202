@@ -17266,8 +17266,6 @@ def compile_dashboard(
 #     import asyncio
 #     import pydantic
 #     from prism_mcp.tools.data_tools import Details, get_data
-#     from prism_mcp.utils.data_functions import pull_haver_data, save_artifact
-#     from core.s3_bucket_manager import s3_manager
 #     SESSION_PATH = "users/<k>/dashboards/<id>"
 #     def pull_rates():
 #         asyncio.run(get_data(
@@ -17276,9 +17274,11 @@ def compile_dashboard(
 #                 'source': 'tsdb_eod', 'start': ..., 'end': ...,
 #                 'symbols': [{'symbol': ..., 'label': ...}]})))
 #     def pull_cpi():
-#         pull_haver_data(codes=[...], name='cpi',
-#                         output_path=f'{SESSION_PATH}/data',
-#                         s3_manager=s3_manager)
+#         asyncio.run(get_data(
+#             session_path=f'{SESSION_PATH}/data', name='cpi',
+#             details=pydantic.TypeAdapter(Details).validate_python({
+#                 'source': 'haver', 'start': ...,
+#                 'symbols': [{'code': 'JCXFE@USECON', 'label': ...}]})))
 #     PULLS = {'rates': pull_rates, 'cpi': pull_cpi}
 #
 # get_data writes {session_path}/{name}.csv directly -- no output_path, no
@@ -21346,10 +21346,46 @@ _PULL_PRIMITIVES: frozenset = frozenset({
 })
 
 # ``get_data(source="lakehouse")`` is the one shape where ``name=`` is a
-# DIRECTORY rather than a CSV stem: each table lands at
-# ``{session_path}/{name}/{table}.csv``, so ``name`` never names a dataset.
-# Inference must refuse it rather than attach a stem that will not exist.
-_GET_DATA_DIRECTORY_SOURCES: frozenset = frozenset({"lakehouse"})
+# filename PREFIX rather than a CSV stem: every table lands flat beside its
+# siblings at ``{session_path}/{name}_{stem}.csv``, so ``name`` alone never
+# names a dataset, and the single ``{name}_metadata.json`` covers the whole
+# call. The per-table stem is the table's ``label`` when it has one, else the
+# last URI segment that is neither ``all`` nor a ``{templated}`` placeholder.
+_GET_DATA_MULTI_FILE_SOURCES: frozenset = frozenset({"lakehouse"})
+_LAKEHOUSE_STEM_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _lakehouse_table_stem(table: Any) -> Optional[str]:
+    """Derive the CSV stem ``get_data`` gives one ``lakehouse`` table.
+
+    Mirrors the tool's own rule so a lakehouse pull is attachable without
+    the author restating what the engine can already compute. A bare string
+    entry is taken as the ``service_uri``. Returns ``None`` when nothing
+    literal is available, which the caller reports as unresolved.
+    """
+    if isinstance(table, str):
+        table = {"service_uri": table}
+    if not isinstance(table, dict):
+        return None
+
+    raw = table.get("label")
+    if not isinstance(raw, str) or not raw.strip():
+        uri = table.get("service_uri")
+        if not isinstance(uri, str):
+            return None
+        segments = [
+            segment for segment in uri.split("/")
+            if segment and segment != "all"
+            and not (segment.startswith("{") and segment.endswith("}"))
+        ]
+        if not segments:
+            return None
+        raw = segments[-1]
+
+    if _STATIC_DYNAMIC_TOKEN in raw:
+        return None
+    stem = _LAKEHOUSE_STEM_UNSAFE.sub("_", raw)
+    return stem or None
 
 
 def _collect_widget_dataset_refs(template: Dict[str, Any]) -> set:
@@ -22009,17 +22045,17 @@ class _StaticProducerAnalyzer:
         for child in ast.iter_child_nodes(expression):
             self._trace_expr(child, env, root_name, function_name, stack)
 
-    def _static_details_source(
+    def _static_details_mapping(
         self, call: Any, env: Dict[str, Any]
-    ) -> Optional[str]:
-        """Read the literal ``details['source']`` of a ``get_data`` call.
+    ) -> Optional[Dict[str, Any]]:
+        """Read the literal ``details=`` mapping of a ``get_data`` call.
 
         The canonical authored form wraps a literal dict in
         ``pydantic.TypeAdapter(Details).validate_python(...)``, so the dict
         is reachable by walking the ``details=`` subtree even though the
         wrapper call itself does not evaluate statically. Returns ``None``
-        when no literal source is present, which the caller treats as
-        unresolved rather than guessing a shape.
+        when no literal mapping carrying a ``source`` is present, which the
+        caller treats as unresolved rather than guessing a shape.
         """
         ast = self.ast
         details = next(
@@ -22028,23 +22064,58 @@ class _StaticProducerAnalyzer:
         if details is None:
             return None
 
+        def _usable(mapping: Any) -> bool:
+            if not isinstance(mapping, dict):
+                return False
+            source = mapping.get("source")
+            return (isinstance(source, str)
+                    and _STATIC_DYNAMIC_TOKEN not in source)
+
         evaluated = self._eval(details, env)
-        if isinstance(evaluated, dict):
-            source = evaluated.get("source")
-            if isinstance(source, str) and _STATIC_DYNAMIC_TOKEN not in source:
-                return source
+        if _usable(evaluated):
+            return evaluated
 
         for node in ast.walk(details):
             if not isinstance(node, ast.Dict):
                 continue
-            for key, value in zip(node.keys, node.values):
-                if not isinstance(key, ast.Constant) or key.value != "source":
-                    continue
-                resolved = self._eval(value, env)
-                if isinstance(resolved, str) \
-                        and _STATIC_DYNAMIC_TOKEN not in resolved:
-                    return resolved
+            candidate = self._eval(node, env)
+            if _usable(candidate):
+                return candidate
         return None
+
+    def _add_lakehouse_outputs(
+        self,
+        root_name: str,
+        function_name: str,
+        call: Any,
+        name: str,
+        details: Dict[str, Any],
+    ) -> None:
+        """Attach the per-table stems a ``lakehouse`` pull writes.
+
+        A lakehouse call fans out to ``{name}_{stem}.csv``, so ``name``
+        itself is never a dataset key. Every stem has to resolve: attaching
+        a partial set would leave a real dataset unattached while looking
+        like a clean parse.
+        """
+        tables = details.get("tables")
+        if isinstance(tables, (str, dict)):
+            tables = [tables]
+        stems = (
+            [_lakehouse_table_stem(table) for table in tables]
+            if isinstance(tables, list) and tables else []
+        )
+        if not stems or any(stem is None for stem in stems):
+            self._record_unresolved(
+                root_name, function_name, call,
+                f"get_data source='lakehouse' writes one CSV per table as "
+                f"{name}_<stem>.csv, and at least one stem is not statically "
+                f"readable; give every table an explicit literal label= so "
+                f"the dataset keys are provable",
+            )
+            return
+        for stem in stems:
+            self._add_output(root_name, f"{name}_{stem}")
 
     def _trace_call(
         self,
@@ -22069,7 +22140,8 @@ class _StaticProducerAnalyzer:
             mode = values.get("mode", "eod")
             if isinstance(name, str) and _STATIC_DYNAMIC_TOKEN not in name:
                 if call_name == "get_data":
-                    source = self._static_details_source(call, env)
+                    details = self._static_details_mapping(call, env)
+                    source = None if details is None else details.get("source")
                     if source is None:
                         self._record_unresolved(
                             root_name, function_name, call,
@@ -22077,17 +22149,12 @@ class _StaticProducerAnalyzer:
                             "readable source; author it as "
                             "pydantic.TypeAdapter(Details).validate_python("
                             "{\"source\": \"<literal>\", ...}), because "
-                            "source=\"lakehouse\" makes name= a directory "
-                            "rather than a CSV stem",
+                            "source=\"lakehouse\" makes name= a filename "
+                            "prefix rather than a CSV stem",
                         )
-                    elif source in _GET_DATA_DIRECTORY_SOURCES:
-                        self._record_unresolved(
-                            root_name, function_name, call,
-                            f"get_data source={source!r} writes one CSV per "
-                            f"table beneath the {name!r} directory, so "
-                            f"{name!r} is not itself a dataset key; give each "
-                            "table its own pull or declare the per-table "
-                            "stems explicitly",
+                    elif source in _GET_DATA_MULTI_FILE_SOURCES:
+                        self._add_lakehouse_outputs(
+                            root_name, function_name, call, name, details
                         )
                     else:
                         self._add_output(root_name, name)
@@ -22922,21 +22989,43 @@ def _load_json_key(s3_manager, key: str) -> Optional[Any]:
 def _get_data_sidecar_coverage(sidecar: Any) -> Optional[Dict[str, Any]]:
     """Return the coverage block of a ``get_data`` ``<stem>_metadata.json``.
 
-    ``get_data`` records ``requested`` / ``resolved`` counts plus a
-    ``series`` list. The curated pull helpers write a different shape to
-    the same filename, so this shape-detects instead of assuming, and
-    returns ``None`` for anything it does not recognise.
+    ``get_data`` records ``requested`` / ``resolved`` counts plus a list of
+    per-item records. The list key is ``series`` for the eight series and
+    client sources and ``tables`` for ``lakehouse``, whose ``resolved``
+    counts tables that produced a CSV rather than records without an
+    error. The curated pull helpers write a different shape to the same
+    filename, so this shape-detects instead of assuming, and returns
+    ``None`` for anything it does not recognise.
     """
     if not isinstance(sidecar, dict):
         return None
     requested = sidecar.get("requested")
     resolved = sidecar.get("resolved")
-    series = sidecar.get("series")
     if not isinstance(requested, int) or not isinstance(resolved, int):
         return None
-    if not isinstance(series, list):
-        return None
-    return {"requested": requested, "resolved": resolved, "series": series}
+    for key in ("series", "tables"):
+        records = sidecar.get(key)
+        if isinstance(records, list):
+            return {
+                "requested": requested,
+                "resolved": resolved,
+                "series": records,
+            }
+    return None
+
+
+def _sidecar_covers(stem: str, dataset_keys: set) -> bool:
+    """Does ``<stem>_metadata.json`` describe any of ``dataset_keys``?
+
+    A series pull names its sidecar after its single CSV. A ``lakehouse``
+    pull writes one ``{name}_metadata.json`` covering the whole call while
+    its CSVs are ``{name}_{table}.csv``, so there the sidecar stem is a
+    prefix of the dataset keys rather than one of them.
+    """
+    if stem in dataset_keys:
+        return True
+    prefix = f"{stem}_"
+    return any(key.startswith(prefix) for key in dataset_keys)
 
 
 def _collect_short_pulls(folder: str, s3_manager,
@@ -22967,7 +23056,7 @@ def _collect_short_pulls(folder: str, s3_manager,
         if not key or not key.endswith(suffix):
             continue
         stem = key.rsplit("/", 1)[-1][:-len(suffix)]
-        if wanted is not None and stem not in wanted:
+        if wanted is not None and not _sidecar_covers(stem, wanted):
             continue
         coverage = _get_data_sidecar_coverage(_load_json_key(s3_manager, key))
         if coverage is None or coverage["resolved"] >= coverage["requested"]:
@@ -22979,7 +23068,7 @@ def _collect_short_pulls(folder: str, s3_manager,
             missing.append({
                 "label": record.get("label"),
                 "requested": record.get("requested"),
-                "error_class": record.get("error_class"),
+                "error_kind": record.get("error_kind"),
                 "error": record.get("error"),
             })
         findings.append({
@@ -23010,7 +23099,9 @@ def _detect_partial_pulls(folder: str, s3_manager,
         str(root.get("name"))
         for root in _analyze_pull_producers_from_source(src).get("roots", [])
         if root.get("name")
-        and not stems.isdisjoint(root.get("outputs") or [])
+        and any(_sidecar_covers(stem, {str(output) for output
+                                       in (root.get("outputs") or [])})
+                for stem in stems)
     })
     return {
         "pulls": owners,
@@ -23026,8 +23117,8 @@ def _describe_short_pulls(findings: List[Dict[str, Any]]) -> str:
         named = []
         for record in finding["missing"]:
             label = record.get("requested") or record.get("label") or "?"
-            cls = record.get("error_class")
-            named.append(f"{label} ({cls})" if cls else str(label))
+            kind = record.get("error_kind")
+            named.append(f"{label} ({kind})" if kind else str(label))
         detail = ", ".join(named) or "no per-series error recorded"
         parts.append(
             f"{finding['stem']}: resolved {finding['resolved']}/"
@@ -23110,12 +23201,18 @@ def _max_pull_time(folder: str, s3_manager) -> Optional[str]:
 def _normalize_persisted_index_column(dataframe: Any) -> Any:
     """Rename a ``get_data`` index column to the engine's ``date`` convention.
 
-    ``get_data`` writes its index column as ``timestamp``; the curated pull
-    helpers write ``date``. Chart mappings, ``dateRange`` filters, vintage
-    labels, and domain derivation all bind to ``date``, and a CSV read gives
-    a string column that matches neither the datetime-dtype branch nor the
-    ``date`` name. Normalising once here keeps a manifest identical whichever
-    producer wrote the file, rather than making every author remember.
+    ``get_data`` names the index ``timestamp`` on its trusted series path;
+    the curated pull helpers write ``date``. Chart mappings, ``dateRange``
+    filters, vintage labels, and domain derivation all bind to ``date``, and
+    a CSV read gives a string column that matches neither the datetime-dtype
+    branch nor the ``date`` name. Normalising once here keeps a manifest
+    identical whichever producer wrote the file, rather than making every
+    author remember.
+
+    The other two ``get_data`` shapes need nothing: ``source="client"``
+    keeps the client's own index name (FRED already writes ``date``), and a
+    positionally-indexed frame is written without an index column at all,
+    so there is no leading date column to rename.
 
     Only the leading column is considered, and only when the frame has no
     ``date`` column already, so a measurement column that happens to be named
