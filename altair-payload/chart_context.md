@@ -7,7 +7,9 @@ The v1 surface is canonical. `make_chart`, `make_table`, `build_charts`,
 `profile_df`, `ChartSpec`, all five `make_*pack_*` helpers, result classes,
 and all annotation classes are injected into the sandbox. Call them bare:
 **never import them**. `s3_manager`, `session_path`, and `user_id` are supplied
-by the sandbox; never pass them. Raw matplotlib is blocked.
+by the sandbox; never pass them. There is no matplotlib here: `plt` is not in
+your namespace and importing it yourself produces a confusing failure, not a
+chart. Every visual on this surface comes from the functions below.
 
 ## 1. Where things are
 

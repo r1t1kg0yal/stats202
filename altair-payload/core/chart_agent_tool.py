@@ -13,6 +13,8 @@ DataFrames cross that boundary as files, which is the channel
 ``execute_analysis_script`` already writes them to.
 """
 
+from __future__ import annotations
+
 import logging
 
 # Share gs_llm2's logger namespace so these lines interleave with the rest of the agent's.

@@ -4,7 +4,7 @@ topic: Composer-in-dashboards delta re-extract + drag/panel feasibility
 expected_reply: ~35 KB
 created_at: 2026-08-19
 sent:
-status: OPEN
+status: FOLDED
 baseline_date: 2026-07-21
 baseline_source: staging/prompts/archive/2026-07-21_composer_s3_full_stack_refresh.md
 trigger: >

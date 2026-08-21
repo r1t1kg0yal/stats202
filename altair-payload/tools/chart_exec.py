@@ -6,10 +6,6 @@ import would put ``register_trusted_extensions`` back into that module's import
 graph -- the coupling this split exists to remove.
 """
 
-# --- STAGING: import region inferred from usage, not read. See README "Parity
-# --- status". The transcription source collapsed it behind `import ...`.
-# --- Everything from `logger = ...` down is verbatim. Delete these four lines
-# --- and reconcile the block below once the real imports are confirmed.
 import asyncio
 import functools
 import io
@@ -22,15 +18,15 @@ import numpy as np
 import pandas as pd
 
 from core.s3_bucket_manager import s3_manager
-from prism_mcp.utils.download_links import generate_download_links_for_sandbox
-from prism_mcp.utils.error_handler import log_swallowed_exception
-from prism_mcp.tools.session_tools import (
-    SCRIPT_STDOUT_INLINE_BYTES,
-    _resolve_kerberos_info_from_baggage,
-    _resolve_medium_from_baggage,
-    _resolve_or_create,
-    preprocess_script_code,
+from core.swallowed_exceptions import log_swallowed_exception
+from prism_mcp.utils.baggage import (
+    resolve_kerberos_info_from_baggage as _resolve_kerberos_info_from_baggage,
+    resolve_medium_from_baggage as _resolve_medium_from_baggage,
 )
+from prism_mcp.utils.code_preprocess_utils import preprocess_script_code
+from prism_mcp.utils.download_links import generate_download_links_for_sandbox
+from prism_mcp.utils.output_limits import SCRIPT_STDOUT_INLINE_BYTES
+from prism_mcp.utils.session_registry import resolve_or_create as _resolve_or_create
 
 logger = logging.getLogger('chart_exec')
 
@@ -46,8 +42,11 @@ DELIVERY_CLOSE = "===CHART_DELIVERY_END==="
 DIAGNOSTICS_OPEN = "===CHART_DIAGNOSTICS_START==="
 DIAGNOSTICS_CLOSE = "===CHART_DIAGNOSTICS_END==="
 
-# A numbered defect inside one aggregated ValidationError message.
-_FINDING_RE = re.compile(r'^\s*\d+[.)]\s', re.MULTILINE)
+# The engine folds 2+ validation findings into one frame under this exact header
+# (`chart_render/core.py::_aggregate_finding_messages`). A lone finding is re-raised
+# verbatim with no header, so absence of a match means exactly one. Deliberately
+# unanchored: in a formatted traceback the header trails the exception class name.
+_AGGREGATE_RE = re.compile(r'(\d+) independent problems -- fix ALL, then re-run:')
 
 # Plausible-sounding names the model reaches for instead of the documented ones.
 # Remapped silently so the call lands without costing a retry.
@@ -261,9 +260,10 @@ def _classify_failure(exc: BaseException, error_text: str) -> Tuple[str, str, in
         ), 0
     if isinstance(exc, (MemoryError, RecursionError)):
         return 'FATAL', f'{type(exc).__name__}: the render exhausted the worker', 0
-    # The engine aggregates independent defects into one numbered message, so the
-    # count is the convergence signal across attempts.
-    return 'RETRYABLE', type(exc).__name__, len(_FINDING_RE.findall(error_text)) or 1
+    # The count is the convergence signal across attempts: a retry that does not
+    # reduce it is not making progress.
+    aggregate = _AGGREGATE_RE.search(error_text)
+    return 'RETRYABLE', type(exc).__name__, int(aggregate.group(1)) if aggregate else 1
 
 
 def _describe_artifact(art: Dict[str, Any]) -> str:
