@@ -278,7 +278,7 @@ Per-project unit count and file inventory:
 |---|---|---|
 | apis | per-source | 9 today (`treasury`, `treasury_direct`, `bis`, `statcan`, `bank_of_canada`, `wid`, `ai_buildout`, `ilo`, `imf`); grows as more clients are rebuilt (target ~20) |
 | altair | per-topic | 8 (`chart_types`, `mapping`, `annotations`, `dual_axis`, `composites`, `tables`, `grids`, `colors`) — the inventory covers the registered core plus all six spokes. The 2026-05-10 Chart Center disable archived `chart_center_test.md` to `projects/altair/dev/archive/test_prompts/`; restore it alongside the studio call sites when re-enabling. |
-| echarts | per ownership/test surface | 8 (`charts`, `diagnose`, `filters`, `pipelines`, `recipes`, `template_crud`, `widget_tool`, `widgets`) — 8/8 files, 63 pure prompt bodies total (`template_crud` has 10, `charts` has 9, `pipelines` and `widgets` have 8 each, and the other four files have 7 each). `build.md` is covered through the create/edit prompts rather than a separate prompt file. |
+| echarts | per ownership/test surface | 8 (`charts`, `diagnose`, `filters`, `pipelines`, `recipes`, `template_crud`, `widget_tool`, `widgets`) — 8/8 files, 64 pure prompt bodies total (`charts` and `template_crud` have 10 each, `pipelines` and `widgets` have 8 each, and the other four files have 7 each). `build.md` is covered through the create/edit prompts rather than a separate prompt file. Every prompt that retrieves now declares a `scripts/pulls.json` entry; fixtures declare an empty document and persist through a `build.py` transform. |
 | whitepapers | — (deferred) | 0 |
 | frontend | — (no payload) | 0 |
 

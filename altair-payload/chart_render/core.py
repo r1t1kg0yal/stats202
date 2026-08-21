@@ -605,6 +605,8 @@ _ENGINE_ONLY_CHART_MAPPING_KEYS: frozenset = frozenset({
     "_bar_category_axis_plan",
     "_chart_height_px",
     "_chart_width_px",
+    "_contribution_axis_plan",
+    "_contribution_period_axis",
     "_facet_panel",
     "_grad_color_bounds",
     "_histogram_bin_extent",
@@ -2908,6 +2910,12 @@ def _materialize_contribution_periods(
             _relabel_annotation_x(a, label_by_stamp, formatter)
             for a in annotations
         ]
+
+    mapping["_contribution_period_axis"] = {
+        "grain": grain,
+        "labels": list(labels),
+        "stamps": [pd.Timestamp(ts).isoformat() for ts in chronological],
+    }
 
     return df, (
         f"Contribution x_field {x_field!r} was datetime; materialised "
@@ -11507,25 +11515,10 @@ def _count_calendar_ticks_in_range(
         step = 1
 
     if interval == "year":
-        count = 0
-        for year in range(min_date.year, max_date.year + 1):
-            if year % step != 0:
-                continue
-            tick = pd.Timestamp(year=year, month=1, day=1)
-            if min_date <= tick <= max_date:
-                count += 1
-        return count
+        return len(_calendar_ticks_in_range(min_date, max_date, tick_step))
 
     if interval == "month":
-        count = 0
-        for year in range(min_date.year, max_date.year + 2):
-            for month in range(1, 13):
-                if (month - 1) % step != 0:
-                    continue
-                tick = pd.Timestamp(year=year, month=month, day=1)
-                if min_date <= tick <= max_date:
-                    count += 1
-        return count
+        return len(_calendar_ticks_in_range(min_date, max_date, tick_step))
 
     if interval == "week":
         # Vega-Lite anchors weekly ticks to ISO week boundaries
@@ -11550,6 +11543,49 @@ def _count_calendar_ticks_in_range(
         return max(int(span_sec / step) + 1, 1)
 
     return 2
+
+
+def _calendar_ticks_in_range(
+    min_date: pd.Timestamp,
+    max_date: pd.Timestamp,
+    tick_step: Optional[Dict[str, Any]],
+) -> List[pd.Timestamp]:
+    """Calendar-aligned tick timestamps for year / month ``tick_step``.
+
+    Mirrors the Vega-Lite anchoring documented on
+    ``_count_calendar_ticks_in_range``. Other intervals return an empty
+    list -- those paths keep their count-only approximation.
+    """
+    if not isinstance(tick_step, dict):
+        return []
+    interval = tick_step.get("interval")
+    step = tick_step.get("step", 1)
+    try:
+        step = int(step)
+    except (TypeError, ValueError):
+        step = 1
+    if step < 1:
+        step = 1
+
+    ticks: List[pd.Timestamp] = []
+    if interval == "year":
+        for year in range(min_date.year, max_date.year + 1):
+            if year % step != 0:
+                continue
+            tick = pd.Timestamp(year=year, month=1, day=1)
+            if min_date <= tick <= max_date:
+                ticks.append(tick)
+        return ticks
+    if interval == "month":
+        for year in range(min_date.year, max_date.year + 2):
+            for month in range(1, 13):
+                if (month - 1) % step != 0:
+                    continue
+                tick = pd.Timestamp(year=year, month=month, day=1)
+                if min_date <= tick <= max_date:
+                    ticks.append(tick)
+        return ticks
+    return []
 
 
 # Coarsening ladder for "drop one notch finer" when a chosen step
@@ -12925,6 +12961,18 @@ def get_axis_beautification(
                 label_limit=150 if label_angle != 0 else 200,
                 tick_values=tick_values,
                 label_overlap="greedy",
+            )
+        elif isinstance(mapping.get("_contribution_axis_plan"), dict):
+            # ``_build_contribution`` already decided which period names
+            # stay on the axis. Date-originated windows thin to year
+            # (or coarser) ticks and keep every bar; a leftover rotate
+            # here is what turned 262 quarter labels into a smear.
+            plan = mapping["_contribution_axis_plan"]
+            configs["x"] = AxisConfig(
+                label_angle=int(plan.get("label_angle", 0)),
+                label_limit=200,
+                tick_values=plan.get("tick_values"),
+                label_expr=plan.get("label_expr"),
             )
         elif isinstance(mapping.get("_bar_category_axis_plan"), dict):
             # ``_build_bar`` already fitted this axis: it measured the
@@ -20646,6 +20694,107 @@ def _build_band(
 _CONTRIB_MAX_VALUE_LABELS = 14
 
 
+def _vega_label_lookup(label_map: Dict[str, str]) -> str:
+    """Vega expr: look up ``datum.value`` in a string-to-string table."""
+    parts = ", ".join(
+        f"{json.dumps(key)}: {json.dumps(value)}"
+        for key, value in label_map.items()
+    )
+    return f"{{{parts}}}[datum.value]"
+
+
+def _contribution_period_label_for_tick(
+    tick: pd.Timestamp,
+    stamps: Sequence[pd.Timestamp],
+    labels: Sequence[str],
+) -> Optional[str]:
+    """First period at or after ``tick``; last period if the tick is past the end."""
+    if not stamps:
+        return None
+    for stamp, label in zip(stamps, labels):
+        if stamp >= tick:
+            return str(label)
+    return str(labels[-1])
+
+
+def _plan_contribution_axis(
+    x_order: Sequence[str],
+    mapping: Dict[str, Any],
+    width: int,
+) -> Dict[str, Any]:
+    """Pick contribution x-axis ticks. Bars stay; only the labels thin.
+
+    Date-originated windows reuse ``determine_date_format`` so a 65-year
+    quarterly stack gets the same year stride a timeseries would (1970,
+    1980, ...). Named categories that were never dates keep every name,
+    or raise through the bar pitch gate when they cannot fit.
+    """
+    labels = [str(v) for v in x_order]
+    meta = mapping.get("_contribution_period_axis")
+    if (
+        isinstance(meta, dict)
+        and meta.get("stamps")
+        and meta.get("labels")
+    ):
+        stamps = [pd.Timestamp(ts) for ts in meta["stamps"]]
+        period_labels = [str(lab) for lab in meta["labels"]]
+        if labels and stamps and len(stamps) == len(period_labels):
+            sample = max(period_labels, key=len)
+            if _max_ticks_for_width(width, sample, 0) >= len(period_labels):
+                return {
+                    "label_angle": 0,
+                    "tick_values": None,
+                    "label_expr": None,
+                }
+            stamp_series = pd.Series(stamps)
+            cfg = determine_date_format(stamp_series, width)
+            ticks = _calendar_ticks_in_range(
+                stamp_series.min(), stamp_series.max(), cfg.tick_step,
+            )
+            fmt = cfg.format or "%Y"
+            label_map: Dict[str, str] = {}
+            tick_values: List[str] = []
+            for tick in ticks:
+                period = _contribution_period_label_for_tick(
+                    tick, stamps, period_labels,
+                )
+                if period is None or period in label_map:
+                    continue
+                try:
+                    display = pd.Timestamp(tick).strftime(fmt)
+                except (TypeError, ValueError):
+                    display = period
+                label_map[period] = display
+                tick_values.append(period)
+            if len(tick_values) >= 2:
+                return {
+                    "label_angle": 0,
+                    "tick_values": tick_values,
+                    "label_expr": _vega_label_lookup(label_map),
+                }
+            subset = _uniform_step_subset(
+                period_labels,
+                _max_ticks_for_width(width, sample, 0),
+            )
+            return {
+                "label_angle": 0,
+                "tick_values": subset if len(subset) < len(period_labels) else None,
+                "label_expr": None,
+            }
+
+    # Caller-supplied category names. Same contract as a vertical bar:
+    # every name is labelled, or we raise.
+    if labels:
+        _bar_category_axis_plan(
+            labels,
+            pitch_px=width / max(len(labels), 1),
+            base_font_size=_DEFAULT_AXIS_LABEL_FONT_SIZE,
+            extent_px=width,
+            grouped=False,
+        )
+    return {"label_angle": 0, "tick_values": None, "label_expr": None}
+
+
 def _build_contribution(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -20753,10 +20902,19 @@ def _build_contribution(
     y_title = _format_label(y_field, mapping, "y")
     _validate_y_axis_label(y_title, mapping)
 
+    axis_plan = _plan_contribution_axis(x_order, mapping, width)
+    mapping["_contribution_axis_plan"] = axis_plan
+    x_axis_kwargs: Dict[str, Any] = dict(titleFontWeight="normal")
+    x_axis_kwargs["labelAngle"] = int(axis_plan.get("label_angle") or 0)
+    if axis_plan.get("tick_values") is not None:
+        x_axis_kwargs["values"] = list(axis_plan["tick_values"])
+    if axis_plan.get("label_expr"):
+        x_axis_kwargs["labelExpr"] = axis_plan["label_expr"]
+
     def _x(frame: pd.DataFrame, *, title: Optional[str]) -> alt.X:
         return alt.X(
             x_field, type="nominal", sort=x_order,
-            axis=alt.Axis(title=title, titleFontWeight="normal"),
+            axis=alt.Axis(title=title, **x_axis_kwargs),
         )
 
     def _y(*, title: Optional[str], stack: Any = None) -> alt.Y:
