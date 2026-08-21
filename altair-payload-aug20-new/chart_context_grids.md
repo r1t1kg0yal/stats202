@@ -1,13 +1,13 @@
 # Altair facet grids
 
-This document covers `mapping['facet']` and 7–36 same-shape entities. A facet
+Fetch this spoke for `mapping['facet']` or 7–36 same-shape entities. A facet
 grid is one `make_chart()` call whose facet-column values become panels.
 
 ## 1. Grid versus composite
 
 | Need | Use |
 |---|---|
-| Two to six panels making one argument | `ChartSpec` pack; see `chart_context_composites.md` |
+| Two to six panels making one argument | `ChartSpec` pack; fetch composites |
 | Seven to 36 entities with the same chart shape | Facet grid |
 | More than 36 entities or matrix-like comparison | Aggregate or use heatmap/table |
 
@@ -104,8 +104,8 @@ make_chart(
 )
 ```
 
-The 10-category colour cap does not apply to a continuous ramp. See
-`chart_context_colors.md` before setting `color_range`, `color_scheme`, or opacity.
+The 10-category colour cap does not apply to a continuous ramp. Fetch the
+colours spoke before setting `color_range`, `color_scheme`, or opacity.
 
 ## 6. Output and failures
 

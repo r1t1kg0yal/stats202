@@ -3,8 +3,10 @@ class: context-extraction
 topic: subagent architecture — the agent topology, and how chart context now reaches the agent that authors charts
 expected_reply: ~30 KB
 created_at: 2026-08-20
-sent:
-status: OPEN
+sent: 2026-08-20
+status: ANSWERED — folded into prism/subagents.md (new), context-system.md,
+  mcp-tools.md, architecture.md, code-sandbox.md, prism/README.md,
+  .cursor/rules/{prism,viz-platforms,skill-discipline}.mdc, _changelog.md
 trigger: >
   User reports PRISM has moved to a full subagent architecture. The chart
   engine and the seven chart context files are unchanged, but if a

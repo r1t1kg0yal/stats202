@@ -1,11 +1,11 @@
 # Altair static tables (`make_table`)
 
-This document governs every `make_table()` call. Structured rows × columns
+Fetch this spoke before every `make_table()` call. Structured rows × columns
 ship as PNG tables across PRISM interfaces. Do not emit Markdown pipe tables,
 `print(df)`, `df.to_string()`, or aligned text blocks.
 
 Table colour kwargs are documented here; they are unrelated to the chart
-colours document.
+colours spoke.
 
 ## 1. Data source and minimal calls
 

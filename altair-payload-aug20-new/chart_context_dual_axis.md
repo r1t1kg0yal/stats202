@@ -1,6 +1,6 @@
 # Altair dual-axis and lead-lag charts
 
-This document covers two metrics or unit families on one shared x axis, any
+Fetch this spoke for two metrics or unit families on one shared x axis, any
 `dual_axis_*` / `y_title_right` / inverted-RHS request, a y-scale mismatch
 error, or a time-shifted lead-lag chart. Dual axis is supported on
 `multi_line` / `timeseries`.

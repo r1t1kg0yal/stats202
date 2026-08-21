@@ -1,6 +1,6 @@
 # Altair annotations and layers
 
-This document governs any `annotations=[...]` or `layers=[...]` call, and applies when
+Fetch this spoke before any `annotations=[...]` or `layers=[...]` call, or when
 the request asks to mark an event, threshold, regime, point, trend, forecast
 zone, or narrative takeaway. All classes are injected; call them bare.
 
@@ -88,7 +88,7 @@ There are four distinct trend surfaces; choose one and do not combine them:
 | Horizontal bar | `HLine` becomes a vertical value threshold |
 | Grouped bar (`stack=False`) | Annotations do not render; use title/subtitle or stack/split |
 | `multi_line` / `timeseries` | Rules, bands, segments, arrows, point classes, and callouts are supported; engine auto-injects `LastValueLabel` on a single axis |
-| Dual axis | See `chart_context_dual_axis.md`; y-bearing annotations need the correct `axis` |
+| Dual axis | Fetch dual-axis spoke; y-bearing annotations need the correct `axis` |
 | `band` | Rules, bands, segments, arrows, and callouts read against the ribbon, not just the subject line; the forecast divider is already drawn, so skip a `VLine` at the handoff |
 | `contribution` | `HLine` reads against stacked totals and zero is always in domain; a rule at zero is already drawn. Pass `VLine.x` as the date you have — the engine maps it to the rendered period label |
 | Facet grid | `LastValueLabel` is removed; panel headers identify facets |

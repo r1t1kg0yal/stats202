@@ -1,11 +1,11 @@
 # Altair chart colours and opacity
 
-This document governs any chart palette, per-series colour, hex, emphasis,
+Fetch this spoke before any chart palette, per-series colour, hex, emphasis,
 fade, transparency, `color_scheme`, `color_map`, `color_range`, `opacity`, or
 `opacity_map` request. Skip it when the user did not ask for colour control;
 the default `gs_primary` palette is production-ready.
 
-This document is for `make_chart`. Table backgrounds and heatmap-style table
+This spoke is for `make_chart`. Table backgrounds and heatmap-style table
 cells belong to `chart_context_tables.md`.
 
 ## 1. Five mapping kwargs

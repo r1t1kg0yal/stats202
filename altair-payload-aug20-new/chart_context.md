@@ -1,7 +1,9 @@
 # Altair Charts & Tables — v1 router and core
 
-- **Audience:** the chart agent
-- **Scope:** Static PNG charts, multi-panel composites, and PNG tables. Live dashboards are not yours.
+- **Module:** `chart_context`
+- **Audience:** PRISM in chat, email, report, and analysis workflows
+- **Tier:** 2 (registered context module)
+- **Scope:** Static PNG charts, multi-panel composites, and PNG tables. Live dashboards use `dashboards`.
 
 The v1 surface is canonical. `make_chart`, `make_table`, `build_charts`,
 `profile_df`, `ChartSpec`, all five `make_*pack_*` helpers, result classes,
@@ -9,34 +11,45 @@ and all annotation classes are injected into the sandbox. Call them bare:
 **never import them**. `s3_manager`, `session_path`, and `user_id` are supplied
 by the sandbox; never pass them. Raw matplotlib is blocked.
 
-## 1. Where things are
+## 1. Route before authoring
 
-Everything you need is already here. This document continues past the `---`
-separators below into six further documents, all of them present in full. There
-is nothing to retrieve and no tool to retrieve it with.
+Classify the request, then fetch every applicable spoke in one
+`list_ai_repo(file_paths=[...], mode="full")` call. Pass only `file_paths`
+and `mode`; `get_context()` is one-shot and cannot fetch a sibling mid-turn.
 
-| Topic | Trigger | Document |
+| Spoke | Mandatory trigger | Short path |
 |---|---|---|
-| Annotations | Threshold, event line, regime band, callout, highlight, trendline, narrative text, or any `annotations=[...]` / `layers=[...]` | `chart_context_annotations.md` |
-| Dual axis | Two metrics or units on one timeline; `dual_axis_*`, `y_title_right`, inverted RHS, lead-lag time shift, or a y-scale mismatch error | `chart_context_dual_axis.md` |
-| Composites and batch | Two or more chart calls, any `ChartSpec` / `make_*pack_*`, or several independent charts in one script | `chart_context_composites.md` |
-| Tables | Any structured rows × columns output or any `make_table()` call | `chart_context_tables.md` |
-| Grids | `mapping['facet']` or 7–36 same-shape entities | `chart_context_grids.md` |
-| Colours | Any chart palette, per-series colour, hex, fade, highlight, opacity, `color_scheme`, `color_map`, or `opacity_map` request | `chart_context_colors.md` |
+| Annotations | Threshold, event line, regime band, callout, highlight, trendline, narrative text, or any `annotations=[...]` / `layers=[...]` | `charts/chart_context_annotations.md` |
+| Dual axis | Two metrics or units on one timeline; `dual_axis_*`, `y_title_right`, inverted RHS, lead-lag time shift, or a y-scale mismatch error | `charts/chart_context_dual_axis.md` |
+| Composites and batch | Two or more chart calls, any `ChartSpec` / `make_*pack_*`, or several independent charts in one script | `charts/chart_context_composites.md` |
+| Tables | Any structured rows × columns output or any `make_table()` call | `charts/chart_context_tables.md` |
+| Grids | `mapping['facet']` or 7–36 same-shape entities | `charts/chart_context_grids.md` |
+| Colours | Any chart palette, per-series colour, hex, fade, highlight, opacity, `color_scheme`, `color_map`, or `opacity_map` request | `charts/chart_context_colors.md` |
 
-A basic single chart using default colours and no annotations needs none of
-them. Table colouring is in **tables**, not colours.
+Example:
+
+```python
+list_ai_repo(
+    file_paths=[
+        "charts/chart_context_composites.md",
+        "charts/chart_context_dual_axis.md",
+    ],
+    mode="full",
+)
+```
+
+No spoke is needed for a basic single chart using default colours and no
+annotations. Table colouring belongs to the **tables** spoke, not colours.
 
 ## 2. Pick the artifact and shape
 
 **Structured rows × columns always render through `make_table()`.** Do not emit
 Markdown pipe tables, `print(df)`, `df.to_string()`, or aligned text blocks.
-See `chart_context_tables.md`.
+Fetch the tables spoke before the call.
 
 | Analytical shape | Reach for |
 |---|---|
-| Time path, datetime `x` | `timeseries` |
-| Curve or profile across tenors, strikes, or buckets | `multi_line` |
+| Time path or curve | `multi_line` / `timeseries` |
 | X–Y relationship | `scatter`; grouped relationships → `scatter_multi` |
 | Categorical comparison | `bar` / `bar_horizontal` |
 | Matrix | `heatmap` |
@@ -48,9 +61,9 @@ See `chart_context_tables.md`.
 | Part-to-whole | `donut` |
 | Current value inside a range | `bullet` |
 | Additive bridge between two points in time | `waterfall` |
-| Two to six related stories | composite helper; see `chart_context_composites.md` |
-| Seven to 36 same-shape entities | facet grid; see `chart_context_grids.md` |
-| Structured watchlist, tape, calendar, snapshot, or trade list | `make_table`; see `chart_context_tables.md` |
+| Two to six related stories | composite helper; fetch composites |
+| Seven to 36 same-shape entities | facet grid; fetch grids |
+| Structured watchlist, tape, calendar, snapshot, or trade list | `make_table`; fetch tables |
 
 For freeform analysis, prefer a relationship-bearing shape over a descriptive
 single line: scatter with trendline, lead-lag, phase orbit, normalized
@@ -156,20 +169,16 @@ surfaces:
 | Surface | What belongs there | Common wrong placement |
 |---|---|---|
 | `make_chart(...)` | `df`, `chart_type`, `mapping`; title/source/caption; `annotations`, `layers`; facet layout controls; save path | Colour, opacity, axis-title, dual-axis, and chart-encoding keys do **not** belong at top level |
-| `mapping={...}` | Data fields, axis titles, and chart-specific encoding/configuration listed in §6 or a topic document | `title`, `source`, `annotations`, `layers`, `facet_cols`, `same_scale`, and save kwargs do **not** belong in `mapping` |
+| `mapping={...}` | Data fields, axis titles, and chart-specific encoding/configuration listed in §6 or a fetched spoke | `title`, `source`, `annotations`, `layers`, `facet_cols`, `same_scale`, and save kwargs do **not** belong in `mapping` |
 | `VLine(...)`, `Band(...)`, etc. | Only that annotation constructor's coordinates and style parameters | Annotation coordinates/style do not belong in `mapping` or at `make_chart` top level |
-| `layers=[{...}]` | Only the strict layer dictionaries in `chart_context_annotations.md` | Do not pass annotation objects or arbitrary Vega-Lite dictionaries |
+| `layers=[{...}]` | Only the strict layer dictionaries in the annotations spoke | Do not pass annotation objects or arbitrary Vega-Lite dictionaries |
 | `ChartSpec(...)` | Per-panel `df`, `chart_type`, `mapping`, text, annotations, and layers | `dimension_preset`, spacing, filename, and save path belong on `make_*pack_*` |
-| `make_table(...)` | Table kwargs from `chart_context_tables.md`; there is no `mapping` | Chart colour or chart mapping kwargs do not apply |
+| `make_table(...)` | Table kwargs from the tables spoke; there is no `mapping` | Chart colour or chart mapping kwargs do not apply |
 
 Unknown `mapping` keys, unexpected top-level `make_chart` kwargs, malformed
 layer dictionaries, and engine-only keys raise `ValidationError` with a
 placement or spelling hint. `dual_axis_config` is engine-managed; never pass
 it.
-
-Canonical names where a generic plotting prior suggests otherwise: `color`
-(the categorical field), `x_title` / `y_title` (axis titles), `value` (heatmap
-magnitude), `x_timezone` (display clock), `color_sort` (legend order).
 
 Results are dataclasses; use dot notation.
 
@@ -199,11 +208,10 @@ The engine raises rather than truncating. These are ceilings, not targets.
 | Named categories vs canvas (`bar`, `bar_horizontal`, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, and raises when it cannot. Date columns thin instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap, or switch to `bar_horizontal` for long lists |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
-| Series vertical share (`color`-split `multi_line` / `timeseries`) | Every series needs ≥10% of the y span, and adjacent series means stay within 3× the widest single span | Pass `y_title_right` naming the secondary metric and unit: inert when one axis suffices, and when it does not the engine routes the magnitude clusters to a dual axis in one pass. Standalone charts only — inside a composite cell declare `dual_axis_series` as well. Otherwise 2-pack, rebase to 100, or facet |
 | Categorical colour / donut slices | 10 categories | Filter or aggregate to `Other` |
 | Composite super-title / super-subtitle | `3 x int(row_px / (font_px x 0.55))` characters, where `row_px = cols x chart_width + (cols - 1) x 20` for the chosen layout and `dimension_preset`, and `font_px` is 32 (title) / 22 (subtitle). Across the presets that runs 63 to 159 characters for the title, 93 to 231 for the subtitle | Write to the 63 / 93 floor and any preset takes it; name a wider preset and spend its full budget |
 | `make_table` printed width | Body text prints at `body_font_size x 468 / canvas_px` and must clear 6pt, so the canvas stays under `78 x body_font_size` px, i.e. about 140 characters across one row (the widest cell of each column, summed), less ~2.5 per column for padding | Transpose, split by column group, drop or aggregate columns, shorten headers; the engine wraps text columns toward their floors to reach it |
-| Composite / facet count | Packs 2–6; facets 7–36 | See the composites or grids document |
+| Composite / facet count | Packs 2–6; facets 7–36 | Fetch the matching spoke |
 | `PlotText.text` | 10 words (aim ≤8) | Use caption/side text for longer prose |
 
 Long labels are named in the error with an actionable repair. Never pre-truncate
@@ -221,8 +229,7 @@ become nanoseconds after 1970 and the axis renders as a clock.
 
 | `chart_type` | Required mapping | Core rule |
 |---|---|---|
-| `timeseries` | datetime `x`, `y`; optional `color` | `x` must be a datetime column; any other dtype raises. Convert with `pd.to_datetime()` first |
-| `multi_line` | `x`, `y`; optional `color` | Datetime path, or an ordinal curve when `x` is categorical (tenors, strikes, buckets) |
+| `multi_line` / `timeseries` | `x`, `y`; optional `color` | Datetime series or ordinal profiles; `timeseries` follows the same line path |
 | `scatter` | `x`, `y` | At least 8 distinct visible coordinates |
 | `scatter_multi` | `x`, `y`, `color` | Grouped scatter; `trendlines=True` fits per group |
 | `bar` | categorical `x`, numeric `y` | Categorical only, never raw datetime |
@@ -286,7 +293,6 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `x_timezone` | Intraday display clock; default `America/New_York` |
 | `legend` | Explicit legend override; normally leave automatic |
 | `trendline`, `trendlines` | Overall scatter fit / per-group fits |
-| `size` | `scatter`: column name bound to the dot-size channel for a bubble scatter |
 | `connect`, `order` | Ordered scatter path; incompatible with trendline |
 | `zero_fill`, `zero_fill_baseline` | Single-line above/below-baseline fill |
 | `stack` | `bar`/`area` with colour: stacked by default; `False` groups/layers |
@@ -300,10 +306,10 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `extent` | Boxplot whisker IQR multiplier; default 1.5 |
 | `scale_type` | `linear` / `log` for line/timeseries/scatter only |
 | `orientation` | `bar`: force `vertical` instead of automatic horizontal routing |
-| `x_low`, `x_high`, `color_by`, `label`, `marker_size` | Bullet range, marker colour metric, optional label, marker area (default 200) |
-| `dual_axis_series`, `dual_axis_bind`, `invert_right_axis` | See `chart_context_dual_axis.md`; `dual_axis_config` is engine-managed |
-| `facet`, `facet_order`; `facet_cols`, `same_scale`, `share_color` top-level | See `chart_context_grids.md` |
-| `color_scheme`, `color_range`, `color_map`, `opacity`, `opacity_map` | See `chart_context_colors.md` |
+| `x_low`, `x_high`, `color_by`, `label` | Bullet range, marker colour metric, optional label |
+| `dual_axis_series`, `dual_axis_bind`, `invert_right_axis` | Fetch dual-axis spoke; `dual_axis_config` is engine-managed |
+| `facet`, `facet_order`; `facet_cols`, `same_scale`, `share_color` top-level | Fetch grids spoke |
+| `color_scheme`, `color_range`, `color_map`, `opacity`, `opacity_map` | Fetch colours spoke |
 
 ### 6.3 Type-specific decisions
 
@@ -314,7 +320,7 @@ become nanoseconds after 1970 and the axis renders as a clock.
 - Intraday line x values should stay datetime-like. Do not pre-format clock
   strings or force ordinal; set `x_timezone` only when ET is wrong.
 - `scatter` + `connect=True` creates an ordered phase path and needs `order`
-  or temporal/numeric `color`. See `chart_context_colors.md` to override its gradient.
+  or temporal/numeric `color`. Fetch colours when overriding its gradient.
 - `bar` / `bar_horizontal` are categorical comparisons. Mixed value units on
   one bar axis raise. Grouped bars (`stack=False`) do not render annotations.
 - `heatmap` accepts tidy long data, an unambiguous wide frame, or a meaningful
@@ -378,7 +384,7 @@ Expand the window to support the claim: “since 2008” must include 2008;
 percentiles need the full calculation window; compared charts use the same
 window.
 
-For two or more chart calls, see `chart_context_composites.md` and use
+For two or more chart calls, fetch the composites spoke and use
 `build_charts()` rather than a bare loop. A failed batch or composite surfaces
 all named defects; fix all of them and rebuild the complete set. Never silently
 substitute a different layout—if the requested shape is analytically invalid,

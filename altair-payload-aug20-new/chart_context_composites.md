@@ -1,6 +1,6 @@
 # Altair composites and batch building
 
-This document governs any `ChartSpec`, `make_*pack_*`, or `build_charts` call,
+Fetch this spoke before any `ChartSpec`, `make_*pack_*`, or `build_charts` call,
 and whenever one script builds two or more charts. Composite panels tell one
 related story in one PNG; `build_charts` safely attempts several independent
 chart/composite calls.
@@ -14,7 +14,7 @@ chart/composite calls.
 | One headline plus two supporting views | `make_3pack_triangle` |
 | Four coordinated regions/sectors/scenarios | `make_4pack_grid` |
 | True six-panel monitoring sheet | `make_6pack_grid` |
-| Seven to 36 same-shape entities | Facet grid, not a pack; see `chart_context_grids.md` |
+| Seven to 36 same-shape entities | Facet grid, not a pack; fetch grids |
 
 Two panels are the default for an analytical argument. Four or six should be
 used only when the grid itself is meaningful.
@@ -108,7 +108,7 @@ fixed `save_as` path wins over generated naming, so `filename_prefix` /
 `filename_suffix` matter only when `save_as` is omitted.
 
 Each cell owns its mapping, colour scale, axes, and annotations. Apply chart
-colour kwargs inside the cell's `mapping`; see `chart_context_colors.md`.
+colour kwargs inside the cell's `mapping` after fetching the colours spoke.
 Composite cells are narrower than standalone charts, so shorten category,
 legend, and end-label names aggressively; the engine raises with the exact
 offenders rather than truncating.
