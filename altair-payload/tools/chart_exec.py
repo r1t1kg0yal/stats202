@@ -50,16 +50,25 @@ _AGGREGATE_RE = re.compile(r'(\d+) independent problems -- fix ALL, then re-run:
 
 # Plausible-sounding names the model reaches for instead of the documented ones.
 # Remapped silently so the call lands without costing a retry.
+#
+# Split by destination, because the two are not interchangeable: `save_as` is a
+# top-level kwarg, while the axis titles are mapping keys and the engine rejects
+# them at top level by name. Rewriting an axis alias in place would swap one
+# error for a worse one -- the model wrote `ylabel` and would be told about
+# `y_title`, a name it never used.
 _KWARG_ALIASES = {
-    'y_axis_label': 'y_title',
-    'x_axis_label': 'x_title',
-    'ylabel': 'y_title',
-    'xlabel': 'x_title',
     'save_path': 'save_as',
     'output_path': 'save_as',
     'filename': 'save_as',
     'file_name': 'save_as',
     'output_file': 'save_as',
+}
+
+_MAPPING_ALIASES = {
+    'y_axis_label': 'y_title',
+    'x_axis_label': 'x_title',
+    'ylabel': 'y_title',
+    'xlabel': 'x_title',
 }
 
 
@@ -81,6 +90,15 @@ def _wrap_chart_func(func, s3_mgr, session_path=None, user_id=None):
                 kwargs[canonical] = kwargs.pop(alias)
             elif alias in kwargs:
                 kwargs.pop(alias)
+        # Copied, not mutated: the caller's dict is theirs, and a composite pack
+        # can hand the same mapping to more than one spec.
+        if any(alias in kwargs for alias in _MAPPING_ALIASES):
+            mapping = dict(kwargs.get('mapping') or {})
+            for alias, canonical in _MAPPING_ALIASES.items():
+                value = kwargs.pop(alias, None)
+                if value is not None and canonical not in mapping:
+                    mapping[canonical] = value
+            kwargs['mapping'] = mapping
         kwargs.pop('s3_manager', None)
         # session_path forces use_s3=True, so a render never attempts a local write.
         if session_path and 'session_path' not in kwargs:
