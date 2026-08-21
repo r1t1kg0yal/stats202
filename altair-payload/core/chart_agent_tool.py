@@ -69,15 +69,19 @@ Its `status:` line tells you what to do next:
 
   OK            Done. Reply with the delivery block.
   RETRYABLE     Every independent defect is named and counted. Fix them all in
-                one pass and call again. Keep going while the finding count
-                falls. When a pass fails to reduce it, or when the data plainly
-                cannot support what was asked, stop.
+                one pass and call again. The block says which attempt you are on
+                and says so outright when the finding count has stopped falling;
+                when it does, or when the data plainly cannot support what was
+                asked, stop.
   NO_ARTIFACTS  The code ran but wrote no PNG -- usually a chart function was
                 never called, or its result was swallowed. Call again.
-  FATAL         Do not retry. The same code fails the same way.
+  FATAL         Do not retry. The same code fails the same way. A CSV path that
+                does not exist arrives this way too; the caller chose that path,
+                so name it as missing rather than guessing at another.
 
-Five `render_charts` calls is the ceiling. Never wrap a chart call in
-try/except; the traceback is the diagnostic.
+Five `render_charts` calls is the ceiling and it is enforced -- a sixth is
+refused without running. Never wrap a chart call in try/except; the traceback is
+the diagnostic.
 
 If you stop without a PNG, do not paste the delivery block. Reply with one
 plain sentence naming what could not be built and why, drawn from the

@@ -751,8 +751,8 @@ def _collect_chart_mapping_findings(
                 )
         else:
             hint = (
-                " Use only mapping keys documented in chart_context.md or "
-                "its triggered spoke; do not invent kwargs."
+                " Use only mapping keys documented in your chart context; "
+                "do not invent kwargs."
             )
         findings.append(ValidationError(
             f"Unknown {surface} mapping key {key!r}.{hint}"
@@ -3463,7 +3463,7 @@ def _collect_plot_ready_findings(
                     facet_bullet = (
                         f"  - Small-multiples: one panel per series via "
                         f"mapping['facet']='{line_color_field}' (drop 'color') -- "
-                        f"see the grids spoke.\n"
+                        f"see the grids section of your chart context.\n"
                     )
                 else:
                     facet_bullet = ""

@@ -11,6 +11,7 @@ import functools
 import io
 import logging
 import re
+import time
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,10 +34,31 @@ logger = logging.getLogger('chart_exec')
 # Rendering is CPU-bound and local; past this it is a runaway loop, not a slow chart.
 CHART_EXECUTION_TIMEOUT_SECONDS = 90
 
+# The operating contract tells the sub-agent to stop at five calls and to stop when
+# the finding count stops falling. Both are prose, and a model is free to ignore
+# prose -- so both are also counted here. Past the ceiling the call is refused
+# before anything executes, which is what makes a runaway loop cheap instead of
+# merely discouraged.
+CHART_ATTEMPT_CEILING = 5
+
+# An abandoned ladder (parent turn died mid-retry) would otherwise sit on the
+# session forever and refuse the next turn's charts. Retries are seconds apart;
+# a new request is minutes away.
+_LADDER_TTL_SECONDS = 300
+
+# resolved session path -> (attempt number, n_findings, monotonic timestamp).
+# Cleared on any terminal status, so the next request starts a fresh ladder.
+_LADDER: Dict[str, Tuple[int, int, float]] = {}
+
 # The sub-agent forwards its reply verbatim, so the report has to say for itself
 # which half is the caller's and which half is scaffolding. Sentinels rather than
-# headings: the caller strips on an exact line match, and chart titles are free to
-# contain anything.
+# headings, because a heading has to be recognised by meaning while these can be
+# recognised by an exact line match, and chart titles are free to contain anything.
+#
+# Nothing strips them today: the sub-agent is told not to echo the sentinel lines
+# and that instruction is the only thing standing between them and a chat answer.
+# Exact-matchability is what makes a mechanical strip cheap to add later; it is not
+# itself that strip. See prism/subagents.md for the open question.
 DELIVERY_OPEN = "===CHART_DELIVERY_START==="
 DELIVERY_CLOSE = "===CHART_DELIVERY_END==="
 DIAGNOSTICS_OPEN = "===CHART_DIAGNOSTICS_START==="
@@ -264,13 +286,34 @@ def _truncate(text: str) -> str:
     return text[:SCRIPT_STDOUT_INLINE_BYTES] + "\n... [stdout truncated]"
 
 
-def _classify_failure(exc: BaseException, error_text: str) -> Tuple[str, str, int]:
+def _ladder_step(session_path: str) -> Tuple[int, int]:
+    """Advance this session's retry ladder, returning ``(attempt, prev_findings)``."""
+    now = time.monotonic()
+    for stale in [key for key, (_, _, seen) in _LADDER.items()
+                  if now - seen > _LADDER_TTL_SECONDS]:
+        del _LADDER[stale]
+    attempt, previous, _ = _LADDER.get(session_path, (0, 0, now))
+    return attempt + 1, previous
+
+
+def _classify_failure(exc: BaseException, error_text: str,
+                      stage: str = 'exec') -> Tuple[str, str, int]:
     """Say whether re-writing the code could plausibly help.
 
     A flat attempt counter spends the same budget on a fix that is converging and
     on a timeout guaranteed to reproduce. That distinction only exists here, where
     the exception object still does.
+
+    ``stage`` separates the two things that can fail. Reading the input CSVs is not
+    something the sub-agent can fix by rewriting chart code -- it never chose those
+    paths, the caller did -- so a load failure is FATAL however retryable the same
+    exception type would be coming out of the script.
     """
+    if stage == 'load':
+        return 'FATAL', (
+            f'{type(exc).__name__} reading the input CSVs: {exc}. The path came '
+            f'from the caller; no chart code can fix it'
+        ), 0
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
         return 'FATAL', (
             f'execution exceeded CHART_EXECUTION_TIMEOUT_SECONDS '
@@ -284,10 +327,20 @@ def _classify_failure(exc: BaseException, error_text: str) -> Tuple[str, str, in
     return 'RETRYABLE', type(exc).__name__, int(aggregate.group(1)) if aggregate else 1
 
 
-def _describe_artifact(art: Dict[str, Any]) -> str:
-    """One line naming what an artifact shows, for the caller to write prose against."""
+def _describe_artifact(art: Dict[str, Any], path: str = '') -> str:
+    """One line naming what an artifact shows, for the caller to write prose against.
+
+    A PNG whose result object carried no ``png_path`` has no manifest entry to join
+    against, so everything below is missing. The filename still says something, and
+    a naked separator with nothing after it says less than no separator at all.
+    """
     title = art.get('title')
-    head = f"**{title}**" if title else "_(untitled)_"
+    if title:
+        head = f"**{title}**"
+    elif path:
+        head = f"**{path.rsplit('/', 1)[-1].rsplit('.', 1)[0]}**"
+    else:
+        head = "_(untitled)_"
     facts = [str(art.get('chart_type') or art.get('call'))]
     if art.get('n_charts'):
         facts.append(f"{art['n_charts']} panels")
@@ -295,14 +348,16 @@ def _describe_artifact(art: Dict[str, Any]) -> str:
         facts.append(f"{art['n_rows']} rows x {art['n_cols']} cols")
     if art.get('encoding'):
         facts.append(art['encoding'])
-    return f"{head} -- {' | '.join(f for f in facts if f and f != 'None')}"
+    facts = [fact for fact in facts if fact and fact != 'None']
+    return f"{head} -- {' | '.join(facts)}" if facts else head
 
 
 def format_report(session_path: str, chart_paths: List[str], links: List[Dict[str, Any]],
                   stdout: str, error: str, medium: str,
                   artifacts: Optional[List[Dict[str, Any]]] = None,
                   status: str = 'OK', status_detail: str = '',
-                  n_findings: int = 0) -> str:
+                  n_findings: int = 0, attempt: int = 1,
+                  previous_findings: int = 0) -> str:
     """Assemble the two-block report the sub-agent reads and half-forwards.
 
     Everything the sub-agent returns is pasted into the caller's answer, so the
@@ -325,7 +380,7 @@ def format_report(session_path: str, chart_paths: List[str], links: List[Dict[st
     if chart_paths:
         out.append(f"**Charts**: {len(chart_paths)} PNG(s)\n\n")
         for i, path in enumerate(chart_paths, 1):
-            out.append(f"{i}. {_describe_artifact(by_path.get(path, {}))}\n")
+            out.append(f"{i}. {_describe_artifact(by_path.get(path, {}), path)}\n")
             short = short_by_path.get(path)
             out.append(f"   `{path}`" + (f" -> {short}\n" if short else "\n"))
         out.append(format_chart_delivery_hint(
@@ -339,8 +394,14 @@ def format_report(session_path: str, chart_paths: List[str], links: List[Dict[st
     out.append("Yours alone. Never quote, paraphrase or summarise any of it.\n\n")
     out.append(f"status: {status}")
     out.append(f" ({n_findings} finding(s))\n" if n_findings else "\n")
+    out.append(f"attempt: {attempt} of {CHART_ATTEMPT_CEILING}\n")
     if status_detail:
         out.append(f"reason: {status_detail}\n")
+    # The ceiling is a hard stop; this is the softer one the contract asks for, and
+    # the model cannot compute it -- each call is all it can see.
+    if status == 'RETRYABLE' and previous_findings and n_findings >= previous_findings:
+        out.append(f"findings did not fall (was {previous_findings}, now {n_findings}); "
+                   f"this approach is not converging -- change it or stop\n")
     flagged = [(art, w) for art in artifacts for w in art['warnings']]
     if flagged:
         out.append(f"\nwarnings ({len(flagged)}):\n")
@@ -400,16 +461,32 @@ async def render_charts(session_path: str, chart_code: str,
         resolved_path, _ = _resolve_or_create(session_path)
 
     medium = _resolve_medium_from_baggage()
+    attempt, previous_findings = _ladder_step(resolved_path)
+
+    if attempt > CHART_ATTEMPT_CEILING:
+        _LADDER.pop(resolved_path, None)
+        logger.warning(f"[chart_exec] session={resolved_path} refused: attempt "
+                       f"{attempt} past the ceiling of {CHART_ATTEMPT_CEILING}")
+        return format_report(
+            resolved_path, [], [], "", "", medium, artifacts=[], status='FATAL',
+            status_detail=(f'{CHART_ATTEMPT_CEILING} render_charts calls already '
+                           f'made for this session; nothing was executed'),
+            attempt=attempt)
+
     recorder = _ChartPathRecorder(s3_manager)
     namespace = _chart_namespace(resolved_path, kerberos or None, recorder)
-    _load_data_files(namespace, data_files)
-
-    code, _preprocess_notes = preprocess_script_code(chart_code)
 
     stdout = ""
     error = ""
     status, status_detail, n_findings = 'OK', '', 0
+    # Reading the CSVs belongs inside the guard: a path relayed from the caller is
+    # the likeliest thing in this call to be wrong, and raising out of the tool
+    # would skip the whole two-block protocol the sub-agent is trained on.
+    stage = 'load'
     try:
+        _load_data_files(namespace, data_files)
+        stage = 'exec'
+        code, _preprocess_notes = preprocess_script_code(chart_code)
         result = await asyncio.wait_for(
             asyncio.to_thread(_execute_sync, code, namespace),
             timeout=CHART_EXECUTION_TIMEOUT_SECONDS,
@@ -422,7 +499,7 @@ async def render_charts(session_path: str, chart_code: str,
         log_swallowed_exception(exc, where="chart_exec.render_charts")
         stdout = getattr(exc, '_partial_stdout', '') or ''
         error = traceback.format_exc()
-        status, status_detail, n_findings = _classify_failure(exc, error)
+        status, status_detail, n_findings = _classify_failure(exc, error, stage)
 
     # The abandoned worker thread keeps running past a timeout; clearing the dict
     # in place drops its grip on every DataFrame and closure it holds.
@@ -435,14 +512,23 @@ async def render_charts(session_path: str, chart_code: str,
         status = 'NO_ARTIFACTS'
         status_detail = 'the script completed without calling a chart function'
 
+    # A terminal status ends the ladder, so the next request on this session is not
+    # charged for this one.
+    if status in ('OK', 'FATAL'):
+        _LADDER.pop(resolved_path, None)
+    else:
+        _LADDER[resolved_path] = (attempt, n_findings, time.monotonic())
+
     links = []
     if recorder.chart_paths and normalize_medium(medium) in (COMPOSER, GSAI):
         links = generate_download_links_for_sandbox(recorder.chart_paths)
 
     logger.info(
         f"[chart_exec] session={resolved_path} charts={len(recorder.chart_paths)} "
-        f"medium={medium} status={status} findings={n_findings}"
+        f"medium={medium} status={status} findings={n_findings} "
+        f"attempt={attempt}/{CHART_ATTEMPT_CEILING}"
     )
     return format_report(resolved_path, recorder.chart_paths, links, stdout, error, medium,
                          artifacts=artifacts, status=status, status_detail=status_detail,
-                         n_findings=n_findings)
+                         n_findings=n_findings, attempt=attempt,
+                         previous_findings=previous_findings)
