@@ -7,13 +7,17 @@ graph -- the coupling this split exists to remove.
 """
 
 import asyncio
+import contextlib
 import functools
+import inspect
 import io
 import logging
 import re
-import time
 import traceback
-from typing import Any, Dict, List, Optional, Tuple
+import uuid
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -41,14 +45,85 @@ CHART_EXECUTION_TIMEOUT_SECONDS = 90
 # merely discouraged.
 CHART_ATTEMPT_CEILING = 5
 
-# An abandoned ladder (parent turn died mid-retry) would otherwise sit on the
-# session forever and refuse the next turn's charts. Retries are seconds apart;
-# a new request is minutes away.
-_LADDER_TTL_SECONDS = 300
+# Untruncated DataFrame repr, so a sub-agent that opens with `print(df1.head())`
+# sees every column name rather than an ellipsis -- guessing a column name costs
+# it a whole attempt. `profile_df` builds its own output and does not depend on
+# these.
+#
+# Set at import rather than per render, which is where they used to live. The
+# values never varied, so the two are equivalent in effect, but pandas options
+# are process-global: written per render they were a mutation on the render path
+# that silently reached every other user's `execute_analysis_script` repr in the
+# same process. Written once at startup they are what they always were in
+# practice -- a process-wide display choice this module makes on import,
+# alongside the engine's other write-once globals.
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', None)
+pd.set_option('display.max_colwidth', None)
 
-# resolved session path -> (attempt number, n_findings, monotonic timestamp).
-# Cleared on any terminal status, so the next request starts a fresh ladder.
-_LADDER: Dict[str, Tuple[int, int, float]] = {}
+
+@dataclass
+class _Invocation:
+    """What belongs to one chart_agent invocation rather than one call.
+
+    Both fields exist for the same reason: the caller can dispatch two chart
+    agents in one turn, they resolve to the same session path, and neither can
+    see the other.
+
+    ``attempt`` / ``findings`` are the retry ladder. Keyed on the session instead,
+    they told the second agent's very first call that it was on attempt 2 and not
+    converging, on the strength of the first agent's unrelated chart -- a false
+    stop signal, which is worse than no signal.
+
+    ``token`` disambiguates the S3 keys this invocation writes. Two agents both
+    asked for ``save_as='chart.png'`` produced one PNG and two reports naming it,
+    losing a chart with no error anywhere. It is fixed for the invocation rather
+    than per call, so a retry overwrites its own previous attempt instead of
+    littering the session with near-duplicates.
+    """
+
+    token: str
+    attempt: int = 0
+    findings: int = 0
+
+
+# A ContextVar rather than a dict keyed on anything: asyncio copies the context
+# into each task, so agents dispatched concurrently never see each other's state,
+# and the set/reset pair in `chart_invocation` keeps sequential ones from
+# bleeding. Same mechanism `core.subagent_events._FRAMES` uses to keep concurrent
+# sub-agent identity frames apart.
+_INVOCATION: ContextVar[Optional[_Invocation]] = ContextVar('chart_invocation',
+                                                            default=None)
+
+
+@contextlib.contextmanager
+def chart_invocation() -> Iterator[_Invocation]:
+    """Scope one chart_agent invocation.
+
+    Entered by the ``AgentTool`` wrapper in ``core/chart_agent_tool.py``, which is
+    the only place that knows where an invocation starts and ends. Without it
+    every invocation in the process shares whatever context it was called from.
+    """
+    state = _Invocation(token=uuid.uuid4().hex[:6])
+    reset = _INVOCATION.set(state)
+    try:
+        yield state
+    finally:
+        _INVOCATION.reset(reset)
+
+
+def _current_invocation() -> _Invocation:
+    """This invocation's state, installing one when called outside a scope.
+
+    Unscoped means ``render_charts`` was reached directly rather than through the
+    sub-agent. Installing into the calling context keeps the ceiling counting and
+    keys unique for that caller, without reaching across to any other.
+    """
+    state = _INVOCATION.get()
+    if state is None:
+        state = _Invocation(token=uuid.uuid4().hex[:6])
+        _INVOCATION.set(state)
+    return state
 
 # The sub-agent forwards its reply verbatim, so the report has to say for itself
 # which half is the caller's and which half is scaffolding. Sentinels rather than
@@ -94,6 +169,19 @@ _MAPPING_ALIASES = {
 }
 
 
+def _disambiguate(save_as: str, token: str) -> str:
+    """Tag the leaf of an explicit ``save_as`` with this invocation's token.
+
+    Only the leaf: ``save_as`` may already be rooted at a canonical S3 prefix,
+    which the engine honours verbatim, and moving it would defeat that.
+    """
+    head, slash, leaf = save_as.rpartition('/')
+    stem, dot, extension = leaf.rpartition('.')
+    if not dot:
+        stem, extension = leaf, ''
+    return f"{head}{slash}{stem}_{token}{dot}{extension}"
+
+
 def _wrap_chart_func(func, s3_mgr, session_path=None, user_id=None):
     """Inject s3_manager / session_path / user_id into every chart call.
 
@@ -103,6 +191,11 @@ def _wrap_chart_func(func, s3_mgr, session_path=None, user_id=None):
     """
     if func is None:
         return None
+
+    try:
+        _accepts_suffix = 'filename_suffix' in inspect.signature(func).parameters
+    except (TypeError, ValueError):
+        _accepts_suffix = False
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -122,6 +215,16 @@ def _wrap_chart_func(func, s3_mgr, session_path=None, user_id=None):
                     mapping[canonical] = value
             kwargs['mapping'] = mapping
         kwargs.pop('s3_manager', None)
+        # Two chart agents charting into one session cannot see each other, so
+        # neither can avoid the other's filenames. Tagging every key this
+        # invocation writes is the only point where that is knowable. Auto-named
+        # charts already carry a second-resolution timestamp; the suffix closes
+        # the same-second case where the engine exposes one.
+        invocation = _current_invocation()
+        if kwargs.get('save_as'):
+            kwargs['save_as'] = _disambiguate(kwargs['save_as'], invocation.token)
+        elif _accepts_suffix and not kwargs.get('filename_suffix'):
+            kwargs['filename_suffix'] = invocation.token
         # session_path forces use_s3=True, so a render never attempts a local write.
         if session_path and 'session_path' not in kwargs:
             kwargs['session_path'] = session_path
@@ -275,9 +378,6 @@ def _load_data_files(namespace: Dict[str, Any], data_files: Optional[List[str]])
     for i, file_path in enumerate(data_files or [], 1):
         csv_bytes = s3_manager.get(file_path)
         namespace[f'df{i}'] = pd.read_csv(io.BytesIO(csv_bytes), index_col=0, parse_dates=True)
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.width', None)
-    pd.set_option('display.max_colwidth', None)
 
 
 def _truncate(text: str) -> str:
@@ -286,14 +386,10 @@ def _truncate(text: str) -> str:
     return text[:SCRIPT_STDOUT_INLINE_BYTES] + "\n... [stdout truncated]"
 
 
-def _ladder_step(session_path: str) -> Tuple[int, int]:
-    """Advance this session's retry ladder, returning ``(attempt, prev_findings)``."""
-    now = time.monotonic()
-    for stale in [key for key, (_, _, seen) in _LADDER.items()
-                  if now - seen > _LADDER_TTL_SECONDS]:
-        del _LADDER[stale]
-    attempt, previous, _ = _LADDER.get(session_path, (0, 0, now))
-    return attempt + 1, previous
+def _ladder_step() -> Tuple[_Invocation, int, int]:
+    """Advance this invocation's ladder, returning ``(state, attempt, prev_findings)``."""
+    state = _current_invocation()
+    return state, state.attempt + 1, state.findings
 
 
 def _classify_failure(exc: BaseException, error_text: str,
@@ -461,10 +557,15 @@ async def render_charts(session_path: str, chart_code: str,
         resolved_path, _ = _resolve_or_create(session_path)
 
     medium = _resolve_medium_from_baggage()
-    attempt, previous_findings = _ladder_step(resolved_path)
+    invocation, attempt, previous_findings = _ladder_step()
 
     if attempt > CHART_ATTEMPT_CEILING:
-        _LADDER.pop(resolved_path, None)
+        # Recorded, not cleared. Clearing here made the ceiling a speed bump: the
+        # refusal reset the count, so call seven ran as attempt 1 and a runaway
+        # loop got five more renders for the price of one refused call. The ladder
+        # is scoped to this invocation and dies with it, so holding the count past
+        # the ceiling strands nothing.
+        invocation.attempt = attempt
         logger.warning(f"[chart_exec] session={resolved_path} refused: attempt "
                        f"{attempt} past the ceiling of {CHART_ATTEMPT_CEILING}")
         return format_report(
@@ -512,12 +613,12 @@ async def render_charts(session_path: str, chart_code: str,
         status = 'NO_ARTIFACTS'
         status_detail = 'the script completed without calling a chart function'
 
-    # A terminal status ends the ladder, so the next request on this session is not
-    # charged for this one.
+    # A terminal status ends the ladder: the sub-agent has no reason to call again,
+    # and if it does anyway it starts clean rather than inheriting a dead retry.
     if status in ('OK', 'FATAL'):
-        _LADDER.pop(resolved_path, None)
+        invocation.attempt, invocation.findings = 0, 0
     else:
-        _LADDER[resolved_path] = (attempt, n_findings, time.monotonic())
+        invocation.attempt, invocation.findings = attempt, n_findings
 
     links = []
     if recorder.chart_paths and normalize_medium(medium) in (COMPOSER, GSAI):

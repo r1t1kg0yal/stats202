@@ -120,8 +120,32 @@ def chart_agent_tool(worker_id: str, event_callback=None):
     from core.gs_llm2 import (
         APP_ID, ENV, PRISM_MAX_OUTPUT_TOKENS, PRISM_MODEL_ID, _install_cache_and_io, get_token,
     )
-    from prism_mcp.tools.chart_exec import render_charts
+    from prism_mcp.tools.chart_exec import chart_invocation, render_charts
     from core.subagent_events import subagent_callbacks
+
+    class _ScopedChartAgentTool(AgentTool):
+        """``AgentTool`` that bounds one charting invocation.
+
+        ``render_charts`` counts retries per invocation, and this is the only
+        place that knows where one begins and ends. ADK gives each call a fresh
+        Runner and a throwaway session, but none of that reaches the tool's own
+        module state, so two chart agents in one turn shared a retry ladder until
+        this scope existed -- the second agent's first call was told it was on
+        attempt 2 and not converging, on the strength of the first agent's chart.
+
+        Overriding ``run_async`` is the supported seam: it is a plain coroutine
+        returning the reply as a ``str`` (``google/adk/tools/agent_tool.py``
+        205-309, ADK 2.4.0). The alternative, an ``after_agent_callback``,
+        *appends* an event rather than replacing one, and because the caller is
+        last-content-wins that append silently becomes the entire tool result.
+
+        Declared here rather than at module scope because ``AgentTool`` is a
+        deferred import, which is what keeps this module loadable without ADK.
+        """
+
+        async def run_async(self, *, args, tool_context):
+            with chart_invocation():
+                return await super().run_async(args=args, tool_context=tool_context)
 
     corpus = _chart_corpus()
     llm_model = LiteLlm(
@@ -153,4 +177,4 @@ def chart_agent_tool(worker_id: str, event_callback=None):
         f"[LLM] ({worker_id}) chart AgentTool attached "
         f"(model={PRISM_MODEL_ID}, corpus={len(corpus)}B)"
     )
-    return AgentTool(agent=chart_agent)
+    return _ScopedChartAgentTool(agent=chart_agent)

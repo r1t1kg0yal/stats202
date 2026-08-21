@@ -63,6 +63,7 @@ import math
 import os
 import re
 import sys
+import threading
 import traceback
 from dataclasses import dataclass, field, fields, replace
 from datetime import date, datetime, timezone
@@ -22051,6 +22052,27 @@ def _generate_filename(
 _CHART_SPEC_PREFIX = "charts"
 _CHART_MANIFEST_NAME = "chart_manifest.json"
 
+# Serialises the manifest merge in ``_persist_editable_spec``. That merge is a
+# naked get / mutate / put over one S3 key -- no ETag, no conditional put, no
+# retry-on-conflict -- and two chart agents fanned out in one turn address the
+# same session by construction, so without this the second writer's entry
+# silently replaces the first's. Nothing is corrupted; the losing chart's PNG
+# renders and reaches the answer. What it loses is the png_path -> chart_id
+# index entry, so click-to-edit finds no spec behind it and the chart looks
+# broken in the studio rather than missing anywhere.
+#
+# One lock rather than a table keyed on the manifest: the critical section is
+# two S3 round-trips against a chart render measured in seconds, and a
+# per-session table would grow for the life of a long-running MCP server to buy
+# back contention that costs less than the table does. The tables manifest is
+# guarded separately in ``chart_functions_studio_tables`` -- different key,
+# no reason to share a lock.
+#
+# In-process only, which is the whole scope that matters: every writer to one
+# session's manifest is a chart render on a worker thread of one MCP server.
+# Dashboard refreshes run as detached subprocesses and do not write here.
+_MANIFEST_LOCK = threading.Lock()
+
 
 def _studio_dimension_name(dimensions: Optional[str]) -> str:
     """The studio preset name for an engine dimension choice.
@@ -22092,6 +22114,14 @@ def _persist_editable_spec(
     id resolved out of the manifest is the same id the studio derives from
     the same spec. Re-emitting an identical chart rewrites identical bytes.
 
+    That content-addressing is also what makes the first three keys safe
+    under concurrent renders in one session: two charts collide on them only
+    when their specs are identical, in which case so are the bytes. The
+    manifest is the one key genuinely shared, and its merge is serialised --
+    see ``_MANIFEST_LOCK``. Note that ``png_path`` also rides in every
+    ``.meta.json``, so a reader that globbed those instead would need no
+    shared key at all.
+
     ``chart_type`` must be a name ``wrap_interactive_prism`` accepts, since
     the meta sidecar is literally its argument record.
 
@@ -22129,13 +22159,14 @@ def _persist_editable_spec(
     if editor_key is not None:
         s3_manager.put(editor_html.encode("utf-8"), editor_key)
 
-    try:
-        manifest = json.loads(s3_manager.get(manifest_key).decode("utf-8"))
-    except Exception:  # noqa: BLE001 - absent until the session's first chart
-        manifest = {"schema_version": 1, "charts": {}}
-    manifest.setdefault("charts", {})[png_path] = chart_id
-    manifest["updated_at"] = stamp
-    s3_manager.put(json.dumps(manifest, indent=2).encode("utf-8"), manifest_key)
+    with _MANIFEST_LOCK:
+        try:
+            manifest = json.loads(s3_manager.get(manifest_key).decode("utf-8"))
+        except Exception:  # noqa: BLE001 - absent until the session's first chart
+            manifest = {"schema_version": 1, "charts": {}}
+        manifest.setdefault("charts", {})[png_path] = chart_id
+        manifest["updated_at"] = stamp
+        s3_manager.put(json.dumps(manifest, indent=2).encode("utf-8"), manifest_key)
 
     logger.info(
         "[_persist_editable_spec] chart_id=%s spec=%s editor=%s png=%s",
