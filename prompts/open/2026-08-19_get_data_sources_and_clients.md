@@ -23,7 +23,7 @@ reply_folded_into:
   - projects/echarts/echarts-payload/echart_dashboard.py       # namespace collapse, _PULL_PRIMITIVES, partial-series detector
   - projects/echarts/echarts-payload/dashboards.md             # pull primitives table
   - projects/echarts/echarts-payload/dashboards/pipelines.md   # stem rules, client indirection, provenance
-  - projects/echarts/echarts-payload/dashboards/build.md       # canonical pull_data.py example
+  - projects/echarts/echarts-payload/dashboards/build.md       # canonical Tool 1 retrieval example
 ---
 
 **Staging-side note — do NOT paste this header into PRISM.**
@@ -233,11 +233,15 @@ before a pull, or does the spoke replace it?
 
 ### 7. Can the engine call `get_data` itself
 
-We are considering letting `scripts/pull_data.py` declare pulls as **data**
-rather than code — `PULLS = {"rates": {"source": "tsdb_eod", ...}}` — and having
-the dashboard engine construct and await the `get_data` call. That would remove
-the asyncio/pydantic boilerplate from every authored script and make our static
-stem inference exact instead of AST-parsed.
+Staging has since built this: `scripts/pulls.json` declares each pull as
+data and the engine constructs and awaits the call. 7.1-7.3 are the
+assumptions that build rests on, so they are worth confirming even though
+the local test suite is green against a stub. 7.4 is answered locally —
+`pydantic.TypeAdapter(Details).validate_python(...)` pre-flights a request
+without executing it, which is what gates the document write — but confirm
+there is no second validation layer inside `get_data` that a caller can
+skip this way. The follow-on questions about the installed engine are in
+`staging/prompts/open/2026-08-21_pulls_document.md`.
 
 7.1 Is there anything in `get_data` that requires it be called **from the
 authored script's frame** rather than from engine code — implicit session state,

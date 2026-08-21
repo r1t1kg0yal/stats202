@@ -20,9 +20,13 @@ Vega/Altair chart engine for PRISM. Single-file consolidation of the
   * Result types ``ChartResult``, ``CompositeResult``, ``TableResult``,
     ``DataProfile``.
 
-``chart_context.md`` plus its ``chart_context_*.md`` spokes are the
-LLM-facing specification for this surface; keep them in step with any
-change here.
+The seven ``chart_context*.md`` files are the LLM-facing specification for
+this surface; keep them in step with any change here. They are no longer a
+hub with retrievable spokes -- since the sub-agent migration they are
+concatenated in ``_CORPUS_SOURCES`` order into one system instruction, and the
+``chart_agent`` that reads them has no way to fetch anything, so a runtime
+string pointing at one of them by name is pointing at something already in
+front of the model.
 
 PRISM-coupled helpers (S3, presigned URLs) are
 imported from ``prism_mcp.utils.*`` -- the same paths PRISM uses in
@@ -29146,7 +29150,19 @@ _PASSTHROUGH_PREFIXES = (
 
 
 def _tbl_resolve_path(save_as: Optional[str], session_path: Optional[str],
-                       df: pd.DataFrame, title: Optional[str]) -> str:
+                       df: pd.DataFrame, title: Optional[str],
+                       filename_suffix: Optional[str] = None) -> str:
+    """Resolve the S3 key for a table PNG.
+
+    The auto-named branch routes through ``_generate_filename`` so tables are
+    named exactly the way charts are. It used to slugify the title alone, which
+    made the name a pure function of the title and nothing else: two
+    ``make_table(title='Twin')`` calls -- in one script, or in two runs against
+    one session, or in two concurrent agents -- resolved to one key, and the
+    second silently overwrote the first. Only one PNG existed, but the delivery
+    block counted the calls, so it reported one chart where two were asked for
+    and nothing anywhere raised.
+    """
     if save_as:
         # Passthrough: if save_as is already rooted at a canonical S3
         # prefix, honour it exactly. This mirrors the convention used by
@@ -29156,8 +29172,7 @@ def _tbl_resolve_path(save_as: Optional[str], session_path: Optional[str],
             return save_as
         rel = save_as
     else:
-        slug = re.sub(r"[^A-Za-z0-9_-]+", "_", (title or "table").lower()).strip("_") or "table"
-        rel = f"{slug}.png"
+        rel = f"{_generate_filename(title, 'table', None, filename_suffix)}.png"
     if session_path:
         return f"{session_path.rstrip('/')}/{rel}"
     return rel
@@ -29198,6 +29213,7 @@ def make_table(
     row_height_scale: float = 1.0,
     show_index: bool = False,
     save_as: Optional[str] = None,
+    filename_suffix: Optional[str] = None,
     session_path: Optional[str] = None,
     s3_manager: Optional[Any] = None,
     output_dir: str = "",
@@ -29240,6 +29256,13 @@ def make_table(
     charts. Left at None it follows
     ``chart_functions_studio_tables.TABLE_STUDIO_ENABLED``. The PNG is
     byte-identical either way.
+
+    An auto-named table lands at
+    ``YYYYMMDD_HHMMSS_<title>_<filename_suffix>_table.png``, the same shape
+    ``make_chart`` produces. ``save_as`` overrides that entirely and is honoured
+    verbatim when already rooted at a canonical prefix. ``filename_suffix`` is
+    the disambiguation hook the sandbox wrapper fills in per call, which is what
+    keeps two same-titled tables from resolving to one key.
     """
     warnings: List[str] = []
 
@@ -29756,7 +29779,7 @@ def make_table(
     )
 
     buf = _tbl_png_bytes(img)
-    out_path = _tbl_resolve_path(save_as, session_path, df, title)
+    out_path = _tbl_resolve_path(save_as, session_path, df, title, filename_suffix)
 
     written_path: Optional[str] = None
     presigned_url: Optional[str] = None

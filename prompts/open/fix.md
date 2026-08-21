@@ -74,8 +74,10 @@ dashboards were in each pass's "refreshed" set. Confirm whether
 ## 5. Build pipeline integrity for this dashboard
 If `last_refresh_status == "error"` or the dashboard hasn't appeared
 in any cron pass, walk these:
-  - Does `users/goyalri/dashboards/ust_10y_intraday/scripts/pull_data.py`
-    exist? Quote the `PULLS` dict literal (just the keys).
+  - List `users/goyalri/dashboards/ust_10y_intraday/scripts/`. Say which
+    of `pulls.json` and `pull_data.py` is present. For `pulls.json`,
+    quote every entry's `name` and `details.source`. For `pull_data.py`,
+    quote the `PULLS` dict literal (just the keys).
   - Does `users/goyalri/dashboards/ust_10y_intraday/scripts/build.py`
     exist? Quote the `TRANSFORMS = [...]` literal.
   - Does `users/goyalri/dashboards/ust_10y_intraday/manifest_template.json`

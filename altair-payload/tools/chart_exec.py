@@ -66,7 +66,7 @@ pd.set_option('display.max_colwidth', None)
 class _Invocation:
     """What belongs to one chart_agent invocation rather than one call.
 
-    Both fields exist for the same reason: the caller can dispatch two chart
+    The fields exist for the same reason: the caller can dispatch two chart
     agents in one turn, they resolve to the same session path, and neither can
     see the other.
 
@@ -75,16 +75,31 @@ class _Invocation:
     converging, on the strength of the first agent's unrelated chart -- a false
     stop signal, which is worse than no signal.
 
-    ``token`` disambiguates the S3 keys this invocation writes. Two agents both
-    asked for ``save_as='chart.png'`` produced one PNG and two reports naming it,
-    losing a chart with no error anywhere. It is fixed for the invocation rather
-    than per call, so a retry overwrites its own previous attempt instead of
-    littering the session with near-duplicates.
+    ``token`` and ``sequence`` together disambiguate the S3 keys this invocation
+    writes, and the split between them is the whole design. ``token`` is fixed
+    for the invocation, so a retry overwrites its own previous attempt instead of
+    littering the session with near-duplicates. ``sequence`` counts calls within
+    one attempt and resets at the top of every ``render_charts``, so two
+    artifacts in one script never collide while call N of attempt 2 still lands
+    on call N of attempt 1.
+
+    Both halves are load-bearing and each was missing once. Without the token,
+    two agents asked for ``save_as='chart.png'`` and produced one PNG that two
+    delivery blocks named. Without the sequence, two same-titled artifacts in one
+    ordinary script did the same thing with no concurrency involved at all --
+    charts survived only because their names carry a second-resolution timestamp
+    and a render usually crosses a second boundary.
     """
 
     token: str
     attempt: int = 0
     findings: int = 0
+    sequence: int = 0
+
+    def next_key_token(self) -> str:
+        """The nonce for the next artifact this invocation writes."""
+        self.sequence += 1
+        return f"{self.token}{self.sequence}"
 
 
 # A ContextVar rather than a dict keyed on anything: asyncio copies the context
@@ -169,25 +184,41 @@ _MAPPING_ALIASES = {
 }
 
 
-def _disambiguate(save_as: str, token: str) -> str:
-    """Tag the leaf of an explicit ``save_as`` with this invocation's token.
+def _disambiguate(save_as: str, token: str, base: str) -> str:
+    """Tag the leaf of an explicit ``save_as`` with this call's nonce.
 
     Only the leaf: ``save_as`` may already be rooted at a canonical S3 prefix,
     which the engine honours verbatim, and moving it would defeat that.
+
+    Idempotent within an invocation, because the input is not always the model's
+    own. A delivery block lists tagged paths, and a model that copies one back as
+    ``save_as`` on a retry would otherwise get ``chart_a1b2c31_a1b2c32.png`` --
+    growing a suffix per attempt and defeating the overwrite the fixed token
+    exists to give. Stripping is keyed on ``base``, this invocation's own token,
+    so only a tag this invocation wrote is removed: a stem that merely looks
+    hex-ish, or one tagged by some earlier invocation, is left alone.
     """
     head, slash, leaf = save_as.rpartition('/')
     stem, dot, extension = leaf.rpartition('.')
     if not dot:
         stem, extension = leaf, ''
+    if base:
+        stem = re.sub(rf'_{re.escape(base)}\d+$', '', stem)
     return f"{head}{slash}{stem}_{token}{dot}{extension}"
 
 
-def _wrap_chart_func(func, s3_mgr, session_path=None, user_id=None):
+def _wrap_chart_func(func, recorder, session_path=None, user_id=None):
     """Inject s3_manager / session_path / user_id into every chart call.
 
     Positional args pass through -- the composite packs take ChartSpec objects
     positionally. functools.wraps keeps inspect.signature() resolving to the real
     function, which validate_params' error enrichment reads.
+
+    ``recorder`` must be a ``_ChartPathRecorder``, not a bare ``S3BucketManager``:
+    the artifact manifest is built by calling ``.record()`` after every chart, so
+    a plain manager raises ``AttributeError`` on the first call. Only
+    ``_chart_namespace`` constructs these today and it passes the recorder, but
+    the name says so rather than leaving the next caller to find out.
     """
     if func is None:
         return None
@@ -215,25 +246,31 @@ def _wrap_chart_func(func, s3_mgr, session_path=None, user_id=None):
                     mapping[canonical] = value
             kwargs['mapping'] = mapping
         kwargs.pop('s3_manager', None)
-        # Two chart agents charting into one session cannot see each other, so
-        # neither can avoid the other's filenames. Tagging every key this
-        # invocation writes is the only point where that is knowable. Auto-named
-        # charts already carry a second-resolution timestamp; the suffix closes
-        # the same-second case where the engine exposes one.
+        # Nothing else in the stack can make two artifacts distinct. Two chart
+        # agents in one session cannot see each other's filenames, and two calls
+        # in one script cannot see each other's either -- the engine names from
+        # title and clock alone, so same title plus same second is one file and a
+        # silently lost chart. The nonce closes both: the invocation half keeps
+        # concurrent agents apart, the per-call half keeps one script's own calls
+        # apart, and because the per-call half restarts each render, a retry's
+        # Nth artifact overwrites the previous attempt's Nth rather than
+        # accumulating.
         invocation = _current_invocation()
+        token = invocation.next_key_token()
         if kwargs.get('save_as'):
-            kwargs['save_as'] = _disambiguate(kwargs['save_as'], invocation.token)
+            kwargs['save_as'] = _disambiguate(kwargs['save_as'], token,
+                                              invocation.token)
         elif _accepts_suffix and not kwargs.get('filename_suffix'):
-            kwargs['filename_suffix'] = invocation.token
+            kwargs['filename_suffix'] = token
         # session_path forces use_s3=True, so a render never attempts a local write.
         if session_path and 'session_path' not in kwargs:
             kwargs['session_path'] = session_path
         if user_id and 'user_id' not in kwargs:
             kwargs['user_id'] = user_id
-        result = func(*args, **kwargs, s3_manager=s3_mgr)
+        result = func(*args, **kwargs, s3_manager=recorder)
         # The only point where the result object is still in our hands. Generated
         # code is free to discard it, and usually does.
-        s3_mgr.record(func, kwargs, result)
+        recorder.record(func, kwargs, result)
         return result
 
     return wrapper
@@ -573,6 +610,12 @@ async def render_charts(session_path: str, chart_code: str,
             status_detail=(f'{CHART_ATTEMPT_CEILING} render_charts calls already '
                            f'made for this session; nothing was executed'),
             attempt=attempt)
+
+    # Restart the per-call nonce so this attempt's Nth artifact lands on the
+    # previous attempt's Nth. Retries then overwrite rather than accumulate,
+    # which is the property the fixed invocation token exists to give and which a
+    # monotonic counter would quietly take away.
+    invocation.sequence = 0
 
     recorder = _ChartPathRecorder(s3_manager)
     namespace = _chart_namespace(resolved_path, kerberos or None, recorder)
