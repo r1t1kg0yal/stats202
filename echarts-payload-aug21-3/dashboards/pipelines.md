@@ -133,7 +133,7 @@ When an external source is unavailable at predictable times, model that state ex
 
 ### Transform producer visibility
 
-Transform keys are still read from code. The engine follows each registered `TRANSFORMS` function through local helper calls, propagating literal strings through assignments, helper parameters, f-strings, `datasets.update({...})`, and finite loops over literal lists, tuples, or dictionaries. Dataset keys are fixed by the template, so a data-dependent form such as `for key in runtime_names(): datasets[key] = ...` is rejected as `transform_producer_output_unresolved`, and a missing consumer reached alongside it is `dataset_<key>_producer_unresolved` rather than silent-stale. Make the fixed keys literal at the assignment, helper call, or finite literal loop; do not add dummy `datasets["key"] = datasets["key"]` assignments for the auditor. The registry is read the same way, so name every transform inside the single `TRANSFORMS = [...]` literal: one grown by `+`, `+=`, `.append`, or `.extend` still runs, but its additions are invisible to resolution.
+Transform keys are still read from code. The engine follows each registered `TRANSFORMS` function through local helper calls, propagating literal strings through assignments, helper parameters, f-strings, `datasets.update({...})`, and finite loops over literal lists, tuples, or dictionaries. Dataset keys are fixed by the template, so a data-dependent form such as `for key in runtime_names(): datasets[key] = ...` is rejected as `transform_producer_output_unresolved`, and a missing consumer reached alongside it is `dataset_<key>_producer_unresolved` rather than silent-stale. Make the fixed keys literal at the assignment, helper call, or finite literal loop; do not add dummy `datasets["key"] = datasets["key"]` assignments for the auditor.
 
 ## Transform contract
 
@@ -197,57 +197,16 @@ a bad request leaves the prior document intact. `result["declared_stems"]`
 is what the refresh audit will hold the dashboard to — read it back and
 confirm it matches the template's dataset keys before compiling.
 
-## Editing the build script
+`apply_persisted_script_operations` now edits `scripts/build.py` only, with
+the same typed `replace` / `insert_before` / `insert_after` / `append`
+fragment operations, exact match counts, and rollback on failure.
 
-`apply_persisted_script_operations` edits `scripts/build.py` only, as typed fragment operations against exact source text, with rollback on failure. Pass a `describe_dashboard` or `inspect_dashboard` state: it carries the `scripts.build.sha256` guard, which a bare folder string does not.
-
-| `op` | Keys | Effect |
-|---|---|---|
-| `replace` | `old`, `new` | Replace the exact fragment `old` |
-| `insert_before` / `insert_after` | `anchor`, `text` | Insert `text` at `anchor` |
-| `append` | `text` | Append at end of file |
-
-`expected_count` (default 1) is how many times the anchor must occur.
-
-Two constraints have no local symptom. The path needs the full canonical file set, so it opens only after the first publish — a first build writes `scripts/build.py` directly ([build.md](build.md#tool-2-template-transforms-compile)). And a review hold is the one failure that does not roll back: it keeps the candidate script so `review_dashboard` can reproduce that signature, so complete the publish path rather than re-applying fragments that would now miss or double-apply.
-
-Both this and `apply_manifest_operations` take `dry_run=True`: no writes, no raise for an authoring fault, and every stage's complaints returned together in `findings`, with `would_raise` naming what the committing call would hit. Converge on `ok: True`, then repeat without it. A `would_raise` of `DashboardReviewRequired` means the edit is valid and needs the publish path, not a repair.
-
-## Replacing a pull module with a document
-
-A dashboard whose inspection reports `pulls_missing` while
-`scripts/pull_data.py` appears in the folder listing keeps its retrieval in
-that module. Nothing executes it and no converter exists — read it and
-author the document yourself:
-
-```python
-src = s3_manager.get(f"{FOLDER}/scripts/pull_data.py").decode("utf-8")
-print(src)
-```
-
-One entry per `get_data` call: `name` is the CSV stem that call writes,
-`details` is the mapping it passed. Then commit and delete, in that order:
-
-```python
-apply_pulls_document(FOLDER, {"schema_version": 1, "pulls": [...]})
-s3_manager.delete(f"{FOLDER}/scripts/pull_data.py")
-```
-
-Four shapes need a judgment call rather than a transcription:
-
-| In the module | In the document |
-|---|---|
-| A function retrieving twice | Two entries, one per request |
-| A function that also derives | Entry keeps the retrieval; the derivation becomes a `TRANSFORMS` function in `scripts/build.py` |
-| A window computed at runtime (`date.today()`, a module constant) | The `@today`-family token or literal date it was computing |
-| A `get_data` whose `name=` differs from the key it was registered under | Entry name is the stem the call writes; repoint the template's dataset key to match |
-
-Confirm `declared_stems` covers every dataset key the template consumes,
-then build. A saved version created before the document reports
-`retrieval: "scripts/pull_data.py"` and `restorable: false`;
-`restore_dashboard_version` refuses it, since writing that recipe back
-would leave the dashboard with no document at all. Rewrite the current
-folder instead of reaching for an older definition.
+A dashboard whose inspection reports `pulls_missing` while a
+`scripts/pull_data.py` is present converts once with
+`migrate_pull_script(FOLDER, dry_run=True)` to read the document it would
+write, then without `dry_run` to commit it and delete the module. A pull
+that also derives, writes two datasets, or computes its window at runtime
+is refused with that reason named; fix the module and retry.
 
 After a pull-document edit, run only the affected pull first with
 `run_pull(FOLDER, name)` and verify a non-empty current-cycle CSV with the

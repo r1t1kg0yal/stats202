@@ -319,9 +319,7 @@ result = restore_dashboard_version(
 )
 ```
 
-The list result has top-level `current_version_id`, `previous_version_id`, and `timezone`. Each version entry contains exact `version_id`, `created_at_utc`, `display_time`, `local_date`, `timezone`, `summary`, `retrieval`, `restorable`, `is_current`, and `is_previous`. Summary contains `title`, `tab_names`, `widget_count`, `filter_count`, `retrieval`, `pull_document_changed`, and `build_script_changed`. The version id is an opaque engine token: copy it exactly from the selected entry and never show it to the user.
-
-`retrieval` names the file that version stores its data retrieval in. Versions saved before the pull document say `scripts/pull_data.py` and carry `restorable: false`; the engine no longer executes that module, so restoring one would leave the dashboard with no pull document and `restore_dashboard_version` refuses it. Filter candidates on `restorable` before offering them, and when the user wants a non-restorable version specifically, treat it as a rewrite rather than a restore: read that version's `recipe.pull_data_py`, author the equivalent document yourself, and apply it per `dashboards/pipelines.md`.
+The list result has top-level `current_version_id`, `previous_version_id`, and `timezone`. Each version entry contains exact `version_id`, `created_at_utc`, `display_time`, `local_date`, `timezone`, `summary`, `is_current`, and `is_previous`. Summary contains `title`, `tab_names`, `widget_count`, `filter_count`, `pull_document_changed`, and `build_script_changed`. The version id is an opaque engine token: copy it exactly from the selected entry and never show it to the user.
 
 Resolve the target in product language:
 

@@ -17840,29 +17840,31 @@ def _load_dashboard_recipe(
     }
 
 
-_PRE_DOCUMENT_RETRIEVAL_PATH = "scripts/pull_data.py"
+def _normalize_recipe(recipe: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a recipe carrying ``pulls_json``, converting a legacy one.
 
-
-def _recipe_retrieval_artifact(recipe: Dict[str, Any]) -> Tuple[str, str]:
-    """The retrieval file a stored recipe holds, as ``(path, source)``.
-
-    Recipes written since the pull document carry ``pulls_json``; older
-    ones carry ``pull_data_py``. Both are reported verbatim. Nothing here
-    rewrites one into the other, so reading an older version tells the
-    caller what that version actually stores rather than failing on a
-    module the engine stopped executing.
+    Versions created before the pull document stored ``pull_data_py``.
+    Restoring one verbatim would write back a module the engine no longer
+    reads and leave the dashboard with no document at all -- a restore that
+    fails its own audit with the file it just restored sitting right there.
+    Converting on the way out keeps the version corpus usable across the
+    cutover. The stored version is never rewritten; only what is handed to
+    the caller changes.
     """
-    pulls_source = recipe.get("pulls_json")
-    if isinstance(pulls_source, str):
-        return _PULLS_SPEC_PATH, pulls_source
-    pre_document = recipe.get("pull_data_py")
-    if isinstance(pre_document, str):
-        return _PRE_DOCUMENT_RETRIEVAL_PATH, pre_document
-    raise ValueError(
-        "recipe must carry pulls_json (current) or pull_data_py "
-        "(pre-document) as a UTF-8 string | fix: restore a version "
-        "created by the dashboard engine."
+    if not isinstance(recipe, dict) \
+            or isinstance(recipe.get("pulls_json"), str):
+        return recipe
+    legacy = recipe.get("pull_data_py")
+    if not isinstance(legacy, str):
+        return recipe
+    document = _pulls_document_from_legacy_source(legacy)
+    migrated = {
+        key: value for key, value in recipe.items() if key != "pull_data_py"
+    }
+    migrated["pulls_json"] = json.dumps(
+        document, indent=2, ensure_ascii=False,
     )
+    return migrated
 
 
 def _recipe_fingerprint(recipe: Dict[str, Any]) -> str:
@@ -17873,12 +17875,22 @@ def _recipe_fingerprint(recipe: Dict[str, Any]) -> str:
             "recipe.manifest_template must be an object | fix: restore a "
             "version created by the dashboard engine."
         )
-    # Hash the retrieval artifact the recipe actually stores. Restating an
-    # older version's artifact in the current shape first would recompute
-    # every historical fingerprint and declare the whole version corpus
-    # corrupt.
-    retrieval_path, retrieval_source = _recipe_retrieval_artifact(recipe)
-    retrieval = (retrieval_path, retrieval_source.encode("utf-8"))
+    # Hash the retrieval artifact the recipe actually stores. A version
+    # created before the pull document holds Python; normalising it first
+    # would recompute every historical fingerprint and declare the whole
+    # version corpus corrupt. Migration happens on restore, not on read.
+    pulls_source = recipe.get("pulls_json")
+    if isinstance(pulls_source, str):
+        retrieval = ("scripts/pulls.json", pulls_source.encode("utf-8"))
+    else:
+        legacy = recipe.get("pull_data_py")
+        if not isinstance(legacy, str):
+            raise ValueError(
+                "recipe must carry pulls_json (current) or pull_data_py "
+                "(pre-document) as a UTF-8 string | fix: restore a version "
+                "created by the dashboard engine."
+            )
+        retrieval = ("scripts/pull_data.py", legacy.encode("utf-8"))
     if not isinstance(build_source, str):
         raise ValueError(
             "recipe.build_py must be a UTF-8 string | fix: restore a "
@@ -17914,14 +17926,7 @@ def _dashboard_recipe_summary(
     recipe: Dict[str, Any],
     previous_recipe: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """A human-readable "what changed" block for one version.
-
-    Comparison is between the retrieval artifacts the two recipes store,
-    whatever those are. A summary describes a publish that has already
-    compiled and audited cleanly, so it must never be the first thing to
-    refuse one: a predecessor stored in a shape this engine no longer
-    executes is reported as a change, not raised over.
-    """
+    recipe = _normalize_recipe(recipe)
     template = recipe["manifest_template"]
     layout = template.get("layout") \
         if isinstance(template.get("layout"), dict) else {}
@@ -17933,17 +17938,12 @@ def _dashboard_recipe_summary(
         if isinstance(tab, dict) and (tab.get("label") or tab.get("id"))
     ]
     filters = template.get("filters")
-    retrieval = _recipe_retrieval_artifact(recipe)
-    previous_retrieval = None
-    if isinstance(previous_recipe, dict):
-        try:
-            previous_retrieval = _recipe_retrieval_artifact(previous_recipe)
-        except ValueError:
-            # A predecessor too damaged to read is a fact about history,
-            # not about the publish in hand. Leaving it unreadable reports
-            # the pull document as changed, which is all that can honestly
-            # be said when there is nothing to compare against.
-            previous_retrieval = None
+    previous_recipe = _normalize_recipe(previous_recipe) \
+        if isinstance(previous_recipe, dict) else previous_recipe
+    previous_pulls = (
+        previous_recipe.get("pulls_json")
+        if isinstance(previous_recipe, dict) else None
+    )
     previous_build = (
         previous_recipe.get("build_py")
         if isinstance(previous_recipe, dict) else None
@@ -17953,8 +17953,10 @@ def _dashboard_recipe_summary(
         "tab_names": tab_names,
         "widget_count": len(_widget_locations(template)),
         "filter_count": len(filters) if isinstance(filters, list) else 0,
-        "retrieval": retrieval[0],
-        "pull_document_changed": previous_retrieval != retrieval,
+        "pull_document_changed": (
+            previous_recipe is None
+            or recipe["pulls_json"] != previous_pulls
+        ),
         "build_script_changed": (
             previous_recipe is None
             or recipe["build_py"] != previous_build
@@ -18268,16 +18270,6 @@ def list_dashboard_versions(
                 "recipe_sha256": item["recipe_sha256"],
                 "compiler_version": item["compiler_version"],
                 "summary": item["summary"],
-                # Which file this version stores its retrieval in. A
-                # version predating the pull document says
-                # ``scripts/pull_data.py`` and cannot be restored, so
-                # surfacing it here is what lets a caller choose a
-                # different target instead of discovering the refusal.
-                "retrieval": _recipe_retrieval_artifact(item["recipe"])[0],
-                "restorable": (
-                    _recipe_retrieval_artifact(item["recipe"])[0]
-                    == _PULLS_SPEC_PATH
-                ),
                 "is_current": item["version_id"] == current_id,
                 "is_previous": item["version_id"] == previous_id,
             }
@@ -18977,17 +18969,14 @@ _OPERATION_SCHEMAS: Dict[str, Tuple[set, set]] = {
 }
 
 
-def _check_manifest_operation_shape(
+def _apply_manifest_operation(
+    manifest: Dict[str, Any],
     operation: Any,
     index: int,
-) -> Dict[str, Any]:
-    """Validate one operation object in isolation.
-
-    Split out from :func:`_apply_manifest_operation` because it depends on
-    nothing but the operation itself, so the preflight can check every
-    operation up front and report all malformed ones together instead of
-    surfacing them one committing call at a time.
-    """
+    *,
+    kerberos: str,
+    dashboard_id: str,
+) -> None:
     if not isinstance(operation, dict):
         raise _operation_error(
             index,
@@ -19013,21 +19002,9 @@ def _check_manifest_operation_shape(
             "typed target surface.",
         )
     allowed, required = _OPERATION_SCHEMAS[op_name]
-    return _check_operation_shape(
+    operation = _check_operation_shape(
         operation, index, allowed=allowed, required=required,
     )
-
-
-def _apply_manifest_operation(
-    manifest: Dict[str, Any],
-    operation: Any,
-    index: int,
-    *,
-    kerberos: str,
-    dashboard_id: str,
-) -> None:
-    operation = _check_manifest_operation_shape(operation, index)
-    op_name = operation["op"]
 
     layout = manifest.get("layout")
     if op_name.endswith("_widget") or op_name.endswith("_tab"):
@@ -19504,347 +19481,6 @@ def _transaction_target_from_state(
     )
 
 
-# A committing transaction is a chain of stages -- guards, operation shape,
-# operation application, template validation, compile, review -- and each
-# stage can only run once the one before it succeeded. Discovering them one
-# per round trip is the multiplier on every other authoring defect, so
-# ``dry_run=True`` walks the whole chain against an in-memory working copy
-# and returns every complaint at once. ``compile_dashboard``'s resilient
-# mode already collects every diagnostic instead of raising at the first;
-# the preflight is what makes that mode reachable from the transaction API.
-def _preflight_finding(
-    stage: str,
-    code: str,
-    message: str,
-    fix: str = "",
-    *,
-    operation_index: Optional[int] = None,
-) -> Dict[str, Any]:
-    finding: Dict[str, Any] = {
-        "stage": stage,
-        "code": code,
-        "message": message.strip(),
-        "fix": fix.strip(),
-    }
-    if operation_index is not None:
-        finding["operation_index"] = operation_index
-    return finding
-
-
-def _preflight_split_error(exc: BaseException) -> Tuple[str, str]:
-    """Split an engine error on its ``ANY | fix: ANY`` seam."""
-    text = str(exc)
-    if " | fix: " in text:
-        message, fix = text.split(" | fix: ", 1)
-        return message, fix
-    return text, ""
-
-
-def _preflight_finding_from_error(
-    stage: str,
-    code: str,
-    exc: BaseException,
-    *,
-    operation_index: Optional[int] = None,
-) -> Dict[str, Any]:
-    message, fix = _preflight_split_error(exc)
-    return _preflight_finding(
-        stage, code, message, fix, operation_index=operation_index,
-    )
-
-
-def _preflight_compile_candidate(
-    canonical: str,
-    *,
-    s3_manager,
-    manifest_template: Optional[Dict[str, Any]] = None,
-    build_py: Optional[str] = None,
-) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], Any]:
-    """Compile a candidate recipe in memory against current persisted data.
-
-    Returns ``(findings, review_state, compiled_manifest)``. Nothing is
-    written: the recipe is loaded, the candidate template and/or script
-    substituted, and ``_compile_dashboard_recipe`` runs in its resilient
-    mode so every error diagnostic lands on the result instead of the
-    first one raising.
-    """
-    findings: List[Dict[str, Any]] = []
-    try:
-        recipe = _load_dashboard_recipe(canonical, s3_manager)
-    except Exception as exc:  # noqa: BLE001
-        return (
-            [_preflight_finding_from_error(
-                "compile", "recipe_unreadable", exc,
-            )],
-            None,
-            None,
-        )
-    if manifest_template is not None:
-        recipe["manifest_template"] = manifest_template
-    if build_py is not None:
-        recipe["build_py"] = build_py
-    try:
-        result, _datasets, _transforms = _compile_dashboard_recipe(
-            canonical,
-            recipe,
-            s3_manager=s3_manager,
-            allow_blocked_review=True,
-            print_receipts=False,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return (
-            [_preflight_finding_from_error("compile", "compile_failed", exc)],
-            None,
-            None,
-        )
-    for diagnostic in getattr(result, "diagnostics", None) or []:
-        if getattr(diagnostic, "severity", None) != "error":
-            continue
-        context = getattr(diagnostic, "context", None)
-        findings.append(_preflight_finding(
-            "compile",
-            getattr(diagnostic, "code", None) or "compile_error",
-            getattr(diagnostic, "message", None) or "",
-            (
-                str(context.get("fix_hint") or "")
-                if isinstance(context, dict) else ""
-            ),
-        ))
-    if not result.success and not findings:
-        findings.append(_preflight_finding(
-            "compile", "compile_failed",
-            result.error_message or "compile reported failure",
-            "read the compile diagnostics and repair the named surface.",
-        ))
-
-    review = getattr(result, "review", None)
-    if review is None:
-        return findings, None, getattr(result, "manifest", None)
-    acknowledgment = _load_dashboard_review_acknowledgment(
-        s3_manager, canonical, review,
-    )
-    ack_match = acknowledgment is not None
-    status = getattr(review, "status", None)
-    review_state = {
-        "status": status,
-        "review_signature": getattr(review, "review_signature", None),
-        "acknowledgment_match": ack_match,
-        "publish_ready": status != "BLOCK" and ack_match,
-        "text": review.to_text(),
-    }
-    if status == "BLOCK":
-        findings.append(_preflight_finding(
-            "review", "review_block",
-            "review status is BLOCK; the deterministic defect is "
-            "unacknowledgeable",
-            "repair the flagged panels, then preflight again. Do not "
-            "acknowledge or publish a BLOCK.",
-        ))
-    elif not ack_match:
-        findings.append(_preflight_finding(
-            "review", "review_required",
-            f"this edit changes the review signature to "
-            f"{review_state['review_signature']!r}, so the committing call "
-            f"would raise DashboardReviewRequired after writing",
-            "inspect every flagged panel with review.panel(id), then call "
-            "publish_dashboard with a substantive rationale.",
-        ))
-    return findings, review_state, getattr(result, "manifest", None)
-
-
-def _preflight_would_raise(findings: List[Dict[str, Any]]) -> Optional[str]:
-    """The exception the committing call would raise, given these findings."""
-    if not findings:
-        return None
-    if any(finding["code"] == "review_required" for finding in findings):
-        return "DashboardReviewRequired"
-    return "ValueError"
-
-
-def _preflight_report(
-    canonical: str,
-    findings: List[Dict[str, Any]],
-    **extra: Any,
-) -> Dict[str, Any]:
-    report = {
-        "folder": canonical,
-        "dry_run": True,
-        "ok": not findings,
-        "committed": False,
-        "findings": findings,
-        "finding_count": len(findings),
-        "would_raise": _preflight_would_raise(findings),
-    }
-    report.update(extra)
-    return report
-
-
-def _preflight_manifest_operations(
-    canonical: str,
-    kerberos: str,
-    dashboard_id: str,
-    operations: Sequence[Dict[str, Any]],
-    *,
-    s3_manager,
-    expected_sha256: Optional[str],
-    expected_current_version_id: Optional[str],
-    recompile: bool,
-) -> Dict[str, Any]:
-    """Walk every stage of a manifest transaction without writing bytes."""
-    import copy
-
-    findings: List[Dict[str, Any]] = []
-    try:
-        audit_dashboard_layout(canonical, s3_manager=s3_manager)
-    except Exception as exc:  # noqa: BLE001
-        findings.append(_preflight_finding_from_error(
-            "files", "canonical_files_missing", exc,
-        ))
-        return _preflight_report(canonical, findings, operations_applied=0)
-
-    template_path = f"{canonical}/manifest_template.json"
-    try:
-        original_raw = _manifest_template_bytes(s3_manager, canonical)
-        original = _decode_json_object(original_raw, template_path)
-    except Exception as exc:  # noqa: BLE001
-        findings.append(_preflight_finding_from_error(
-            "files", "template_unreadable", exc,
-        ))
-        return _preflight_report(canonical, findings, operations_applied=0)
-
-    before_sha = _sha256(original_raw)
-    if expected_sha256 is not None and expected_sha256 != before_sha:
-        findings.append(_preflight_finding(
-            "guard", "template_sha_mismatch",
-            f"manifest_template.json SHA-256 mismatch: expected "
-            f"{expected_sha256}, found {before_sha}",
-            "describe or inspect again, rebase the ordered operations on "
-            "the fresh state, and preflight again.",
-        ))
-        return _preflight_report(
-            canonical, findings,
-            pre_sha256=before_sha, operations_applied=0,
-        )
-
-    shape_findings: List[Dict[str, Any]] = []
-    for index, operation in enumerate(operations):
-        try:
-            _check_manifest_operation_shape(operation, index)
-        except Exception as exc:  # noqa: BLE001
-            shape_findings.append(_preflight_finding_from_error(
-                "operation_shape", "operation_shape_invalid", exc,
-                operation_index=index,
-            ))
-    if shape_findings:
-        findings.extend(shape_findings)
-        return _preflight_report(
-            canonical, findings,
-            pre_sha256=before_sha, operations_applied=0,
-        )
-
-    working = copy.deepcopy(original)
-    applied = 0
-    for index, operation in enumerate(operations):
-        try:
-            _apply_manifest_operation(
-                working, operation, index,
-                kerberos=kerberos, dashboard_id=dashboard_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            findings.append(_preflight_finding_from_error(
-                "operation_apply", "operation_failed", exc,
-                operation_index=index,
-            ))
-            remaining = len(operations) - index - 1
-            if remaining:
-                findings.append(_preflight_finding(
-                    "operation_apply", "operations_not_evaluated",
-                    f"{remaining} later operation(s) were not evaluated "
-                    f"because operation[{index}] failed",
-                    "operations run in order against one working copy, so "
-                    "the rest cannot be judged until this one resolves.",
-                ))
-            return _preflight_report(
-                canonical, findings,
-                pre_sha256=before_sha, operations_applied=applied,
-            )
-        applied += 1
-
-    _stamp_manifest_identity(working, kerberos, dashboard_id)
-    ok, errors = validate_manifest(working, require_persistence_metadata=True)
-    for error in errors:
-        findings.append(_preflight_finding(
-            "template_validation", "manifest_validation_error", error,
-        ))
-
-    post_sha: Optional[str] = None
-    try:
-        post_sha = _sha256(_canonical_json_bytes(working))
-    except Exception as exc:  # noqa: BLE001
-        findings.append(_preflight_finding_from_error(
-            "template_validation", "template_not_serializable", exc,
-        ))
-
-    original_frequency = (
-        (original.get("metadata") or {}).get("refresh_frequency")
-        if isinstance(original.get("metadata") or {}, dict) else None
-    )
-    new_frequency = (working.get("metadata") or {}).get("refresh_frequency")
-    if new_frequency != original_frequency:
-        registry_path = (
-            f"users/{kerberos}/dashboards/dashboards_registry.json"
-        )
-        try:
-            registry = _decode_json_object(
-                bytes(s3_manager.get(registry_path)).rstrip(b"\x00"),
-                registry_path,
-            )
-            _registry_entry_for_update(registry, dashboard_id, registry_path)
-        except Exception as exc:  # noqa: BLE001
-            findings.append(_preflight_finding_from_error(
-                "cadence", "registry_not_synchronizable", exc,
-            ))
-
-    if working != original:
-        try:
-            _require_expected_current_version(
-                s3_manager, canonical, expected_current_version_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            findings.append(_preflight_finding_from_error(
-                "guard", "version_guard_mismatch", exc,
-            ))
-
-    review_state: Optional[Dict[str, Any]] = None
-    compiled: Any = None
-    blocked_before_compile = any(
-        finding["stage"] in {"template_validation", "guard", "cadence"}
-        for finding in findings
-    )
-    if recompile and not blocked_before_compile:
-        compile_findings, review_state, compiled = (
-            _preflight_compile_candidate(
-                canonical,
-                s3_manager=s3_manager,
-                manifest_template=working,
-            )
-        )
-        findings.extend(compile_findings)
-
-    return _preflight_report(
-        canonical, findings,
-        kerberos=kerberos,
-        dashboard_id=dashboard_id,
-        operations_applied=applied,
-        recompile=recompile,
-        pre_sha256=before_sha,
-        post_sha256=post_sha,
-        manifest_template=working,
-        compiled_manifest=compiled,
-        review=review_state,
-    )
-
-
 def apply_manifest_operations(
     folder: Union[str, Dict[str, Any]],
     operations: Sequence[Dict[str, Any]],
@@ -19853,7 +19489,6 @@ def apply_manifest_operations(
     recompile: bool = True,
     expected_sha256: Optional[str] = None,
     expected_current_version_id: Optional[str] = None,
-    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Apply ordered, typed manifest edits as one rollback-safe transaction.
 
@@ -19861,15 +19496,6 @@ def apply_manifest_operations(
     :func:`inspect_dashboard` / :func:`describe_dashboard`. Passing state
     consumes its template SHA and current version guard directly. Nested
     dict patches deep-merge; lists and scalars replace; ``None`` clears.
-
-    ``dry_run=True`` commits nothing and raises nothing for an ordinary
-    authoring fault. It walks the same stages -- guards, operation shape,
-    operation application, template validation, cadence, compile, review --
-    against an in-memory working copy and returns a report whose
-    ``findings`` list carries every complaint the whole chain produces,
-    plus ``would_raise`` naming the exception the committing call would
-    hit. Use it to converge in one round trip; a clean ``ok: True``
-    preflight is the signal to call again with ``dry_run=False``.
     """
     if isinstance(operations, (str, bytes, dict)) \
             or not isinstance(operations, Sequence):
@@ -19889,11 +19515,6 @@ def apply_manifest_operations(
             "recompile must be a boolean | fix: pass True to build current "
             "data or False for a validated template-only transaction."
         )
-    if not isinstance(dry_run, bool):
-        raise ValueError(
-            "dry_run must be a boolean | fix: pass True to preflight every "
-            "stage without writing, or False to commit the transaction."
-        )
 
     import copy
 
@@ -19906,14 +19527,6 @@ def apply_manifest_operations(
     )
     s3 = _resolve_s3_manager(s3_manager)
     canonical, kerberos, dashboard_id = _canonical_dashboard_identity(folder)
-    if dry_run:
-        return _preflight_manifest_operations(
-            canonical, kerberos, dashboard_id, operations,
-            s3_manager=s3,
-            expected_sha256=expected_sha256,
-            expected_current_version_id=expected_current_version_id,
-            recompile=recompile,
-        )
     audit_dashboard_layout(canonical, s3_manager=s3)
     template_path = f"{canonical}/manifest_template.json"
     registry_path = (
@@ -20012,81 +19625,6 @@ _PERSISTED_SCRIPT_OPERATION_TYPES = frozenset({
     "replace", "insert_before", "insert_after", "append",
 })
 
-# One conceptual operation carries three key vocabularies across the
-# surfaces an authoring turn touches: the fragment op below takes
-# ``old``/``new``, its sibling insert ops take ``anchor``/``text``, and the
-# sandbox's own script-edit tool takes ``search``/``replace``. Guessing
-# wrong costs a full round trip per attempt, so the engine resolves the
-# vocabulary rather than spending an error teaching it.
-_SCRIPT_OPERATION_CANONICAL_KEYS: Dict[str, Tuple[str, ...]] = {
-    "replace": ("old", "new"),
-    "insert_before": ("anchor", "text"),
-    "insert_after": ("anchor", "text"),
-    "append": ("text",),
-}
-_SCRIPT_OPERATION_KEY_ALIASES: Dict[str, Dict[str, str]] = {
-    "replace": {
-        "search": "old", "anchor": "old",
-        "replace": "new", "text": "new",
-    },
-    "insert_before": {
-        "search": "anchor", "old": "anchor",
-        "replace": "text", "new": "text",
-    },
-    "insert_after": {
-        "search": "anchor", "old": "anchor",
-        "replace": "text", "new": "text",
-    },
-    "append": {"replace": "text", "new": "text"},
-}
-_SCRIPT_OPERATION_CONTROL_KEYS = frozenset({"op", "expected_count"})
-
-
-def _script_operation_schema_text() -> str:
-    """The whole fragment-op key schema, for a first-error fix hint."""
-    return ", ".join(
-        f"{name} ({'/'.join(_SCRIPT_OPERATION_CANONICAL_KEYS[name])})"
-        for name in sorted(_PERSISTED_SCRIPT_OPERATION_TYPES)
-    )
-
-
-def _normalize_persisted_script_operation(
-    operation: Dict[str, Any],
-    index: int,
-) -> Dict[str, Any]:
-    """Resolve an operation's keys to this op's canonical vocabulary."""
-    op = operation["op"]
-    canonical_keys = _SCRIPT_OPERATION_CANONICAL_KEYS[op]
-    aliases = _SCRIPT_OPERATION_KEY_ALIASES[op]
-    allowed = (
-        set(canonical_keys) | set(aliases) | _SCRIPT_OPERATION_CONTROL_KEYS
-    )
-    unknown = sorted(set(operation) - allowed)
-    if unknown:
-        raise ValueError(
-            f"script operation[{index}] has unknown key(s) {unknown} for "
-            f"op={op!r} | fix: op={op!r} takes {list(canonical_keys)}; the "
-            f"full schema is {_script_operation_schema_text()}."
-        )
-    normalized: Dict[str, Any] = {"op": op}
-    if "expected_count" in operation:
-        normalized["expected_count"] = operation["expected_count"]
-    supplied_by: Dict[str, str] = {}
-    for key in sorted(operation):
-        if key in _SCRIPT_OPERATION_CONTROL_KEYS:
-            continue
-        canonical = key if key in canonical_keys else aliases[key]
-        if canonical in normalized and normalized[canonical] != operation[key]:
-            raise ValueError(
-                f"script operation[{index}] sets {canonical!r} twice with "
-                f"different values, via {supplied_by[canonical]!r} and "
-                f"{key!r} | fix: supply {canonical!r} once; op={op!r} takes "
-                f"{list(canonical_keys)}."
-            )
-        normalized[canonical] = operation[key]
-        supplied_by[canonical] = key
-    return normalized
-
 
 def _apply_persisted_script_operation(
     source: str,
@@ -20100,10 +19638,9 @@ def _apply_persisted_script_operation(
     op = operation.get("op")
     if op not in _PERSISTED_SCRIPT_OPERATION_TYPES:
         raise ValueError(
-            f"script operation[{index}].op={op!r} is unsupported | fix: use "
-            f"one of {_script_operation_schema_text()}."
+            f"script operation[{index}].op={op!r} is unsupported; valid "
+            f"operations are {sorted(_PERSISTED_SCRIPT_OPERATION_TYPES)}"
         )
-    operation = _normalize_persisted_script_operation(operation, index)
     if op == "append":
         text = operation.get("text")
         if not isinstance(text, str) or not text:
@@ -20191,171 +19728,6 @@ def _validate_persisted_script_source(
     }
 
 
-def _preflight_persisted_script_operations(
-    canonical: str,
-    script: str,
-    operations: Sequence[Dict[str, Any]],
-    *,
-    s3_manager,
-    expected_sha256: Optional[str],
-    expected_current_version_id: Optional[str],
-) -> Dict[str, Any]:
-    """Walk every stage of a script transaction without writing bytes."""
-    findings: List[Dict[str, Any]] = []
-    script_path = f"{canonical}/scripts/{script}.py"
-    try:
-        audit_dashboard_layout(canonical, s3_manager=s3_manager)
-    except Exception as exc:  # noqa: BLE001
-        message, fix = _preflight_split_error(exc)
-        findings.append(_preflight_finding(
-            "files", "canonical_files_missing", message,
-            fix + (
-                " Typed script operations are a post-publish path: they "
-                "require the full canonical set, so a first build writes "
-                "scripts/build.py directly and publishes before this API "
-                "becomes available."
-            ),
-        ))
-        return _preflight_report(canonical, findings, script=script,
-                                 operations_applied=0)
-
-    if expected_sha256 is None:
-        findings.append(_preflight_finding(
-            "guard", "script_sha_missing",
-            "expected_sha256 is required for persisted-script edits",
-            "pass the describe_dashboard or inspect_dashboard state "
-            f"directly, or copy state['scripts']['{script}']['sha256'].",
-        ))
-        return _preflight_report(canonical, findings, script=script,
-                                 operations_applied=0)
-
-    try:
-        original_raw = _read_dashboard_script_bytes(
-            s3_manager, canonical, script,
-        )
-    except Exception as exc:  # noqa: BLE001
-        findings.append(_preflight_finding_from_error(
-            "files", "script_unreadable", exc,
-        ))
-        return _preflight_report(canonical, findings, script=script,
-                                 operations_applied=0)
-    original_source = original_raw.decode("utf-8")
-    before_sha = _sha256(original_raw)
-    if expected_sha256 != before_sha:
-        findings.append(_preflight_finding(
-            "guard", "script_sha_mismatch",
-            f"{script_path} SHA-256 mismatch: expected {expected_sha256}, "
-            f"found {before_sha}",
-            "describe or inspect again and rebase the typed operations on "
-            "the current script.",
-        ))
-        return _preflight_report(
-            canonical, findings, script=script,
-            pre_sha256=before_sha, operations_applied=0,
-        )
-
-    working = original_source
-    applied = 0
-    for index, operation in enumerate(operations):
-        try:
-            working = _apply_persisted_script_operation(
-                working, operation, index,
-            )
-        except Exception as exc:  # noqa: BLE001
-            findings.append(_preflight_finding_from_error(
-                "operation_apply", "operation_failed", exc,
-                operation_index=index,
-            ))
-            remaining = len(operations) - index - 1
-            if remaining:
-                findings.append(_preflight_finding(
-                    "operation_apply", "operations_not_evaluated",
-                    f"{remaining} later operation(s) were not evaluated "
-                    f"because operation[{index}] failed",
-                    "fragment operations apply in order to one working "
-                    "source, so a later anchor may not exist yet.",
-                ))
-            return _preflight_report(
-                canonical, findings, script=script,
-                pre_sha256=before_sha, operations_applied=applied,
-            )
-        applied += 1
-
-    if working == original_source:
-        findings.append(_preflight_finding(
-            "operation_apply", "no_byte_change",
-            "typed script operations produced no byte change",
-            "the anchors matched but the result is identical; drop the "
-            "no-op or correct the replacement text.",
-        ))
-        return _preflight_report(
-            canonical, findings, script=script,
-            pre_sha256=before_sha, operations_applied=applied,
-        )
-
-    pipeline_contract: Optional[Dict[str, Any]] = None
-    try:
-        pipeline_contract = _validate_persisted_script_source(
-            canonical, script, working, s3_manager=s3_manager,
-        )
-    except SyntaxError as exc:
-        findings.append(_preflight_finding(
-            "script_validation", "script_syntax_error",
-            f"{type(exc).__name__}: {exc}",
-            "the edited source does not compile; correct the fragment.",
-        ))
-    except Exception as exc:  # noqa: BLE001
-        findings.append(_preflight_finding_from_error(
-            "script_validation", "script_contract_invalid", exc,
-        ))
-
-    if pipeline_contract and pipeline_contract.get("unresolved_outputs"):
-        unresolved = pipeline_contract["unresolved_outputs"]
-        findings.append(_preflight_finding(
-            "script_validation", "transform_producer_output_unresolved",
-            f"the edited script leaves {len(unresolved)} transform "
-            f"output(s) unresolvable by static analysis: {unresolved}",
-            "dataset keys must be literal at the assignment, helper call, "
-            "or finite literal loop. Note that this one cause is reported "
-            "downstream once per affected dataset, so repair it here "
-            "rather than chasing the consumer findings.",
-        ))
-
-    if pipeline_contract is not None:
-        try:
-            _require_expected_current_version(
-                s3_manager, canonical, expected_current_version_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            findings.append(_preflight_finding_from_error(
-                "guard", "version_guard_mismatch", exc,
-            ))
-
-    review_state: Optional[Dict[str, Any]] = None
-    compiled: Any = None
-    if pipeline_contract is not None and not any(
-        finding["stage"] == "guard" for finding in findings
-    ):
-        compile_findings, review_state, compiled = (
-            _preflight_compile_candidate(
-                canonical, s3_manager=s3_manager, build_py=working,
-            )
-        )
-        findings.extend(compile_findings)
-
-    return _preflight_report(
-        canonical, findings,
-        script=script,
-        path=script_path,
-        operations_applied=applied,
-        pre_sha256=before_sha,
-        post_sha256=_sha256(working.encode("utf-8")),
-        pipeline_contract=pipeline_contract,
-        compiled_manifest=compiled,
-        review=review_state,
-    )
-
-
 def apply_persisted_script_operations(
     folder: Union[str, Dict[str, Any]],
     script: str,
@@ -20364,7 +19736,6 @@ def apply_persisted_script_operations(
     s3_manager=None,
     expected_sha256: Optional[str] = None,
     expected_current_version_id: Optional[str] = None,
-    dry_run: bool = False,
 ) -> Dict[str, Any]:
     """Hash-gated, rollback-safe edit of ``scripts/build.py``.
 
@@ -20377,26 +19748,6 @@ def apply_persisted_script_operations(
     Typed fragments exist because a source edit can hide anything until it
     is executed. Retrieval no longer has that problem -- it is declared in
     ``scripts/pulls.json`` and edited whole through ``apply_pulls_document``.
-
-    Each operation names its fragment in this op's canonical vocabulary --
-    ``replace`` takes ``old``/``new``, ``insert_before`` / ``insert_after``
-    take ``anchor``/``text``, ``append`` takes ``text`` -- and the engine
-    resolves the equivalent ``search``/``replace`` spelling to the same
-    keys, so a vocabulary guess does not cost a round trip.
-
-    ``dry_run=True`` commits nothing and raises nothing for an ordinary
-    authoring fault, returning a ``findings`` report across every stage
-    instead. Prefer it before the committing call: on the review branch
-    this transaction deliberately retains the written candidate script (see
-    below), so a preflight is the cheapest way to learn that the review
-    gate is about to fire.
-
-    ``DashboardReviewRequired`` is the one failure that does **not** roll
-    back: the new script bytes stay persisted so ``review_dashboard`` can
-    reproduce the exact signature for the publish path. A naive retry of
-    the same fragment operations against the already-rewritten source is
-    therefore wrong -- it will miss its anchor or double-apply. Complete
-    the publish path instead, or re-read the script and rebase.
     """
     if script not in _PERSISTED_SCRIPT_STEMS:
         raise ValueError(
@@ -20409,13 +19760,7 @@ def apply_persisted_script_operations(
             or not isinstance(operations, Sequence) or not operations:
         raise ValueError(
             "operations must be a non-empty ordered sequence of typed "
-            f"script operation objects | fix: the schema is "
-            f"{_script_operation_schema_text()}."
-        )
-    if not isinstance(dry_run, bool):
-        raise ValueError(
-            "dry_run must be a boolean | fix: pass True to preflight every "
-            "stage without writing, or False to commit the transaction."
+            "script operation objects"
         )
     folder, expected_sha256, expected_current_version_id = (
         _transaction_target_from_state(
@@ -20425,14 +19770,6 @@ def apply_persisted_script_operations(
             script=script,
         )
     )
-    if dry_run:
-        canonical, _k, _d = _canonical_dashboard_identity(folder)
-        return _preflight_persisted_script_operations(
-            canonical, script, operations,
-            s3_manager=_resolve_s3_manager(s3_manager),
-            expected_sha256=expected_sha256,
-            expected_current_version_id=expected_current_version_id,
-        )
     if expected_sha256 is None:
         raise ValueError(
             "expected_sha256 is required for persisted-script edits | fix: "
@@ -20748,13 +20085,9 @@ def describe_dashboard(
     and file inventories. The ``text`` field is safe to paraphrase to the
     user (no paths or SHAs). ``widgets`` carries compact identity, placement,
     mapping, named-color, and user-input-mode summaries for surgical edits.
-    The returned dict carries ``manifest_template_sha256``,
-    ``versioning.current_version_id``, and ``scripts.<stem>.sha256`` so it can
-    be passed directly to :func:`apply_manifest_operations`,
-    :func:`apply_persisted_script_operations`, and
-    :func:`apply_pulls_document` without a second read. The script block is
-    hashes and sizes only; the parsed pull document and the transform graph
-    remain :func:`inspect_dashboard`'s job.
+    The returned dict still carries ``manifest_template_sha256`` and
+    ``versioning.current_version_id`` so it can be passed directly to
+    :func:`apply_manifest_operations`.
     """
     if mode != "layout":
         raise ValueError(
@@ -20768,10 +20101,6 @@ def describe_dashboard(
     template_raw = _manifest_template_bytes(s3, canonical)
     template_sha = _sha256(template_raw)
     template = _decode_json_object(template_raw, template_path)
-    # audit_dashboard_layout above already proved both persisted scripts
-    # exist, so these reads cannot miss.
-    pulls_raw = _read_pulls_spec_bytes(s3, canonical)
-    build_raw = _read_dashboard_script_bytes(s3, canonical, "build")
 
     layout = template.get("layout") if isinstance(template.get("layout"), dict) \
         else {}
@@ -20854,11 +20183,14 @@ def describe_dashboard(
         versioning["current_version_id"] = listed.get("current_version_id")
         versioning["previous_version_id"] = listed.get("previous_version_id")
         state = _load_dashboard_version_state(s3, canonical)
-        if state is not None:
+        pulls_path = f"{canonical}/{_PULLS_SPEC_PATH}"
+        build_path = f"{canonical}/scripts/build.py"
+        if state is not None and s3.exists(pulls_path) \
+                and s3.exists(build_path):
             working = {
                 "manifest_template": template,
-                "pulls_json": pulls_raw.rstrip(b"\x00").decode("utf-8"),
-                "build_py": build_raw.decode("utf-8"),
+                "pulls_json": bytes(s3.get(pulls_path)).decode("utf-8"),
+                "build_py": bytes(s3.get(build_path)).decode("utf-8"),
             }
             working_sha = _recipe_fingerprint(working)
             current_sha = state.get("current_recipe_sha256")
@@ -20977,20 +20309,6 @@ def describe_dashboard(
         "versioning": versioning,
         "review": review_state,
         "manifest_template_sha256": template_sha,
-        "scripts": {
-            "pulls": {
-                "path": f"{canonical}/{_PULLS_SPEC_PATH}",
-                "present": True,
-                "sha256": _sha256(pulls_raw),
-                "bytes": len(pulls_raw),
-            },
-            "build": {
-                "path": f"{canonical}/scripts/build.py",
-                "present": True,
-                "sha256": _sha256(build_raw),
-                "bytes": len(build_raw),
-            },
-        },
         "text": text,
         "mode": mode,
     }
@@ -22047,6 +21365,16 @@ class RefreshAttachmentError(ValueError):
         )
 
 
+# Pull primitives recognized by the static-parse stem inference. ``get_data``
+# is the authoring primitive and writes ``name=`` verbatim. The retired names
+# are kept for inference only, so the existing persisted-script corpus stays
+# attachable; they are not an authoring surface and the injected namespace no
+# longer binds ``pull_market_data`` at all.
+_PULL_PRIMITIVES: frozenset = frozenset({
+    "get_data", "pull_haver_data", "pull_fred_data", "save_artifact",
+    "pull_market_data", "pull_plottool_data",
+})
+
 # The ``get_data`` sources where ``name=`` is a filename PREFIX rather than a
 # CSV stem. Both route through the tool's shared ``_save_tables`` writer, so
 # every table lands flat beside its siblings at
@@ -22061,6 +21389,41 @@ _MULTI_TABLE_SOURCES: Dict[str, str] = {
     "lakehouse": "tables",
     "gs_quant_reference": "tables",
 }
+_GET_DATA_MULTI_FILE_SOURCES: frozenset = frozenset(_MULTI_TABLE_SOURCES)
+_LAKEHOUSE_STEM_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _lakehouse_table_stem(table: Any) -> Optional[str]:
+    """Derive the CSV stem ``get_data`` gives one ``lakehouse`` table.
+
+    Mirrors the tool's own rule so a lakehouse pull is attachable without
+    the author restating what the engine can already compute. A bare string
+    entry is taken as the ``service_uri``. Returns ``None`` when nothing
+    literal is available, which the caller reports as unresolved.
+    """
+    if isinstance(table, str):
+        table = {"service_uri": table}
+    if not isinstance(table, dict):
+        return None
+
+    raw = table.get("label")
+    if not isinstance(raw, str) or not raw.strip():
+        uri = table.get("service_uri")
+        if not isinstance(uri, str):
+            return None
+        segments = [
+            segment for segment in uri.split("/")
+            if segment and segment != "all"
+            and not (segment.startswith("{") and segment.endswith("}"))
+        ]
+        if not segments:
+            return None
+        raw = segments[-1]
+
+    if _STATIC_DYNAMIC_TOKEN in raw:
+        return None
+    stem = _LAKEHOUSE_STEM_UNSAFE.sub("_", raw)
+    return stem or None
 
 
 # ---------------------------------------------------------------------------
@@ -22472,6 +21835,162 @@ def apply_pulls_document(
     }
 
 
+def _dynamic_value_paths(details: Any, prefix: str = "details") -> List[str]:
+    """Dotted paths of every value the static read could not evaluate.
+
+    The analyzer marks an unevaluable expression with a sentinel string
+    rather than dropping the key, so without this check a module-level
+    ``TODAY = date.today().isoformat()`` would migrate into a document
+    whose ``end`` is literally ``"<dynamic>"`` -- rejected later by
+    pydantic with a message about date parsing that says nothing about
+    where the value came from.
+    """
+    found: List[str] = []
+    if isinstance(details, dict):
+        for key, value in details.items():
+            found.extend(_dynamic_value_paths(value, f"{prefix}.{key}"))
+    elif isinstance(details, list):
+        for index, value in enumerate(details):
+            found.extend(_dynamic_value_paths(value, f"{prefix}[{index}]"))
+    elif isinstance(details, str) and _STATIC_DYNAMIC_TOKEN in details:
+        found.append(prefix)
+    return found
+
+
+def _pulls_document_from_legacy_source(src: str) -> Dict[str, Any]:
+    """Convert legacy ``pull_data.py`` source into a pull document.
+
+    Each ``PULLS`` entry must reach exactly one literal ``get_data``
+    request whose ``name`` is the entry name, because that is the only
+    shape a document can express. Anything else -- a pull that also
+    computes, one that writes two datasets, one whose request is assembled
+    at runtime -- raises with every blocker named at once, so the caller
+    fixes the module in one pass rather than discovering blockers serially.
+    """
+    analysis = _analyze_pull_producers_from_source(src)
+    if not analysis["registry_present"]:
+        raise ValueError(
+            "scripts/pull_data.py defines no module-level PULLS dict, so "
+            "there is nothing to convert | fix: if this dashboard retrieves "
+            "nothing, write the empty document directly rather than "
+            "migrating"
+        )
+
+    blockers: List[str] = []
+    entries: List[Dict[str, Any]] = []
+    for root in analysis["roots"]:
+        name = root["name"]
+        if root["unresolved"]:
+            reasons = "; ".join(
+                f"{item['function']} line {item.get('line')}: {item['reason']}"
+                for item in root["unresolved"]
+            )
+            blockers.append(
+                f"{name!r}: request is not statically readable -- {reasons}"
+            )
+            continue
+        requests = root["requests"]
+        if len(requests) != 1:
+            blockers.append(
+                f"{name!r}: reaches {len(requests)} literal get_data "
+                f"request(s); a document entry is exactly one request. Split "
+                f"it into one entry per request, or move the derivation into "
+                f"a TRANSFORMS function in scripts/build.py -- deriving is "
+                f"not retrieving"
+            )
+            continue
+        request = requests[0]
+        dynamic = _dynamic_value_paths(request["details"])
+        if dynamic:
+            blockers.append(
+                f"{name!r}: {', '.join(dynamic)} " +
+                ("is" if len(dynamic) == 1 else "are") +
+                " computed at runtime, so the value cannot be read off the "
+                f"module. A document states its window, so replace "
+                f"{'it' if len(dynamic) == 1 else 'them'} with a literal "
+                f"date or an @today-family token -- the engine will not "
+                f"guess that a name like TODAY meant today"
+            )
+            continue
+        if request["name"] != name:
+            blockers.append(
+                f"{name!r}: its get_data call writes stem "
+                f"{request['name']!r}. In a document the entry name IS the "
+                f"stem, so rename the PULLS key to {request['name']!r} first "
+                f"and repoint the manifest dataset key with it"
+            )
+            continue
+        entries.append({"name": name, "details": request["details"]})
+
+    if blockers:
+        body = "\n".join(f"  - {item}" for item in blockers)
+        raise ValueError(
+            f"migrate_pull_script: {len(blockers)} pull(s) cannot be "
+            f"expressed as a document entry:\n{body}\n"
+            f"Nothing was written. Repair the module and retry."
+        )
+    return {"schema_version": _PULLS_SCHEMA_VERSION, "pulls": entries}
+
+
+def migrate_pull_script(
+    folder: Union[str, Dict[str, Any]],
+    *,
+    s3_manager=None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Convert a dashboard's legacy ``pull_data.py`` into ``pulls.json``.
+
+    A one-shot converter, not a compatibility layer: nothing in the engine
+    reads the Python, before or after. Run it once per dashboard, check the
+    document it produced, then refresh.
+
+    Writes the document and removes the module in that order, so an
+    interrupted migration leaves a dashboard with both files rather than
+    neither. ``dry_run`` returns the document it would write without
+    touching S3, which is the right first call on a pipeline you did not
+    author.
+    """
+    s3 = _resolve_s3_manager(s3_manager)
+    target = folder if isinstance(folder, str) else folder.get("folder")
+    canonical, _kerberos, _dashboard_id = _canonical_dashboard_identity(target)
+    legacy_path = f"{canonical}/scripts/pull_data.py"
+
+    try:
+        src = bytes(s3.get(legacy_path)).rstrip(b"\x00").decode("utf-8")
+    except Exception as exc:
+        raise ValueError(
+            f"migrate_pull_script: {legacy_path} not found -- {exc} | fix: "
+            f"this dashboard has nothing to migrate. Check whether "
+            f"{canonical}/{_PULLS_SPEC_PATH} already exists."
+        ) from exc
+
+    document = _pulls_document_from_legacy_source(src)
+    spec = _parse_pulls_document(document, f"{canonical}/{_PULLS_SPEC_PATH}")
+    stems = sorted(_declared_pull_stems(spec))
+    if dry_run:
+        return {
+            "folder": canonical,
+            "migrated": False,
+            "dry_run": True,
+            "document": document,
+            "pulls": list(spec),
+            "declared_stems": stems,
+        }
+
+    written = apply_pulls_document(canonical, document, s3_manager=s3)
+    s3.delete(legacy_path)
+    return {
+        "folder": canonical,
+        "migrated": True,
+        "dry_run": False,
+        "document": document,
+        "pulls": written["pulls"],
+        "declared_stems": written["declared_stems"],
+        "removed": legacy_path,
+        "sha256": written["sha256"],
+    }
+
+
 def _collect_widget_dataset_refs(template: Dict[str, Any]) -> set:
     """Walk a manifest template, collect every dataset key referenced by
     a widget. Covers chart specs (``spec.dataset``), table / pivot
@@ -22572,24 +22091,23 @@ _STATIC_DYNAMIC_TOKEN = "<dynamic>"
 
 
 class _StaticProducerAnalyzer:
-    """Registered-call-graph analysis for ``TRANSFORMS`` outputs.
+    """Registered-call-graph analysis for pull and transform outputs.
 
-    Dashboard consumers use stable dataset keys. Retrieval states its own
-    keys in ``scripts/pulls.json``, so the only side left to prove is
-    derivation: what a transform materializes is knowable only by reading
-    it. The analyzer follows functions reachable from ``TRANSFORMS`` (or
-    every local function when a small inference helper is tested without a
-    registry), propagates literal strings through assignments, helper
-    parameters, f-strings, and finite literal loops, and records
-    unresolved output sites instead of silently pretending that no
-    producer exists.
+    Dashboard consumers use stable dataset keys, so their producers must be
+    statically provable without executing network code. The analyzer follows
+    only functions reachable from ``PULLS`` / ``TRANSFORMS`` (or every local
+    function when a small inference helper is tested without a registry),
+    propagates literal strings through assignments, helper parameters,
+    f-strings, and finite literal loops, and records unresolved output sites
+    instead of silently pretending that no producer exists.
     """
 
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, kind: str) -> None:
         import ast
 
         self.ast = ast
         self.source = source
+        self.kind = kind
         self.tree = ast.parse(source)
         self.functions = {
             node.name: node for node in self.tree.body
@@ -22599,16 +22117,24 @@ class _StaticProducerAnalyzer:
         self.outputs_by_root: Dict[str, set] = {}
         self.function_by_root: Dict[str, str] = {}
         self.unresolved: List[Dict[str, Any]] = []
+        # Every literal ``get_data`` request the walk reached, keyed by root.
+        # Only ``migrate_pull_script`` reads this: converting a legacy pull
+        # module into a pull document is the same extraction the stem walk
+        # already performs, one step short of discarding the request body.
+        self.requests_by_root: Dict[str, List[Dict[str, Any]]] = {}
         self._unresolved_seen: set = set()
         self._collect_module_constants()
         self.roots, self.registry_present = self._registered_roots()
         for root_name, function_name in self.roots:
             self.outputs_by_root.setdefault(root_name, set())
             self.function_by_root[root_name] = function_name
+            initial_args: List[Any] = []
+            if kind == "transform":
+                initial_args.append(_STATIC_DATASETS)
             self._trace_function(
                 function_name,
                 root_name=root_name,
-                positional=[_STATIC_DATASETS],
+                positional=initial_args,
                 keywords={},
                 stack=(),
             )
@@ -22620,12 +22146,14 @@ class _StaticProducerAnalyzer:
                 "name": root_name,
                 "function": function_name,
                 "outputs": sorted(self.outputs_by_root.get(root_name, set())),
+                "requests": list(self.requests_by_root.get(root_name, [])),
                 "unresolved": [
                     item for item in self.unresolved
                     if item["root"] == root_name
                 ],
             })
         return {
+            "kind": self.kind,
             "registry_present": self.registry_present,
             "roots": roots,
             "outputs": set().union(
@@ -22650,7 +22178,7 @@ class _StaticProducerAnalyzer:
 
     def _registered_roots(self) -> Tuple[List[Tuple[str, str]], bool]:
         ast = self.ast
-        registry_name = "TRANSFORMS"
+        registry_name = "PULLS" if self.kind == "pull" else "TRANSFORMS"
         registry_node: Optional[ast.AST] = None
         for node in self.tree.body:
             targets: List[ast.AST] = []
@@ -22667,52 +22195,50 @@ class _StaticProducerAnalyzer:
             ):
                 registry_node = value
 
-        # Resolution reads the list literal, so a registry grown by
-        # mutation is invisible here while it works fine at runtime. The
-        # concatenation form at least fails loudly below; `.append` used to
-        # drop its transform in silence and surface only as an unrelated
-        # consumer's missing producer, several stages downstream.
-        for node in self.tree.body:
-            mutation = ""
-            if isinstance(node, ast.AugAssign) \
-                    and isinstance(node.target, ast.Name) \
-                    and node.target.id == registry_name:
-                mutation = f"{registry_name} += ..."
-            elif isinstance(node, ast.Expr) \
-                    and isinstance(node.value, ast.Call):
-                func = node.value.func
-                if isinstance(func, ast.Attribute) \
-                        and isinstance(func.value, ast.Name) \
-                        and func.value.id == registry_name \
-                        and func.attr in {"append", "extend", "insert"}:
-                    mutation = f"{registry_name}.{func.attr}()"
-            if mutation:
-                self._record_unresolved(
-                    "<registry>", registry_name, node,
-                    f"{registry_name} is grown by {mutation}; producer "
-                    f"resolution reads the {registry_name} list literal "
-                    f"only, so entries added this way are invisible",
-                )
-
         if registry_node is None:
             return [(name, name) for name in self.functions], False
 
         roots: List[Tuple[str, str]] = []
-        if isinstance(registry_node, (ast.List, ast.Tuple)):
+        if self.kind == "pull" and isinstance(registry_node, ast.Dict):
+            for key_node, value_node in zip(
+                registry_node.keys, registry_node.values
+            ):
+                key = self._eval(key_node, self.module_env)
+                if isinstance(key, str) and isinstance(value_node, ast.Name):
+                    if value_node.id in self.functions:
+                        roots.append((key, value_node.id))
+                    else:
+                        self._record_unresolved(
+                            "<registry>", "PULLS", value_node,
+                            f"PULLS[{key!r}] does not reference a local "
+                            "function",
+                        )
+                else:
+                    self._record_unresolved(
+                        "<registry>", "PULLS", value_node,
+                        "PULLS keys must be literal strings and values must "
+                        "be local function names",
+                    )
+            return roots, True
+
+        if self.kind == "transform" and isinstance(
+            registry_node, (ast.List, ast.Tuple)
+        ):
             for value_node in registry_node.elts:
                 if isinstance(value_node, ast.Name) \
                         and value_node.id in self.functions:
                     roots.append((value_node.id, value_node.id))
                 else:
                     self._record_unresolved(
-                        "<registry>", registry_name, value_node,
+                        "<registry>", "TRANSFORMS", value_node,
                         "TRANSFORMS entries must be local function names",
                     )
             return roots, True
 
         self._record_unresolved(
             "<registry>", registry_name, registry_node,
-            f"{registry_name} must be a literal list or tuple",
+            f"{registry_name} must be a literal "
+            f"{'dictionary' if self.kind == 'pull' else 'list or tuple'}",
         )
         return roots, True
 
@@ -23128,6 +22654,78 @@ class _StaticProducerAnalyzer:
         for child in ast.iter_child_nodes(expression):
             self._trace_expr(child, env, root_name, function_name, stack)
 
+    def _static_details_mapping(
+        self, call: Any, env: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Read the literal ``details=`` mapping of a ``get_data`` call.
+
+        The canonical authored form wraps a literal dict in
+        ``pydantic.TypeAdapter(Details).validate_python(...)``, so the dict
+        is reachable by walking the ``details=`` subtree even though the
+        wrapper call itself does not evaluate statically. Returns ``None``
+        when no literal mapping carrying a ``source`` is present, which the
+        caller treats as unresolved rather than guessing a shape.
+        """
+        ast = self.ast
+        details = next(
+            (kw.value for kw in call.keywords if kw.arg == "details"), None
+        )
+        if details is None:
+            return None
+
+        def _usable(mapping: Any) -> bool:
+            if not isinstance(mapping, dict):
+                return False
+            source = mapping.get("source")
+            return (isinstance(source, str)
+                    and _STATIC_DYNAMIC_TOKEN not in source)
+
+        evaluated = self._eval(details, env)
+        if _usable(evaluated):
+            return evaluated
+
+        for node in ast.walk(details):
+            if not isinstance(node, ast.Dict):
+                continue
+            candidate = self._eval(node, env)
+            if _usable(candidate):
+                return candidate
+        return None
+
+    def _add_lakehouse_outputs(
+        self,
+        root_name: str,
+        function_name: str,
+        call: Any,
+        name: str,
+        details: Dict[str, Any],
+    ) -> None:
+        """Attach the per-table stems a ``lakehouse`` pull writes.
+
+        A lakehouse call fans out to ``{name}_{stem}.csv``, so ``name``
+        itself is never a dataset key. Every stem has to resolve: attaching
+        a partial set would leave a real dataset unattached while looking
+        like a clean parse.
+        """
+        tables = details.get("tables")
+        if isinstance(tables, (str, dict)):
+            tables = [tables]
+        stems = (
+            [_lakehouse_table_stem(table) for table in tables]
+            if isinstance(tables, list) and tables else []
+        )
+        if not stems or any(stem is None for stem in stems):
+            self._record_unresolved(
+                root_name, function_name, call,
+                f"get_data source='lakehouse' writes one CSV per table as "
+                f"{name}_<stem>.csv, and at least one stem is not statically "
+                f"readable; give every table an explicit literal label= so "
+                f"the dataset keys are provable",
+            )
+            return
+        for stem in stems:
+            self._add_output(root_name, f"{name}_{stem}")
+
     def _trace_call(
         self,
         call: Any,
@@ -23137,7 +22735,89 @@ class _StaticProducerAnalyzer:
         stack: Tuple[Tuple[str, str], ...],
     ) -> None:
         ast = self.ast
-        if isinstance(call.func, ast.Attribute) \
+        call_name = (
+            call.func.id if isinstance(call.func, ast.Name)
+            else call.func.attr if isinstance(call.func, ast.Attribute)
+            else None
+        )
+        if self.kind == "pull" and call_name in _PULL_PRIMITIVES:
+            values = {
+                keyword.arg: self._eval(keyword.value, env)
+                for keyword in call.keywords if keyword.arg is not None
+            }
+            name = values.get("name", _STATIC_UNKNOWN)
+            mode = values.get("mode", "eod")
+            if isinstance(name, str) and _STATIC_DYNAMIC_TOKEN not in name:
+                if call_name == "get_data":
+                    details = self._static_details_mapping(call, env)
+                    source = None if details is None else details.get("source")
+                    if source is None:
+                        self._record_unresolved(
+                            root_name, function_name, call,
+                            "get_data details= carries no statically "
+                            "readable source; author it as "
+                            "pydantic.TypeAdapter(Details).validate_python("
+                            "{\"source\": \"<literal>\", ...}), because "
+                            "source=\"lakehouse\" makes name= a filename "
+                            "prefix rather than a CSV stem",
+                        )
+                    else:
+                        self.requests_by_root.setdefault(
+                            root_name, []
+                        ).append({"name": name, "details": details})
+                        if source in _GET_DATA_MULTI_FILE_SOURCES:
+                            self._add_lakehouse_outputs(
+                                root_name, function_name, call, name, details
+                            )
+                        else:
+                            self._add_output(root_name, name)
+                elif call_name == "pull_market_data":
+                    if mode == "eod":
+                        self._add_output(root_name, f"{name}_eod")
+                    elif mode in ("iday", "intraday"):
+                        self._add_output(root_name, f"{name}_intraday")
+                    elif mode == "both":
+                        self._add_output(root_name, f"{name}_eod")
+                        self._add_output(root_name, f"{name}_intraday")
+                    else:
+                        self._record_unresolved(
+                            root_name, function_name, call,
+                            f"pull_market_data mode {mode!r} is not static "
+                            "or supported",
+                        )
+                else:
+                    self._add_output(root_name, name)
+            else:
+                self._record_unresolved(
+                    root_name, function_name, call,
+                    f"{call_name} name= is runtime-dependent",
+                )
+            return
+
+        if self.kind == "pull" and isinstance(call.func, ast.Attribute) \
+                and call.func.attr in ("put", "save"):
+            path_node = call.args[1] if len(call.args) >= 2 else None
+            for keyword in call.keywords:
+                if keyword.arg in ("path", "key", "url"):
+                    path_node = keyword.value
+                    break
+            if path_node is not None:
+                path = self._string_value(path_node, env)
+                import re
+                match = re.search(r"(?:^|/)data/([^/]+)\.csv$", path)
+                if match:
+                    stem = match.group(1)
+                    if _STATIC_DYNAMIC_TOKEN in stem:
+                        self._record_unresolved(
+                            root_name, function_name, call,
+                            "direct CSV output stem is runtime-dependent",
+                        )
+                    else:
+                        self._add_output(root_name, stem)
+            return
+
+        if self.kind == "transform" \
+                and isinstance(call.func, ast.Attribute) \
                 and call.func.attr == "update" \
                 and self._eval(call.func.value, env) is _STATIC_DATASETS:
             mapping = self._eval(
@@ -23203,7 +22883,7 @@ class _StaticProducerAnalyzer:
         function_name: str,
     ) -> None:
         ast = self.ast
-        if not isinstance(target, ast.Subscript):
+        if self.kind != "transform" or not isinstance(target, ast.Subscript):
             return
         if self._eval(target.value, env) is not _STATIC_DATASETS:
             return
@@ -23225,7 +22905,7 @@ class _StaticProducerAnalyzer:
         function_name: str,
     ) -> None:
         ast = self.ast
-        if not isinstance(value_node, ast.Dict):
+        if self.kind != "transform" or not isinstance(value_node, ast.Dict):
             return
         for key_node in value_node.keys:
             if key_node is None:
@@ -23264,12 +22944,19 @@ class _StaticProducerAnalyzer:
         })
 
 
-def _analyze_transform_producers_from_source(src: str) -> Dict[str, Any]:
-    """Return helper-aware outputs and unresolved sites for ``TRANSFORMS``."""
+def _analyze_pull_producers_from_source(src: str) -> Dict[str, Any]:
+    """Read a legacy ``PULLS`` module's outputs, requests and unresolved sites.
+
+    Migration-only. The refresh audit reads declared stems off
+    ``scripts/pulls.json`` and never calls this; ``migrate_pull_script`` is
+    the one caller, and it needs the ``requests`` this collects in order to
+    convert a module into a document.
+    """
     try:
-        return _StaticProducerAnalyzer(src).result()
+        return _StaticProducerAnalyzer(src, "pull").result()
     except SyntaxError as exc:
         return {
+            "kind": "pull",
             "registry_present": False,
             "roots": [],
             "outputs": set(),
@@ -23280,6 +22967,30 @@ def _analyze_transform_producers_from_source(src: str) -> Dict[str, Any]:
                 "reason": exc.msg,
             }],
         }
+
+
+def _analyze_transform_producers_from_source(src: str) -> Dict[str, Any]:
+    """Return helper-aware outputs and unresolved sites for ``TRANSFORMS``."""
+    try:
+        return _StaticProducerAnalyzer(src, "transform").result()
+    except SyntaxError as exc:
+        return {
+            "kind": "transform",
+            "registry_present": False,
+            "roots": [],
+            "outputs": set(),
+            "unresolved": [{
+                "root": "<parse>",
+                "function": "<parse>",
+                "line": exc.lineno,
+                "reason": exc.msg,
+            }],
+        }
+
+
+def _infer_pull_stems_from_source(src: str) -> set:
+    """Infer CSV stems through registered local helper call graphs."""
+    return set(_analyze_pull_producers_from_source(src)["outputs"])
 
 
 def _infer_transform_keys_from_source(src: str) -> set:
@@ -23495,9 +23206,9 @@ def _audit_refresh_attachment(
             gaps.append(
                 f"pulls_missing: version recipe does not contain UTF-8 "
                 f"{pulls_path} | fix: this version predates the pull "
-                f"document and cannot be audited or restored. Pick a "
-                f"version whose list_dashboard_versions entry reports "
-                f"restorable=true."
+                f"document. restore_dashboard_version migrates such a "
+                f"recipe on the way out; call it rather than auditing the "
+                f"raw recipe."
             )
     else:
         try:
@@ -23507,13 +23218,10 @@ def _audit_refresh_attachment(
         except Exception as e:
             gaps.append(
                 f"pulls_missing: {pulls_path} not found on S3 -- {e} | fix: "
-                f"read what this dashboard retrieves -- if a "
-                f"{_PRE_DOCUMENT_RETRIEVAL_PATH} is still present, that "
-                f"module is it -- write one document entry per get_data "
-                f"request with apply_pulls_document(folder, document), then "
-                f"delete the module. A dashboard that retrieves nothing "
-                f'takes {{"schema_version": {_PULLS_SCHEMA_VERSION}, '
-                f'"pulls": []}}'
+                f"if this dashboard still carries scripts/pull_data.py, run "
+                f"migrate_pull_script(folder) once to convert it; otherwise "
+                f"author the document with apply_pulls_document(folder, "
+                f'{{"schema_version": {_PULLS_SCHEMA_VERSION}, "pulls": []}})'
             )
     if isinstance(pulls_raw, str):
         try:
@@ -24648,22 +24356,10 @@ def restore_dashboard_version(
             "and confirm the intended restore target."
         )
     target = _load_dashboard_version(s3, canonical, version_id)
-    recipe = target["recipe"]
-    retrieval_path, _retrieval_source = _recipe_retrieval_artifact(recipe)
-    if retrieval_path != _PULLS_SPEC_PATH:
-        raise ValueError(
-            f"dashboard version {version_id} stores its retrieval as "
-            f"{retrieval_path}, which the engine does not execute, so "
-            f"restoring it would leave the dashboard with no pull document "
-            f"| fix: read that module from "
-            f"{_dashboard_version_path(canonical, version_id)} at "
-            f"recipe.pull_data_py, write the equivalent document yourself "
-            f"with apply_pulls_document(folder, document), delete "
-            f"{canonical}/{_PRE_DOCUMENT_RETRIEVAL_PATH}, and build. Pick "
-            f"another version from list_dashboard_versions if you wanted a "
-            f"restore rather than a rewrite -- every entry reports its "
-            f"'retrieval' and 'restorable'."
-        )
+    # The stored version keeps whatever it was written with; a pre-document
+    # recipe is converted here, after its own fingerprint has been verified
+    # against the bytes it actually stores.
+    recipe = _normalize_recipe(target["recipe"])
     _validate_recipe_identity(
         recipe,
         kerberos=kerberos,
@@ -24735,6 +24431,7 @@ def restore_dashboard_version(
 
     template_path = f"{canonical}/manifest_template.json"
     pulls_path = f"{canonical}/{_PULLS_SPEC_PATH}"
+    legacy_pull_path = f"{canonical}/scripts/pull_data.py"
     build_path = f"{canonical}/scripts/build.py"
     manifest_path = f"{canonical}/manifest.json"
     html_path = f"{canonical}/dashboard.html"
@@ -24742,7 +24439,7 @@ def restore_dashboard_version(
     snapshots = {
         path: _snapshot_s3_key(s3, path)
         for path in (
-            template_path, pulls_path, build_path,
+            template_path, pulls_path, legacy_pull_path, build_path,
             manifest_path, html_path, state_path,
         )
     }
@@ -24761,6 +24458,11 @@ def restore_dashboard_version(
         )
         s3.put(recipe["pulls_json"].encode("utf-8"), pulls_path)
         s3.put(recipe["build_py"].encode("utf-8"), build_path)
+        # A version predating the document was migrated on the way out, so
+        # its legacy module must not survive the restore: leaving it beside
+        # the new document is exactly the ambiguity the cutover removes.
+        if s3.exists(legacy_pull_path):
+            s3.delete(legacy_pull_path)
         s3.put(
             json.dumps(compiled.manifest, indent=2).encode("utf-8"),
             manifest_path,
@@ -25412,7 +25114,7 @@ __all__ = [
     "read_dashboard_user_input",
     "OPEN_PRESENCE_INDEX_KEY", "OPEN_PRESENCE_TTL_SECONDS",
     "apply_manifest_operations", "apply_persisted_script_operations",
-    "apply_pulls_document",
+    "apply_pulls_document", "migrate_pull_script",
     "inspect_dashboard",
     "list_dashboard_versions", "restore_dashboard_version",
     "synchronize_refresh_frequency", "sync_refresh_frequency",

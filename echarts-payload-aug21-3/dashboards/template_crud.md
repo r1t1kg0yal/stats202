@@ -53,15 +53,6 @@ Passing a `describe_dashboard` or `inspect_dashboard` state into
 `versioning.current_version_id` automatically. Do not hand-copy those
 guards unless you are targeting the folder string alone.
 
-`dry_run=True` commits nothing and raises nothing for an ordinary
-authoring fault. It walks every stage the committing call would — guards,
-operation shape, application, template validation, cadence, compile,
-review — and returns `ok`, a `findings` list carrying all complaints at
-once, and `would_raise` naming the exception the real call would hit.
-Preflight any multi-operation edit, converge on `ok: True`, then repeat the
-call without `dry_run`. `would_raise: "DashboardReviewRequired"` means the
-edit is valid and needs the publish path below, not a repair.
-
 Operations execute in list order against one working copy, so later operations see earlier results. The engine stamps canonical `metadata.kerberos` and `metadata.dashboard_id`, validates persistence metadata, writes the template, synchronizes refresh cadence when changed, and optionally calls `build_dashboard`. A successful changed build automatically records the template plus both persisted scripts as one immutable definition version; `recompile=False` remains dirty until a later successful build.
 
 When the pre-edit review is already publish-ready and the edit does not change the review signature, `recompile=True` builds inside the transaction — no separate publish call is required. When `recompile=True` raises `DashboardReviewRequired`, the candidate template is kept; complete the publish path with a substantive rationale.
@@ -157,16 +148,14 @@ Widget, tab, and filter mutations select exactly one stable id:
 {"selector": {"id": "curve"}}
 ```
 
-The selector object must contain only `id`, and the id must match exactly once. Read valid ids from the state you already hold; the two states do not expose the same keys:
+The selector object must contain only `id`, and the id must match exactly once. Read valid ids from `describe_dashboard` (`layout_text` / `text`) or `inspect_dashboard`:
 
-| Surface | In `describe_dashboard` | In `inspect_dashboard` |
-|---|---|---|
-| Widgets | `widgets.by_id` / `widgets.ordered`, or `layout_text` tokens | `widgets.by_id` / `widgets.ordered` |
-| Tabs | `tabs`, or tab headers in `layout_text` | `tabs` |
-| Filters | `filters_text` only | `filters.by_id` / `filters.ordered` |
-| Datasets | `counts.datasets` plus consumer tokens in `layout_text` | `datasets`, plus producers in `graph` |
-
-Both states carry `manifest_template_sha256`, `versioning.current_version_id`, and `scripts.<stem>.sha256`, so either one guards any typed transaction. Reach for `inspect_dashboard` when you need structured filters, the pipeline graph, findings, or telemetry.
+| Surface | Describe / inspect source |
+|---|---|
+| Widgets | `layout_text` tokens, or `widgets.by_id` / `widgets.ordered` |
+| Tabs | `tabs`, or tab headers in `layout_text` |
+| Filters | `filters_text`, or `filters.by_id` / `filters.ordered` |
+| Datasets | `counts.datasets` plus consumer tokens in `layout_text`, or `datasets` |
 
 Destinations place a widget:
 

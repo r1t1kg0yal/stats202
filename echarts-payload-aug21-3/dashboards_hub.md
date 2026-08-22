@@ -117,6 +117,7 @@ from dashboards import (
     apply_manifest_operations,
     apply_persisted_script_operations,
     apply_pulls_document,
+    migrate_pull_script,
     launch_clean_refresh,
     record_open_presence,
     list_open_dashboards,
@@ -152,14 +153,14 @@ from dashboards import (
 | `record_open_presence(folder, viewer)` / `list_open_dashboards()` | Open-tab heartbeat index (`secondary/dashboard_open_presence/index.json`, TTL 90s) |
 | `read_dashboard_user_input(folder, widget_id=None, include_deleted=False)` | Read verified persisted `user_input` state; one id returns `{}` before first save, while omitted id returns all saved widgets. Files include trusted object keys; `include_deleted=True` adds tombstoned file history |
 | `audit_dashboard_layout(folder)` | Require the five canonical paths; return `True` |
-| `describe_dashboard(folder, mode="layout")` | Compact product floorplan: text, counts, review/guards, `scripts.<stem>.sha256`, plus `widgets.ordered/by_id` summaries with placement, mapping, named colors, and user-input mode. Prefer this for ordinary edit sync — it guards every typed transaction, including script and pull edits. It is not a screenshot |
+| `describe_dashboard(folder, mode="layout")` | Compact product floorplan: text, counts, review/guards, plus `widgets.ordered/by_id` summaries with placement, mapping, named colors, and user-input mode. Prefer this for ordinary edit sync; it is not a screenshot |
 | `inspect_dashboard(folder, telemetry_limit=50)` | Read-only structured folder, script hashes, definition-version, review/acknowledgment state, graph, refresh, registry, telemetry, and finding report. Use for heal/triage, not ordinary layout sync |
-| `list_dashboard_versions(folder, limit=20, timezone_name="UTC")` | Return recent immutable definition versions with UTC/local timestamps, local calendar date, product summaries, current/previous markers, and each entry's `retrieval` file plus `restorable`; pass the user’s IANA timezone for relative-date requests |
-| `restore_dashboard_version(folder, version_id, expected_current_version_id=...)` | Restore one exact listed definition only after its current-data review is acknowledged; compile it with current persisted data and preserve every other version. Only `restorable` entries qualify — one that stored retrieval as `scripts/pull_data.py` is refused, because writing it back would leave the dashboard with no pull document |
-| `apply_manifest_operations(folder_or_state, operations, recompile=True, dry_run=False, ...)` | Ordered typed template transaction; a describe/inspect state supplies both guards. Returns exact post-edit `manifest_template` plus populated `compiled_manifest` on direct recompile success; dicts deep-merge, lists/scalars replace, `None` clears |
-| `apply_persisted_script_operations(folder_or_state, "build", operations, dry_run=False, ...)` | Typed fragment transaction for `scripts/build.py` only: hash gate, syntax/pipeline check, atomic write, strict compile, exact rollback. `replace` takes `old`/`new`, the insert ops `anchor`/`text`, `append` `text` |
-| `dry_run=True` on either | Preflight: no writes, no raise on an authoring fault, every stage's complaints together in `findings`, plus `would_raise` |
+| `list_dashboard_versions(folder, limit=20, timezone_name="UTC")` | Return recent immutable definition versions with UTC/local timestamps, local calendar date, product summaries, and current/previous markers; pass the user’s IANA timezone for relative-date requests |
+| `restore_dashboard_version(folder, version_id, expected_current_version_id=...)` | Restore one exact listed definition only after its current-data review is acknowledged; compile it with current persisted data and preserve every other version |
+| `apply_manifest_operations(folder_or_state, operations, recompile=True, ...)` | Ordered typed template transaction; a describe/inspect state supplies both guards. Returns exact post-edit `manifest_template` plus populated `compiled_manifest` on direct recompile success; dicts deep-merge, lists/scalars replace, `None` clears |
+| `apply_persisted_script_operations(folder_or_state, "build", operations, ...)` | Typed fragment transaction for `scripts/build.py` only: hash gate, syntax/pipeline check, atomic write, strict compile, exact rollback |
 | `apply_pulls_document(folder_or_state, document, expected_sha256=None)` | Whole-document write of `scripts/pulls.json`: hash gate, then every entry validated against `Details` before anything lands. Returns the committed `pulls` and the `declared_stems` they commit the dashboard to producing |
+| `migrate_pull_script(folder, dry_run=False)` | One-shot conversion of a `scripts/pull_data.py` left by an older build into the document, deleting the module. Nothing in the engine reads that Python, before or after |
 | `synchronize_refresh_frequency(folder, value, expected_sha256=None, expected_current_version_id=None)` | Atomically align template metadata and the matching registry entry; existing versioned dashboards require the inspected current version id; `sync_refresh_frequency` is the alias |
 | `validate_manifest(manifest)` | Structural validation only |
 | `compile_dashboard(manifest, strict=True, ...)` | Return `DashboardResult` with `.review` as a `DashboardReview`; strict mode raises when any error is present, while warnings remain on `.diagnostics`, `.quality_findings`, and the review |

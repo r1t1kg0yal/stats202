@@ -32,6 +32,7 @@ Public surface PRISM imports:
         apply_manifest_operations,
         apply_persisted_script_operations,  # scripts/build.py only
         apply_pulls_document,      # whole-document write of scripts/pulls.json
+        migrate_pull_script,       # one-shot legacy pull_data.py -> pulls.json
         synchronize_refresh_frequency,
         list_dashboard_versions,   # timestamped definition summaries
         restore_dashboard_version, # older definition + current data
@@ -152,6 +153,7 @@ from dashboards.echart_dashboard import (  # noqa: E402,F401
     apply_manifest_operations,
     apply_persisted_script_operations,
     apply_pulls_document,
+    migrate_pull_script,
     synchronize_refresh_frequency,
     sync_refresh_frequency,
     inspect_dashboard,
@@ -234,6 +236,7 @@ __all__ = [
     "apply_manifest_operations",
     "apply_persisted_script_operations",
     "apply_pulls_document",
+    "migrate_pull_script",
     "synchronize_refresh_frequency",
     "sync_refresh_frequency",
     "inspect_dashboard",

@@ -1,0 +1,149 @@
+# ECharts dashboard router
+
+- **Context ID:** `echarts.router`
+- **Owns:** `route.surface`, `route.intent`, `route.fetch`, `route.message`
+- **Fetch when:** Always loaded when dashboard intent is present.
+- **Depends on:** None.
+
+ECharts is the only sanctioned path for persistent PRISM dashboards, including analytical monitors and productivity/workflow workspaces. PRISM authors Python plus a JSON manifest and calls the public `dashboards` APIs. Do not hand-roll HTML/CSS/JS, use another dashboard framework, or use Altair composites as dashboards.
+
+## L2 registration
+
+This router is the sole context-registry entry for dashboard construction (`pillar: tools`, `order: 1`). `dashboards_hub.md` and the ten `dashboards/*.md` spokes are not registry entries; fetch them only through the short-path `list_ai_repo(..., mode="full")` routes below. The registry footer explicitly forbids retrieving `chart_context.md` while building dashboards.
+
+## User-message contract
+
+Dashboard construction is invisible plumbing. Unless the user explicitly asks for implementation detail:
+
+- Say what is live, fixed, or blocked in product language.
+- Never expose file names, manifests, datasets, widgets, pipelines, runners, validation codes, registry mechanics, or architectural options.
+- Pick implementation paths yourself. Ask only product questions whose answer changes what the user sees.
+- Do not promise work after the response. Complete the build or edit before replying.
+- A failure response is at most: product-level acknowledgement, present/past-tense action, and one product-level question if no defensible choice exists.
+
+Success handoff uses exactly:
+
+`https://reports.prism-ai.url.gs.com/users/{kerberos}/dashboards/{dashboard_id}/`
+
+Use `https`, no port, the author's kerberos, the folder-leaf dashboard id, and the trailing slash. Never hand off an S3 HTML path.
+
+## Tool 1 prerequisites
+
+Before authoring a first build:
+
+1. Use the canonical folder `users/{kerberos}/dashboards/{dashboard_id}`.
+2. Retrieval is declared, not coded. Persist `scripts/pulls.json` through `apply_pulls_document(folder, document)`; the engine validates every entry, resolves its date tokens, and runs the `get_data` call itself. Then run each entry with `run_pull(folder, name)` and require current-cycle production of a non-empty CSV with the expected columns. A retained pre-existing CSV is not pull success.
+3. `scripts/build.py` is the only persisted Python, and it derives rather than retrieves. Define `SESSION_PATH` as the folder literal and import every name it uses; the exec namespace binds only `s3_manager`, `pd` and `np`. Import `save_artifact` from `prism_mcp.utils.data_functions` for computed frames.
+4. The entry `name` is the CSV stem and the manifest dataset key, all three byte-identical. `session_path` is pinned by the engine and must not appear in the document.
+5. When data is shown, use real data. Never invent identifiers, visible numbers, or successful results; a data-free workspace needs no placeholder dataset.
+6. Only CSV files become datasets. Metadata sidecars, `df.attrs`, and JSON artifacts do not populate datasets or `field_provenance`.
+
+Producers:
+
+| Declaration | Required naming result |
+|---|---|
+| `pulls.json` entry `{"name": "rates", "details": {...}}` | `data/rates.csv` |
+| the same entry under `source` `lakehouse` / `gs_quant_reference` | one `data/rates_<label>.csv` per table; `rates` alone is not a key |
+| `save_artifact(DataFrame or non-empty list[dict], name="screen")` in `build.py` | `data/screen.csv` |
+
+`get_data` is the only retrieval primitive: TSDB, ChunkStore, MDAPI, GS Quant, Haver and Lakehouse are its `source` values, and FRED, NY Fed, BIS, FDIC, SDR, Treasury and TreasuryDirect reach it through `source="client"`. A dashboard never calls it — it states the request and the engine calls it. `save_artifact` is for computed frames only. `dashboards/pipelines.md` owns the document shape.
+
+## Route before fetching
+
+Classify the request, then issue the smallest applicable `list_ai_repo(file_paths=[...], mode="full")` call. Pass only `file_paths` and `mode`.
+
+**Initial** means the first context fetch after the user prompt. **Adaptive** means a later fetch at a newly reached phase boundary. Fetch for the current phase only; context needed by a later phase is not an initial requirement unless that later phase is already explicit in the prompt.
+
+| Intent at the current phase | First fetch for that phase |
+|---|---|
+| Data-backed first build | `dashboards_hub.md`, `dashboards/build.md`, `dashboards/pipelines.md`, then only primitive spokes required by the requested artifact |
+| Productivity/workflow first build: chief-of-staff, task/ops, shared notes/checklists, or email/file intake | `dashboards_hub.md`, `dashboards/build.md`, `dashboards/productivity.md`, `dashboards/widgets.md`; add `dashboards/pipelines.md` and requested data-primitive spokes only when the workspace includes refreshable data |
+| Manifest/layout/widget/filter edit | `dashboards_hub.md`, `dashboards/template_crud.md`, plus the affected primitive spoke |
+| Productivity/workflow composition edit | `dashboards_hub.md`, `dashboards/template_crud.md`, `dashboards/productivity.md`, `dashboards/widgets.md` |
+| Pure pull source/symbol/window edit with no derived dataset or `TRANSFORMS` change | `dashboards_hub.md`, `dashboards/pipelines.md` only |
+| Derived dataset or `TRANSFORMS` operation: rolling/window, lag, normalization, join/pivot/reshape, or any other derived shape | `dashboards_hub.md`, `dashboards/pipelines.md`, `dashboards/recipes.md` |
+| Read-only diagnosis | `dashboards/diagnose.md` only |
+| Revert or heal reached during an active turn | `dashboards/diagnose.md` first; fetch repair context only after inspection identifies its owner |
+| Chart authoring | `dashboards/charts.md` |
+| KPI/table/pivot/stat/image/markdown/divider or persisted text/checklist/file input | `dashboards/widgets.md` |
+| `widget: tool` with stat, table, or stat_grid outputs and no sibling/dashboard chart | `dashboards/widget_tool.md`, `dashboards/widgets.md` |
+| `widget: tool` with a sibling/dashboard chart or chart/series output requiring chart specs | `dashboards/widget_tool.md`, `dashboards/widgets.md`, `dashboards/charts.md` |
+| Filters, zoom, click-to-filter, sync, brush | `dashboards/filters.md` |
+| Chart-choice archetype without a pipeline operation | `dashboards/recipes.md` |
+| A `get_data` pull whose `source` has not already been read this session | `market_data_infra_hub.md`, then the per-source spoke it routes to |
+
+That row is the one required fetch outside this family: the `details` shape is per-source and not guessable, so authoring one without its spoke guesses both field names and symbols. Once per source per session. Nothing else loosens — `chart_context.md` stays forbidden.
+
+Every tool build requires the widgets companion: it owns the stat, table, and stat_grid presentation contracts. Add charts only for the charted-tool row above.
+For a first build, fetch each primitive owner required by the requested user-visible widgets before Tool 2 manifest authoring: charts require `dashboards/charts.md`, non-tool widgets require `dashboards/widgets.md`, and filters/links require `dashboards/filters.md`. A data-free productivity build does not fetch pipelines or charts unless the requested surface uses them.
+
+### Adaptive phase rules
+
+| Rule | Trigger and timing | Fetch |
+|---|---|---|
+| `adaptive.inspect` | Heal, revert, findings triage, refresh failure, or the user asks why something is broken. Fetch immediately before `inspect_dashboard`. Ordinary manifest edits do **not** use this rule: they use `describe_dashboard` from the hub/template_crud contract for layout sync and concurrency guards. Never include diagnose in the initial build/edit fetch. | `dashboards/diagnose.md` |
+| `phase.manifest_after_build` | A first build crosses into typed manifest operations. Before the first `apply_manifest_operations` call, ensure this context is loaded. It may join the initial fetch only when the prompt already states that same-turn second phase; otherwise fetch when the phase becomes known. | `dashboards_hub.md`, `dashboards/template_crud.md`, plus every affected primitive spoke |
+| `phase.revert` | The user asks for an older, previous, yesterday, or pre-change dashboard version. Diagnosis owns version listing, ambiguity handling, and exact restore. Fetch a repair owner only when the selected version cannot compile against current data or current engine rules. | `dashboards/diagnose.md` |
+| `evidence.repair_owner` | After `inspect_dashboard`, classify a required repair through the exhaustive evidence map below and fetch its one matching branch. Selecting diagnosis now plus the mandated unique branch later is route-complete deterministic deferred routing, not router ambiguity. | Exactly one evidence-map branch; never guess multiple owners or fetch all |
+
+### Evidence-deferred repair map
+
+| Inspection evidence | Unique repair fetch |
+|---|---|
+| Manifest, layout, widget, filter, link, or metadata defect | `dashboards_hub.md`, `dashboards/template_crud.md`, plus the evidence-identified primitive |
+| Pull document, `build.py`, CSV, or attachment defect with no derived-shape change | `dashboards_hub.md`, `dashboards/pipelines.md` |
+| Transform or derived-shape defect: rolling/window, lag, normalization, join/pivot/reshape | `dashboards_hub.md`, `dashboards/pipelines.md`, `dashboards/recipes.md` |
+| First-build transaction or registration defect | `dashboards_hub.md`, `dashboards/build.md` |
+
+Read-only diagnosis is the only request that includes diagnosis in its initial fetch:
+
+```python
+list_ai_repo(file_paths=["dashboards/diagnose.md"], mode="full")
+```
+
+For ordinary manifest edits, stay on the hub + `template_crud` + primitive bundle: call `describe_dashboard(folder)` before and after mutation (product floorplan sync + concurrency guards), apply typed operations, publish/refresh, then hand off. Fetch `dashboards/diagnose.md` only when `adaptive.inspect` fires. Call `inspect_dashboard(folder)` for heal/triage evidence; its findings, graph, refresh evidence, registry state, and telemetry identify the owner. A later `list_ai_repo` call is allowed when that evidence identifies the repair surface; fetch only the hub if mutation needs cross-cutting contracts, the owner spoke, and any primitive reference needed to author the fix.
+
+## Adaptive bundles
+
+These are measured context bundles, not mandatory bulk loads:
+
+| Bundle | Exact fetch |
+|---|---|
+| Typical create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/charts.md", "dashboards/widgets.md"], mode="full")` |
+| Productivity create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/productivity.md", "dashboards/widgets.md"], mode="full")` |
+| Filtered create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/charts.md", "dashboards/widgets.md", "dashboards/filters.md"], mode="full")` |
+| Tool create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/widget_tool.md", "dashboards/widgets.md"], mode="full")` |
+| Charted tool create | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/widget_tool.md", "dashboards/widgets.md", "dashboards/charts.md"], mode="full")` |
+| Typical manifest edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/template_crud.md", "dashboards/charts.md"], mode="full")` |
+| Pure pull edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/pipelines.md"], mode="full")` |
+| Derived transform edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/pipelines.md", "dashboards/recipes.md"], mode="full")` |
+| Typical diagnosis | `list_ai_repo(file_paths=["dashboards/diagnose.md"], mode="full")` |
+| Explicit tool build then typed edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/template_crud.md", "dashboards/widget_tool.md", "dashboards/widgets.md"], mode="full")` |
+| Explicit charted tool build then typed edit | `list_ai_repo(file_paths=["dashboards_hub.md", "dashboards/build.md", "dashboards/pipelines.md", "dashboards/template_crud.md", "dashboards/widget_tool.md", "dashboards/widgets.md", "dashboards/charts.md"], mode="full")` |
+
+## File map
+
+The router is the only fetch menu. The production context inventory is:
+
+| File | Authority |
+|---|---|
+| `dashboards_hub.md` | Cross-cutting manifest, public API, Dashboard Garbage Gate, layout, registry, and anti-pattern kernel |
+| `dashboards/build.md` | First-build Tools 1-4 and publish gate |
+| `dashboards/diagnose.md` | Inspect, review state, in-artifact diagnostics panel, triage, heal, and revert |
+| `dashboards/template_crud.md` | Typed manifest operations |
+| `dashboards/pipelines.md` | Persisted pull/build script edits and data-flow integrity |
+| `dashboards/recipes.md` | Data archetypes and transform patterns |
+| `dashboards/productivity.md` | Productivity, task/workflow, and email/file-intake compositions |
+| `dashboards/charts.md` | Chart catalog, mappings, annotations, computed columns |
+| `dashboards/widgets.md` | Non-tool widget catalog, persisted input, popups, provenance, markdown, tile chrome (badge, vintage, description) |
+| `dashboards/widget_tool.md` | Form-driven compute widgets |
+| `dashboards/filters.md` | Filter catalog, linking, zoom, sync, brush |
+
+## Atomic completion
+
+- First build means all four tools in [build.md](dashboards/build.md#four-tool-transaction) complete in one turn.
+- An edit means `describe_dashboard` (before), the owner API, publish/recompile as required, clean refresh verification, `describe_dashboard` (after), and portal handoff complete before responding.
+- Every publish follows the hub-owned path: prefer `publish_dashboard`. When `describe_dashboard` / `inspect_dashboard` reports `acknowledgment_match` and `publish_ready`, omit a new rationale. Otherwise review, drill into each flagged panel, and publish with a substantive rationale. Repair `BLOCK`; never acknowledge it.
+- A missing product decision may block. Mechanical uncertainty does not: follow structured engine fix hints.
+- Never report success from `validate_manifest` or retained file existence alone. The persisted dashboard must pass the final refresh path, report `refresh_status.status == "success"`, and prove each required CSV is non-empty output from the current cycle.
+- Refresh has no universal per-pull timeout. Do not add an arbitrary authoring timeout; respect source-specific client timeouts and wait for terminal refresh evidence.
