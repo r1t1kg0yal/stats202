@@ -7,27 +7,27 @@ graph -- the coupling this split exists to remove.
 """
 
 import asyncio
+import contextlib
 import functools
 import inspect
 import io
 import logging
 import re
-import time
 import traceback
+import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
-from core.agent_base import Invocation, current_invocation
 from core.s3_bucket_manager import s3_manager
 from core.swallowed_exceptions import log_swallowed_exception
 from prism_mcp.utils.baggage import (
     resolve_kerberos_info_from_baggage as _resolve_kerberos_info_from_baggage,
     resolve_medium_from_baggage as _resolve_medium_from_baggage,
 )
-from prism_mcp.utils.chart_call_log import record_render_call
 from prism_mcp.utils.code_preprocess_utils import preprocess_script_code
 from prism_mcp.utils.download_links import generate_download_links_for_sandbox
 from prism_mcp.utils.output_limits import SCRIPT_STDOUT_INLINE_BYTES
@@ -63,7 +63,7 @@ pd.set_option('display.max_colwidth', None)
 
 
 @dataclass
-class ChartInvocation(Invocation):
+class _Invocation:
     """What belongs to one chart_agent invocation rather than one call.
 
     The fields exist for the same reason: the caller can dispatch two chart
@@ -75,12 +75,13 @@ class ChartInvocation(Invocation):
     converging, on the strength of the first agent's unrelated chart -- a false
     stop signal, which is worse than no signal.
 
-    ``sequence`` splits off the inherited ``token``, and that split is the whole
-    design. The token is fixed for the invocation, so a retry overwrites its own
-    previous attempt instead of littering the session with near-duplicates.
-    ``sequence`` counts calls within one attempt and resets at the top of every
-    ``render_charts``, so two artifacts in one script never collide while call N
-    of attempt 2 still lands on call N of attempt 1.
+    ``token`` and ``sequence`` together disambiguate the S3 keys this invocation
+    writes, and the split between them is the whole design. ``token`` is fixed
+    for the invocation, so a retry overwrites its own previous attempt instead of
+    littering the session with near-duplicates. ``sequence`` counts calls within
+    one attempt and resets at the top of every ``render_charts``, so two
+    artifacts in one script never collide while call N of attempt 2 still lands
+    on call N of attempt 1.
 
     Both halves are load-bearing and each was missing once. Without the token,
     two agents asked for ``save_as='chart.png'`` and produced one PNG that two
@@ -90,6 +91,7 @@ class ChartInvocation(Invocation):
     and a render usually crosses a second boundary.
     """
 
+    token: str
     attempt: int = 0
     findings: int = 0
     sequence: int = 0
@@ -99,6 +101,44 @@ class ChartInvocation(Invocation):
         self.sequence += 1
         return f"{self.token}{self.sequence}"
 
+
+# A ContextVar rather than a dict keyed on anything: asyncio copies the context
+# into each task, so agents dispatched concurrently never see each other's state,
+# and the set/reset pair in `chart_invocation` keeps sequential ones from
+# bleeding. Same mechanism `core.subagent_events._FRAMES` uses to keep concurrent
+# sub-agent identity frames apart.
+_INVOCATION: ContextVar[Optional[_Invocation]] = ContextVar('chart_invocation',
+                                                            default=None)
+
+
+@contextlib.contextmanager
+def chart_invocation() -> Iterator[_Invocation]:
+    """Scope one chart_agent invocation.
+
+    Entered by the ``AgentTool`` wrapper in ``core/chart_agent_tool.py``, which is
+    the only place that knows where an invocation starts and ends. Without it
+    every invocation in the process shares whatever context it was called from.
+    """
+    state = _Invocation(token=uuid.uuid4().hex[:6])
+    reset = _INVOCATION.set(state)
+    try:
+        yield state
+    finally:
+        _INVOCATION.reset(reset)
+
+
+def _current_invocation() -> _Invocation:
+    """This invocation's state, installing one when called outside a scope.
+
+    Unscoped means ``render_charts`` was reached directly rather than through the
+    sub-agent. Installing into the calling context keeps the ceiling counting and
+    keys unique for that caller, without reaching across to any other.
+    """
+    state = _INVOCATION.get()
+    if state is None:
+        state = _Invocation(token=uuid.uuid4().hex[:6])
+        _INVOCATION.set(state)
+    return state
 
 # The sub-agent forwards its reply verbatim, so the report has to say for itself
 # which half is the caller's and which half is scaffolding. Sentinels rather than
@@ -215,7 +255,7 @@ def _wrap_chart_func(func, recorder, session_path=None, user_id=None):
         # apart, and because the per-call half restarts each render, a retry's
         # Nth artifact overwrites the previous attempt's Nth rather than
         # accumulating.
-        invocation = current_invocation(ChartInvocation)
+        invocation = _current_invocation()
         token = invocation.next_key_token()
         if kwargs.get('save_as'):
             kwargs['save_as'] = _disambiguate(kwargs['save_as'], token,
@@ -383,9 +423,9 @@ def _truncate(text: str) -> str:
     return text[:SCRIPT_STDOUT_INLINE_BYTES] + "\n... [stdout truncated]"
 
 
-def _ladder_step() -> Tuple[ChartInvocation, int, int]:
+def _ladder_step() -> Tuple[_Invocation, int, int]:
     """Advance this invocation's ladder, returning ``(state, attempt, prev_findings)``."""
-    state = current_invocation(ChartInvocation)
+    state = _current_invocation()
     return state, state.attempt + 1, state.findings
 
 
@@ -563,19 +603,13 @@ async def render_charts(session_path: str, chart_code: str,
         # is scoped to this invocation and dies with it, so holding the count past
         # the ceiling strands nothing.
         invocation.attempt = attempt
-        detail = (f'{CHART_ATTEMPT_CEILING} render_charts calls already '
-                  f'made for this session; nothing was executed')
         logger.warning(f"[chart_exec] session={resolved_path} refused: attempt "
                        f"{attempt} past the ceiling of {CHART_ATTEMPT_CEILING}")
-        record_render_call(
-            session_path=resolved_path, invocation_token=invocation.token,
-            attempt=attempt, chart_code=chart_code, data_files=data_files,
-            status='FATAL', status_detail=detail, n_findings=0,
-            previous_findings=previous_findings, chart_paths=[], artifacts=[],
-            stdout='', error='', elapsed_s=0.0, executed=False)
         return format_report(
             resolved_path, [], [], "", "", medium, artifacts=[], status='FATAL',
-            status_detail=detail, attempt=attempt)
+            status_detail=(f'{CHART_ATTEMPT_CEILING} render_charts calls already '
+                           f'made for this session; nothing was executed'),
+            attempt=attempt)
 
     # Restart the per-call nonce so this attempt's Nth artifact lands on the
     # previous attempt's Nth. Retries then overwrite rather than accumulate,
@@ -589,7 +623,6 @@ async def render_charts(session_path: str, chart_code: str,
     stdout = ""
     error = ""
     status, status_detail, n_findings = 'OK', '', 0
-    started = time.perf_counter()
     # Reading the CSVs belongs inside the guard: a path relayed from the caller is
     # the likeliest thing in this call to be wrong, and raising out of the tool
     # would skip the whole two-block protocol the sub-agent is trained on.
@@ -629,14 +662,6 @@ async def render_charts(session_path: str, chart_code: str,
         invocation.attempt, invocation.findings = 0, 0
     else:
         invocation.attempt, invocation.findings = attempt, n_findings
-
-    record_render_call(
-        session_path=resolved_path, invocation_token=invocation.token,
-        attempt=attempt, chart_code=chart_code, data_files=data_files,
-        status=status, status_detail=status_detail, n_findings=n_findings,
-        previous_findings=previous_findings, chart_paths=recorder.chart_paths,
-        artifacts=artifacts, stdout=stdout, error=error,
-        elapsed_s=time.perf_counter() - started, executed=True)
 
     links = []
     if recorder.chart_paths and normalize_medium(medium) in (COMPOSER, GSAI):

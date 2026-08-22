@@ -150,6 +150,7 @@ import argparse
 import hashlib
 import json
 import sys
+import threading
 import webbrowser
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -180,6 +181,14 @@ TABLE_STUDIO_ENABLED: bool = True
 
 TABLE_MODEL_PREFIX = "tables"
 TABLE_MANIFEST_NAME = "table_manifest.json"
+
+# Serialises the manifest merge in ``persist_editable_table``, for the reason
+# and with the scope documented at ``chart_render.core._MANIFEST_LOCK``: the
+# merge is a naked get / mutate / put over one S3 key, and a chart agent asked
+# for several tables at once addresses one session. Separate lock because it
+# guards a separate key -- a fan-out mixing charts and tables contends on
+# neither.
+_MANIFEST_LOCK = threading.Lock()
 
 
 # =============================================================================
@@ -5298,13 +5307,14 @@ def persist_editable_table(
     if editor_key is not None:
         s3_manager.put(editor_html.encode("utf-8"), editor_key)
 
-    try:
-        manifest = json.loads(s3_manager.get(manifest_key).decode("utf-8"))
-    except Exception:  # noqa: BLE001 - absent until the session's first table
-        manifest = {"schema_version": 1, "tables": {}}
-    manifest.setdefault("tables", {})[png_path] = table_id
-    manifest["updated_at"] = stamp
-    s3_manager.put(json.dumps(manifest, indent=2).encode("utf-8"), manifest_key)
+    with _MANIFEST_LOCK:
+        try:
+            manifest = json.loads(s3_manager.get(manifest_key).decode("utf-8"))
+        except Exception:  # noqa: BLE001 - absent until the session's first table
+            manifest = {"schema_version": 1, "tables": {}}
+        manifest.setdefault("tables", {})[png_path] = table_id
+        manifest["updated_at"] = stamp
+        s3_manager.put(json.dumps(manifest, indent=2).encode("utf-8"), manifest_key)
 
     return {
         "table_id": table_id,

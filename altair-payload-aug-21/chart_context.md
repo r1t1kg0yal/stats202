@@ -7,7 +7,9 @@ The v1 surface is canonical. `make_chart`, `make_table`, `build_charts`,
 `profile_df`, `ChartSpec`, all five `make_*pack_*` helpers, result classes,
 and all annotation classes are injected into the sandbox. Call them bare:
 **never import them**. `s3_manager`, `session_path`, and `user_id` are supplied
-by the sandbox; never pass them. Raw matplotlib is blocked.
+by the sandbox; never pass them. There is no matplotlib here: `plt` is not in
+your namespace and importing it yourself produces a confusing failure, not a
+chart. Every visual on this surface comes from the functions below.
 
 ## 1. Where things are
 
@@ -196,7 +198,7 @@ The engine raises rather than truncating. These are ceilings, not targets.
 | Auto end-label series name | 32 characters | Rename categories before charting |
 | Bar / `contribution` category label | 22 characters | Abbreviate in the DataFrame |
 | Heatmap row or column label | 20 characters | Abbreviate in the DataFrame |
-| Named categories vs canvas (`bar`, `bar_horizontal`, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, and raises when it cannot. Date columns thin instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap, or switch to `bar_horizontal` for long lists |
+| Named categories vs canvas (`bar`, `bar_horizontal`, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap, or switch to `bar_horizontal` for long lists |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
 | Series vertical share (`color`-split `multi_line` / `timeseries`) | Every series needs ≥10% of the y span, and adjacent series means stay within 3× the widest single span | Pass `y_title_right` naming the secondary metric and unit: inert when one axis suffices, and when it does not the engine routes the magnitude clusters to a dual axis in one pass. Standalone charts only — inside a composite cell declare `dual_axis_series` as well. Otherwise 2-pack, rebase to 100, or facet |
@@ -328,7 +330,9 @@ become nanoseconds after 1970 and the axis renders as a clock.
   bridges one start to one end, a contribution chart repeats the
   decomposition every period. Pass tidy long data, one row per
   `(period, component)`. A datetime `x` is converted to house period labels
-  automatically — do not pre-format it. The net line, the zero rule, and the
+  automatically — do not pre-format it. Long windows thin the axis ticks to
+  year (or coarser) labels the way a date column does; every bar still draws.
+  The net line, the zero rule, and the
   per-period value labels are engine-supplied; `net` only needs naming when
   the published total differs from the sum of the components. A named `net`
   column sits on the components' own axis — repeat the period's total on

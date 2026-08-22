@@ -15,15 +15,18 @@ DataFrames cross that boundary as files, which is the channel
 
 from __future__ import annotations
 
-import logging
-
-# Share gs_llm2's logger namespace so these lines interleave with the rest of the agent's.
-_log = logging.getLogger("prism.gs_llm2")
-
 # The corpus is byte-stable across calls, so it earns the long breakpoint.
 CACHE_TTL = "1h"
 
-# Hub first, then spokes. A literal list, not a registry read: none of these are
+# Which model runs the charting sub-agent. Flip this literal to switch; it is a
+# catalog KEY from core/configs/model_catalog.py, resolved to a gateway model id
+# at build time so a typo fails loudly at the first chart call rather than
+# silently falling back to the process default.
+#   "opus"          -- Claude Opus (the process default)
+#   "gemini_flash"  -- Gemini 3.7 Flash
+CHART_AGENT_MODEL_KEY = "opus"
+
+# Hub first, then spokes. A literal list, not a registry read; none of these are
 # registered any more.
 _CORPUS_SOURCES = (
     "static/tools/chart_context.md",
@@ -54,30 +57,30 @@ at once.
 
 The tool returns two fenced blocks with different audiences. Read both.
 
-  ===CHART_DELIVERY_START===  ...  ===CHART_DELIVERY_END===
-      The caller's. When it lists at least one PNG, reply with the contents of
-      this block VERBATIM: the whole block, unchanged, nothing added before or
-      after, and never the sentinel lines themselves. It carries the S3 paths,
-      the links and the delivery instruction the caller needs; summarising it
-      destroys them.
+===CHART_DELIVERY_START=== ... ===CHART_DELIVERY_END===
+    The caller's. When it lists at least one PNG, reply with the contents of
+    this block VERBATIM: the whole block, unchanged, nothing added before or
+    after, and never the sentinel lines themselves. It carries the S3 paths,
+    the links and the delivery instruction the caller needs; summarising it
+    destroys them.
 
-  ===CHART_DIAGNOSTICS_START===  ...  ===CHART_DIAGNOSTICS_END===
-      Yours. Warnings, stdout and tracebacks, for your retry loop. Never quote,
-      paraphrase or summarise any of it, and never show a traceback to anyone.
+===CHART_DIAGNOSTICS_START=== ... ===CHART_DIAGNOSTICS_END===
+    Yours. Warnings, stdout and tracebacks, for your retry loop. Never quote,
+    paraphrase or summarise any of it, and never show a traceback to anyone.
 
 Its `status:` line tells you what to do next:
 
-  OK            Done. Reply with the delivery block.
-  RETRYABLE     Every independent defect is named and counted. Fix them all in
-                one pass and call again. The block says which attempt you are on
-                and says so outright when the finding count has stopped falling;
-                when it does, or when the data plainly cannot support what was
-                asked, stop.
-  NO_ARTIFACTS  The code ran but wrote no PNG -- usually a chart function was
-                never called, or its result was swallowed. Call again.
-  FATAL         Do not retry. The same code fails the same way. A CSV path that
-                does not exist arrives this way too; the caller chose that path,
-                so name it as missing rather than guessing at another.
+OK             Done. Reply with the delivery block.
+RETRYABLE      Every independent defect is named and counted. Fix them all in
+               one pass and call again. The block says which attempt you are on
+               and says so outright when the finding count has stopped falling;
+               when it does, or when the data plainly cannot support what was
+               asked, stop.
+NO_ARTIFACTS   The code ran but wrote no PNG -- usually a chart function was
+               never called, or its result was swallowed. Call again.
+FATAL          Do not retry. The same code fails the same way. A CSV path that
+               does not exist arrives this way too; the caller chose that path,
+               so name it as missing rather than guessing at another.
 
 Five `render_charts` calls is the ceiling and it is enforced -- a sixth is
 refused without running. Never wrap a chart call in try/except; the traceback is
@@ -107,74 +110,44 @@ def _chart_corpus() -> str:
 def chart_agent_tool(worker_id: str, event_callback=None):
     """Build the ``AgentTool`` wrapping the charting agent.
 
-    Built fresh per query to match ``local_adk_tools``' fresh-stack-per-query discipline.
+    Built fresh per query to match ``local_adk_tools`` fresh-stack-per-query discipline.
     Imports are deferred so this module stays importable without google-adk.
 
     ``event_callback`` is the caller's structured-event sink. The sub-agent runs on a Runner of
-    its own, so its tool loop reaches that sink only through the ADK callbacks attached below;
-    without them the whole charting run is a single opaque ``chart_agent`` row in the lane.
+    its own, so its tool loop reaches that sink only through the ADK callbacks ``subagent_tool``
+    attaches; without them the whole charting run is a single opaque ``chart_agent`` row.
+
+    The invocation scope is what ``render_charts`` counts its retry ladder against: two chart
+    agents in one turn resolve to the same session path and neither can see the other.
     """
-    from google.adk.agents import Agent
-    from google.adk.models.lite_llm import LiteLlm
-    from google.adk.tools import AgentTool, FunctionTool
-    from core.gs_llm2 import (
-        APP_ID, ENV, PRISM_MAX_OUTPUT_TOKENS, PRISM_MODEL_ID, _install_cache_and_io, get_token,
+    from google.adk.tools import FunctionTool
+    from core.agent_base import subagent_tool
+    from core.configs.model_catalog import MODEL_KEY_TO_ID
+    from prism_mcp.tools.chart_exec import ChartInvocation, render_charts
+
+    assert CHART_AGENT_MODEL_KEY in MODEL_KEY_TO_ID, (
+        f"CHART_AGENT_MODEL_KEY={CHART_AGENT_MODEL_KEY!r} names no catalog row; "
+        f"pick one of {sorted(MODEL_KEY_TO_ID)}"
     )
-    from prism_mcp.tools.chart_exec import chart_invocation, render_charts
-    from core.subagent_events import subagent_callbacks
-
-    class _ScopedChartAgentTool(AgentTool):
-        """``AgentTool`` that bounds one charting invocation.
-
-        ``render_charts`` counts retries per invocation, and this is the only
-        place that knows where one begins and ends. ADK gives each call a fresh
-        Runner and a throwaway session, but none of that reaches the tool's own
-        module state, so two chart agents in one turn shared a retry ladder until
-        this scope existed -- the second agent's first call was told it was on
-        attempt 2 and not converging, on the strength of the first agent's chart.
-
-        Overriding ``run_async`` is the supported seam: it is a plain coroutine
-        returning the reply as a ``str`` (``google/adk/tools/agent_tool.py``
-        205-309, ADK 2.4.0). The alternative, an ``after_agent_callback``,
-        *appends* an event rather than replacing one, and because the caller is
-        last-content-wins that append silently becomes the entire tool result.
-
-        Declared here rather than at module scope because ``AgentTool`` is a
-        deferred import, which is what keeps this module loadable without ADK.
-        """
-
-        async def run_async(self, *, args, tool_context):
-            with chart_invocation():
-                return await super().run_async(args=args, tool_context=tool_context)
+    model_id = MODEL_KEY_TO_ID[CHART_AGENT_MODEL_KEY]
 
     corpus = _chart_corpus()
-    llm_model = LiteLlm(
-        model=f"openai/{PRISM_MODEL_ID}",
-        api_base=f"https://{ENV}.gpt.site.gs.com/models-gateway/api/openai",
-        api_key=get_token(),
-        max_completion_tokens=PRISM_MAX_OUTPUT_TOKENS,
-        extra_headers={"app_id": APP_ID, "exclude_from_history": "true"},
-    )
-    # LiteLLM strips cache_control on the `openai` provider; a surviving marker is
-    # what makes the corpus cheap.
-    _install_cache_and_io(llm_model, CACHE_TTL, worker_id)
-
-    chart_agent = Agent(
+    return subagent_tool(
         name="chart_agent",
-        model=llm_model,
+        worker_id=worker_id,
+        model_id=model_id,
         description=(
-            "Renders charts and tables to PNG. Send it the session path, the S3 paths of the "
-            "CSVs holding the data, and what each chart should show; it returns the S3 paths "
-            "and links of the PNGs it wrote. Paste its reply into your answer verbatim."
+            "The renderer for every chart and table Prism produces. Send it the session path, "
+            "the s3 paths of the CSVs holding the data, and what each chart or table should "
+            "show; it returns the s3 paths and links of the PNGs it wrote. Paste its reply "
+            "into your answer verbatim."
         ),
         # Callable provider -> ADK uses the text verbatim instead of running {var}
         # state-injection over it, which the corpus's literal braces would break.
         instruction=lambda ctx: f"{_OPERATING_CONTRACT}\n\n---\n\n{corpus}",
         tools=[FunctionTool(func=render_charts)],
-        **subagent_callbacks("chart_agent", event_callback),
+        attached=f"chart AgentTool attached (model={model_id}, corpus={len(corpus)}B)",
+        event_callback=event_callback,
+        cache_ttl=CACHE_TTL,
+        invocation_state=ChartInvocation,
     )
-    _log.info(
-        f"[LLM] ({worker_id}) chart AgentTool attached "
-        f"(model={PRISM_MODEL_ID}, corpus={len(corpus)}B)"
-    )
-    return _ScopedChartAgentTool(agent=chart_agent)

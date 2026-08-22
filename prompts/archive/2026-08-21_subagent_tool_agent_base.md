@@ -3,17 +3,15 @@ class: context-extraction
 topic: subagent_tool / agent_base factory, model catalog, and ChartInvocation
 expected_reply: ~25 KB
 created_at: 2026-08-21
-sent:
-status: OPEN
+sent: 2026-08-21
+status: ANSWERED — folded into prism/subagents.md, the altair payload pair,
+  and the staging shims (agent_base, model_catalog, chart_call_log).
+  Live CHART_AGENT_MODEL_KEY is "opus", not gemini_flash.
 trigger: >
   Screenshots of live core/chart_agent_tool.py show the factory no longer
   builds LiteLlm / Agent / AgentTool itself. It now calls
-  core.agent_base.subagent_tool with a catalog model key (currently
-  gemini_flash) and invocation_state=ChartInvocation. Staging still
-  documents the pre-factory shape in prism/subagents.md and still hosts
-  _ScopedChartAgentTool + chart_invocation() as the invocation scope.
-  We cannot update the curated docs or the local shim until the new
-  factory, the catalog, and ChartInvocation are read from source.
+  core.agent_base.subagent_tool with a catalog model key and
+  invocation_state=ChartInvocation.
 reply_folded_into:
   - prism/subagents.md
   - prism/_changelog.md
