@@ -331,6 +331,8 @@ def _spawn_runner(folder: str, *, mode: str = "full") -> dict:
             "log_path": None,
             "s3_log_key": None,
             "s3_folder_key": None,
+            "session_s3_log_key": None,
+            "session_s3_folder_key": None,
             "pid": None,
             "error": f"{type(exc).__name__}: {exc}",
         }

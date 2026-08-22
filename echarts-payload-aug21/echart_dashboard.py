@@ -24947,17 +24947,22 @@ def launch_clean_refresh(
     _audit_refresh_attachment(canonical, s3_manager=s3, strict=True)
     spawn_ts = utcnow()
     slug = canonical.replace("/", "_")
-    # Logs go to the centralized subprocess tree only. A session-side copy
-    # (S3LogPathBuilder.build_session_side) would root a per-cycle folder
-    # inside the dashboard folder itself, where nothing reads it and the S3
-    # cleaner cannot reach it -- `users/` is on the cleaner's allowlist, so
-    # only the centralized copy is subject to SUBPROCESS_LOGS_TTL_DAYS.
     folder_key, log_key, metadata_key, _completion_key = (
         S3LogPathBuilder.build(
             kind="dashboard_refresh",
             session_description=slug,
             ts=spawn_ts,
         )
+    )
+    (
+        session_folder_key,
+        session_log_key,
+        session_metadata_key,
+        _session_completion_key,
+    ) = S3LogPathBuilder.build_session_side(
+        session_path=canonical,
+        kind="dashboard_refresh",
+        ts=spawn_ts,
     )
     mode_norm = (mode or "full").strip().lower()
     if mode_norm not in ("full", "light"):
@@ -24967,6 +24972,7 @@ def launch_clean_refresh(
         )
     env = os.environ.copy()
     env["PRISM_SUBPROCESS_S3_FOLDER_KEY"] = folder_key
+    env["PRISM_SUBPROCESS_SESSION_FOLDER_KEY"] = session_folder_key
     header = (
         "=== refresh_runner spawn ===\n"
         f"folder: {canonical}\n"
@@ -24997,7 +25003,7 @@ def launch_clean_refresh(
         pipe_w = -1
         streamer = S3LogStreamer(
             fd=pipe_r,
-            s3_log_key=log_key,
+            s3_log_key=[session_log_key, log_key],
             header=header,
         )
         streamer.start()
@@ -25009,9 +25015,13 @@ def launch_clean_refresh(
             "mode": mode_norm,
             "s3_log_key": log_key,
             "s3_folder_key": folder_key,
+            "session_s3_log_key": session_log_key,
+            "session_s3_folder_key": session_folder_key,
+            "session_s3_metadata_key": session_metadata_key,
             "kind": "dashboard_refresh",
         }
         s3.put(metadata_blob, metadata_key)
+        s3.put(metadata_blob, session_metadata_key)
         returncode = process.wait()
         elapsed = round(time.time() - started, 2)
         status_path = f"{canonical}/refresh_status.json"
@@ -25024,9 +25034,11 @@ def launch_clean_refresh(
             "folder": canonical,
             "returncode": returncode,
             "elapsed_seconds": elapsed,
-            "log_path": log_key,
+            "log_path": session_log_key,
             "s3_log_key": log_key,
             "s3_folder_key": folder_key,
+            "session_s3_log_key": session_log_key,
+            "session_s3_folder_key": session_folder_key,
             "pid": process.pid,
             "status": status,
         }
@@ -25037,7 +25049,7 @@ def launch_clean_refresh(
         if returncode != 0 and not review_required:
             raise RuntimeError(
                 f"clean refresh failed with returncode {returncode}; "
-                f"log_path={log_key}; status={status!r}"
+                f"log_path={session_log_key}; status={status!r}"
             )
         return result
     except BaseException:

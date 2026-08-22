@@ -344,20 +344,46 @@ the open daemon *checks* due state (recommend 10s).
 
 ## Tool 4: fresh-process refresh
 
-Run the same refresh runner used by scheduled refreshes, through
-`launch_clean_refresh(FOLDER, mode="full")`. Tool 4 must use `mode="full"`
-(compile + HTML) so cold loads see fresh bytes. The browser Refresh button
-uses `mode="light"` (datasets only); do not close a first-build on light
-mode. The engine owns runner resolution, subprocess arguments, environment
-markers, S3 log streaming, status collection, and failure propagation: it
-raises on a failed refresh and returns the parsed `refresh_status.json` at
-`result["status"]`, so do not spawn the runner yourself and do not re-read
-the status file.
+Run the same refresh runner used by scheduled refreshes. Tool 4 must use
+`--mode full` (compile + HTML) so cold loads see fresh bytes. The browser
+Refresh button uses `--mode light` (datasets only); do not close a
+first-build on light mode. Prefer `launch_clean_refresh(FOLDER, mode="full")`
+when the import resolves. Otherwise launch the runner by its resolved file
+path, not with `python -m dashboards.refresh_runner`. Production spawners
+also set `start_new_session=True` and `cwd=REPO_ROOT`; the runner accepts
+`--folder`, optional `--log-path`, and `--mode full|light` (default `full`).
 
 ```python
-result = launch_clean_refresh(FOLDER, mode="full")
-status = result["status"]
+import dashboards.refresh_runner as refresh_runner_module
+from prism_meta import REPO_ROOT
 
+log_path = (
+    f"/tmp/dashboard_refresh/"
+    f"{KERBEROS}_{DASHBOARD_ID}_{int(time.time())}.log"
+)
+os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+with open(log_path, "wb") as log_file:
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            refresh_runner_module.__file__,
+            "--folder", FOLDER,
+            "--log-path", log_path,
+            "--mode", "full",
+        ],
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        cwd=REPO_ROOT,
+        start_new_session=True,
+    )
+    return_code = process.wait()
+
+status = json.loads(
+    s3_manager.get(f"{FOLDER}/refresh_status.json")
+    .rstrip(b"\x00").decode("utf-8")
+)
 if status.get("status") == "review_required":
     review = review_dashboard(FOLDER)
     print(review.to_text())
@@ -365,6 +391,8 @@ if status.get("status") == "review_required":
         "review the flagged panels, acknowledge the exact signature with "
         "a rationale, then rerun the build and clean refresh"
     )
+if return_code != 0:
+    raise RuntimeError(f"refresh failed with rc={return_code}; log={log_path}")
 if status.get("status") != "success":
     raise RuntimeError(
         f"refresh status={status.get('status')}; errors={status.get('errors')}"
