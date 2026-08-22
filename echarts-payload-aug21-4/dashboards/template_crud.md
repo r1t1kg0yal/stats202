@@ -79,15 +79,6 @@ structured returns to verify the target and unchanged siblings; the final
 `patch_metadata` deep-merge nested **dicts**. **Lists** and scalars
 **replace**. Explicit JSON/`None` **clears** that key.
 
-Three metadata keys are exempt from clearing, because a persistent
-dashboard is invalid without them: `kerberos` and `dashboard_id` gate the
-Refresh and Share chrome, and `methodology` drives the Methodology popup.
-`patch_metadata` with any of the three set to `None` — or to `""`, or to a
-dict carrying no `body`/`text` — fails validation rather than clearing the
-key, and nothing is written. To retire the content of one of the three,
-replace it with a real value; to drop an optional key such as `sources` or
-`refresh_cadence`, `None` clears it as documented.
-
 Leaf dict edits do not require copying sibling subtrees:
 
 ```python

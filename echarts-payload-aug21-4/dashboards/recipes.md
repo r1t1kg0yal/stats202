@@ -148,7 +148,7 @@ Use only for two series with distinct units and one clear comparison:
 }
 ```
 
-`"ISM Manufacturing"` above is a literal cell value in `macro_long.series`, which holds exactly `"S&P 500"` and `"ISM Manufacturing"` — it is not a caption, and `y_title_right` is where the human-readable axis label goes. Read the distinct values off the persisted column (or, in wide form, off `mapping.y`) and copy one verbatim; a plausible-looking label of your own fails with the concrete emitted-series list in `fix:`. For three or more distinct units, use `mapping.axes` or normalize to Index=100.
+Assert that the right-axis series name exactly matches a persisted value. For three or more distinct units, use `mapping.axes` or normalize to Index=100.
 
 ### Range and current
 

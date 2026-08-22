@@ -126,7 +126,7 @@ SCHEMA_VERSION = 1
 ENGINE_VERSION = "0.6.1"
 _DASHBOARD_VERSION_SCHEMA = 1
 _DASHBOARD_REVIEW_SCHEMA = 1
-_DASHBOARD_REVIEW_DETECTOR_VERSION = "semantic-panel-review-v2"
+_DASHBOARD_REVIEW_DETECTOR_VERSION = "semantic-panel-review-v1"
 _DASHBOARD_REVIEW_TEXT_BUDGET = 48_000
 _DASHBOARD_VERSION_ID_RE = re.compile(
     r"^\d{8}T\d{6}\.\d{6}Z__[0-9a-f]{12}$"
@@ -2159,28 +2159,6 @@ def _validate_chart_widget(w: Dict[str, Any], wbase: str,
             errs.append(_err(f"{wbase}.spec.mapping", "required"))
         elif not isinstance(spec["mapping"], dict):
             errs.append(_err(f"{wbase}.spec.mapping", "must be a dict"))
-        # Wide-form y against a builder that takes a single column. Fires
-        # before the cardinality cap below so the shape complaint wins over
-        # a count complaint, and before the builder turns the list into an
-        # unhashable dict key.
-        if isinstance(spec.get("mapping"), dict):
-            y_field = spec["mapping"].get("y")
-            if (isinstance(y_field, list)
-                    and ct in VALID_CHART_TYPES
-                    and ct not in _WIDE_FORM_Y_CHART_TYPES):
-                errs.append(_err(
-                    f"{wbase}.spec.mapping.y",
-                    f"chart_type '{ct}' takes a single column for 'y'; got "
-                    f"a {len(y_field)}-column wide-form list ({y_field!r}). "
-                    f"Only {sorted(_WIDE_FORM_Y_CHART_TYPES)} enumerate one "
-                    f"series per column from a list.",
-                    f"Reshape to long form and group with 'color' (or its "
-                    f"alias 'series'): melt {y_field!r} into one value "
-                    f"column plus one group column, set y to the value "
-                    f"column, and set color to the group column. To keep "
-                    f"the wide columns as they are, switch chart_type to "
-                    f"one of {sorted(_WIDE_FORM_Y_CHART_TYPES)}.",
-                ))
         # Line-shaped y-series cardinality cap (wide-form: mapping.y is
         # a list). Long-form (mapping.y scalar + mapping.color column)
         # fires from chart_data_diagnostics once the DataFrame is
@@ -9025,22 +9003,6 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
 # ``chart_data_diagnostics`` once the DataFrame is materialised.
 _LINE_SHAPED_CHART_TYPES: frozenset = frozenset({"line", "multi_line", "area"})
 _MAX_LINE_SERIES: int = 4
-
-# The only chart types whose builders enumerate one series per column when
-# ``mapping.y`` is a list. Everywhere else ``y`` is a single column
-# reference, and handing it a list reaches the builder as an unhashable
-# key: `bar`, `bar_horizontal`, `boxplot`, `scatter`, `scatter_multi` and
-# `waterfall` raise ``unhashable type: 'list'``, and `histogram` raises an
-# arithmetic TypeError on the column names. Every one of those surfaced as
-# "category column has list-valued cells" through
-# ``_BUILDER_EXCEPTION_TRANSLATIONS`` -- a message that names a column
-# holding clean scalars and sends the reader to explode it. Validating the
-# mapping shape up front replaces all seven cryptic paths with one error
-# that names ``y``, so the wide-form restriction is enforced where it can
-# still be read as a restriction.
-_WIDE_FORM_Y_CHART_TYPES: frozenset = frozenset(
-    {"line", "multi_line", "area", "scatter_studio"}
-)
 
 # Mapping keys whose values are dataset column references (string or
 # list of strings). Anything not in this set is treated as a config
@@ -16342,11 +16304,9 @@ def _build_dashboard_review(
         else:
             global_diagnostics.append(diagnostic)
     panels: List[PanelReceipt] = []
-    claimed_panel_ids: set = set()
     for ordinal, location in enumerate(_widget_locations(manifest)):
         widget = location["widget"]
         panel_id = str(widget.get("id") or f"panel_{ordinal + 1}")
-        claimed_panel_ids.add(panel_id)
         kind = str(widget.get("widget") or "unknown")
         tab = location.get("tab")
         tab_id = (
@@ -16637,22 +16597,6 @@ def _build_dashboard_review(
             evidence=_receipt_compact_value(evidence),
             coverage=coverage,
         ))
-
-    # A diagnostic carries whatever id its emitter knew about, and not every
-    # emitter is looking at a widget: the filter checks tag theirs with the
-    # filter id, so `filter_chart_rebuild_unsupported` and its siblings
-    # bucketed under a key no panel ever claims and dropped out of the review
-    # entirely. The review then reported CLEAR on a candidate the strict
-    # compile refuses, which is the worst shape a gate can take -- the cheap
-    # check passes and the expensive one rejects, with nothing in the receipt
-    # to predict it. Unclaimed ids fall through to the global stream so the
-    # review's silence has to be earned rather than assumed.
-    orphaned_diagnostics = [
-        diagnostic for diagnostic in diagnostics
-        if diagnostic.widget_id
-        and diagnostic.widget_id not in claimed_panel_ids
-    ]
-    global_diagnostics.extend(orphaned_diagnostics)
 
     global_findings = [
         _diagnostic_receipt_finding(diagnostic)
@@ -17320,9 +17264,8 @@ def compile_dashboard(
 #         <stem>.csv              one CSV per dataset; stem matches
 #                                 manifest.datasets key byte-for-byte
 #
-# pulls.json shape -- one get_data request per entry. The entry name is the
-# pull name, and for every source but the multi-table ones (whose stems are
-# <name>_<table label>) the CSV stem and dataset key as well:
+# pulls.json shape -- one get_data request per entry, and the entry name is
+# simultaneously the pull name, the CSV stem, and the dataset key:
 #     {"schema_version": 1,
 #      "pulls": [
 #        {"name": "rates",
@@ -17337,10 +17280,8 @@ def compile_dashboard(
 #
 # The engine resolves @today-family tokens to real ISO dates, validates each
 # details object against the get_data Details union, and pins session_path
-# itself. get_data writes {session_path}/{name}.csv -- or one
-# {session_path}/{name}_{table label}.csv per table for a multi-table source;
-# its first column header is 'timestamp', which the CSV loader renames to
-# 'date'.
+# itself. get_data writes {session_path}/{name}.csv; its first column header
+# is 'timestamp', which the CSV loader renames to 'date'.
 #
 # A dashboard that retrieves nothing carries {"schema_version": 1,
 # "pulls": []}. The file is always required.
@@ -20187,34 +20128,10 @@ def _apply_persisted_script_operation(
         )
     observed_count = source.count(anchor)
     if observed_count != expected_count:
-        # A vanished anchor whose replacement is already present is the
-        # signature of a replayed edit, and the review hold is what makes
-        # that the common case: the hold keeps the edited candidate rather
-        # than rolling it back, so re-sending the operation after
-        # acknowledging meets a script the edit already landed in. Naming
-        # that beats sending the author to diff the script by hand.
-        replayed = observed_count == 0 and (
-            (op == "replace"
-             and isinstance(operation.get("new"), str)
-             and operation["new"] in source)
-            or (op in ("insert_before", "insert_after")
-                and isinstance(operation.get("text"), str)
-                and operation["text"] in source)
-        )
-        hint = (
-            "this edit appears to have already been applied -- its "
-            "replacement text is present and its anchor is gone. A review "
-            "hold keeps the edited script rather than reverting it, so a "
-            "retry after acknowledging must not re-send the same "
-            "operation; re-read the script and send only what is still "
-            "missing."
-            if replayed else
-            "inspect the current script and rebase the typed edit on a "
-            "unique fragment."
-        )
         raise ValueError(
             f"script operation[{index}] anchor count mismatch: expected "
-            f"{expected_count}, found {observed_count} | fix: {hint}"
+            f"{expected_count}, found {observed_count} | fix: inspect the "
+            "current script and rebase the typed edit on a unique fragment."
         )
     if op == "replace":
         replacement = operation.get("new")
@@ -22166,9 +22083,8 @@ _MULTI_TABLE_SOURCES: Dict[str, str] = {
 _PULLS_SPEC_PATH = "scripts/pulls.json"
 _PULLS_SCHEMA_VERSION = 1
 
-# A pull name is the entry key, and -- for every source but the multi-table
-# ones, whose stems are ``<name>_<table label>`` -- the CSV stem and manifest
-# dataset key too. Either way it has to survive as a filename.
+# A pull name is simultaneously the entry key, the CSV stem, and the manifest
+# dataset key, so it has to survive as a filename.
 _PULL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
@@ -22449,38 +22365,6 @@ def _declared_pull_stems(spec: Dict[str, Dict[str, Any]]) -> set:
     return stems
 
 
-def _resolve_pull_entry_name(
-    spec: Dict[str, Dict[str, Any]], pull_name: str, document_path: str,
-) -> str:
-    """Map a pull name OR a declared CSV stem onto its entry name.
-
-    ``apply_pulls_document`` reports both ``pulls`` (entry names) and
-    ``declared_stems`` (the CSV keys), and for a multi-table source those
-    two differ: one ``ratings`` entry declaring a ``dbrs`` table emits the
-    stem ``ratings_dbrs``. Keying only on the entry name made the stem list
-    look like a runnable work queue that it was not, so a loop over the
-    stems failed on the first multi-table source. Accepting either spelling
-    costs nothing and removes the distinction from the caller's problem.
-
-    Running one entry writes every table it declares, so several stems can
-    legitimately resolve to the same entry; a caller iterating stems will
-    re-run such an entry once per table. Iterate ``pulls`` to run each
-    entry exactly once.
-    """
-    if pull_name in spec:
-        return pull_name
-    for name, details in spec.items():
-        if pull_name in _declared_pull_stems({name: details}):
-            return name
-    stems = sorted(_declared_pull_stems(spec))
-    detail = f"; declared stems: {stems}" if stems != sorted(spec) else ""
-    raise KeyError(
-        f"run_pull: {pull_name!r} is neither a declared pull name nor a "
-        f"declared stem in {document_path}; available pulls: "
-        f"{sorted(spec)}{detail}"
-    )
-
-
 def _read_pulls_spec_bytes(s3_manager, folder: str) -> bytes:
     path = f"{folder}/{_PULLS_SPEC_PATH}".replace("//", "/")
     raw = s3_manager.get(path)
@@ -22505,14 +22389,8 @@ def _run_pull_entry(folder: str, name: str, details: Dict[str, Any]) -> None:
     Validation happens AFTER token resolution, so ``Details`` only ever
     sees real ISO dates and what ``get_data`` receives is byte-identical
     to a hand-typed request. ``session_path`` is pinned by the engine and
-    cannot be stated in the document.
-
-    ``name`` is the pull name and the ``get_data`` name. For a
-    single-table source it is also the CSV stem and the dataset key. A
-    multi-table source instead writes one ``<name>_<table>`` stem per
-    declared table, so entry names and stems are not interchangeable
-    there -- see ``_declared_pull_stems`` for the authoritative stem set
-    and ``_resolve_pull_entry_name`` for the mapping back.
+    cannot be stated in the document -- which is why the entry ``name`` is
+    simultaneously the pull name, the CSV stem, and the dataset key.
     """
     import asyncio
     import pydantic
@@ -23816,14 +23694,8 @@ def run_pull(folder: str, pull_name: str, *, s3_manager=None,
 
     Reads the document, resolves that entry's date tokens, validates it
     against ``Details``, and awaits its ``get_data`` call, which writes the
-    CSV into ``<folder>/data/`` itself.
-
-    ``pull_name`` accepts either spelling ``apply_pulls_document`` reports:
-    an entry name from ``pulls``, or a CSV stem from ``declared_stems``
-    (which for a multi-table source is ``<name>_<label>``). Raises
-    ``KeyError`` when it is neither. Prefer iterating ``pulls`` -- running
-    one entry writes every table it declares, so a loop over stems re-runs
-    a multi-table entry once per table.
+    CSV into ``<folder>/data/`` itself. Raises ``KeyError`` when the name
+    is not declared.
 
     Use from PRISM ephemeral code to refresh ONE pipeline during dev
     iteration without spawning a subprocess. Use ``refresh_dashboard()``
@@ -23842,9 +23714,11 @@ def run_pull(folder: str, pull_name: str, *, s3_manager=None,
 
     s3 = _resolve_s3_manager(s3_manager)
     spec = _load_pulls_spec(folder, s3_manager=s3)
-    pull_name = _resolve_pull_entry_name(
-        spec, pull_name, f"{folder}/{_PULLS_SPEC_PATH}",
-    )
+    if pull_name not in spec:
+        raise KeyError(
+            f"run_pull: {pull_name!r} is not declared in "
+            f"{folder}/{_PULLS_SPEC_PATH}; available: {sorted(spec)}"
+        )
     print(f"[run_pull] {folder} :: {pull_name}")
     _run_pull_entry(folder, pull_name, spec[pull_name])
     _stamp_pull_completion(folder, s3, [pull_name], format_iso(utcnow()))
@@ -25494,11 +25368,6 @@ def refresh_dashboard(folder: str, *, s3_manager=None) -> Dict[str, Any]:
     path doesn't know the frequency without reading the registry, so
     ``next_refresh_at`` is left unstamped here (the runner is the
     right caller for that).
-
-    Writes no ``refresh_status.json`` either: that file is the runner's
-    own record, so ``inspect_dashboard()["refresh_status"]`` stays
-    ``None`` however many times this function succeeds. Use
-    ``launch_clean_refresh`` when the triage evidence is the point.
     """
     from dashboards_time import utcnow, format_iso
 

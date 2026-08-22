@@ -67,11 +67,8 @@ The closed aggregator enum is:
 | `delta_label`, `delta_decimals` | Delta presentation |
 | `prefix`, `suffix`, `decimals` | Value presentation |
 | `sparkline_source` | `<dataset>.<column>` full-series reference |
-| `sense_check` | Set `False` to acknowledge a confirmed large value and silence the magnitude warning |
 
 `value` and `delta` may appear after compilation as resolved values, but persisted templates keep the source wires. A hand-typed value without `source` is invalid. Compile receipts list every user-visible KPI string (headline and change pill); sense-check those before shipping.
-
-Any resolved value with `|value| > 20` also raises a non-blocking `kpi_value_sense_check` warning. The threshold is deliberately low because most macro and rates readings sit under it, so a legitimate S&P level, volume, or spread in basis points will trip it. Confirm the column, aggregator and units first; once the number is right, set `"sense_check": False` on that widget to acknowledge it. The receipt still lists the value — the field silences the warning, not the disclosure.
 
 ## Stat grid
 
@@ -100,7 +97,7 @@ Any resolved value with `|value| > 20` also raises a non-blocking `kpi_value_sen
 }
 ```
 
-Each stat requires `label` and `source`; use the KPI aggregator enum. Keep grids compact and conceptually coherent. The same magnitude warning applies per stat as `stat_grid_value_sense_check`, and `"sense_check": False` is acknowledged on the individual stat rather than on the widget — a grid is a set of independent numbers, so one confirmed large stat does not silence its neighbours.
+Each stat requires `label` and `source`; use the KPI aggregator enum. Keep grids compact and conceptually coherent.
 
 ## Sparkline
 

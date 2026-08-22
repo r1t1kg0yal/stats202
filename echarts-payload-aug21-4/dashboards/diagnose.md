@@ -25,7 +25,7 @@ The deterministic result contains:
 | `scripts.pulls` | Canonical path, presence, byte count, SHA-256 guard, `document_error`, the parsed `document` itself, declared pull names, and `declared_stems` |
 | `scripts.build` | Canonical path, presence, byte count, SHA-256 guard, syntax status, registered function inventory, resolved transform outputs, and unresolved output sites |
 | `versioning` | Current/previous definition version, working/current recipe hashes, clean/dirty state, and five recent product summaries |
-| `review` | Availability/source, `BLOCK`/`REVIEW_REQUIRED`/`CLEAR`, definition/quality/review signatures, acknowledgment match/path, and drill-down pointers for every flagged panel plus any finding that belongs to no panel (`panel_id: null`, drill-down `review_dashboard(...).global_findings`) |
+| `review` | Availability/source, `BLOCK`/`REVIEW_REQUIRED`/`CLEAR`, definition/quality/review signatures, acknowledgment match/path, and flagged panel drill-down pointers |
 | `metadata` | Identity, cadence, methodology, sources, and authored state |
 | `tabs` | Canonical ordered `{id, label, index}` list |
 | `datasets` | Name-keyed records with persisted CSV path/presence, columns, dtypes, `[rows, columns]` shape, data origin, producer classification/pipelines/transform, and widget/filter consumers |
@@ -42,7 +42,7 @@ The deterministic result contains:
 | `graph.widgets` | Stable ids, kinds, datasets, tab, row, and index |
 | `graph.filters` | Filter ids, kinds, targets, and dataset reach |
 | `graph.edges` | Pipeline → CSV → dataset → widget/filter relationships |
-| `refresh_status` | Last refresh status, errors, timestamps, log path, and failure count when present. Sourced from `refresh_status.json`, which only the refresh subprocess writes — `launch_clean_refresh`, the cron, and the browser Refresh button. The in-process `refresh_dashboard()` pulls and builds without stamping it, so this stays `None` after any number of successful in-session refreshes |
+| `refresh_status` | Last refresh status, errors, timestamps, log path, and failure count when present |
 | `registry` | Path/presence, matching entries, `match_count`, canonical entry, duplicates, `created_at`, refresh frequency/alignment, and manifest-pointer state |
 | `attachment_gaps` | Compile-to-refresh attachment violations with repair text |
 | `telemetry_contract` / `telemetry` | Category definitions plus normalized recent events preserving `kind`, `message`, `url`, `source`, raw event, and persisted-path matches |
@@ -181,7 +181,7 @@ The same object is returned as `result.diagnostics_report` from `compile_dashboa
 1. **Identity and required files.** Confirm canonical folder identity and address every `files.missing` finding before mutation.
 2. **Structured findings.** Work error findings before warnings. Use each `path` to localize and each `fix_hint` as the corrective contract.
 3. **Refresh attachment.** Resolve every `attachment_gaps` item; a compiling but unattached dashboard is not healthy.
-4. **Refresh evidence.** Read `refresh_status.status`, `errors`, and `log_path`. `review_required` retains live output bytes and is not a failure cooldown; inspect and acknowledge rather than restart-looping. A `None` `refresh_status` is not evidence of a failed refresh: it means no subprocess refresh has run against this folder yet, because in-process `refresh_dashboard()` calls never write the file. Call `launch_clean_refresh` to produce the evidence this step reads, and note the key is `refresh_status`, not `refresh`.
+4. **Refresh evidence.** Read `refresh_status.status`, `errors`, and `log_path`. `review_required` retains live output bytes and is not a failure cooldown; inspect and acknowledge rather than restart-looping.
 5. **Browser evidence.** Classify recent telemetry by `kind`, timestamp, viewer, message, source, and URL.
 6. **Dependency graph.** Trace affected widget/filter backward through dataset and CSV to a pull or transform.
 7. **Registry.** Require exactly one matching entry and aligned cadence.
@@ -196,7 +196,7 @@ The same object is returned as `result.diagnostics_report` from `compile_dashboa
 | Popup detail dataset/field/key-overlap finding | `widgets.md` and `template_crud.md` | Correct the source/target binding named by the diagnostic |
 | Data-quality error | `pipelines.md` plus the consuming primitive | Repair the named producer/transform/contract defect; strict compilation remains blocked |
 | Data-quality warning with ambiguous observation | Product judgment | Preserve the data, surface the structured evidence, and ask before changing scale treatment or data |
-| Review status `BLOCK` | Owning primitive or pipeline | Repair the deterministic finding and obtain a new receipt; acknowledgment is forbidden. When every panel reads `CLEAR`, the finding is in `review.global_findings` — a filter or whole-manifest defect owns no panel |
+| Review status `BLOCK` | Owning primitive or pipeline | Repair the deterministic finding and obtain a new receipt; acknowledgment is forbidden |
 | Review status `REVIEW_REQUIRED` or unacknowledged `CLEAR` | Dashboard Garbage Gate | Drill into every flagged panel, acknowledge the exact signature with rationale, then run the guarded build |
 | Refresh status `review_required` | Dashboard Garbage Gate | Live manifest/dashboard and registry/user pointers remain unchanged; acknowledge the current review and retry without failure cooldown |
 | Refresh status `partial` | `pipelines.md` for the named pulls | Read `stale_pulls`; the rest of the dashboard is current and `metadata.time.stale_pulls` already declares the gap. Repair the named producers rather than re-running the whole cycle |

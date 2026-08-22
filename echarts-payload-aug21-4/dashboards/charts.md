@@ -46,8 +46,8 @@ The closed chart-type enum is:
 |---|---|
 | `line` | `x`, `y`; optional `color` |
 | `multi_line` | `x`, `y` list, or scalar `y` + `color` |
-| `bar` | category `x`, one numeric `y` column (not a list); optional `color`, `stack` |
-| `bar_horizontal` | one numeric `x` column, category `y` (not a list); optional `color`, `stack` |
+| `bar` | category `x`, numeric `y`; optional `color`, `stack` |
+| `bar_horizontal` | numeric `x`, category `y`; optional `color`, `stack` |
 | `scatter` | `x`, `y`; optional `color`, `size`, `trendline` |
 | `scatter_multi` | `x`, `y`; normally `color`; optional `trendlines` |
 | `scatter_studio` | no required mapping; author whitelists viewer choices |
@@ -77,8 +77,6 @@ The closed chart-type enum is:
 | `marimekko` | categorical `x`, categorical `y`, numeric `value` |
 
 Unknown chart types, missing mapping keys/columns, and wrong numeric/categorical roles are diagnostics. Author from the actual persisted dataset schema.
-
-Only `line`, `multi_line`, `area`, and `scatter_studio` enumerate one series per column from a wide-form `y` list. Everywhere else `y` is a single column, and a list there is a validation error naming `y`. To plot several columns against a category on any other type — `bar`, `bar_horizontal`, `boxplot`, `scatter`, `scatter_multi`, `waterfall`, `histogram` — melt them into one value column plus one group column and group with `color` (alias `series`); for `bar` that is the grouped-bar shape, side-by-side by default and stacked under `stack`.
 
 ### Geographic maps
 
@@ -206,7 +204,7 @@ These decisions describe the Python compiler's default-filter state. Browser int
 
 | Key | Purpose |
 |---|---|
-| `x`, `y` | Primary fields; `y` takes a wide-form list only for `line`, `multi_line`, `area`, `scatter_studio` |
+| `x`, `y` | Primary fields; `y` may be a wide-form list |
 | `color` | Long-form grouping field |
 | `x_title`, `y_title`, `y_title_right` | Plain-English units/axis labels |
 | `x_sort` | Explicit category order |

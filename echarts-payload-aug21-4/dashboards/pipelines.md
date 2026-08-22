@@ -51,9 +51,7 @@ A pull is also the unit of refresh failure: each entry runs in its own boundary,
 
 ## Pull document
 
-`scripts/pulls.json` is an ordered list of `get_data` requests. Each entry is a `name` and the `details` body for that source; the engine supplies `session_path`.
-
-For most sources one entry writes one CSV, so the name is simultaneously the pull name, the CSV stem, and the manifest dataset key. The exceptions are the multi-table sources `lakehouse` and `gs_quant_reference`: they write one CSV per entry in their `tables` list, stemmed `<name>_<table label>`, so a single `ratings` entry declaring a `dbrs` table produces the stem `ratings_dbrs` and no `ratings.csv` at all. Every table needs an explicit `label` for that reason. Take stems from `declared_stems`, never by assuming they equal the names; and run pulls by iterating entry names, since one entry writes all of its tables in one call.
+`scripts/pulls.json` is an ordered list of `get_data` requests. Each entry is a `name` and the `details` body for that source; the engine supplies `session_path`, so the name is simultaneously the pull name, the CSV stem, and the manifest dataset key.
 
 ```json
 {
@@ -227,10 +225,8 @@ src = s3_manager.get(f"{FOLDER}/scripts/pull_data.py").decode("utf-8")
 print(src)
 ```
 
-One entry per `get_data` call: `name` is the name that call passed, and for
-every source but the two multi-table ones it is also the CSV stem that call
-writes; `details` is the mapping it passed. Then commit and delete, in that
-order:
+One entry per `get_data` call: `name` is the CSV stem that call writes,
+`details` is the mapping it passed. Then commit and delete, in that order:
 
 ```python
 apply_pulls_document(FOLDER, {"schema_version": 1, "pulls": [...]})

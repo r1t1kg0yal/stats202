@@ -47,17 +47,13 @@ written = apply_pulls_document(FOLDER, {
     }],
 })
 
-for name in written["pulls"]:
-    run_pull(FOLDER, name)
-
 for stem in written["declared_stems"]:
+    run_pull(FOLDER, stem)
     frame = pd.read_csv(io.BytesIO(s3_manager.get(f"{FOLDER}/data/{stem}.csv")))
     if frame.empty:
         raise ValueError(f"{stem}.csv is empty")
     print(stem, frame.shape, frame.columns.tolist())
 ```
-
-`written` carries five keys: `folder`, `path`, `sha256`, and the two lists the loops above use. Both lists are lists of plain strings, not objects — `written["pulls"][0]` is a name, so indexing it with a field name raises `TypeError: string indices must be integers`. Run over `pulls` and verify over `declared_stems`, because the two differ: one entry against a multi-table source declares one name and emits one stem per table. `run_pull` accepts either spelling, but running an entry writes all of its tables, so looping over stems re-runs a multi-table entry once per table.
 
 Tool 1 rules:
 
@@ -247,7 +243,6 @@ Layout composition remains a flat, collision-checked `rows` list. Add named visu
         "id": "macro_regime",
         "title": "Macro regime",
         "description": "Growth, inflation, and policy",
-        # Inclusive: this spans rows 0, 1 and 2, so the tab needs >= 3 rows.
         "start_row": 0,
         "end_row": 2,
         "collapsible": False,
@@ -255,7 +250,7 @@ Layout composition remains a flat, collision-checked `rows` list. Add named visu
 ]
 ```
 
-`groups` is valid on a grid layout or inside an individual tab. Group ids are globally unique; ranges are zero-based, inclusive, in bounds, and may not overlap. Inclusive means `end_row` is the last row covered, not the stop value of a Python slice: the final row of an `n`-row tab is `end_row: n - 1`, and `end_row: n` is out of bounds. Use one `hero: true, w: 12` chart in its own row only when the chart is the page's decision-critical focal point. Standard charts remain 4/12 or 6/12. Use `data_grid` for a full-width virtualized records surface rather than overloading a chart row.
+`groups` is valid on a grid layout or inside an individual tab. Group ids are globally unique; ranges are zero-based, inclusive, in bounds, and may not overlap. Use one `hero: true, w: 12` chart in its own row only when the chart is the page's decision-critical focal point. Standard charts remain 4/12 or 6/12. Use `data_grid` for a full-width virtualized records surface rather than overloading a chart row.
 
 At an adaptive manifest phase, every dataset referenced by the proposed operation must already be present in the current compiled/persisted data. If it is not, route to the persisted pipeline owner and provision the producer before applying the manifest operation; `recompile=False` does not make missing phase data legal.
 

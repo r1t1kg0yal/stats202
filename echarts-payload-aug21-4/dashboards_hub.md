@@ -180,9 +180,7 @@ substrate, not public PRISM authoring APIs.
 |---|---|
 | `BLOCK` | Deterministic defect; repair and review again. It cannot be acknowledged. |
 | `REVIEW_REQUIRED` | Advisory or browser-runtime boundary; inspect the evidence and acknowledge only with an explicit rationale. |
-| `CLEAR` | No flagged Python-visible semantics, panel or global; the exact first-build or changed signature still requires acknowledgment. |
-
-Not every finding belongs to a panel. A diagnostic raised against a filter, or against the manifest as a whole, lands in `review.global_findings` — an error there is enough to make the status `BLOCK` with every panel reading `CLEAR`. `review.to_text()` prints that section, so read the receipt rather than only looping the panel index.
+| `CLEAR` | No flagged Python-visible panel semantics; the exact first-build or changed signature still requires acknowledgment. |
 
 The versioned quality signature hashes the detector version plus sorted panel
 status, data state, finding codes, and coarse materiality classes. Materiality
@@ -207,8 +205,6 @@ else:
     for panel in review.panels:
         if panel.status != "CLEAR":
             print(review.panel(panel.panel_id).to_text())
-    for finding in review.global_findings:  # may be non-empty with no
-        print(finding)                      # panel flagged at all
     published = publish_dashboard(
         FOLDER,
         rationale=(
@@ -258,22 +254,6 @@ parameters, f-strings, dictionary/list/tuple loops, and
 `datasets.update({...})`. Runtime-dependent output names block with
 `producer_output_unresolved`; expose the fixed key at a helper call or a
 finite literal loop rather than adding dummy assignments.
-
-The two producers differ in what they leave on disk. `data/<stem>.csv`
-exists for pull stems only; a transform output is materialized into the
-compiled manifest's dataset entry and never written as a CSV, so reading
-`data/<transform_key>.csv` raises a missing-key error however healthy the
-dashboard is. Verify a transform through the compiled manifest or the
-review receipt, and reserve the `data/` read for pull stems. A transform
-that must leave a file behind has to call `save_artifact` explicitly.
-
-A compiled dataset's `source` is header-plus-rows, not records:
-`[["date", "spread_bp"], ["2026-04-24", 42.1], ...]`. Row 0 is the column
-names and every later row is a positional list, so `row.get("spread_bp")`
-raises `AttributeError: 'list' object has no attribute 'get'`. Index
-through the header — `cols = source[0]` then
-`row[cols.index("spread_bp")]` — or rebuild a frame with
-`pd.DataFrame(source[1:], columns=source[0])`.
 
 `build.py` executes in one namespace shared by in-process
 `build_dashboard` and clean refresh discovery: `s3_manager`, `pd`, `np`.
