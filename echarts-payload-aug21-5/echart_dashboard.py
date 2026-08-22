@@ -300,6 +300,7 @@ CHART_TYPES: Dict[str, ChartTypeSpec] = {
     "graph":              ChartTypeSpec("graph"),
     "candlestick":        ChartTypeSpec("candlestick"),
     "radar":              ChartTypeSpec("radar"),
+    "gauge":              ChartTypeSpec("gauge"),
     "calendar_heatmap":   ChartTypeSpec("calendar_heatmap"),
     "funnel":             ChartTypeSpec("funnel"),
     "parallel_coords":    ChartTypeSpec("parallel_coords"),
@@ -2158,15 +2159,28 @@ def _validate_chart_widget(w: Dict[str, Any], wbase: str,
             errs.append(_err(f"{wbase}.spec.mapping", "required"))
         elif not isinstance(spec["mapping"], dict):
             errs.append(_err(f"{wbase}.spec.mapping", "must be a dict"))
-        # A list on a scalar-only mapping key. Fires before the cardinality
-        # cap below so the shape complaint wins over a count complaint, and
-        # before the builder turns the list into an unhashable dict key.
-        if isinstance(spec.get("mapping"), dict) and ct in VALID_CHART_TYPES:
-            for key, value in sorted(spec["mapping"].items()):
-                if not _is_wide_form_misplacement(ct, key, value):
-                    continue
-                message, hint = _wide_form_misplacement_error(ct, key, value)
-                errs.append(_err(f"{wbase}.spec.mapping.{key}", message, hint))
+        # Wide-form y against a builder that takes a single column. Fires
+        # before the cardinality cap below so the shape complaint wins over
+        # a count complaint, and before the builder turns the list into an
+        # unhashable dict key.
+        if isinstance(spec.get("mapping"), dict):
+            y_field = spec["mapping"].get("y")
+            if (isinstance(y_field, list)
+                    and ct in VALID_CHART_TYPES
+                    and ct not in _WIDE_FORM_Y_CHART_TYPES):
+                errs.append(_err(
+                    f"{wbase}.spec.mapping.y",
+                    f"chart_type '{ct}' takes a single column for 'y'; got "
+                    f"a {len(y_field)}-column wide-form list ({y_field!r}). "
+                    f"Only {sorted(_WIDE_FORM_Y_CHART_TYPES)} enumerate one "
+                    f"series per column from a list.",
+                    f"Reshape to long form and group with 'color' (or its "
+                    f"alias 'series'): melt {y_field!r} into one value "
+                    f"column plus one group column, set y to the value "
+                    f"column, and set color to the group column. To keep "
+                    f"the wide columns as they are, switch chart_type to "
+                    f"one of {sorted(_WIDE_FORM_Y_CHART_TYPES)}.",
+                ))
         # Line-shaped y-series cardinality cap (wide-form: mapping.y is
         # a list). Long-form (mapping.y scalar + mapping.color column)
         # fires from chart_data_diagnostics once the DataFrame is
@@ -2182,9 +2196,9 @@ def _validate_chart_widget(w: Dict[str, Any], wbase: str,
                     f"chart_too_many_series: chart_type '{ct}'{wid_repr} "
                     f"has {len(y)} y-series ({y!r}); cap is "
                     f"{_MAX_LINE_SERIES}. Too many overlaid lines "
-                    f"wrap the legend onto multiple rows and make any "
-                    f"single series untraceable across the canvas. "
-                    f"Drop to <= {_MAX_LINE_SERIES} "
+                    f"crowd the legend, break color discrimination, "
+                    f"and make any single series untraceable across "
+                    f"the canvas. Drop to <= {_MAX_LINE_SERIES} "
                     f"series, split into small multiples (separate "
                     f"widgets, one per category or paired theme), or "
                     f"pivot to a different framing (Index=100 "
@@ -3110,6 +3124,184 @@ def _validate_divider_widget(w: Dict[str, Any], wbase: str,
     return
 
 
+def _validate_score_gauge_widget(w: Dict[str, Any], wbase: str,
+                                  errs: List[str], dataset_names: Any) -> None:
+    """Validate a ``widget: score_gauge`` entry.
+
+    PWL's role map is ``{score: scalar, drivers: table(label,
+    contribution)}`` -- one composite reading placed on a declared
+    scale, plus the signed decomposition that produced it. The tile
+    computes nothing: both halves are dataset-bound, so a refresh moves
+    the needle and the bars together or moves neither.
+
+    ``scale`` is required. A needle with no declared bounds is a
+    picture of a number, not a placement of it -- the reader cannot
+    tell whether 0.4 is high. Bands are optional; when present they
+    reuse the badge ``states`` shape (ordered, terminal entry carries
+    no bound) and the ``row_highlight`` tone vocabulary, so no third
+    grammar enters the engine.
+    """
+    score = w.get("score")
+    if not score or not isinstance(score, str):
+        errs.append(_err(
+            f"{wbase}.score",
+            "required for score_gauge; set score="
+            "\"<dataset>.<aggregator>.<column>\" so the needle moves "
+            "with the data",
+        ))
+    else:
+        ds_name, agg, _col, parse_err = _parse_kpi_source(score, "value")
+        if parse_err is not None:
+            errs.append(_err(
+                f"{wbase}.score", f"malformed: {parse_err}",
+                "Rewrite as '<dataset>.<aggregator>.<column>'.",
+            ))
+        else:
+            if agg not in VALID_KPI_AGGREGATORS:
+                errs.append(_err(
+                    f"{wbase}.score",
+                    f"aggregator {agg!r} is unsupported",
+                    f"Must be one of {sorted(VALID_KPI_AGGREGATORS)}.",
+                ))
+            if dataset_names is not None and ds_name not in dataset_names:
+                errs.append(_err(
+                    f"{wbase}.score",
+                    f"dataset {ds_name!r} is not declared",
+                    f"Declare it or pick from {sorted(dataset_names)}.",
+                ))
+
+    scale = w.get("scale")
+    if not isinstance(scale, dict):
+        errs.append(_err(
+            f"{wbase}.scale",
+            "required dict {min, max, bands?}; a needle with no bounds "
+            "cannot say whether the score is high",
+        ))
+        scale = {}
+    else:
+        unknown = sorted(set(scale) - {"min", "max", "bands"})
+        if unknown:
+            errs.append(_err(
+                f"{wbase}.scale",
+                f"unknown key(s) {unknown}; valid: ['bands', 'max', 'min']",
+            ))
+        lo, hi = scale.get("min"), scale.get("max")
+        for edge, val in (("min", lo), ("max", hi)):
+            if not isinstance(val, (int, float)) or isinstance(val, bool):
+                errs.append(_err(
+                    f"{wbase}.scale.{edge}",
+                    f"required number, got {type(val).__name__}",
+                ))
+        if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) \
+                and not isinstance(lo, bool) and not isinstance(hi, bool) \
+                and lo >= hi:
+            errs.append(_err(
+                f"{wbase}.scale",
+                f"min={lo} must be less than max={hi}",
+            ))
+
+    bands = scale.get("bands") if isinstance(scale, dict) else None
+    if bands is not None:
+        if not isinstance(bands, list) or not bands:
+            errs.append(_err(
+                f"{wbase}.scale.bands",
+                "must be a non-empty list of {to?, label, tone?} dicts; "
+                "omit the key entirely for an unbanded arc",
+            ))
+        else:
+            prev_to = None
+            for bi, band in enumerate(bands):
+                bbase = f"{wbase}.scale.bands[{bi}]"
+                if not isinstance(band, dict):
+                    errs.append(_err(bbase, "must be a dict"))
+                    continue
+                unknown = sorted(set(band) - {"to", "label", "tone"})
+                if unknown:
+                    errs.append(_err(
+                        bbase,
+                        f"unknown key(s) {unknown}; valid: "
+                        f"['label', 'to', 'tone']",
+                    ))
+                label = band.get("label")
+                if not isinstance(label, str) or not label.strip():
+                    errs.append(_err(f"{bbase}.label",
+                                       "required non-empty string"))
+                tone = band.get("tone")
+                if tone is not None and tone not in VALID_BADGE_TONES:
+                    errs.append(_err(
+                        f"{bbase}.tone", f"{tone!r} is unsupported",
+                        f"Tone must be one of {sorted(VALID_BADGE_TONES)}.",
+                    ))
+                is_last = bi == len(bands) - 1
+                to = band.get("to")
+                if is_last:
+                    if "to" in band:
+                        errs.append(_err(
+                            f"{bbase}.to",
+                            "the last band runs to scale.max and must not "
+                            "declare 'to'; a bounded final band would "
+                            "leave the top of the arc unlabelled",
+                        ))
+                elif not isinstance(to, (int, float)) or isinstance(to, bool):
+                    errs.append(_err(
+                        f"{bbase}.to",
+                        f"required upper bound number, got "
+                        f"{type(to).__name__}",
+                    ))
+                elif prev_to is not None and to <= prev_to:
+                    errs.append(_err(
+                        f"{bbase}.to",
+                        f"{to} must exceed the previous band's "
+                        f"to={prev_to}; bands are ordered and "
+                        f"non-overlapping",
+                    ))
+                else:
+                    prev_to = to
+
+    drivers = w.get("drivers")
+    if drivers is not None:
+        if not isinstance(drivers, dict):
+            errs.append(_err(
+                f"{wbase}.drivers",
+                "must be a dict {dataset, label_field, "
+                "contribution_field, max_rows?}",
+            ))
+        else:
+            unknown = sorted(set(drivers) - {
+                "dataset", "label_field", "contribution_field", "max_rows"})
+            if unknown:
+                errs.append(_err(
+                    f"{wbase}.drivers",
+                    f"unknown key(s) {unknown}; valid: "
+                    f"['contribution_field', 'dataset', 'label_field', "
+                    f"'max_rows']",
+                ))
+            for req in ("dataset", "label_field", "contribution_field"):
+                val = drivers.get(req)
+                if not isinstance(val, str) or not val:
+                    errs.append(_err(f"{wbase}.drivers.{req}",
+                                       "required non-empty string"))
+            ds = drivers.get("dataset")
+            if isinstance(ds, str) and ds and dataset_names is not None \
+                    and ds not in dataset_names:
+                errs.append(_err(
+                    f"{wbase}.drivers.dataset",
+                    f"dataset {ds!r} is not declared",
+                    f"Declare it or pick from {sorted(dataset_names)}.",
+                ))
+            max_rows = drivers.get("max_rows")
+            if max_rows is not None and (
+                    not isinstance(max_rows, int) or isinstance(max_rows, bool)
+                    or not 1 <= max_rows <= 20):
+                errs.append(_err(
+                    f"{wbase}.drivers.max_rows",
+                    f"must be an integer 1..20, got {max_rows!r}",
+                    "Past ~20 bars the decomposition stops being "
+                    "readable; aggregate the tail upstream into an "
+                    "'Other' row.",
+                ))
+
+
 def _validate_search_widget(w: Dict[str, Any], wbase: str,
                               errs: List[str], dataset_names: Any) -> None:
     """Validate a ``widget: search`` entry.
@@ -3317,6 +3509,8 @@ WIDGETS: Dict[str, WidgetSpec] = {
                               data_bound=True,  filter_targetable=True),
     "sparkline": WidgetSpec("sparkline", _validate_sparkline_widget,
                               data_bound=True,  filter_targetable=True),
+    "score_gauge": WidgetSpec("score_gauge", _validate_score_gauge_widget,
+                                data_bound=True,  filter_targetable=True),
     "search":    WidgetSpec("search",    _validate_search_widget,
                               data_bound=True,  filter_targetable=True),
     "tool":      WidgetSpec("tool",      _validate_tool_widget,
@@ -7058,7 +7252,7 @@ def _augment_manifest(manifest: Dict[str, Any]) -> Dict[str, Any]:
     # Set of widget ids that ANY filter targets. We only auto-populate
     # dataset_ref on widgets actually in the filter path so that charts
     # with pre-baked computed data (histograms, trendlines, bullets,
-    # candlesticks, heatmaps, radar, sankey, treemap, funnel,
+    # candlesticks, heatmaps, radar, gauge, sankey, treemap, funnel,
     # etc.) are not silently rewired and broken.
     targeted_ids: set = set()
     wildcard = False
@@ -8679,6 +8873,16 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     "sparkline_column_missing",
     "sparkline_too_short",
     "sparkline_range_band_inverted",
+    # score_gauge: an unresolvable score leaves the needle with nothing
+    # to point at, and an off-scale one pins it at an end -- which reads
+    # as "at the limit" rather than past it. Broken drivers ship a
+    # decomposition the reader takes as complete.
+    "score_gauge_score_unresolvable",
+    "score_gauge_score_off_scale",
+    "score_gauge_drivers_dataset_unknown",
+    "score_gauge_drivers_empty",
+    "score_gauge_drivers_column_missing",
+    "score_gauge_drivers_not_numeric",
     # search: PWL requires every answer to cite a record ref. A missing
     # column leaves nothing to search, and a repeated or empty
     # record_key makes the citation point at the wrong row -- which is
@@ -8780,6 +8984,10 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
     # Literal token strings such as "MMM YY" paint the exact same text at
     # every tick. This is deterministic, not an aesthetic judgment.
     "chart_temporal_formatter_constant",
+    # Non-finite/inverted bounds and out-of-range values render a
+    # semantically misleading gauge and are not acknowledgeable.
+    "chart_gauge_invalid_range",
+    "chart_gauge_value_out_of_range",
     # An unresolvable narrative reference is strictly worse than a
     # broken tile: the prose around the gap still reads as an
     # assertion, so the reader gets a confident sentence with an
@@ -8804,69 +9012,35 @@ ALWAYS_BLOCKING_ERROR_CODES: frozenset = frozenset({
 # Line-shaped chart series cardinality cap
 # -----------------------------------------------------------------------------
 # Line / multi_line / area widgets with too many overlaid series collapse
-# into spaghetti: the legend wraps to multiple rows and no single series is
-# traceable across the canvas. The corrective action is to drop the count,
-# split into small multiples (one widget per category), or pivot to a
-# different framing (Index=100 normalisation, correlation_matrix, aggregate
-# stat_grid). The cap covers both wide-form (``mapping.y`` as list) and
-# long-form (``mapping.y`` scalar + ``mapping.color`` column with N distinct
-# values). Wide-form fires from ``validate_manifest`` (mapping-only);
-# long-form fires from ``chart_data_diagnostics`` once the DataFrame is
-# materialised.
-#
-# Six, not four. Color is not the binding constraint: ``gs_primary`` carries
-# ten entries, and the minimum pairwise CIE76 separation within its first six
-# is 20.5 (light blue #7399C6 against slate #5A7D8C), which stays above the
-# ~20 threshold where two lines read as one. That minimum does not degrade
-# further at seven or eight, so the limit past six is legend crowding and
-# traceability rather than palette exhaustion. Four was costing real work --
-# a requested five-pair panel had to be reshaped onto two widgets purely to
-# clear the gate.
+# into spaghetti: the legend wraps to multiple rows, palette colors stop
+# being distinguishable past ~5 categorical entries, and no single series
+# is traceable across the canvas. The chart context cross-references
+# the cap; the corrective action is to
+# drop the count, split into small multiples (one widget per category),
+# or pivot to a different framing (Index=100 normalisation,
+# correlation_matrix, aggregate stat_grid). The cap covers both wide-
+# form (``mapping.y`` as list) and long-form (``mapping.y`` scalar +
+# ``mapping.color`` column with N distinct values). Wide-form fires
+# from ``validate_manifest`` (mapping-only); long-form fires from
+# ``chart_data_diagnostics`` once the DataFrame is materialised.
 _LINE_SHAPED_CHART_TYPES: frozenset = frozenset({"line", "multi_line", "area"})
-_MAX_LINE_SERIES: int = 6
+_MAX_LINE_SERIES: int = 4
 
-# Where a list of column names is legal in a chart mapping.
-#
-# Handing a scalar-only mapping key a list reaches the builder as an
-# unhashable dict key. `unhashable type: 'list'` is then translated by
-# ``_BUILDER_EXCEPTION_TRANSLATIONS`` into "category column has list-valued
-# cells", which names a column holding clean scalars and tells the reader to
-# explode it -- a fix for a defect they do not have. Validating the mapping
-# shape up front replaces every one of those cryptic paths with one error
-# that names the offending key.
-#
-# The allowlist is inverted deliberately. Measured against the builders,
-# exactly three (chart_type, key) pairs read a list as one series per column,
-# while 63 pairs raise; enumerating the rejections would leave every new
-# chart type unguarded until someone remembered to add it. Listing what is
-# permitted makes scalar-only the default a new type inherits.
-
-# Keys whose value is a list BY CONTRACT -- the builder wants several column
-# names there, and a bare string is the error case. `path` is the reminder
-# that this set has to be measured rather than reasoned about: treemap and
-# sunburst accept either {path, value} or {name, parent, value}, and probing
-# only the second alternative made a list of hierarchy levels look like an
-# authoring error.
-_LIST_VALUED_MAPPING_KEYS: frozenset = frozenset({
-    "dims",     # parallel_coords axes
-    "columns",  # correlation_matrix / scatter_studio column picker
-    "bands",    # fan_cone ribbon bounds (list of {lower, upper, label?})
-    "path",     # treemap / sunburst hierarchy levels, outermost first
-    "x_columns", "y_columns", "color_columns", "size_columns",
-})
-
-# (chart_type -> keys) where a list means "one series per column". These are
-# the only three the builders actually enumerate; `bar` and friends do not,
-# which is why a wide-form list has to be melted for them.
-_WIDE_FORM_SERIES_KEYS: Dict[str, frozenset] = {
-    "line": frozenset({"y"}),
-    "multi_line": frozenset({"y"}),
-    "area": frozenset({"y"}),
-}
-
-# Chart types whose builder resolves whatever mapping shape it is handed and
-# derives its own defaults, so the engine has nothing to enforce.
-_PERMISSIVE_MAPPING_CHART_TYPES: frozenset = frozenset({"scatter_studio"})
+# The only chart types whose builders enumerate one series per column when
+# ``mapping.y`` is a list. Everywhere else ``y`` is a single column
+# reference, and handing it a list reaches the builder as an unhashable
+# key: `bar`, `bar_horizontal`, `boxplot`, `scatter`, `scatter_multi` and
+# `waterfall` raise ``unhashable type: 'list'``, and `histogram` raises an
+# arithmetic TypeError on the column names. Every one of those surfaced as
+# "category column has list-valued cells" through
+# ``_BUILDER_EXCEPTION_TRANSLATIONS`` -- a message that names a column
+# holding clean scalars and sends the reader to explode it. Validating the
+# mapping shape up front replaces all seven cryptic paths with one error
+# that names ``y``, so the wide-form restriction is enforced where it can
+# still be read as a restriction.
+_WIDE_FORM_Y_CHART_TYPES: frozenset = frozenset(
+    {"line", "multi_line", "area", "scatter_studio"}
+)
 
 # Mapping keys whose values are dataset column references (string or
 # list of strings). Anything not in this set is treated as a config
@@ -8926,6 +9100,7 @@ _REQUIRED_MAPPING_KEYS: Dict[str, Tuple[str, ...]] = {
     "candlestick": ("x", "open", "high", "low", "close"),
     "calendar_heatmap": ("date", "value"),
     "funnel": ("category", "value"),
+    "gauge": ("value",),
     "radar": ("category", "value"),
     "graph": ("source", "target"),
     "boxplot": ("x", "y"),
@@ -9013,6 +9188,8 @@ _NUMERIC_KEYS_BY_CHART_TYPE: Dict[str, frozenset] = {
     "sankey": frozenset({"value", "size", "weight"}),
     # Graph: source and target are node ids; weight is the edge weight.
     "graph": frozenset({"value", "weight", "size"}),
+    # Gauge: a single number on a scale.
+    "gauge":  frozenset({"value", "low", "high"}),
     # Bullet (rates-RV style): x is the current value, x_low / x_high
     # the range bounds. y is the categorical row label (NOT numeric).
     "bullet": frozenset({"x", "x_low", "x_high", "value"}),
@@ -9050,64 +9227,6 @@ def _numeric_keys_for(chart_type: Optional[str]) -> frozenset:
     if chart_type and chart_type in _NUMERIC_KEYS_BY_CHART_TYPE:
         return _NUMERIC_KEYS_BY_CHART_TYPE[chart_type]
     return _NUMERIC_KEYS_DEFAULT
-
-
-def _is_wide_form_misplacement(
-    chart_type: str, key: str, value: Any,
-) -> bool:
-    """Is ``mapping[key] = value`` a list where this builder wants one column?
-
-    Only column-reference keys are judged; a list under a config flag is
-    that flag's own business.
-    """
-    if not isinstance(value, list):
-        return False
-    if key not in _COLUMN_REF_KEYS or key in _LIST_VALUED_MAPPING_KEYS:
-        return False
-    if chart_type in _PERMISSIVE_MAPPING_CHART_TYPES:
-        return False
-    return key not in _WIDE_FORM_SERIES_KEYS.get(chart_type, frozenset())
-
-
-def _wide_form_misplacement_error(
-    chart_type: str, key: str, value: List[Any],
-) -> Tuple[str, str]:
-    """The message and fix hint for a list on a scalar-only mapping key.
-
-    Two distinct mistakes reach here and they need different advice. If the
-    chart type enumerates a wide-form list somewhere, the list is on the
-    wrong key and the fix is to move it. If it enumerates one nowhere, the
-    columns have to be melted -- and the key to melt them onto is the
-    chart's own value key, which is ``x`` for ``bar_horizontal`` rather
-    than the ``y`` every other bar-shaped type uses.
-    """
-    wide_keys = sorted(_WIDE_FORM_SERIES_KEYS.get(chart_type, frozenset()))
-    message = (
-        f"chart_type '{chart_type}' takes a single column for '{key}'; got "
-        f"a {len(value)}-column wide-form list ({value!r})."
-    )
-    if wide_keys:
-        return (
-            message + f" On '{chart_type}' only "
-            f"{wide_keys} read a list as one series per column.",
-            f"Move the list to {wide_keys[0]!r} and give '{key}' the single "
-            f"column it plots against, or melt {value!r} into one value "
-            f"column plus one group column and group with 'color' (alias "
-            f"'series').",
-        )
-    numeric_keys = _numeric_keys_for(chart_type) & set(
-        _REQUIRED_MAPPING_KEYS.get(chart_type, ())
-    )
-    value_key = sorted(numeric_keys)[0] if numeric_keys else key
-    wide_form_types = sorted(_WIDE_FORM_SERIES_KEYS)
-    return (
-        message + f" No mapping key on '{chart_type}' reads a list as one "
-        f"series per column; only {wide_form_types} do, on 'y'.",
-        f"Melt {value!r} into one value column plus one group column, set "
-        f"'{value_key}' to the value column, and set 'color' (alias "
-        f"'series') to the group column. To keep the wide columns as they "
-        f"are, switch chart_type to one of {wide_form_types}.",
-    )
 
 
 @dataclass
@@ -9414,10 +9533,13 @@ def _translate_builder_exception(exc: BaseException) -> Dict[str, Any]:
 # Per-chart-type EXCLUSIONS from the column-ref check. The default
 # universe of column-ref keys is :data:`_COLUMN_REF_KEYS` -- broad
 # enough to cover most chart types. Some chart types repurpose certain
-# keys as labels / config (e.g. bullet.mapping.name is a caption, not a
-# column). Keys listed here for a chart_type are NOT treated as
+# keys as labels / config (e.g. gauge.mapping.name is the gauge title,
+# not a column). Keys listed here for a chart_type are NOT treated as
 # column references when the validator walks that chart's mapping.
 _NON_COLUMN_REF_KEYS_BY_CHART_TYPE: Dict[str, frozenset] = {
+    # gauge: 'name' is the gauge label rendered inside the dial.
+    # 'value' may be a literal number or a column.
+    "gauge": frozenset({"name"}),
     # bullet: 'name' (when used) is a label, not a column.
     "bullet": frozenset({"name"}),
     # radar: 'name' is the radar series legend label, not a column.
@@ -9435,7 +9557,7 @@ def _walk_column_refs(
 
     ``chart_type`` is consulted to filter out keys that are NOT column
     references for that chart_type even though they appear in the
-    universal :data:`_COLUMN_REF_KEYS` set (e.g. ``bullet.mapping.name``
+    universal :data:`_COLUMN_REF_KEYS` set (e.g. ``gauge.mapping.name``
     is a label, not a column). Defaults to the full set when
     ``chart_type`` is None or unknown.
     """
@@ -11614,6 +11736,190 @@ def _check_chart_widget(
             },
         ))
 
+    if chart_type == "gauge":
+        import math
+        import pandas as pd
+
+        raw_min = mapping.get("min", 0)
+        raw_max = mapping.get("max", 100)
+
+        def _resolve_gauge_bound(raw: Any) -> float:
+            if isinstance(raw, str) and raw in df.columns:
+                numeric = pd.to_numeric(df[raw], errors="coerce").dropna()
+                raw = numeric.iloc[-1] if len(numeric) else None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return float("nan")
+
+        gauge_min = _resolve_gauge_bound(raw_min)
+        gauge_max = _resolve_gauge_bound(raw_max)
+        if (
+            not math.isfinite(gauge_min)
+            or not math.isfinite(gauge_max)
+            or gauge_min >= gauge_max
+        ):
+            out.append(Diagnostic(
+                severity="error",
+                code="chart_gauge_invalid_range",
+                widget_id=wid,
+                path=f"{path}.spec.mapping",
+                message=(
+                    f"gauge range min={raw_min!r}, max={raw_max!r} is "
+                    "non-finite or not strictly increasing."
+                ),
+                context={
+                    "min": _receipt_compact_value(raw_min),
+                    "max": _receipt_compact_value(raw_max),
+                    "resolved_min": (
+                        gauge_min if math.isfinite(gauge_min) else None
+                    ),
+                    "resolved_max": (
+                        gauge_max if math.isfinite(gauge_max) else None
+                    ),
+                    "fix_hint": (
+                        "Set finite numeric mapping.min and mapping.max, or "
+                        "numeric bound columns, with min < max and units "
+                        "matching mapping.value."
+                    ),
+                },
+            ))
+        value_ref = mapping.get("value")
+        gauge_value: Optional[float] = None
+        if (
+            isinstance(value_ref, (int, float))
+            and not isinstance(value_ref, bool)
+        ):
+            gauge_value = float(value_ref)
+        elif isinstance(value_ref, str) and value_ref in df.columns:
+            numeric_value = pd.to_numeric(
+                df[value_ref], errors="coerce"
+            ).dropna()
+            if len(numeric_value):
+                gauge_value = float(numeric_value.iloc[-1])
+        if gauge_value is not None:
+            if not math.isfinite(gauge_value):
+                out.append(Diagnostic(
+                    severity="error",
+                    code="chart_gauge_invalid_range",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.value",
+                    message="gauge value is non-finite.",
+                    context={"value": gauge_value},
+                ))
+            elif (
+                math.isfinite(gauge_min)
+                and math.isfinite(gauge_max)
+                and gauge_min < gauge_max
+                and not gauge_min <= gauge_value <= gauge_max
+            ):
+                out.append(Diagnostic(
+                    severity="error",
+                    code="chart_gauge_value_out_of_range",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.value",
+                    message=(
+                        f"gauge value {gauge_value:g} lies outside "
+                        f"[{gauge_min:g}, {gauge_max:g}]."
+                    ),
+                    context={
+                        "value": gauge_value,
+                        "min": gauge_min,
+                        "max": gauge_max,
+                        "fix_hint": (
+                            "Correct the value units or set an intentional "
+                            "finite range that contains the value."
+                        ),
+                    },
+                ))
+            if "min" not in mapping or "max" not in mapping:
+                out.append(Diagnostic(
+                    severity="warning",
+                    code="chart_gauge_default_range_ambiguous",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping",
+                    message=(
+                        "gauge relies on at least one generic default bound; "
+                        "the full analytical range has not been declared."
+                    ),
+                    context={
+                        "value": gauge_value,
+                        "effective_range": [gauge_min, gauge_max],
+                        "defaulted_bounds": [
+                            key for key in ("min", "max")
+                            if key not in mapping
+                        ],
+                        "fix_hint": (
+                            "Declare both mapping.min and mapping.max unless "
+                            "the effective defaulted domain is intentional."
+                        ),
+                    },
+                ))
+            if "value_decimals" not in mapping:
+                out.append(Diagnostic(
+                    severity="warning",
+                    code="chart_gauge_precision_ambiguous",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.value_decimals",
+                    message=(
+                        "gauge value_decimals is undeclared; the renderer "
+                        "uses 2 decimals under the global maximum of "
+                        f"{MAX_DASHBOARD_DECIMALS}."
+                    ),
+                    context={
+                        "value": gauge_value,
+                        "default_decimals": 2,
+                        "maximum_decimals": MAX_DASHBOARD_DECIMALS,
+                        "fix_hint": (
+                            "Declare value_decimals when the metric has a "
+                            "known display precision."
+                        ),
+                    },
+                ))
+            if "thresholds" not in mapping:
+                out.append(Diagnostic(
+                    severity="warning",
+                    code="chart_gauge_thresholds_undeclared",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping",
+                    message=(
+                        "gauge has no declared semantic threshold bands; "
+                        "the dial position has range context but no explicit "
+                        "good/bad interpretation."
+                    ),
+                    context={
+                        "value": gauge_value,
+                        "range": [gauge_min, gauge_max],
+                        "fix_hint": (
+                            "Confirm the range is sufficient context. If "
+                            "threshold semantics are essential, use a chart "
+                            "type that explicitly renders target/risk bands."
+                        ),
+                    },
+                ))
+            else:
+                out.append(Diagnostic(
+                    severity="warning",
+                    code="chart_gauge_thresholds_unrendered",
+                    widget_id=wid,
+                    path=f"{path}.spec.mapping.thresholds",
+                    message=(
+                        "gauge mapping.thresholds is declared but the current "
+                        "gauge builder does not render semantic threshold "
+                        "bands."
+                    ),
+                    context={
+                        "thresholds": _receipt_compact_value(
+                            mapping.get("thresholds")
+                        ),
+                        "fix_hint": (
+                            "Do not assume these thresholds are visible. Use "
+                            "a chart type with explicit target/risk bands or "
+                            "acknowledge the plain-dial limitation."
+                        ),
+                    },
+                ))
+
     # Required mapping keys for this chart_type ------------------------
     required = _REQUIRED_MAPPING_KEYS.get(chart_type or "", ())
     for rk in required:
@@ -11813,9 +12119,9 @@ def _check_chart_widget(
                         f"'{color_col}' produces {n_series} "
                         f"distinct series; cap is "
                         f"{_MAX_LINE_SERIES}. Too many overlaid "
-                        f"lines wrap the legend onto multiple rows "
-                        f"and make any single series untraceable "
-                        f"across the canvas."
+                        f"lines crowd the legend, break color "
+                        f"discrimination, and make any single "
+                        f"series untraceable across the canvas."
                     ),
                     context={
                         "chart_type": chart_type,
@@ -11848,7 +12154,7 @@ def _check_chart_widget(
             context={"dataset": ds_name, "row_count": 1,
                        "fix_hint": (
                            "Add more rows to the dataset, or switch to a "
-                           "single-value chart_type (kpi, bullet).")}))
+                           "single-value chart_type (kpi, gauge, bullet).")}))
 
     if chart_type == "geo_map":
         out.extend(_check_geo_map_integrity(
@@ -12059,7 +12365,7 @@ def _check_chart_degeneracy(
                             "fix_hint": (
                                 "Pick a y column with variance, or "
                                 "switch to a single-value chart_type "
-                                "(kpi).")}))
+                                "(kpi, gauge).")}))
                     if (
                         float(coerced.iloc[0]) == 0.0
                         and chart_type in {
@@ -13499,6 +13805,144 @@ def _check_search_widget(w: Dict[str, Any], path: str,
     return out
 
 
+def _check_score_gauge_widget(w: Dict[str, Any], path: str,
+                               dfs: Dict[str, Any]) -> List[Diagnostic]:
+    """Data-binding diagnostics for a ``score_gauge`` widget.
+
+    Two failure modes are specific to this tile and neither is visible
+    as a blank:
+
+    * a score outside the declared scale pins the needle at an end, so
+      the gauge reads "at the limit" when the truth is past it;
+    * drivers that do not add up to the score present a decomposition
+      the reader will take as complete.
+    """
+    import pandas as pd
+    out: List[Diagnostic] = []
+    wid = w.get("id")
+    score_src = w.get("score")
+    scale = w.get("scale") if isinstance(w.get("scale"), dict) else {}
+    lo, hi = scale.get("min"), scale.get("max")
+
+    score_val: Optional[float] = None
+    if isinstance(score_src, str) and score_src:
+        score_val, reason = _resolve_kpi_value(score_src, dfs)
+        if score_val is None:
+            out.append(Diagnostic(
+                severity="error", code="score_gauge_score_unresolvable",
+                widget_id=wid, path=f"{path}.score",
+                message=(f"score_gauge '{wid}' score={score_src!r} cannot "
+                         f"resolve: {reason}; the needle has nothing to "
+                         f"point at."),
+                context={"score": score_src, "reason": reason}))
+        elif isinstance(lo, (int, float)) and isinstance(hi, (int, float)):
+            if score_val < lo or score_val > hi:
+                out.append(Diagnostic(
+                    severity="error", code="score_gauge_score_off_scale",
+                    widget_id=wid, path=f"{path}.score",
+                    message=(f"score_gauge '{wid}' score resolves to "
+                             f"{score_val:g}, outside the declared scale "
+                             f"[{lo:g}, {hi:g}]; the needle pins at the end "
+                             f"and reads 'at the limit' rather than past "
+                             f"it."),
+                    context={"score": score_src, "value": score_val,
+                               "scale_min": lo, "scale_max": hi,
+                               "fix_hint": (
+                                   "Widen scale.min / scale.max to contain "
+                                   "the range this score can actually "
+                                   "take, or normalise the score "
+                                   "upstream.")}))
+
+    drivers = w.get("drivers") if isinstance(w.get("drivers"), dict) else None
+    if drivers:
+        ds_name = drivers.get("dataset")
+        label_field = drivers.get("label_field")
+        contrib_field = drivers.get("contribution_field")
+        df = dfs.get(ds_name)
+        if df is None:
+            out.append(Diagnostic(
+                severity="error", code="score_gauge_drivers_dataset_unknown",
+                widget_id=wid, path=f"{path}.drivers.dataset",
+                message=(f"score_gauge '{wid}' drivers reference unknown "
+                         f"dataset {ds_name!r}."),
+                context={"dataset": ds_name,
+                           "available_datasets": sorted(dfs.keys())}))
+        elif len(df) == 0:
+            out.append(Diagnostic(
+                severity="error", code="score_gauge_drivers_empty",
+                widget_id=wid, path=f"{path}.drivers.dataset",
+                message=(f"score_gauge '{wid}' drivers dataset {ds_name!r} "
+                         f"has 0 rows; the decomposition renders as empty "
+                         f"space beneath a live needle."),
+                context={"dataset": ds_name}))
+        else:
+            available = list(df.columns)
+            missing = [f for f in (label_field, contrib_field)
+                       if isinstance(f, str) and f not in available]
+            if missing:
+                ctx: Dict[str, Any] = {"dataset": ds_name,
+                                        "missing_columns": missing,
+                                        "available_columns": available}
+                ctx.update(_suggest_for_missing_column(missing[0], available))
+                out.append(Diagnostic(
+                    severity="error", code="score_gauge_drivers_column_missing",
+                    widget_id=wid, path=f"{path}.drivers",
+                    message=(f"score_gauge '{wid}' drivers column(s) "
+                             f"{missing!r} are not in dataset "
+                             f"{ds_name!r}."),
+                    context=ctx))
+            elif isinstance(contrib_field, str):
+                contrib = pd.to_numeric(df[contrib_field], errors="coerce")
+                n_valid = int(contrib.notna().sum())
+                if n_valid == 0:
+                    out.append(Diagnostic(
+                        severity="error",
+                        code="score_gauge_drivers_not_numeric",
+                        widget_id=wid,
+                        path=f"{path}.drivers.contribution_field",
+                        message=(f"score_gauge '{wid}' contribution column "
+                                 f"{contrib_field!r} has 0 numeric values "
+                                 f"in {len(df)} row(s); every bar would "
+                                 f"render at zero length."),
+                        context={"dataset": ds_name,
+                                   "column": contrib_field,
+                                   "row_count": len(df)}))
+                elif score_val is not None and isinstance(lo, (int, float)) \
+                        and isinstance(hi, (int, float)):
+                    # A decomposition the reader will take as complete.
+                    # Tolerance is 10% of the scale span, floored at a
+                    # tenth of a unit, so a legitimate residual or
+                    # rounding does not fire while a genuinely
+                    # unexplained score does.
+                    total = float(contrib.sum())
+                    span = float(hi) - float(lo)
+                    tol = max(0.1, 0.1 * span)
+                    residual = total - float(score_val)
+                    if abs(residual) > tol:
+                        out.append(Diagnostic(
+                            severity="warning",
+                            code="score_gauge_drivers_do_not_sum",
+                            widget_id=wid, path=f"{path}.drivers",
+                            message=(f"score_gauge '{wid}' contributions sum "
+                                     f"to {total:g} against a score of "
+                                     f"{score_val:g} (residual "
+                                     f"{residual:+g}, tolerance "
+                                     f"{tol:g}); the bars will read as a "
+                                     f"complete decomposition of a number "
+                                     f"they do not add up to."),
+                            context={"contribution_total": total,
+                                       "score_value": float(score_val),
+                                       "residual": residual,
+                                       "tolerance": tol,
+                                       "fix_hint": (
+                                           "Add the unexplained part as an "
+                                           "explicit 'Other' / 'Residual' "
+                                           "row so the reader sees it, or "
+                                           "fix the decomposition "
+                                           "upstream.")}))
+    return out
+
+
 def _check_stat_grid_widget(w: Dict[str, Any], path: str,
                               dfs: Dict[str, Any]) -> List[Diagnostic]:
     """Per-stat source-binding diagnostics for a ``stat_grid`` widget.
@@ -14825,6 +15269,8 @@ def chart_data_diagnostics(
                     diags.extend(_check_stat_grid_widget(w, wpath, dfs))
                 elif wt == "sparkline":
                     diags.extend(_check_sparkline_widget(w, wpath, dfs))
+                elif wt == "score_gauge":
+                    diags.extend(_check_score_gauge_widget(w, wpath, dfs))
                 elif wt == "search":
                     diags.extend(_check_search_widget(w, wpath, dfs))
                 elif wt == "tool":
@@ -16084,6 +16530,62 @@ def _build_dashboard_review(
             }
             if not total_rows:
                 data_state = "NO_DATA"
+        elif kind == "score_gauge":
+            # The two things a reviewer has to see: where the needle
+            # lands on the declared scale, and whether the bars beneath
+            # it add up to it.
+            import pandas as _pd
+            score_src = widget.get("score")
+            scale = (widget.get("scale")
+                      if isinstance(widget.get("scale"), dict) else {})
+            drivers = (widget.get("drivers")
+                        if isinstance(widget.get("drivers"), dict) else None)
+            value, reason = (
+                _resolve_kpi_value(score_src, dfs)
+                if isinstance(score_src, str) and score_src
+                else (None, "score unset")
+            )
+            evidence = {
+                "score": score_src,
+                "score_value": value,
+                "scale_min": scale.get("min"),
+                "scale_max": scale.get("max"),
+                "band_labels": [
+                    b.get("label") for b in (scale.get("bands") or [])
+                    if isinstance(b, dict)
+                ],
+            }
+            if value is None:
+                evidence["reason"] = reason
+                data_state = "NO_DATA"
+            else:
+                evidence["user_visible"] = [
+                    _format_kpi_number(float(value), widget)
+                ]
+                bands = scale.get("bands") or []
+                for band in bands:
+                    if not isinstance(band, dict):
+                        continue
+                    bound = band.get("to")
+                    if not isinstance(bound, (int, float)) or value < bound:
+                        evidence["band_hit"] = band.get("label")
+                        break
+            if drivers:
+                dframe = dfs.get(drivers.get("dataset"))
+                contrib_field = drivers.get("contribution_field")
+                evidence["drivers_dataset"] = drivers.get("dataset")
+                evidence["driver_count"] = (
+                    int(len(dframe)) if dframe is not None else None
+                )
+                if dframe is not None and contrib_field in getattr(
+                        dframe, "columns", []):
+                    total = float(_pd.to_numeric(
+                        dframe[contrib_field], errors="coerce").sum())
+                    evidence["contribution_total"] = total
+                    if value is not None:
+                        evidence["residual"] = total - float(value)
+                if dframe is None or len(dframe) == 0:
+                    data_state = "NO_DATA"
         elif kind in ("markdown", "note"):
             text = str(
                 widget.get("content")
@@ -19733,170 +20235,6 @@ def _apply_persisted_script_operation(
     return source.replace(anchor, replacement, expected_count)
 
 
-# Pandas frequency aliases are versioned, and the two generations do not
-# overlap: "ME"/"QE"/"YE" arrived in pandas 2.2, while "M"/"Q"/"A" are
-# deprecated from 2.2 and removed in 3.0. So no alias string is correct on
-# both sides of that line, and a script written against the wrong generation
-# raises ``ValueError: Invalid frequency`` -- not when it is saved, but later,
-# when its transform actually runs, from inside a pandas frame several stages
-# down. The offset objects below mean the same thing on every version and
-# carry no deprecation, so they are what the diagnostic prescribes.
-_PORTABLE_FREQUENCY_OFFSETS: Dict[str, str] = {
-    "ME": "pd.offsets.MonthEnd()",
-    "M": "pd.offsets.MonthEnd()",
-    "MS": "pd.offsets.MonthBegin()",
-    "QE": "pd.offsets.QuarterEnd()",
-    "Q": "pd.offsets.QuarterEnd()",
-    "QS": "pd.offsets.QuarterBegin()",
-    "YE": "pd.offsets.YearEnd()",
-    "Y": "pd.offsets.YearEnd()",
-    "A": "pd.offsets.YearEnd()",
-    "YS": "pd.offsets.YearBegin()",
-    "SME": "pd.offsets.SemiMonthEnd()",
-    "SM": "pd.offsets.SemiMonthEnd()",
-    "BME": "pd.offsets.BMonthEnd()",
-    "BM": "pd.offsets.BMonthEnd()",
-    "BQE": "pd.offsets.BQuarterEnd()",
-    "BQ": "pd.offsets.BQuarterEnd()",
-    "BYE": "pd.offsets.BYearEnd()",
-    "BA": "pd.offsets.BYearEnd()",
-    "CBME": "pd.offsets.CustomBusinessMonthEnd()",
-    "CBM": "pd.offsets.CustomBusinessMonthEnd()",
-}
-
-# Call sites whose first positional argument is a frequency. Any keyword
-# named ``freq`` is also collected, which covers pd.Grouper, date_range,
-# period_range and anything else that spells it that way.
-_FREQUENCY_POSITIONAL_METHODS: frozenset = frozenset({"resample", "asfreq"})
-
-
-def _frequency_alias_literals(source: str) -> List[Tuple[str, int]]:
-    """Every string-literal pandas frequency in ``source``, with its line.
-
-    Only literals are visible here. A computed alias reaches the transform
-    boundary instead, which is why that path carries its own translation.
-    """
-    import ast
-
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return []
-
-    found: List[Tuple[str, int]] = []
-
-    def _record(node: Any) -> None:
-        if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            found.append((node.value, node.lineno))
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if (isinstance(func, ast.Attribute)
-                and func.attr in _FREQUENCY_POSITIONAL_METHODS
-                and node.args):
-            _record(node.args[0])
-        for keyword in node.keywords:
-            if keyword.arg in ("freq", "rule"):
-                _record(keyword.value)
-    return found
-
-
-def _unparseable_frequency_aliases(source: str) -> List[Dict[str, Any]]:
-    """The frequency literals in ``source`` this pandas cannot parse."""
-    import pandas as pd
-    from pandas.tseries.frequencies import to_offset
-
-    failures: List[Dict[str, Any]] = []
-    seen: set = set()
-    for alias, line in _frequency_alias_literals(source):
-        if alias in seen:
-            continue
-        seen.add(alias)
-        try:
-            to_offset(alias)
-        except Exception:
-            failures.append({
-                "alias": alias,
-                "line": line,
-                "pandas_version": pd.__version__,
-                "replacement": _PORTABLE_FREQUENCY_OFFSETS.get(alias),
-            })
-    return failures
-
-
-def _assert_frequency_aliases_parse(stem: str, source: str) -> None:
-    """Refuse a script whose frequency literals this pandas cannot parse.
-
-    Raised at save time so the author is standing at the offending line,
-    rather than several stages later inside a build.
-    """
-    failures = _unparseable_frequency_aliases(source)
-    if not failures:
-        return
-    version = failures[0]["pandas_version"]
-    lines = []
-    for failure in failures:
-        replacement = failure["replacement"]
-        remedy = (
-            f"use {replacement}" if replacement
-            else "pass the equivalent pd.offsets object"
-        )
-        lines.append(
-            f"line {failure['line']}: {failure['alias']!r} -> {remedy}"
-        )
-    body = "; ".join(lines)
-    raise ValueError(
-        f"{stem}.py uses {len(failures)} pandas frequency alias(es) that "
-        f"pandas {version} cannot parse -- {body} | fix: Frequency aliases "
-        f"are versioned ('ME'/'QE'/'YE' need pandas >= 2.2; 'M'/'Q'/'A' are "
-        f"removed in 3.0), so no alias string spans both. Pass an offset "
-        f"object instead -- pd.offsets.MonthEnd(), QuarterEnd(), YearEnd(), "
-        f"Week(), BDay() -- which means the same thing on every version. "
-        f"Left as an alias this would not raise here; it would raise when "
-        f"the transform runs, from inside pandas."
-    )
-
-
-def _reraise_invalid_frequency(fn: Any, exc: ValueError) -> None:
-    """Name the transform and the fix when pandas rejects a frequency.
-
-    ``_assert_frequency_aliases_parse`` catches string literals when the
-    script is saved. An alias assembled at runtime is invisible to it and
-    still reaches pandas, whose own message names neither the transform it
-    came from nor the fact that the alias is version-gated. Returns without
-    raising when this is some other ValueError, leaving it untouched.
-    """
-    text = str(exc)
-    if "Invalid frequency" not in text:
-        return
-    import pandas as pd
-
-    name = getattr(fn, "__name__", "<transform>")
-    alias = None
-    match = re.search(r"Invalid frequency:\s*([^,\s]+)", text)
-    if match:
-        alias = match.group(1).strip("'\"")
-    replacement = _PORTABLE_FREQUENCY_OFFSETS.get(alias or "")
-    remedy = (
-        f"Replace it with {replacement}." if replacement
-        else "Pass the equivalent pd.offsets object instead."
-    )
-    named = f"{alias!r} " if alias else ""
-    raise RuntimeError(
-        f"build_dashboard: transform {name!r} passed a frequency alias "
-        f"{named}that pandas {pd.__version__} cannot parse. {remedy} "
-        f"Frequency aliases are versioned -- 'ME'/'QE'/'YE' need pandas "
-        f">= 2.2 and 'M'/'Q'/'A' are removed in 3.0 -- so no alias string "
-        f"is correct on both sides. Offset objects "
-        f"(pd.offsets.MonthEnd(), QuarterEnd(), YearEnd(), Week(), BDay()) "
-        f"mean the same thing on every version. Literal aliases are "
-        f"refused when the script is saved; this one was assembled at "
-        f"runtime, so it got this far."
-    ) from exc
-
-
 def _validate_persisted_script_source(
     folder: str,
     stem: str,
@@ -19906,7 +20244,6 @@ def _validate_persisted_script_source(
 ) -> Dict[str, Any]:
     path = f"{folder}/scripts/{stem}.py"
     compile(source, path, "exec")
-    _assert_frequency_aliases_parse(stem, source)
     namespace = _exec_dashboard_script_source(
         folder, stem, source, s3_manager=s3_manager,
     )
@@ -23989,11 +24326,7 @@ def _materialize_recipe_datasets(
             f"be a list (got {type(transforms).__name__})"
         )
     for fn in transforms:
-        try:
-            result = fn(datasets)
-        except ValueError as exc:
-            _reraise_invalid_frequency(fn, exc)
-            raise
+        result = fn(datasets)
         if not isinstance(result, dict):
             raise RuntimeError(
                 f"build_dashboard: transform {fn.__name__!r} must return "

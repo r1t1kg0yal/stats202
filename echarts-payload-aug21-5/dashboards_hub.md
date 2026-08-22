@@ -372,7 +372,7 @@ Cadence examples: `"60s"`/`"5m"` for intraday, `"1h"` for frequently changing ag
 - Choose a chart archetype that answers the question; do not maximize primitive variety.
 - Every displayed field carries the dataset-entry lineage shape in [pipelines.md](dashboards/pipelines.md#field-provenance); computed fields state their recipe and upstream columns.
 - Preserve source history deep enough for the requested horizon. Pull-time clipping cannot be recovered at render time.
-- Keep line/area overlays to six series. Split, aggregate, or reframe when every seventh series is load-bearing.
+- Keep line/area overlays to four series. Split, aggregate, or reframe when every fifth series is load-bearing.
 - Use plain-English persisted columns. Labels applied only to an ephemeral DataFrame do not survive refresh.
 - A destructive rebuild requires explicit product intent. Ordinary “add”, “change”, and “also show” asks are surgical edits.
 - Intraday unavailability is a data-source condition to model explicitly in the product; do not fabricate values.
@@ -412,7 +412,7 @@ context-registry entry.
 | Pull/build script edits | [pipelines.md](dashboards/pipelines.md#pipeline-reuse-decision) |
 | Archetypes and transforms | [recipes.md](dashboards/recipes.md#data-archetypes) |
 | Productivity and workflow composition | [productivity.md](dashboards/productivity.md#workspace-archetypes) |
-| Chart primitives | [charts.md](dashboards/charts.md#chart-type-catalog-30) |
+| Chart primitives | [charts.md](dashboards/charts.md#chart-type-catalog-31) |
 | Non-tool widgets and popups | [widgets.md](dashboards/widgets.md#widget-kinds) |
 | Tool widgets | [widget_tool.md](dashboards/widget_tool.md#tool-definition) |
 | Filters and links | [filters.md](dashboards/filters.md#filter-catalog) |

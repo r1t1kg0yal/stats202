@@ -9,17 +9,18 @@
 
 The closed widget enum is:
 
-`chart`, `kpi`, `table`, `data_grid`, `pivot`, `stat_grid`, `sparkline`, `search`, `tool`, `user_input`, `note`, `markdown`, `image`, `divider`
+`chart`, `kpi`, `table`, `data_grid`, `pivot`, `stat_grid`, `sparkline`, `score_gauge`, `search`, `tool`, `user_input`, `note`, `markdown`, `image`, `divider`
 
 | Widget | Purpose |
 |---|---|
-| `chart` | ECharts visualization; see [charts.md](charts.md#chart-type-catalog-30) |
+| `chart` | ECharts visualization; see [charts.md](charts.md#chart-type-catalog-31) |
 | `kpi` | One current dataset-bound value, optional delta and sparkline |
 | `table` | Sortable/searchable records with formatting and row detail |
 | `data_grid` | Full-width, virtualized large-screen records surface |
 | `pivot` | Viewer-configurable multidimensional aggregation |
 | `stat_grid` | Compact grid of dataset-bound statistics |
 | `sparkline` | Bare trend line as its own narrow tile, with optional range band |
+| `score_gauge` | Composite score on a banded arc, with its signed drivers beneath |
 | `search` | Record lookup over declared datasets; every hit cites its record |
 | `tool` | Interactive calculator; see [widget_tool.md](widget_tool.md#tool-definition) |
 | `user_input` | Dashboard-shared text, checklist, or uploaded knowledge files |
@@ -131,6 +132,49 @@ A KPI carries a sparkline under its number. Use the `sparkline` widget when the 
 `range_band` names columns rather than a second `<dataset>.<column>` pair because a band sourced from another dataset would align by row index and silently mis-register the moment the two frames differ in length. Both bounds are required — one edge is a second line, not a band — and `lo > hi` on any row is blocking, since an inside-out band reads as the opposite uncertainty.
 
 Every binding failure here is blocking rather than advisory: unlike a KPI's inline sparkline, this tile has no headline number to fall back on, so a missing column or a single-point series ships an empty rectangle. Use a `kpi` instead when the current level is what the reader needs.
+
+## Score gauge
+
+One composite reading placed on a declared scale, with the signed decomposition that produced it directly beneath. Use `score_gauge` when the number is a *judgment* rather than an observation — a risk-appetite index, a positioning-stress composite, a readiness score — and the reader's second question is always "what drove it".
+
+```python
+{
+    "widget": "score_gauge",
+    "id": "risk_appetite",
+    "w": 4,
+    "title": "Risk appetite",
+    "score": "composite.latest.score",
+    "scale": {
+        "min": 0,
+        "max": 1,
+        "bands": [
+            {"to": 0.33, "label": "Risk off", "tone": "neg"},
+            {"to": 0.66, "label": "Neutral", "tone": "muted"},
+            {"label": "Risk on", "tone": "pos"},
+        ],
+    },
+    "drivers": {
+        "dataset": "score_drivers",
+        "label_field": "driver",
+        "contribution_field": "contribution",
+        "max_rows": 6,
+    },
+    "decimals": 2,
+}
+```
+
+| Field | Contract |
+|---|---|
+| `score` | Required `<dataset>.<aggregator>.<column>`, the KPI grammar |
+| `scale` | Required `{min, max, bands?}`. `min` < `max`, both numbers |
+| `scale.bands` | Optional ordered `[{to, label, tone?}, ...]`. Bounds ascend; the last band carries no `to` and runs to `scale.max`. `tone` is the `row_highlight` five (`pos`, `neg`, `warn`, `info`, `muted`) |
+| `drivers` | Optional `{dataset, label_field, contribution_field, max_rows?}`. Bars diverge from a shared zero line, largest magnitude first; `max_rows` is 1..20 |
+| `prefix`, `suffix`, `decimals`, `format` | Presentation of the score, same vocabulary as a KPI |
+| `h_px` | Arc height, default 150 |
+
+`scale` is required because a needle with no declared bounds is a picture of a number rather than a placement of it — the reader cannot tell whether 0.4 is high. A score that resolves outside the scale is blocking: the needle pins at the end and the tile reads "at the limit" when the truth is past it. Bands reuse the badge `states` shape and the `row_highlight` tone vocabulary rather than introducing a third grammar, and an untoned band falls through to the categorical palette.
+
+Both halves are dataset-bound and resolve in the same browser pass, so a refresh moves the needle and the bars together or moves neither. When contributions do not sum to the score within a tenth of the scale span, the build warns: bars presented as a decomposition will be read as a complete one, so the unexplained part belongs in an explicit `Other` row rather than in the gap.
 
 ## Search
 

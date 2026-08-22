@@ -790,6 +790,13 @@ APP_JS = r"""
   APPLY.setRadarSplitNumber = function(v){ state.option.radar = state.option.radar || {}; state.option.radar.splitNumber = v; };
   APPLY.setRadarAreaOpacity = function(v){ seriesOfType('radar').forEach(function(s){ s.areaStyle = s.areaStyle || {}; s.areaStyle.opacity = v; }); };
 
+  // Gauge
+  APPLY.setGaugeMin = function(v){ seriesOfType('gauge').forEach(function(s){ s.min = v; }); };
+  APPLY.setGaugeMax = function(v){ seriesOfType('gauge').forEach(function(s){ s.max = v; }); };
+  APPLY.setGaugeSplitNumber = function(v){ seriesOfType('gauge').forEach(function(s){ s.splitNumber = v; }); };
+  APPLY.setGaugeStartAngle = function(v){ seriesOfType('gauge').forEach(function(s){ s.startAngle = v; }); };
+  APPLY.setGaugeEndAngle = function(v){ seriesOfType('gauge').forEach(function(s){ s.endAngle = v; }); };
+
   // Calendar
   APPLY.setCalendarOrient = function(v){ state.option.calendar = state.option.calendar || {}; state.option.calendar.orient = v; };
   APPLY.setCalendarCellSize = function(v){ state.option.calendar = state.option.calendar || {}; state.option.calendar.cellSize = ['auto', v]; };
@@ -3024,6 +3031,59 @@ main.app-main { padding: 20px 28px 40px 28px; flex: 1 1 auto; }
 }
 .spark-canvas { margin-left: -4px; margin-right: -4px; }
 
+/* Score gauge: arc, the band the score lands in, then the signed
+   decomposition. The band caption sits between the two halves because
+   it is the bridge -- it names what the number means, and the bars
+   below say what produced it. Tone words are the row_highlight five. */
+.score-gauge-tile { display: flex; flex-direction: column; }
+.sg-arc { width: 100%; }
+.sg-band {
+  font-family: var(--gs-font-sans);
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.09em; text-align: center; color: var(--text-dim);
+  min-height: 13px; margin-bottom: 2px;
+}
+.sg-band.sg-tone-pos   { color: var(--pos); }
+.sg-band.sg-tone-neg   { color: var(--neg); }
+.sg-band.sg-tone-warn  { color: #b45309; }
+.sg-band.sg-tone-info  { color: var(--accent); }
+.sg-band.sg-tone-muted { color: var(--text-dim); }
+.sg-drivers {
+  display: flex; flex-direction: column; gap: 3px;
+  border-top: 1px solid var(--border); padding-top: 7px; margin-top: 4px;
+}
+.sg-driver {
+  display: grid; grid-template-columns: minmax(0, 1fr) 1.6fr auto;
+  align-items: center; gap: 7px;
+}
+.sg-driver-label {
+  font-family: var(--gs-font-sans); font-size: 10.5px;
+  color: var(--text-dim); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.sg-driver-track {
+  position: relative; height: 9px; display: block;
+  background: var(--surface-2); border-radius: 2px;
+}
+.sg-driver-bar {
+  position: absolute; top: 0; bottom: 0; border-radius: 1px;
+  min-width: 1px;
+}
+.sg-driver-bar.pos { background: var(--pos); }
+.sg-driver-bar.neg { background: var(--neg); }
+/* The zero line is what makes a diverging bar readable at 9px; without
+   it the eye has no anchor for which side is which. */
+.sg-driver-zero {
+  position: absolute; left: 50%; top: -1px; bottom: -1px; width: 1px;
+  background: var(--border-strong);
+}
+.sg-driver-val {
+  font-family: var(--gs-font-serif); font-size: 11px; font-weight: 600;
+  font-feature-settings: "tnum"; white-space: nowrap;
+  justify-self: end;
+}
+.sg-driver-val.pos { color: var(--pos); }
+.sg-driver-val.neg { color: var(--neg); }
 
 /* Search tile. The citation line under each hit is styled as a record
    stamp rather than as chrome: it is the widget's contract, not a
@@ -9958,7 +10018,7 @@ __HEATMAP_SIZE_FRACS__
   //                                             from params.value[0..1]
   //   calendar_heatmap                      -> match date col ==
   //                                              params.value[0]
-  //   histogram / radar / sankey /
+  //   histogram / radar / gauge / sankey /
   //   graph / tree / parallel_coords /
   //   boxplot                              -> not row-resolvable;
   //                                              click is a no-op
@@ -10011,10 +10071,10 @@ __HEATMAP_SIZE_FRACS__
     var ct = String(spec.chart_type || '').toLowerCase();
     var mapping = spec.mapping || {};
 
-    // Aggregate / non-row chart types: histogram bins, radar
+    // Aggregate / non-row chart types: histogram bins, radar/gauge
     // summaries, sankey/graph topology, derived structures. No row
     // identity to resolve.
-    if (ct === 'histogram' || ct === 'radar'
+    if (ct === 'histogram' || ct === 'radar' || ct === 'gauge'
         || ct === 'sankey' || ct === 'graph' || ct === 'tree'
         || ct === 'parallel_coords' || ct === 'boxplot') {
       return null;
@@ -11440,6 +11500,209 @@ __HEATMAP_SIZE_FRACS__
   }
   window.renderSparklines = renderSparklines;
 
+  // ----- score_gauge widgets -----
+  //
+  // One composite reading placed on a declared scale, with the signed
+  // decomposition that produced it directly beneath. The arc and the
+  // bars resolve from the same currentDatasets pass, so they cannot
+  // disagree about which cycle they describe.
+  var SCORE_GAUGE_RESOLVED = {};
+
+  // Band tones reuse the badge / row-highlight vocabulary rather than
+  // introducing gauge-specific colour names. An untoned band falls
+  // through to the categorical palette, which is what every other
+  // unlabelled series in the engine does.
+  function _sgToneColor(tone, wid, index){
+    if (tone === 'pos')   return semanticColor('positive', wid);
+    if (tone === 'neg')   return semanticColor('negative', wid);
+    if (tone === 'warn')  return semanticColor('warning', wid);
+    if (tone === 'info')  return semanticColor('accent', wid);
+    if (tone === 'muted') return semanticColor('text_dim', wid);
+    var pal = _seriesPalette(wid);
+    return pal[index % pal.length];
+  }
+
+  function _sgDriverRows(drivers, maxRows){
+    var ds = currentDatasets[drivers.dataset];
+    if (!ds || ds.length < 2) return [];
+    var li = ds[0].indexOf(drivers.label_field);
+    var ci = ds[0].indexOf(drivers.contribution_field);
+    if (li < 0 || ci < 0) return [];
+    var rows = [];
+    for (var r = 1; r < ds.length; r++){
+      var raw = ds[r][ci];
+      var n = Number(raw);
+      if (raw === '' || raw == null || isNaN(n)) continue;
+      rows.push({label: String(ds[r][li]), value: n});
+    }
+    // Largest movers first, by magnitude: a decomposition is read
+    // top-down for "what drove this", and a truncated tail should drop
+    // the smallest contributions rather than the last rows in the file.
+    rows.sort(function(a, b){ return Math.abs(b.value) - Math.abs(a.value); });
+    return maxRows ? rows.slice(0, maxRows) : rows;
+  }
+
+  function renderScoreGauges(){
+    Object.keys(WIDGET_META).forEach(function(wid){
+      var w = WIDGET_META[wid];
+      if (!w || w.widget !== 'score_gauge') return;
+      var el = document.getElementById('score-gauge-' + wid);
+      if (!el) return;
+      var arc = el.querySelector('.sg-arc');
+      var bandNode = el.querySelector('.sg-band');
+      var driversNode = el.querySelector('.sg-drivers');
+      if (!arc) return;
+
+      var scale = (w.scale && typeof w.scale === 'object') ? w.scale : {};
+      var lo = Number(scale.min), hi = Number(scale.max);
+      var bands = Array.isArray(scale.bands) ? scale.bands : [];
+      var value = resolveSource(w.score);
+      var fmt = {decimals: w.decimals, format: w.format,
+                  prefix: w.prefix || '', suffix: w.suffix || ''};
+
+      // Colour stops are fractions of the arc, so the last band always
+      // closes at 1: the validator guarantees it declares no `to`.
+      var stops = [];
+      if (bands.length){
+        for (var bi = 0; bi < bands.length; bi++){
+          var band = bands[bi] || {};
+          var edge = (bi === bands.length - 1) ? 1
+            : Math.max(0, Math.min(1, (Number(band.to) - lo) / (hi - lo)));
+          stops.push([edge, _sgToneColor(band.tone, wid, bi)]);
+        }
+      } else {
+        stops.push([1, semanticColor('border', wid)]);
+      }
+
+      if (!arc._inst) arc._inst = echarts.init(arc);
+      arc._inst.setOption({
+        animation: false,
+        series: [{
+          type: 'gauge', min: lo, max: hi, splitNumber: 1,
+          startAngle: 200, endAngle: -20,
+          radius: '92%', center: ['50%', '76%'],
+          axisLine: {lineStyle: {width: 11, color: stops}},
+          // Without bands the arc is one flat colour, so the fill is
+          // what states the reading; with bands the fill would sit on
+          // top of the encoding that already answers the question.
+          progress: bands.length ? {show: false} : {
+            show: true, width: 11, roundCap: true,
+            itemStyle: {color: semanticColor('accent', wid)},
+          },
+          // A full-length needle sweeps through the centre of the tile,
+          // which is where the number is -- it struck the reading
+          // through at most values. A tick riding just inside the arc
+          // marks the same angle against the band that explains it.
+          pointer: {
+            icon: 'rect', width: 3, length: '14%',
+            offsetCenter: [0, '-78%'],
+            itemStyle: {color: semanticColor('text', wid)},
+          },
+          anchor: {show: false},
+          axisTick: {show: false},
+          splitLine: {show: false},
+          // Inside the arc: a negative distance pushes the two bound
+          // labels past the canvas edge, where they clip to specks and
+          // the declared scale -- the whole reason this tile is not a
+          // KPI -- becomes unreadable.
+          axisLabel: {
+            distance: 6, fontSize: 9.5,
+            color: semanticColor('text_dim', wid),
+            formatter: function(v){
+              return formatNumber(v, {decimals: w.decimals,
+                                       format: w.format});
+            },
+          },
+          detail: {
+            offsetCenter: [0, '-8%'], fontSize: 26, fontWeight: 600,
+            color: semanticColor('text', wid),
+            formatter: function(v){
+              return (v == null || isNaN(v)) ? '--'
+                : formatNumber(v, fmt);
+            },
+          },
+          title: {show: false},
+          data: [{value: value == null ? null : Number(value)}],
+        }],
+      }, true);
+
+      var hitBand = null;
+      if (value != null){
+        for (var hb = 0; hb < bands.length; hb++){
+          var to = bands[hb] && bands[hb].to;
+          if (typeof to !== 'number' || Number(value) < to){
+            hitBand = bands[hb];
+            break;
+          }
+        }
+      }
+      if (bandNode){
+        bandNode.textContent = hitBand ? (hitBand.label || '') : '';
+        bandNode.className = 'sg-band' +
+          (hitBand && hitBand.tone ? ' sg-tone-' + hitBand.tone : '');
+      }
+
+      var resolvedDrivers = [];
+      if (driversNode && w.drivers){
+        var rows = _sgDriverRows(w.drivers, w.drivers.max_rows);
+        var absMax = 0;
+        rows.forEach(function(r){
+          absMax = Math.max(absMax, Math.abs(r.value));
+        });
+        driversNode.innerHTML = '';
+        rows.forEach(function(r){
+          // Bars diverge from a shared centre line so sign is legible
+          // without reading the number; half the track is the full
+          // magnitude of the largest contributor.
+          var pct = absMax ? (Math.abs(r.value) / absMax) * 50 : 0;
+          var pos = r.value >= 0;
+          var row = document.createElement('div');
+          row.className = 'sg-driver';
+          var lbl = document.createElement('span');
+          lbl.className = 'sg-driver-label';
+          lbl.textContent = r.label;
+          lbl.title = r.label;
+          var track = document.createElement('span');
+          track.className = 'sg-driver-track';
+          var bar = document.createElement('span');
+          bar.className = 'sg-driver-bar ' + (pos ? 'pos' : 'neg');
+          bar.style.width = pct + '%';
+          bar.style.left = (pos ? 50 : 50 - pct) + '%';
+          var zero = document.createElement('span');
+          zero.className = 'sg-driver-zero';
+          track.appendChild(bar);
+          track.appendChild(zero);
+          var val = document.createElement('span');
+          val.className = 'sg-driver-val ' + (pos ? 'pos' : 'neg');
+          val.textContent = formatNumber(r.value, {
+            decimals: w.decimals, format: 'signed',
+          });
+          row.appendChild(lbl);
+          row.appendChild(track);
+          row.appendChild(val);
+          driversNode.appendChild(row);
+          resolvedDrivers.push({label: r.label, contribution: r.value,
+                                 formatted: val.textContent});
+        });
+      }
+
+      SCORE_GAUGE_RESOLVED[wid] = {
+        status: value == null ? 'empty' : 'ready',
+        title: w.title || null,
+        score: value == null ? null : Number(value),
+        formatted_score: value == null ? '--' : formatNumber(value, fmt),
+        scale: {min: lo, max: hi},
+        band_hit: hitBand ? (hitBand.label || null) : null,
+        band_labels: bands.map(function(b){ return (b || {}).label || null; }),
+        drivers: resolvedDrivers,
+        contribution_total: resolvedDrivers.reduce(function(t, d){
+          return t + d.contribution;
+        }, 0),
+      };
+    });
+  }
+  window.renderScoreGauges = renderScoreGauges;
+
   // ----- search widgets -----
   //
   // Searches currentDatasets rather than the compiled DATASETS, so a
@@ -11651,6 +11914,7 @@ __HEATMAP_SIZE_FRACS__
       ['pivot',     renderPivots],
       ['stat_grid', renderStatGrids],
       ['sparkline', renderSparklines],
+      ['score_gauge', renderScoreGauges],
       ['search',    renderSearches],
       ['markdown',  renderMarkdownRefs],
       ['badge',     renderTileBadges],
@@ -16278,6 +16542,11 @@ __USER_INPUT_CONTROLLER__
           _snapshotAddRef(refs, 'value_source', sDs + '.' + sBand[edge]);
         }
       });
+    } else if (widget.widget === 'score_gauge'){
+      _snapshotAddRef(refs, 'value_source', widget.score);
+      if (widget.drivers && widget.drivers.dataset){
+        _snapshotAddRef(refs, 'dataset', widget.drivers.dataset);
+      }
     } else if (widget.widget === 'search'){
       (widget.over || []).forEach(function(entry){
         _snapshotAddRef(refs, 'dataset', entry && entry.dataset);
@@ -16702,6 +16971,22 @@ __USER_INPUT_CONTROLLER__
     };
   }
 
+  function _snapshotScoreGauge(widgetId, widget){
+    var resolved = SCORE_GAUGE_RESOLVED[widgetId];
+    if (!resolved){
+      throw new Error(
+        'Score-gauge snapshot is unavailable before the first browser render.'
+      );
+    }
+    return {
+      resolved_view: resolved,
+      view_state: {},
+      source_refs: _snapshotBaseRefs(widgetId, widget),
+      coverage: 'full',
+      coverage_notes: [],
+    };
+  }
+
   function _snapshotSearch(widgetId, widget){
     var resolved = SEARCH_RESOLVED[widgetId];
     if (!resolved){
@@ -16976,6 +17261,7 @@ __USER_INPUT_CONTROLLER__
     pivot: _snapshotPivot,
     stat_grid: _snapshotStatGrid,
     sparkline: _snapshotSparkline,
+    score_gauge: _snapshotScoreGauge,
     search: _snapshotSearch,
     tool: _snapshotTool,
     user_input: _snapshotUserInput,
@@ -17980,6 +18266,34 @@ def _render_search_widget(w: Dict[str, Any], cols: int,
     )
 
 
+def _render_score_gauge_widget(w: Dict[str, Any], cols: int,
+                                wid: str, style: str) -> str:
+    """Server shell for a ``score_gauge`` tile: arc above, signed
+    contribution bars below.
+
+    Both halves resolve in the browser from ``currentDatasets``, so the
+    needle and the bars can never disagree about which cycle they came
+    from.
+    """
+    cls = _tile_class(w, "tile score-gauge-tile")
+    height = int(w.get("h_px", 150))
+    drivers_html = (
+        '<div class="sg-drivers"></div>' if w.get("drivers") else ""
+    )
+    return (
+        f'<div class="{cls}" id="score-gauge-{_html_escape(wid)}" '
+        f'data-tile-id="{_html_escape(wid)}" style="{style}">'
+        f'  <div class="tile-header">'
+        f'    {_tile_title_html(w)}'
+        f'  </div>'
+        f'  <div class="sg-arc" style="height:{height}px"></div>'
+        f'  <div class="sg-band"></div>'
+        f'{drivers_html}'
+        f'  {_tile_footer_html(w)}'
+        f'</div>'
+    )
+
+
 def _render_table_widget(w: Dict[str, Any], cols: int,
                           wid: str, style: str) -> str:
     cls = _tile_class(
@@ -18311,6 +18625,7 @@ _RENDERERS: Dict[str, Any] = {
     "divider":   _render_divider_widget,
     "stat_grid": _render_stat_grid_widget,
     "sparkline": _render_sparkline_widget,
+    "score_gauge": _render_score_gauge_widget,
     "search":    _render_search_widget,
     "image":     _render_image_widget,
     "user_input": _render_user_input_widget,

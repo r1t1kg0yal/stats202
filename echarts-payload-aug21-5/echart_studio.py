@@ -5398,6 +5398,77 @@ def build_radar(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str, A
     return opt
 
 
+def build_gauge(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str, Any]:
+    import math
+
+    val = mapping.get("value")
+    name = mapping.get("name", "value")
+
+    def _resolve_bound(key: str, default: float) -> float:
+        raw = mapping.get(key, default)
+        if df is not None and isinstance(raw, str) and raw in df.columns:
+            values = _col_to_list(df, raw)
+            raw = values[-1] if values else None
+        try:
+            return float(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"gauge: {key} must be a finite number or numeric column"
+            ) from exc
+
+    mn = _resolve_bound("min", 0)
+    mx = _resolve_bound("max", 100)
+    if not math.isfinite(mn) or not math.isfinite(mx) or mn >= mx:
+        raise ValueError(
+            f"gauge: min/max must be finite with min < max "
+            f"(got min={mn!r}, max={mx!r})"
+        )
+    opt = _base_option(ctx)
+    opt["tooltip"] = {"show": True, "trigger": "item"}
+    opt.pop("xAxis", None); opt.pop("yAxis", None); opt.pop("grid", None)
+    opt["legend"]["show"] = False
+
+    if isinstance(val, (int, float)):
+        value = float(val)
+    elif df is not None and isinstance(val, str):
+        _ensure_columns(df, [val], "gauge")
+        series = _col_to_list(df, val)
+        value = float(series[-1]) if series else 0.0
+    else:
+        raise ValueError("gauge: mapping.value must be a number or column name")
+    if not math.isfinite(value):
+        raise ValueError(f"gauge: value must be finite (got {value!r})")
+    if not mn <= value <= mx:
+        raise ValueError(
+            f"gauge: value {value:g} lies outside [{mn:g}, {mx:g}]"
+        )
+
+    decimals = clamp_decimals(
+        mapping.get("value_decimals", 2)
+    )
+    detail_formatter = (
+        "function(v){"
+        " var n=Number(v);"
+        " if (!Number.isFinite(n)) return '--';"
+        f" var s=n.toFixed({decimals});"
+        " return s.replace(/\\.?0+$/, '');"
+        "}"
+    )
+
+    opt["series"] = [{
+        "type": "gauge", "name": str(name),
+        "min": mn, "max": mx, "splitNumber": 10,
+        "progress": {"show": True, "width": 14},
+        "axisLine": {"lineStyle": {"width": 14}},
+        "pointer": {"show": True, "length": "60%", "width": 6},
+        "title": {"show": True, "fontSize": 14},
+        "detail": {"valueAnimation": True, "formatter": detail_formatter,
+                    "fontSize": 28},
+        "data": [{"value": value, "name": str(name)}],
+    }]
+    return opt
+
+
 def build_calendar_heatmap(df, mapping: Dict[str, Any], ctx: BuilderContext) -> Dict[str, Any]:
     """Year-grid heatmap of a single value column over time.
 
@@ -6285,6 +6356,22 @@ RADAR_KNOBS: List[Dict[str, Any]] = [
      "group": "Mark", "apply": "setRadarAreaOpacity"},
 ]
 
+GAUGE_KNOBS: List[Dict[str, Any]] = [
+    {"name": "gaugeMin", "label": "Min", "type": "number", "default": 0,
+     "group": "Mark", "apply": "setGaugeMin"},
+    {"name": "gaugeMax", "label": "Max", "type": "number", "default": 100,
+     "group": "Mark", "apply": "setGaugeMax"},
+    {"name": "gaugeSplitNumber", "label": "Split number", "type": "range",
+     "min": 2, "max": 20, "step": 1, "default": 10,
+     "group": "Mark", "apply": "setGaugeSplitNumber"},
+    {"name": "gaugeStartAngle", "label": "Start angle", "type": "range",
+     "min": -180, "max": 360, "step": 5, "default": 225,
+     "group": "Mark", "apply": "setGaugeStartAngle"},
+    {"name": "gaugeEndAngle", "label": "End angle", "type": "range",
+     "min": -180, "max": 360, "step": 5, "default": -45,
+     "group": "Mark", "apply": "setGaugeEndAngle"},
+]
+
 CALENDAR_KNOBS: List[Dict[str, Any]] = [
     {"name": "calendarOrient", "label": "Orient", "type": "select",
      "options": ["horizontal", "vertical"], "default": "horizontal",
@@ -6354,6 +6441,7 @@ MARK_KNOB_MAP: Dict[str, List[Dict[str, Any]]] = {
     "graph":            GRAPH_KNOBS,
     "candlestick":      CANDLE_KNOBS,
     "radar":            RADAR_KNOBS,
+    "gauge":            GAUGE_KNOBS,
     "calendar_heatmap": CALENDAR_KNOBS,
     "parallel_coords":  PARALLEL_KNOBS,
     "funnel":           FUNNEL_KNOBS,
@@ -6379,7 +6467,7 @@ def knobs_for(chart_type: str) -> List[Dict[str, Any]]:
             f"Available: {', '.join(sorted(MARK_KNOB_MAP.keys()))}"
         )
     mark = MARK_KNOB_MAP[chart_type]
-    if chart_type in ("pie", "donut", "radar", "sankey", "treemap",
+    if chart_type in ("pie", "donut", "radar", "gauge", "sankey", "treemap",
                        "sunburst", "graph", "calendar_heatmap", "funnel",
                        "parallel_coords", "tree", "correlation_matrix"):
         axes: List[Dict[str, Any]] = []
@@ -6407,7 +6495,7 @@ def knob_count(chart_type: str) -> Tuple[int, int, int]:
     if chart_type not in MARK_KNOB_MAP:
         raise ValueError(f"Unknown chart_type '{chart_type}'")
     universal = len(UNIVERSAL_KNOBS)
-    has_axes = chart_type not in ("pie", "donut", "radar", "sankey",
+    has_axes = chart_type not in ("pie", "donut", "radar", "gauge", "sankey",
                                     "treemap", "sunburst", "graph",
                                     "calendar_heatmap", "funnel",
                                     "parallel_coords", "tree")
@@ -7137,6 +7225,7 @@ _BUILDER_DISPATCH = {
     "graph":              build_graph,
     "candlestick":        build_candlestick,
     "radar":              build_radar,
+    "gauge":              build_gauge,
     "calendar_heatmap":   build_calendar_heatmap,
     "funnel":             build_funnel,
     "parallel_coords":    build_parallel,
@@ -7414,7 +7503,7 @@ def _infer_chart_type(option: Dict[str, Any]) -> str:
             "line": "line", "bar": "bar", "scatter": "scatter",
             "effectScatter": "scatter", "sankey": "sankey", "treemap": "treemap",
             "sunburst": "sunburst", "graph": "graph", "candlestick": "candlestick",
-            "radar": "radar", "heatmap": "heatmap",
+            "radar": "radar", "gauge": "gauge", "heatmap": "heatmap",
             "boxplot": "boxplot", "funnel": "funnel", "parallel": "parallel_coords",
             "tree": "tree",
         }

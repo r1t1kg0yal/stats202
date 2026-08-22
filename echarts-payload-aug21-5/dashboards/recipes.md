@@ -3,7 +3,7 @@
 - **Context ID:** `echarts.recipes`
 - **Owns:** `recipe.archetype`, `recipe.reshape`, `recipe.transform`
 - **Fetch when:** Routed by `dashboards.md`.
-- **Depends on:** [charts.md](charts.md#chart-type-catalog-30) and [dashboards_hub.md](../dashboards_hub.md#cross-cutting-authoring-judgment).
+- **Depends on:** [charts.md](charts.md#chart-type-catalog-31) and [dashboards_hub.md](../dashboards_hub.md#cross-cutting-authoring-judgment).
 
 This file maps analytical intent and data shape to an authoring pattern. It does not own builds, manifest edits, diagnosis, or persisted script-edit mechanics.
 
@@ -27,7 +27,7 @@ This file maps analytical intent and data shape to an authoring pattern. It does
 | 14 | Hierarchy | path or `(name, parent, value)` | `treemap`, `sunburst`, `tree` |
 | 15 | Flow/network | `(source, target, value)` | `sankey`, `graph` |
 | 16 | Multi-dimensional entities | wide dimensions or `(entity, dimension, value)` | `radar`, `parallel_coords` |
-| 17 | Single scalar | one numeric value | dataset-backed `kpi` |
+| 17 | Single scalar | one numeric value | `gauge` or dataset-backed `kpi` |
 | 18 | Rich entity rows | `(id, attr1, attr2, ...)` | `table` |
 | 19 | Latest snapshot from time series | any ordered time-series frame | `kpi` with `<ds>.latest.<col>` |
 | 20 | Sparse events | `(date, label, ...)` | annotations on a chart |
@@ -37,7 +37,6 @@ This file maps analytical intent and data shape to an authoring pattern. It does
 | 24 | Central path with uncertainty | `(date, center, lower_*, upper_*)` | `fan_cone` |
 | 25 | Signed attribution bridge | `(category, delta, is_total)` | `waterfall` |
 | 26 | Two-dimensional proportional allocation | `(x_category, y_category, value)` | `marimekko` |
-| 27 | Composite score with its drivers | one scalar plus `(driver, contribution)` | `kpi` for the score, `bar_horizontal` for the contributions |
 
 Choose the simplest primitive that answers the analytical question. Do not use a dual axis when normalization, small multiples, or a relationship chart makes the comparison more interpretable.
 
@@ -63,16 +62,14 @@ frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
 frame = frame.dropna(subset=["date", "value"])
 ```
 
-Frequency examples. Pass an offset object, not a string alias:
+Frequency examples:
 
 ```python
-month_end_stock = daily_stock.resample(pd.offsets.MonthEnd()).last()
-monthly_flow = daily_flow.resample(pd.offsets.MonthEnd()).sum()
-monthly_rate = daily_rate.resample(pd.offsets.MonthEnd()).mean()
-quarter_end_stock = monthly_stock.resample(pd.offsets.QuarterEnd()).last()
+month_end_stock = daily_stock.resample("ME").last()
+monthly_flow = daily_flow.resample("ME").sum()
+monthly_rate = daily_rate.resample("ME").mean()
+quarter_end_stock = monthly_stock.resample("QE").last()
 ```
-
-String frequency aliases are versioned and the two spellings do not overlap: `"ME"`, `"QE"`, and `"YE"` require pandas 2.2 or newer, while `"M"`, `"Q"`, and `"A"` are deprecated from 2.2 and removed in 3.0. There is no alias string that is correct on both sides of that boundary, so a build script written against the wrong one raises `ValueError: Invalid frequency` when its transform runs. `pd.offsets.MonthEnd()`, `QuarterEnd()`, `YearEnd()`, `Week()`, and `BDay()` mean the same thing on every version and carry no deprecation. The engine rejects an unparseable alias when the script is saved, naming the alias and the installed pandas version, rather than letting it surface later from inside a build.
 
 Resample from economic meaning, not appearance. Haver series stored on business-daily rows may still be monthly or quarterly concepts.
 

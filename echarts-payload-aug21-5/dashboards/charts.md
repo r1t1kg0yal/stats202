@@ -36,18 +36,18 @@ Alternatives:
 
 Use these only when the high-level builder cannot represent the intended product. Widget `title` and `subtitle` belong beside `spec`, never inside it. Standard chart widths are 4 or 6 in a 12-column layout. A single decision-critical full-width chart may set `hero: true` and `w: 12`; it must occupy its own row.
 
-## Chart-type catalog (30)
+## Chart-type catalog (31)
 
 The closed chart-type enum is:
 
-`line`, `multi_line`, `bar`, `bar_horizontal`, `scatter`, `scatter_multi`, `scatter_studio`, `area`, `heatmap`, `geo_map`, `correlation_matrix`, `pie`, `donut`, `boxplot`, `histogram`, `bullet`, `sankey`, `treemap`, `sunburst`, `graph`, `candlestick`, `radar`, `calendar_heatmap`, `funnel`, `parallel_coords`, `tree`, `waterfall`, `slope`, `fan_cone`, `marimekko`
+`line`, `multi_line`, `bar`, `bar_horizontal`, `scatter`, `scatter_multi`, `scatter_studio`, `area`, `heatmap`, `geo_map`, `correlation_matrix`, `pie`, `donut`, `boxplot`, `histogram`, `bullet`, `sankey`, `treemap`, `sunburst`, `graph`, `candlestick`, `radar`, `gauge`, `calendar_heatmap`, `funnel`, `parallel_coords`, `tree`, `waterfall`, `slope`, `fan_cone`, `marimekko`
 
 | `chart_type` | Required mapping |
 |---|---|
 | `line` | `x`, `y`; optional `color` |
 | `multi_line` | `x`, `y` list, or scalar `y` + `color` |
 | `bar` | category `x`, one numeric `y` column (not a list); optional `color`, `stack` |
-| `bar_horizontal` | one numeric `x` column (not a list), category `y`; optional `color`, `stack` |
+| `bar_horizontal` | one numeric `x` column, category `y` (not a list); optional `color`, `stack` |
 | `scatter` | `x`, `y`; optional `color`, `size`, `trendline` |
 | `scatter_multi` | `x`, `y`; normally `color`; optional `trendlines` |
 | `scatter_studio` | no required mapping; author whitelists viewer choices |
@@ -66,6 +66,7 @@ The closed chart-type enum is:
 | `graph` | `source`, `target`; optional numeric `value`/`weight`, `node_category`, `edge_class` |
 | `candlestick` | `x`, `open`, `high`, `low`, `close` |
 | `radar` | `category`, `value`; optional `series` |
+| `gauge` | `value`; optional `min`, `max` |
 | `calendar_heatmap` | `date`, `value`; optional `year` |
 | `funnel` | `category`, `value` |
 | `parallel_coords` | numeric `dims` list; optional `color` |
@@ -77,9 +78,7 @@ The closed chart-type enum is:
 
 Unknown chart types, missing mapping keys/columns, and wrong numeric/categorical roles are diagnostics. Author from the actual persisted dataset schema.
 
-Only `line`, `multi_line`, and `area` read a wide-form list as one series per column, and only on `y`. Every other key on every other type takes exactly one column; a list is rejected by name, with the fix for that chart. Do not assume the key is `y` — `bar_horizontal` inverts the axes, so its list lands on `x`, which is also the key to melt onto. Elsewhere melt into one value column plus one group column and group with `color` (alias `series`); for `bar` that is the grouped-bar shape, stacked under `stack`.
-
-Lists are expected on `dims` (`parallel_coords`), `columns` (`correlation_matrix`, `scatter_studio`), `path` (`treemap`/`sunburst` levels, outermost first), `bands` (`fan_cone`), and `scatter_studio`'s `*_columns` pickers.
+Only `line`, `multi_line`, `area`, and `scatter_studio` enumerate one series per column from a wide-form `y` list. Everywhere else `y` is a single column, and a list there is a validation error naming `y`. To plot several columns against a category on any other type — `bar`, `bar_horizontal`, `boxplot`, `scatter`, `scatter_multi`, `waterfall`, `histogram` — melt them into one value column plus one group column and group with `color` (alias `series`); for `bar` that is the grouped-bar shape, side-by-side by default and stacked under `stack`.
 
 ### Geographic maps
 
@@ -196,6 +195,7 @@ index. Correlate shared codes, but do not report the same finding twice.
 | Receipt state | Decision |
 |---|---|
 | Literal date formatter such as `x_date_format="MMM YY"` | `BLOCK`: ECharts repeats the literal at every tick. Use `"auto"` or an explicit JavaScript function string. |
+| Gauge with non-finite/inverted bounds or a value outside its declared range | `BLOCK`: correct the units/value or set finite `min < max`; these defects cannot be acknowledged. |
 | Sparse, gappy, stale, flat, spiky, or isolated spike/reversal line evidence | `REVIEW_REQUIRED`: inspect missing runs, gap/frequency evidence, scale-dominating points, reversal neighborhoods, and abrupt breaks in `review.panel(id)`; preserve ambiguous source values. |
 | Categorical bar/waterfall marks with only zeros | `REVIEW_REQUIRED` with `data_state="ALL_ZERO"`: verify upstream values/units and make genuine zero explicit. |
 | Categorical bar/waterfall marks with missing values | `REVIEW_REQUIRED` with `data_state="PARTIAL"`: distinguish genuine absence from pull/join failure; never coerce missing to zero. |
@@ -206,7 +206,7 @@ These decisions describe the Python compiler's default-filter state. Browser int
 
 | Key | Purpose |
 |---|---|
-| `x`, `y` | Primary fields, one column each. `y` takes a wide-form list only on `line`, `multi_line`, `area`; `x` never does |
+| `x`, `y` | Primary fields; `y` takes a wide-form list only for `line`, `multi_line`, `area`, `scatter_studio` |
 | `color` | Long-form grouping field |
 | `x_title`, `y_title`, `y_title_right` | Plain-English units/axis labels |
 | `x_sort` | Explicit category order |
@@ -227,7 +227,7 @@ These decisions describe the Python compiler's default-filter state. Browser int
 
 `dual_axis_series` must name concrete emitted series, not source columns. When scalar `y` is split by both `color` and `strokeDash` with `strokeDashLegend: true`, emitted names are `<color> — <strokeDash>` (em dash). ASCII ` -- ` is accepted and normalized. A mismatch fails with the concrete emitted-series list in `fix:`. Example: `dual_axis_series: ["change — actual", "change — estimate"]`.
 
-Line, `multi_line`, and `area` have a hard cap of six visible y-series in both wide and long form. If seven or more series are all load-bearing, preserve every series in explicit small multiples: create separate chart widgets with at most six series each, use the same x field/range, and place them in 2-up or 3-up rows. Do not request one over-cap chart and do not silently drop series.
+Line, `multi_line`, and `area` have a hard cap of four visible y-series in both wide and long form. If five or more series are all load-bearing, preserve every series in explicit small multiples: create separate chart widgets with at most four series each, use the same x field/range, and place them in 2-up or 3-up rows. Do not request one over-cap chart and do not silently drop series.
 
 For an existing wide-form chart, add a line through the complete-list
 `update_widget` pattern in [template_crud.md](template_crud.md#add-one-line-from-an-existing-dataset).
