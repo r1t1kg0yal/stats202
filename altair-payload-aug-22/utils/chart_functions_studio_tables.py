@@ -1060,28 +1060,6 @@ function measure(text, size, bold) {
   _mctx.font = fontStr(size, bold);
   return _mctx.measureText(String(text == null ? "" : text)).width;
 }
-// Mirror of _tbl_continuation_hyphen. A piece already ending on a separator
-// reads as broken without help, so it is left alone.
-function continuationHyphen(piece) {
-  return /[-_]$/.test(piece) ? piece : piece + "-";
-}
-// Mirror of _tbl_hard_break. The continuation hyphen is measured as part of
-// the piece, so hyphenating never pushes a line back over the budget.
-function hardBreak(word, maxW, size, bold) {
-  const chars = Array.from(word);
-  const pieces = [];
-  let cur = "";
-  chars.forEach((ch, idx) => {
-    const cand = cur + ch;
-    const probe = idx === chars.length - 1 ? cand : continuationHyphen(cand);
-    if (measure(probe, size, bold) > maxW && cur) {
-      pieces.push(continuationHyphen(cur));
-      cur = ch;
-    } else cur = cand;
-  });
-  if (cur) pieces.push(cur);
-  return pieces.length ? pieces : [word];
-}
 function wrapText(text, maxW, size, bold) {
   if (text == null || text === "") return [""];
   const out = [];
@@ -1095,9 +1073,13 @@ function wrapText(text, maxW, size, bold) {
       else {
         if (cur) out.push(cur);
         if (measure(w, size, bold) > maxW) {
-          const pieces = hardBreak(w, maxW, size, bold);
-          for (let i = 0; i < pieces.length - 1; i++) out.push(pieces[i]);
-          cur = pieces[pieces.length - 1];
+          let chunk = "";
+          for (const ch of w) {
+            if (measure(chunk + ch, size, bold) > maxW && chunk) {
+              out.push(chunk); chunk = ch;
+            } else chunk += ch;
+          }
+          cur = chunk;
         } else cur = w;
       }
     });

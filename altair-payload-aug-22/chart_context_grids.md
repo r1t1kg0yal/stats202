@@ -1,20 +1,15 @@
 # Altair facet grids
 
-This document covers `mapping['facet']` and 5–36 same-shape entities. A facet
+This document covers `mapping['facet']` and 7–36 same-shape entities. A facet
 grid is one `make_chart()` call whose facet-column values become panels.
 
 ## 1. Grid versus composite
 
 | Need | Use |
 |---|---|
-| Two, three or four panels making one argument | `ChartSpec` pack; see `chart_context_composites.md` |
-| Five to 36 entities with the same chart shape | Facet grid |
-| Six panels as a tight argument | Either: `make_6pack_grid`, or a facet grid when the six need one shared scale |
-| One scale shared across panels, at any count | Facet grid with `same_scale=True` — packs always scale each panel independently |
+| Two to six panels making one argument | `ChartSpec` pack; see `chart_context_composites.md` |
+| Seven to 36 entities with the same chart shape | Facet grid |
 | More than 36 entities or matrix-like comparison | Aggregate or use heatmap/table |
-
-The packs cover 2, 3, 4 and 6 cells; there is no five-cell pack, which is why
-the facet floor is five rather than seven.
 
 Facet grids are cross-sectional comparison sheets. Packs are tighter for one
 compare/contrast argument.
@@ -45,7 +40,6 @@ and both `edge_only_*` controls are top-level `make_chart(...)` kwargs.
 |---|---|---|
 | `mapping['facet']` | required | Panel-id column |
 | `mapping['facet_order']` | first appearance | Explicit panel order |
-| `mapping['y_title']` | none | Panels carry no y-axis title by default, so this is the only place to state a unit. Set it and the label appears on the leftmost panel of each row, not on every panel |
 | `facet_cols` | near-square layout | Number of columns; rows are derived |
 | `same_scale` | `False` | Lock the axis that matters for this chart type |
 | `share_color` | `False` | Lock the colour domain; one shared legend |

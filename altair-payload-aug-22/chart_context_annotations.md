@@ -50,32 +50,19 @@ is no `dash=` or `line_style=`.
 |---|---|
 | `VLine` | `x`, `label`, `color`, `stroke_width`, `stroke_dash`, `style='solid'|'dashed'|'dotted'` |
 | `HLine` | `y`, `axis='left'|'right'`, `label`, `color`, `stroke_width`, `stroke_dash`, `style` |
-| `Segment` | `x1`, `x2`, `y1`, `y2`, `axis`, `label_position='start'|'middle'|'end'`, line styling |
+| `Segment` | `x1`, `x2`, `y1`, `y2`, `axis`, `label_position='start'|'middle'|'end'`, offsets, line styling |
 | `Band` | `x1`/`x2` for vertical or `y1`/`y2` for horizontal, `axis`, `color`, `opacity` (default 0.3) |
-| `Arrow` | `x1`, `y1`, `x2`, `y2`, `axis`, `head_size`, `head_type='triangle'|'none'`, `label_position`; straight only (`curved=True` raises) |
-| `PointLabel` | `x`, `y`, `label`, `axis`, `halo` |
+| `Arrow` | `x1`, `y1`, `x2`, `y2`, `axis`, `head_size`, `head_type='triangle'|'none'`, `label_position`, offsets; straight only (`curved=True` raises) |
+| `PointLabel` | `x`, `y`, `label`, `axis`, `dx`, `dy`, `font_size`, `align`, `halo` |
 | `PointHighlight` | `x`, `y`, `axis`, `color`, `size` (default 100), `opacity`, `shape`, `filled`, stroke controls |
-| `Callout` | `x`, `y`, `axis`, `background='halo'|'box'|'none'`, box/halo controls |
-| `LastValueLabel` | `font_size` (default 15), `font_weight` |
+| `Callout` | `x`, `y`, `axis`, `background='halo'|'box'|'none'`, box/halo controls, `dx`, `dy`, typography |
+| `LastValueLabel` | `dx` (default 6), `font_size` (default 15), `font_weight` |
 | `Trendline` | `method='linear'|'exp'|'log'|'pow'|'poly'|'quad'`, `color`, `stroke_width`, `stroke_dash` |
 | `PlotText` | `text`, `position='auto'|'left'|'right'|'bottom'`, `font_size`, `color`, `italic`, `align`, `width_pct` |
 
 `PointHighlight.shape` supports `circle`, `square`, `diamond`, `triangle`,
-`triangle-up`, `triangle-down`, `cross`, and `stroke`.
-
-### Label placement is engine-owned
-
-Give every annotation its coordinates in DATA units and its text. Do not
-compute where the text sits. The engine measures each label, projects it
-against the axis it belongs to, and solves placement across all
-annotations at once so none overlap and none leave the plot. It handles a
-heavy load — a dozen-plus labels on one panel is expected, not abusive.
-
-There is therefore no reason to pass a pixel offset, alignment, or label
-font size, and no reason to hand-space annotations to avoid a clash you
-cannot see. If space genuinely runs out the engine repositions, then
-shrinks, then omits the least informative label and reports the omission
-in `result.warnings`.
+`triangle-up`, `triangle-down`, `cross`, and `stroke`. Callout x-offsets are
+clamped to the available chart width; do not rely on extreme offsets.
 
 `PlotText.text` has a 10-word hard cap; aim for eight or fewer. It occupies an
 outside panel, not the plot. Explicit `side_right`, `caption`, or `side_left`
@@ -128,9 +115,8 @@ warning. For per-group fits, prefer `chart_type='scatter_multi'` with
   `Trendline` because the axes generally have different units.
 - For “highlight values above X,” use
   `Band(y1=X, y2=df[value_col].max())`, not an unbounded band.
-- Density is an editorial choice, not a technical limit. The engine will
-  place a crowded set legibly, so choose the number of annotations by what
-  the reader needs, not by fear of collisions.
+- Use one or two narrative annotations in a tight time window; move secondary
+  details to subtitle or caption.
 
 Always inspect `result.warnings`. Unsupported or out-of-domain removals are
 reported there; they are not build failures.

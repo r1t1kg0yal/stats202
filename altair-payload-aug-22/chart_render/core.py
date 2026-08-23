@@ -74,7 +74,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import (
     Any, Callable, Dict, FrozenSet, List, Literal, Optional, Sequence, Set,
-    Tuple, Union, get_args,
+    Tuple, Union,
 )
 
 # ---------------------------------------------------------------------------
@@ -361,15 +361,13 @@ _FACET_VALID_CHART_TYPES: frozenset = frozenset({
     "histogram",
 })
 
-# Minimum panel count for facet mode. Set to 5 because that is where the
-# composite packs stop covering the range: the reachable packs are 2, 3, 4 and
-# 6 cells, so FIVE has no pack at all. A floor of 7 therefore left five-entity
-# requests with no route through the engine in either family, while asserting
-# the opposite -- each side refused and pointed at the other. From 5 up, facet
-# answers; 2-4 stay with composites, which are the right shape for an argument
-# rather than a cross-sectional grid. Six is deliberately served by both: the
-# pack for a tight argument, facet when the six panels need one shared scale.
-_FACET_MIN_PANELS: int = 5
+# Minimum panel count for facet mode. Set to 7 so the facet range begins
+# exactly where pack composites end (make_*pack_* tops out at 6 cells),
+# leaving NO dead zone: <=6 entities -> composite, >=7 -> facet grid. This
+# closes the 7-11 gap (Mag-7, 11 GICS sectors, G10 FX) that previously had
+# no native multi-panel shape and forced manual splits. Below 7, a composite
+# is the right call (2-4 panels are arguments, not cross-sectional grids).
+_FACET_MIN_PANELS: int = 7
 
 # Hard cap on grid size. Beyond 6x6, per-panel readability collapses;
 # PRISM should aggregate or switch to a heatmap.
@@ -3470,9 +3468,10 @@ def _collect_plot_ready_findings(
             n_series = df[line_color_field].nunique()
             if n_series > MAX_LINE_SERIES:
                 # Suggestion must be reachable: the facet grid has a
-                # _FACET_MIN_PANELS floor, so offering facet below it would
-                # send PRISM into a second rejection. Only offer the
-                # decompositions that actually work at this series count.
+                # _FACET_MIN_PANELS floor, so suggesting facet for a 5-6
+                # series chart would send PRISM into a second rejection.
+                # Only offer the decompositions that will actually work
+                # at this series count.
                 if n_series >= _FACET_MIN_PANELS:
                     facet_bullet = (
                         f"  - Small-multiples: one panel per series via "
@@ -5272,7 +5271,6 @@ _LABEL_ABBREVIATIONS: Dict[str, str] = {
     "nfp": "NFP", "fomc": "FOMC", "fed": "Fed",
     "ecb": "ECB", "boj": "BoJ", "boe": "BoE",
     "us": "US", "uk": "UK", "eu": "EU", "fx": "FX",
-    "pnl": "PnL", "oas": "OAS",
     "bp": "bp", "bps": "bps",
     "pct": "%", "percent": "%",
 }
@@ -5336,14 +5334,6 @@ def _format_label(raw_label: str, mapping: Dict[str, Any], key: str) -> str:
         lower_word = word.lower()
         if lower_word in _LABEL_ABBREVIATIONS:
             result_words.append(_LABEL_ABBREVIATIONS[lower_word])
-        elif sum(ch.isalpha() for ch in word) >= 2 and word == word.upper():
-            # Already capitalised by the caller: a ticker, index or acronym the
-            # dictionary has no reason to know (USDJPY, OAS, DXY, SPX). Tickers
-            # are an open-ended set, so title-casing whatever the dictionary
-            # missed turned USDJPY into 'Usdjpy' and OAS into 'Oas' -- and
-            # every new ticker arrived mangled. Preserve it instead; prose
-            # column names are unaffected and still title-case below.
-            result_words.append(word)
         else:
             result_words.append(word.title())
     formatted_label = " ".join(result_words)
@@ -5729,11 +5719,6 @@ class HLine(Annotation):
     # may add a positive bump (e.g. +18) to flip below the line near the top
     # boundary so the label doesn't fall outside the plot area.
     _label_dy: int = field(default=-8, repr=False)
-    # Internal: horizontal nudge for the caption. ``None`` keeps the
-    # per-branch default (+5 against the floating midpoint anchor, -5
-    # against a bar chart's right-edge anchor). The placement solver sets
-    # it when the caption has to slide sideways to clear another label.
-    _label_dx: Optional[int] = field(default=None, repr=False)
     # Halo rendered behind the label text so the label is legible whether
     # it sits above or below the dashed rule. Set ``halo=False`` to opt out.
     halo: bool = True
@@ -5790,12 +5775,12 @@ class HLine(Annotation):
             label_df = pd.DataFrame({col_name: [self.y], x_field_user: [anchor_x]})
             x_type = _annotation_x_axis_type(df, x_field_user, mapping)
             label_align = "right"
-            label_dx = -5 if self._label_dx is None else self._label_dx
+            label_dx = -5
             label_x_enc = alt.X(x_field_user, type=x_type)
         else:
             label_df = line_df
             label_align = "left"
-            label_dx = 5 if self._label_dx is None else self._label_dx
+            label_dx = 5
             label_x_enc = None
 
         text_encode_kwargs: Dict[str, Any] = {
@@ -5903,22 +5888,9 @@ class Band(Annotation):
             if not self.label:
                 return band
 
-            # Centre the caption over the band it names. A time axis is
-            # the common case and pd.Timestamp is neither int nor float,
-            # so testing only for numerics silently anchored every dated
-            # band's caption at x1 -- its LEFT EDGE. Vega-Lite centres
-            # text on its anchor, so each caption straddled the seam with
-            # the previous epoch, and the first band (whose x1 IS the
-            # panel edge) drew half its caption into the axis gutter, on
-            # top of the tick labels and the rotated axis title.
             mid_x = self.x1
             try:
-                if hasattr(self.x1, "timestamp") and hasattr(self.x2, "timestamp"):
-                    mid_x = pd.Timestamp(
-                        (self.x1.timestamp() + self.x2.timestamp()) / 2.0,
-                        unit="s",
-                    )
-                elif isinstance(self.x1, (int, float)) and isinstance(self.x2, (int, float)):
+                if isinstance(self.x1, (int, float)) and isinstance(self.x2, (int, float)):
                     mid_x = (self.x1 + self.x2) / 2
             except Exception:  # noqa: BLE001
                 mid_x = self.x1
@@ -6057,12 +6029,6 @@ class PointLabel(Annotation):
     halo_color: str = "#FFFFFF"
     halo_width: float = 4.0
     axis: Literal["left", "right"] = "left"
-    # Internal: set when a pass lifts a Band or VLine caption onto a
-    # PointLabel. Those captions carry their meaning in x -- slide one
-    # sideways and it captions the wrong date -- so the placement solver
-    # must keep treating x as pinned rather than granting the x budget a
-    # user-authored PointLabel gets.
-    _x_is_semantic: bool = field(default=False, repr=False)
 
     def to_layer(
         self,
@@ -6160,12 +6126,6 @@ class Arrow(Annotation):
     label_position: Literal["start", "middle", "end"] = "middle"
     label_offset_x: int = 5
     label_offset_y: int = -10
-    # The arrow's own shaft and head are the most likely thing to cross
-    # its caption, and placement alone cannot always clear them. Halo the
-    # text so the crossing is harmless when it can't be avoided.
-    halo: bool = True
-    halo_color: str = "#FFFFFF"
-    halo_width: float = 4.0
 
     axis: Literal["left", "right"] = "left"
 
@@ -6316,38 +6276,22 @@ class Arrow(Annotation):
             label_y = (self.y1 + self.y2) / 2.0
 
         label_df = pd.DataFrame({x_col: [label_x], y_field: [label_y]})
-        text_kwargs: Dict[str, Any] = dict(
-            align="left",
-            dx=self.label_offset_x,
-            dy=self.label_offset_y,
-            fontSize=10,
-            fontWeight="bold",
-        )
-        encoding: Dict[str, Any] = dict(
-            x=alt.X(x_col, type=x_type),
-            y=alt.Y(f"{y_field}:Q"),
-            text=alt.value(self.label),
-        )
-        text = (
-            alt.Chart(label_df)
-            .mark_text(color=self.label_color or self.color, **text_kwargs)
-            .encode(**encoding)
-        )
-        if not self.halo:
-            return text
-        halo = (
+        return (
             alt.Chart(label_df)
             .mark_text(
-                stroke=self.halo_color,
-                strokeWidth=self.halo_width,
-                strokeJoin="round",
-                strokeOpacity=1.0,
-                color=self.halo_color,
-                **text_kwargs,
+                align="left",
+                dx=self.label_offset_x,
+                dy=self.label_offset_y,
+                fontSize=10,
+                color=self.label_color or self.color,
+                fontWeight="bold",
             )
-            .encode(**encoding)
+            .encode(
+                x=alt.X(x_col, type=x_type),
+                y=alt.Y(f"{y_field}:Q"),
+                text=alt.value(self.label),
+            )
         )
-        return alt.layer(halo, text)
 
 
 @dataclass
@@ -6452,12 +6396,6 @@ class Segment(Annotation):
     label_position: Literal["start", "middle", "end"] = "end"
     label_offset_x: int = 5
     label_offset_y: int = -5
-    # The segment's own dashed shaft is the most likely thing to cross
-    # its caption, and placement alone cannot always clear it. Halo the
-    # text so the crossing is harmless when it can't be avoided.
-    halo: bool = True
-    halo_color: str = "#FFFFFF"
-    halo_width: float = 4.0
 
     x_start: Optional[Any] = field(default=None, repr=False)
     x_end: Optional[Any] = field(default=None, repr=False)
@@ -6566,37 +6504,21 @@ class Segment(Annotation):
         x_kwargs: Dict[str, Any] = {"type": x_type}
         if x_sort is not None:
             x_kwargs["sort"] = x_sort
-        text_kwargs: Dict[str, Any] = dict(
-            align=align,
-            dx=self.label_offset_x,
-            dy=self.label_offset_y,
-            fontSize=10,
-        )
-        encoding: Dict[str, Any] = dict(
-            x=alt.X(x_col, **x_kwargs),
-            y=alt.Y(f"{y_field}:Q"),
-            text=alt.value(self.label),
-        )
-        text = (
-            alt.Chart(label_df)
-            .mark_text(color=self.label_color or self.color, **text_kwargs)
-            .encode(**encoding)
-        )
-        if not self.halo:
-            return text
-        halo = (
+        return (
             alt.Chart(label_df)
             .mark_text(
-                stroke=self.halo_color,
-                strokeWidth=self.halo_width,
-                strokeJoin="round",
-                strokeOpacity=1.0,
-                color=self.halo_color,
-                **text_kwargs,
+                align=align,
+                dx=self.label_offset_x,
+                dy=self.label_offset_y,
+                fontSize=10,
+                color=self.label_color or self.color,
             )
-            .encode(**encoding)
+            .encode(
+                x=alt.X(x_col, **x_kwargs),
+                y=alt.Y(f"{y_field}:Q"),
+                text=alt.value(self.label),
+            )
         )
-        return alt.layer(halo, text)
 
 
 @dataclass
@@ -6626,14 +6548,6 @@ class PointHighlight(Annotation):
     stroke_color: Optional[str] = None
     stroke_width: float = 0.0
     axis: Literal["left", "right"] = "left"
-    # Offsets for the optional label, so the placement solver can lift it
-    # off a neighbour instead of leaving it pinned on top of one.
-    label_offset_x: int = 8
-    label_offset_y: int = -10
-    # The marker sits on the data line, so the caption sits on it too.
-    halo: bool = True
-    halo_color: str = "#FFFFFF"
-    halo_width: float = 4.0
 
     def to_layer(
         self,
@@ -6680,38 +6594,23 @@ class PointHighlight(Annotation):
         if not self.label:
             return layer
 
-        text_kwargs: Dict[str, Any] = dict(
-            align="left",
-            dx=self.label_offset_x,
-            dy=self.label_offset_y,
-            fontSize=10,
-            fontWeight="bold",
-        )
-        encoding: Dict[str, Any] = dict(
-            x=alt.X(x_col, **x_kwargs),
-            y=alt.Y(f"{y_field}:Q"),
-            text=alt.value(self.label),
-        )
         text = (
             alt.Chart(point_df)
-            .mark_text(color=self.label_color or self.color, **text_kwargs)
-            .encode(**encoding)
-        )
-        if not self.halo:
-            return layer + text
-        halo = (
-            alt.Chart(point_df)
             .mark_text(
-                stroke=self.halo_color,
-                strokeWidth=self.halo_width,
-                strokeJoin="round",
-                strokeOpacity=1.0,
-                color=self.halo_color,
-                **text_kwargs,
+                align="left",
+                dx=8,
+                dy=-10,
+                fontSize=10,
+                fontWeight="bold",
+                color=self.label_color or self.color,
             )
-            .encode(**encoding)
+            .encode(
+                x=alt.X(x_col, **x_kwargs),
+                y=alt.Y(f"{y_field}:Q"),
+                text=alt.value(self.label),
+            )
         )
-        return alt.layer(layer, halo, text)
+        return layer + text
 
 
 @dataclass
@@ -7941,21 +7840,16 @@ def _auto_stagger_band_labels(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
     clamped_domain: Optional[List[float]],
-    chart_width_px: int = 700,
 ) -> List[Annotation]:
     """Convert colliding labeled vertical bands into label-less Bands +
     staggered PointLabels.
 
-    Walks the labeled vertical bands sorted by midpoint, measures each
-    label with real font metrics over the panel's actual pixel width, and
-    if any adjacent pair would collide, converts *all* labeled bands in
-    the group: their labels are stripped and replaced with PointLabels at
-    alternating high/low y positions so adjacent labels never share a row.
-
-    The stagger heights come from the domain of the axis each band is
-    bound to. Using the pooled ``clamped_domain`` on a dual-axis chart
-    puts a left-axis caption at a right-axis height, which then falls
-    outside the left scale and is discarded downstream.
+    Walks the labeled vertical bands sorted by midpoint, estimates whether
+    adjacent labels would visually overlap (using a 7px-per-character /
+    14px-padding heuristic over the chart's pixel width). If any pair
+    would collide, *all* labeled bands in the group are converted: their
+    labels are stripped and replaced with PointLabels at alternating
+    high/low y positions so adjacent labels never share a row.
     """
     labeled_bands: List[Tuple[int, Band]] = [
         (i, ann)
@@ -7988,6 +7882,8 @@ def _auto_stagger_band_labels(
         x_min_num, x_max_num = 0.0, 1.0
 
     x_span = (x_max_num - x_min_num) if x_max_num != x_min_num else 1.0
+    chart_width_px = 700
+    char_width_px = 7
     padding_px = 14
 
     collision = False
@@ -7995,8 +7891,8 @@ def _auto_stagger_band_labels(
         _, band_a, mid_a = band_mids[i]
         _, band_b, mid_b = band_mids[i + 1]
         px_dist = abs(mid_b - mid_a) / x_span * chart_width_px
-        half_a = _lp_measure(str(band_a.label or ""), 9, "regular")[0] / 2.0
-        half_b = _lp_measure(str(band_b.label or ""), 9, "regular")[0] / 2.0
+        half_a = len(band_a.label or "") * char_width_px / 2.0
+        half_b = len(band_b.label or "") * char_width_px / 2.0
         if px_dist < (half_a + half_b + padding_px):
             collision = True
             break
@@ -8004,39 +7900,32 @@ def _auto_stagger_band_labels(
     if not collision:
         return annotations
 
-    # Pick high/low stagger heights from the visible y range of the axis
-    # the band is bound to, so the caption lands inside the scale it will
-    # actually be encoded against.
-    dual_cfg = mapping.get("dual_axis_config") or {}
-
-    def _stagger_pair(axis: str) -> Tuple[float, float]:
-        side = dual_cfg.get(
-            "y_domain_right" if axis == "right" else "y_domain_left"
-        )
-        if side is not None:
-            y_lo = float(min(side[0], side[1]))
-            y_hi = float(max(side[0], side[1]))
-        elif clamped_domain is not None:
-            y_lo, y_hi = float(clamped_domain[0]), float(clamped_domain[1])
+    # Pick high/low stagger heights from the visible y range.
+    if clamped_domain is not None:
+        y_lo, y_hi = clamped_domain
+        y_range = y_hi - y_lo
+        stagger_high = y_hi - y_range * 0.05
+        stagger_low = y_hi - y_range * 0.15
+    else:
+        y_field = mapping.get("y")
+        if (
+            y_field
+            and y_field in df.columns
+            and pd.api.types.is_numeric_dtype(df[y_field])
+        ):
+            y_max = float(df[y_field].max())
+            y_min = float(df[y_field].min())
+            y_range = (y_max - y_min) if y_max != y_min else (abs(y_max) or 10.0)
+            stagger_high = y_max + y_range * 0.05
+            stagger_low = y_max - y_range * 0.05
         else:
-            y_field = mapping.get("y")
-            if (
-                y_field
-                and y_field in df.columns
-                and pd.api.types.is_numeric_dtype(df[y_field])
-            ):
-                y_hi = float(df[y_field].max())
-                y_lo = float(df[y_field].min())
-            else:
-                return 100.0, 90.0
-        y_range = (y_hi - y_lo) if y_hi != y_lo else (abs(y_hi) or 10.0)
-        return y_hi - y_range * 0.05, y_hi - y_range * 0.15
+            stagger_high = 100.0
+            stagger_low = 90.0
 
     band_idx_set = {idx for idx, _, _ in band_mids}
     stagger_map: Dict[int, float] = {}
-    for rank, (orig_idx, band, _mid) in enumerate(band_mids):
-        high, low = _stagger_pair(getattr(band, "axis", "left"))
-        stagger_map[orig_idx] = high if rank % 2 == 0 else low
+    for rank, (orig_idx, _band, _mid) in enumerate(band_mids):
+        stagger_map[orig_idx] = stagger_high if rank % 2 == 0 else stagger_low
 
     new_annotations: List[Annotation] = []
     for idx, ann in enumerate(annotations):
@@ -8054,7 +7943,6 @@ def _auto_stagger_band_labels(
                 y2=band.y2,
                 color=band.color,
                 opacity=band.opacity,
-                axis=getattr(band, "axis", "left"),
             )
         )
         # Replace the label with a PointLabel at the staggered height.
@@ -8079,8 +7967,6 @@ def _auto_stagger_band_labels(
                 dx=0,
                 align="center",
                 label_color=band.label_color or "#333333",
-                axis=getattr(band, "axis", "left"),
-                _x_is_semantic=True,
             )
         )
 
@@ -8434,6 +8320,7 @@ def _auto_stagger_vline_labels(
     else:
         x_min_num, x_max_num = 0.0, 1.0
     x_span = (x_max_num - x_min_num) if x_max_num != x_min_num else 1.0
+    char_width_px = 7
     min_gap_px = 14
 
     # Cluster colliding VLines.
@@ -8445,8 +8332,8 @@ def _auto_stagger_vline_labels(
         prev_x = _to_numeric_x(prev.x)
         curr_x = _to_numeric_x(curr.x)
         px_dist = abs(curr_x - prev_x) / x_span * chart_width_px
-        half_prev = _lp_measure(str(prev.label or ""), 10, "regular")[0] / 2.0
-        half_curr = _lp_measure(str(curr.label or ""), 10, "regular")[0] / 2.0
+        half_prev = len(prev.label or "") * char_width_px / 2.0
+        half_curr = len(curr.label or "") * char_width_px / 2.0
         if px_dist < (half_prev + half_curr + min_gap_px):
             current.append(labeled_vlines[j])
         else:
@@ -8516,7 +8403,6 @@ def _auto_stagger_vline_labels(
                     dx=0,
                     dy=0,
                     label_color=vline.label_color or "#333333",
-                    _x_is_semantic=True,
                 )
             )
 
@@ -9500,970 +9386,6 @@ def _rewrite_y_encodings_for_dual_axis(
         return layer
 
 
-# =========================================================================
-# Unified label placement -- the one-shot annotation geometry pass
-# =========================================================================
-# DOCTRINE. PRISM declares WHAT to annotate; it never computes WHERE.
-# Every pixel decision lives here. The contract this pass owes the
-# caller is: given any number of text-bearing annotations, return a set
-# of placements in which no two labels overlap, no label leaves the
-# plot region, and any annotation that could not be placed is reported
-# rather than silently mangled. See ``.cursor/rules/viz-platforms.mdc``
-# ("One-Shot Charts") for why this is an engine responsibility.
-#
-# The pass runs LAST, after the per-type stagger heuristics above. Those
-# heuristics supply good opening positions; this pass is the final
-# authority that guarantees the no-overlap invariant across ALL
-# annotation families at once (the per-type passes each see only their
-# own kind, which is why cross-family collisions survived them).
-#
-# Every label's candidate ladder begins with its CURRENT position, so a
-# label that is already conflict-free never moves. Only contested labels
-# get relocated -- the pass is a repair mechanism, not a re-layout.
-
-# Keep-order when space genuinely runs out. Lower survives. The ranking
-# is by how much information is lost if the label disappears: a series
-# endpoint label is the only thing naming the line, whereas a Band label
-# sits on shading that still reads as a regime without its caption.
-_LP_PRIORITY: Dict[str, int] = {
-    "lastvalue": 0,
-    "callout": 1,
-    "pointlabel": 2,
-    "pointhighlight": 2,
-    "hline": 3,
-    "arrow": 4,
-    "segment": 4,
-    "vline": 5,
-    "band": 6,
-}
-
-_LP_COLUMN_TOL_PX = 8.0   # anchors this close in x form one label column
-_LP_COLUMN_SEED_DY = 12.0  # keep a nudge this small when seeding a column
-_LP_MIN_GAP_PX = 2.0      # breathing room required between two label boxes
-_LP_EDGE_PAD_PX = 2.0     # label must clear the plot edge by this much
-_LP_LINE_HEIGHT = 1.25    # multiple of font_size per rendered text line
-_LP_MIN_FONT_SIZE = 8     # never shrink a label below this to make it fit
-
-
-@functools.lru_cache(maxsize=8192)
-def _lp_measure(text: str, font_size: int, weight: str) -> Tuple[float, float]:
-    """Pixel width/height of rendered ``text`` via real font metrics.
-
-    Replaces the ``len(text) * 7`` and ``font_size * 0.55`` guesses the
-    per-type stagger passes use. Those guesses are the root cause of the
-    two symmetric failure modes: under-measuring uppercase/wide labels
-    (collisions the engine believed were clear) and over-measuring narrow
-    ones (labels staggered or dropped that would have fit).
-    """
-    size = max(1, int(round(font_size)))
-    font = _tbl_load_font(weight, size)
-    lines = str(text).split("\n") or [""]
-    width = max((float(font.getlength(line)) for line in lines), default=0.0)
-    return width, len(lines) * size * _LP_LINE_HEIGHT
-
-
-class _LabelCanvas:
-    """Data-value -> pixel projection for one plot panel.
-
-    Holds the panel's real pixel box plus a per-axis y-domain, so a
-    ``axis='right'`` annotation projects against the RIGHT scale it will
-    actually be encoded on. The per-type passes that project everything
-    through the pooled ``clamped_domain`` are what put dual-axis labels
-    outside the visible plot.
-    """
-
-    def __init__(
-        self,
-        df: pd.DataFrame,
-        mapping: Dict[str, Any],
-        clamped_domain: Optional[List[float]],
-        width_px: int,
-        height_px: int,
-        dual_axis_config: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self.width = float(max(width_px, 1))
-        self.height = float(max(height_px, 1))
-        self._dual = dual_axis_config or {}
-        self._clamped = clamped_domain
-        self.is_dual = bool(self._dual)
-
-        x_col = mapping.get("x", "x")
-        self._x_categories: Optional[List[Any]] = None
-        self._x_kind = "num"
-        if x_col in df.columns and len(df) > 0:
-            col = df[x_col]
-            if pd.api.types.is_datetime64_any_dtype(col):
-                self._x_kind = "time"
-                self._x_lo = float(col.min().timestamp())
-                self._x_hi = float(col.max().timestamp())
-            elif pd.api.types.is_numeric_dtype(col):
-                self._x_lo = float(col.min())
-                self._x_hi = float(col.max())
-            else:
-                self._x_kind = "cat"
-                self._x_categories = list(dict.fromkeys(col.tolist()))
-                self._x_lo, self._x_hi = 0.0, float(
-                    max(len(self._x_categories) - 1, 1)
-                )
-        else:
-            self._x_lo, self._x_hi = 0.0, 1.0
-
-        # Only bar charts stash a right-edge anchor for HLine captions;
-        # everywhere else the caption has no x encoding and floats at the
-        # panel midpoint.
-        _bar_anchor = mapping.get("_anno_label_anchor_right_x")
-        self.bar_label_anchor_x: Optional[float] = (
-            self.x_px(_bar_anchor) if _bar_anchor is not None else None
-        )
-
-        y_col = mapping.get("y")
-        self._y_data: Optional[Tuple[float, float]] = None
-        if (
-            y_col
-            and y_col in df.columns
-            and pd.api.types.is_numeric_dtype(df[y_col])
-            and len(df) > 0
-        ):
-            self._y_data = (float(df[y_col].min()), float(df[y_col].max()))
-
-    def vline_label_y(self, axis: str = "left") -> Optional[float]:
-        """Pixel y of an INLINE VLine caption, matching ``VLine.to_layer``.
-
-        That method anchors to the left axis's top less 5% headroom on a
-        dual-axis chart, and to the data max otherwise. Modelling it any
-        other way makes the solver reserve space where no text lands and
-        leave the real caption free to be overpainted.
-        """
-        if self.is_dual:
-            dom = self.y_domain("left")
-            if dom is not None:
-                lo, hi = min(dom), max(dom)
-                return self.y_px(hi - (hi - lo) * 0.05, axis)
-        if self._y_data is not None:
-            return self.y_px(self._y_data[1], axis)
-        dom = self.y_domain(axis)
-        return self.y_px(max(dom), axis) if dom is not None else None
-
-    def y_domain(self, axis: str = "left") -> Optional[Tuple[float, float]]:
-        """Ordered (lo, hi) for the axis this annotation is encoded on.
-
-        Order is preserved rather than sorted: an inverted axis is
-        expressed as ``[hi, lo]`` and ``y_px`` relies on that to flip.
-        """
-        if self._dual:
-            key = "y_domain_right" if axis == "right" else "y_domain_left"
-            dom = self._dual.get(key)
-            if dom is not None:
-                return float(dom[0]), float(dom[1])
-        if self._clamped is not None:
-            return float(self._clamped[0]), float(self._clamped[1])
-        return self._y_data
-
-    def x_px(self, value: Any) -> Optional[float]:
-        if self._x_categories is not None:
-            try:
-                idx = self._x_categories.index(value)
-            except ValueError:
-                return None
-            step = self.width / max(len(self._x_categories), 1)
-            return (idx + 0.5) * step
-        try:
-            num = _to_numeric_x(value)
-        except Exception:
-            return None
-        span = self._x_hi - self._x_lo
-        if span == 0:
-            return self.width / 2.0
-        return (num - self._x_lo) / span * self.width
-
-    def y_px(self, value: Any, axis: str = "left") -> Optional[float]:
-        dom = self.y_domain(axis)
-        if dom is None:
-            return None
-        lo, hi = dom
-        if hi == lo:
-            return self.height / 2.0
-        try:
-            num = float(value)
-        except (TypeError, ValueError):
-            return None
-        # Pixel y grows downward; an inverted domain (hi first) flips.
-        return (1.0 - (num - lo) / (hi - lo)) * self.height
-
-    def x_value(self, px: float) -> Optional[Any]:
-        """Inverse of ``x_px`` -- pixel back to a plottable x value."""
-        if self._x_kind == "cat" and self._x_categories:
-            step = self.width / max(len(self._x_categories), 1)
-            idx = int(max(0, min(len(self._x_categories) - 1, px / step)))
-            return self._x_categories[idx]
-        span = self._x_hi - self._x_lo
-        num = self._x_lo + (px / self.width) * span if self.width else self._x_lo
-        if self._x_kind == "time":
-            return pd.Timestamp(num, unit="s")
-        return num
-
-    def y_value(self, px: float, axis: str = "left") -> Optional[float]:
-        """Inverse of ``y_px`` -- pixel back to a data-space y value."""
-        dom = self.y_domain(axis)
-        if dom is None:
-            return None
-        lo, hi = dom
-        return lo + (1.0 - px / self.height) * (hi - lo)
-
-
-@dataclass
-class _LabelBox:
-    """One text rect the solver may move, plus how to write it back."""
-
-    idx: int                      # position in the annotations list
-    kind: str
-    text: str
-    anchor_x: float
-    anchor_y: float
-    width: float
-    height: float
-    font_size: int
-    priority: int
-    candidates: List[Tuple[float, float, str]]
-    dx: float = 0.0
-    dy: float = 0.0
-    align: str = "left"
-    # The align the renderer is hard-wired to use, when the annotation
-    # exposes no align field to write back to (HLine, Arrow, Segment).
-    # ``None`` means ``align`` itself is writable. The solver is still
-    # free to pick any align; ``_lp_apply`` folds the difference into dx,
-    # which is exact because both are pixel offsets off the same anchor.
-    render_align: Optional[str] = None
-    axis: str = "left"
-    movable: bool = True
-    clamp_to_panel: bool = True
-    # How far the label may drift from its seeded offset during the
-    # last-resort sweep. This is a semantic bound, not a cosmetic one: a
-    # VLine caption that slides in x now captions the wrong date, and a
-    # Callout that drifts too far no longer points at its datum.
-    sweep_x: float = 0.0
-    sweep_y: float = 0.0
-    base_dx: float = 0.0
-    base_dy: float = 0.0
-    # Band/VLine carry no dx/dy fields; moving their label means
-    # converting it into a PointLabel at apply time.
-    needs_conversion: bool = False
-    converted: bool = False
-    dropped: bool = False
-
-    def rect(
-        self,
-        dx: Optional[float] = None,
-        dy: Optional[float] = None,
-        align: Optional[str] = None,
-    ) -> Tuple[float, float, float, float]:
-        ox = self.dx if dx is None else dx
-        oy = self.dy if dy is None else dy
-        al = self.align if align is None else align
-        cx = self.anchor_x + ox
-        if al == "center":
-            x0 = cx - self.width / 2.0
-        elif al == "right":
-            x0 = cx - self.width
-        else:
-            x0 = cx
-        cy = self.anchor_y + oy
-        y0 = cy - self.height / 2.0
-        return x0, y0, x0 + self.width, y0 + self.height
-
-
-def _lp_align_offset(align: str, width: float) -> float:
-    """Distance from a text mark's anchor to its left edge for ``align``."""
-    if align == "center":
-        return width / 2.0
-    if align == "right":
-        return width
-    return 0.0
-
-
-def _lp_render_dx(box: "_LabelBox") -> float:
-    """``box.dx`` re-expressed under the align the renderer will use.
-
-    Solving is done in whatever align packs best, but HLine / Arrow /
-    Segment derive their align from other fields and ignore anything the
-    solver picks. Shifting dx by the difference in anchor offsets lands
-    the glyphs on exactly the solved pixels under the renderer's align.
-    """
-    if box.render_align is None or box.render_align == box.align:
-        return box.dx
-    return (
-        box.dx
-        - _lp_align_offset(box.align, box.width)
-        + _lp_align_offset(box.render_align, box.width)
-    )
-
-
-def _lp_overlaps(
-    a: Tuple[float, float, float, float],
-    b: Tuple[float, float, float, float],
-    gap: float = _LP_MIN_GAP_PX,
-) -> bool:
-    return not (
-        a[2] + gap <= b[0]
-        or b[2] + gap <= a[0]
-        or a[3] + gap <= b[1]
-        or b[3] + gap <= a[1]
-    )
-
-
-def _lp_inside(
-    rect: Tuple[float, float, float, float],
-    canvas: _LabelCanvas,
-) -> bool:
-    pad = _LP_EDGE_PAD_PX
-    return (
-        rect[0] >= -pad
-        and rect[1] >= -pad
-        and rect[2] <= canvas.width + pad
-        and rect[3] <= canvas.height + pad
-    )
-
-
-def _lp_ladder_compass(
-    base_dx: float, base_dy: float, align: str
-) -> List[Tuple[float, float, str]]:
-    """Candidate offsets for a point-anchored label (Callout, PointLabel).
-
-    Walks the eight compass directions at two radii, mirroring the
-    caller's own offset first so the seeded position is tried before any
-    alternative.
-    """
-    span = max(abs(base_dx), 6.0)
-    rise = max(abs(base_dy), 10.0)
-    out: List[Tuple[float, float, str]] = [(base_dx, base_dy, align)]
-    for scale in (1.0, 1.8):
-        for ddx, ddy, al in (
-            (span, -rise, "left"),
-            (-span, -rise, "right"),
-            (span, rise, "left"),
-            (-span, rise, "right"),
-            (0.0, -rise, "center"),
-            (0.0, rise, "center"),
-            (span, 0.0, "left"),
-            (-span, 0.0, "right"),
-        ):
-            out.append((ddx * scale, ddy * scale, al))
-    return out
-
-
-def _lp_ladder_rows(
-    base_dx: float,
-    base_dy: float,
-    align: str,
-    row_height: float,
-    rows: int = 6,
-) -> List[Tuple[float, float, str]]:
-    """Candidate offsets stacked in vertical rows above then below.
-
-    Used where x is meaningful and must not move (VLine / Band / HLine
-    labels, series endpoint labels): the label slides in y only.
-    """
-    out: List[Tuple[float, float, str]] = [(base_dx, base_dy, align)]
-    sign = -1.0 if base_dy <= 0 else 1.0
-    for row in range(1, rows + 1):
-        out.append((base_dx, base_dy + sign * row * row_height, align))
-    for row in range(1, rows + 1):
-        out.append((base_dx, base_dy - sign * row * row_height, align))
-    return out
-
-
-def _lp_rule_obstacles(
-    annotations: List[Annotation], canvas: _LabelCanvas
-) -> List[Tuple[float, float, float, float]]:
-    """Thin rects for the engine's own ink, as SOFT obstacles.
-
-    A rule painted through a caption's glyphs is legible thanks to the
-    text halo but still reads as a smudge, so the solver prefers
-    positions that clear the ink. Soft means preference only: a label
-    is never dropped for want of a clear slot, because a caption
-    sitting on a dotted rule beats no caption at all.
-
-    Arrow and Segment shafts count too, and their heads especially: an
-    arrowhead is a solid filled triangle that a halo cannot mask, and a
-    later annotation's head paints over an earlier one's text. Diagonal
-    shafts are approximated by a run of small rects along the path,
-    which tracks the diagonal instead of reserving its whole bounding
-    box.
-    """
-    out: List[Tuple[float, float, float, float]] = []
-    for ann in annotations:
-        if isinstance(ann, VLine):
-            px = canvas.x_px(ann.x)
-            if px is not None:
-                out.append((px - 1.5, 0.0, px + 1.5, canvas.height))
-        elif isinstance(ann, HLine):
-            py = canvas.y_px(ann.y, getattr(ann, "axis", "left"))
-            if py is not None:
-                out.append((0.0, py - 1.5, canvas.width, py + 1.5))
-        elif isinstance(ann, (Arrow, Segment)):
-            axis = getattr(ann, "axis", "left") or "left"
-            p1, p2 = canvas.x_px(ann.x1), canvas.x_px(ann.x2)
-            q1, q2 = canvas.y_px(ann.y1, axis), canvas.y_px(ann.y2, axis)
-            if None in (p1, p2, q1, q2):
-                continue
-            steps = 24
-            for i in range(steps + 1):
-                t = i / steps
-                cx = p1 + (p2 - p1) * t  # type: ignore[operator]
-                cy = q1 + (q2 - q1) * t  # type: ignore[operator]
-                # The head is fatter than the shaft and unmaskable.
-                r = 5.0 if (isinstance(ann, Arrow) and t > 0.92) else 1.5
-                out.append((cx - r, cy - r, cx + r, cy + r))
-    return out
-
-
-def _lp_sweep(
-    box: _LabelBox, canvas: _LabelCanvas
-) -> List[Tuple[float, float, str]]:
-    """Last-resort candidate sweep around the label's seeded position.
-
-    The per-kind ladders encode where a label *should* go; this sweep
-    encodes where it *may* go once the preferred slots are taken. An
-    ugly-but-legible position beats a dropped annotation, so this runs
-    before the solver gives up -- but only within the box's semantic
-    drift budget, because a caption that has wandered off its own event
-    is worse than no caption at all.
-    """
-    step_y = max(box.height + _LP_MIN_GAP_PX, 8.0)
-    step_x = max(box.width / 2.0 + _LP_MIN_GAP_PX, 10.0)
-    n_y = int(box.sweep_y // step_y) if step_y else 0
-    n_x = int(box.sweep_x // step_x) if step_x else 0
-    out: List[Tuple[float, float, str]] = []
-    # Nearest positions first, so a label settles as close to its
-    # preferred spot as the contention allows.
-    for ring in range(1, max(n_y, n_x) + 1):
-        for dy_mult in (-1.0, 1.0):
-            for dx_mult in (0.0, 1.0, -1.0):
-                ry = dy_mult * min(ring, n_y) * step_y
-                rx = dx_mult * min(ring, n_x) * step_x
-                if abs(ry) > box.sweep_y or abs(rx) > box.sweep_x:
-                    continue
-                align = (
-                    box.align if dx_mult == 0.0
-                    else ("left" if dx_mult > 0 else "right")
-                )
-                out.append((box.base_dx + rx, box.base_dy + ry, align))
-    return out
-
-
-def _lp_collect(
-    annotations: List[Annotation],
-    canvas: _LabelCanvas,
-    skin_config: Dict[str, Any],
-) -> List[_LabelBox]:
-    """Normalise every text-bearing annotation into a movable rect."""
-    boxes: List[_LabelBox] = []
-
-    for idx, ann in enumerate(annotations):
-        label = getattr(ann, "label", None)
-        if not label:
-            continue
-        axis = getattr(ann, "axis", "left")
-
-        if isinstance(ann, PointLabel):
-            ax, ay = canvas.x_px(ann.x), canvas.y_px(ann.y, axis)
-            if ax is None or ay is None:
-                continue
-            w, h = _lp_measure(str(label), ann.font_size, "regular")
-            # A PointLabel lifted off a Band or VLine still carries its
-            # meaning in x, so it keeps the pinned-x treatment of the
-            # annotation it came from rather than a free x budget.
-            pinned_x = getattr(ann, "_x_is_semantic", False)
-            row_h = h + _LP_MIN_GAP_PX
-            boxes.append(_LabelBox(
-                idx=idx, kind="pointlabel", text=str(label),
-                anchor_x=ax, anchor_y=ay, width=w, height=h,
-                font_size=ann.font_size, priority=_LP_PRIORITY["pointlabel"],
-                candidates=(
-                    _lp_ladder_rows(ann.dx, ann.dy, ann.align, row_h, rows=12)
-                    if pinned_x
-                    else _lp_ladder_compass(ann.dx, ann.dy, ann.align)
-                ),
-                dx=float(ann.dx), dy=float(ann.dy), align=ann.align,
-                axis=axis,
-                base_dx=float(ann.dx), base_dy=float(ann.dy),
-                sweep_x=0.0 if pinned_x else min(40.0, canvas.width * 0.05),
-                sweep_y=canvas.height * (0.85 if pinned_x else 0.55),
-            ))
-
-        elif isinstance(ann, Callout):
-            ax, ay = canvas.x_px(ann.x), canvas.y_px(ann.y, axis)
-            if ax is None or ay is None:
-                continue
-            weight = "bold" if ann.font_weight == "bold" else "regular"
-            w, h = _lp_measure(str(label), ann.font_size, weight)
-            if ann.background == "box":
-                w += 2 * ann.box_padding_x
-                h += 2 * ann.box_padding_y
-            boxes.append(_LabelBox(
-                idx=idx, kind="callout", text=str(label),
-                anchor_x=ax, anchor_y=ay, width=w, height=h,
-                font_size=ann.font_size, priority=_LP_PRIORITY["callout"],
-                candidates=_lp_ladder_compass(ann.dx, ann.dy, ann.align),
-                dx=float(ann.dx), dy=float(ann.dy), align=ann.align,
-                axis=axis,
-                base_dx=float(ann.dx), base_dy=float(ann.dy),
-                sweep_x=min(40.0, canvas.width * 0.05),
-                sweep_y=canvas.height * 0.55,
-            ))
-
-        elif isinstance(ann, HLine):
-            ay = canvas.y_px(ann.y, axis)
-            if ay is None:
-                continue
-            w, h = _lp_measure(str(label), 10, "regular")
-            # Match HLine.to_layer exactly. Only a bar chart supplies a
-            # right-edge anchor; every other chart type leaves the caption
-            # with no x encoding at all, so Vega-Lite floats it at the
-            # panel's horizontal midpoint with align='left', dx=+5.
-            # Anchoring the model at the right edge instead reserves space
-            # where no text lands and leaves the real caption -- half a
-            # panel away -- free to be overprinted by a Callout.
-            bar_ax = canvas.bar_label_anchor_x
-            if bar_ax is not None:
-                ax, base_align = bar_ax, "right"
-                base_dx = -5.0 if ann._label_dx is None else float(ann._label_dx)
-            else:
-                ax, base_align = canvas.width / 2.0, "left"
-                base_dx = 5.0 if ann._label_dx is None else float(ann._label_dx)
-            boxes.append(_LabelBox(
-                idx=idx, kind="hline", text=str(label),
-                anchor_x=ax, anchor_y=ay, width=w, height=h,
-                font_size=10, priority=_LP_PRIORITY["hline"],
-                candidates=_lp_ladder_rows(
-                    base_dx, float(ann._label_dy), base_align,
-                    h + _LP_MIN_GAP_PX,
-                ),
-                dx=base_dx, dy=float(ann._label_dy), align=base_align,
-                render_align=base_align,
-                axis=axis,
-                base_dx=base_dx, base_dy=float(ann._label_dy),
-                sweep_x=canvas.width * 0.4, sweep_y=h * 2.5,
-            ))
-
-        elif isinstance(ann, VLine):
-            ax = canvas.x_px(ann.x)
-            ay = canvas.vline_label_y(axis)
-            if ax is None or ay is None:
-                continue
-            w, h = _lp_measure(str(label), 10, "regular")
-            # VLine.to_layer draws the caption at align='left', dx=5,
-            # dy=-10 off that anchor.
-            boxes.append(_LabelBox(
-                idx=idx, kind="vline", text=str(label),
-                anchor_x=ax, anchor_y=ay, width=w, height=h,
-                font_size=10, priority=_LP_PRIORITY["vline"],
-                candidates=_lp_ladder_rows(
-                    5.0, -10.0, "left", h + _LP_MIN_GAP_PX, rows=12
-                ),
-                dx=5.0, dy=-10.0, align="left", needs_conversion=True,
-                axis=axis,
-                base_dx=5.0, base_dy=-10.0,
-                sweep_x=0.0, sweep_y=canvas.height * 0.85,
-            ))
-
-        elif isinstance(ann, Band):
-            x1 = getattr(ann, "x1", None)
-            x2 = getattr(ann, "x2", None)
-            if x1 is None or x2 is None:
-                continue
-            px1, px2 = canvas.x_px(x1), canvas.x_px(x2)
-            if px1 is None or px2 is None:
-                continue
-            # Band.to_layer encodes x and text but no y, so Vega-Lite
-            # centres the caption vertically in the plot and dy=-10
-            # lifts it from there. fontSize is 9, not 10.
-            w, h = _lp_measure(str(label), 9, "regular")
-            boxes.append(_LabelBox(
-                idx=idx, kind="band", text=str(label),
-                anchor_x=(px1 + px2) / 2.0, anchor_y=canvas.height / 2.0,
-                width=w, height=h, font_size=9,
-                priority=_LP_PRIORITY["band"],
-                candidates=_lp_ladder_rows(
-                    0.0, -10.0, "center", h + _LP_MIN_GAP_PX, rows=12
-                ),
-                dx=0.0, dy=-10.0, align="center", needs_conversion=True,
-                axis=axis,
-                base_dx=0.0, base_dy=-10.0,
-                sweep_x=0.0, sweep_y=canvas.height * 0.85,
-            ))
-
-        elif isinstance(ann, PointHighlight):
-            ax = canvas.x_px(ann.x)
-            ay = canvas.y_px(ann.y, axis)
-            if ax is None or ay is None:
-                continue
-            w, h = _lp_measure(str(label), 10, "bold")
-            boxes.append(_LabelBox(
-                idx=idx, kind="pointhighlight", text=str(label),
-                anchor_x=ax, anchor_y=ay, width=w, height=h,
-                font_size=10, priority=_LP_PRIORITY["pointhighlight"],
-                candidates=_lp_ladder_compass(
-                    float(ann.label_offset_x), float(ann.label_offset_y),
-                    "left",
-                ),
-                dx=float(ann.label_offset_x), dy=float(ann.label_offset_y),
-                align="left", render_align="left",
-                axis=axis,
-                base_dx=float(ann.label_offset_x),
-                base_dy=float(ann.label_offset_y),
-                sweep_x=min(40.0, canvas.width * 0.05),
-                sweep_y=canvas.height * 0.4,
-            ))
-
-        elif isinstance(ann, (Arrow, Segment)):
-            frac = {"start": 0.0, "middle": 0.5, "end": 1.0}[ann.label_position]
-            # Arrow always left-aligns and renders bold; Segment derives
-            # align from label_position and renders regular weight.
-            if isinstance(ann, Arrow):
-                fixed_align, weight = "left", "bold"
-            else:
-                fixed_align = (
-                    "center" if ann.label_position == "middle" else "left"
-                )
-                weight = "regular"
-            p1, p2 = canvas.x_px(ann.x1), canvas.x_px(ann.x2)
-            q1 = canvas.y_px(ann.y1, axis)
-            q2 = canvas.y_px(ann.y2, axis)
-            if None in (p1, p2, q1, q2):
-                continue
-            ax = p1 + (p2 - p1) * frac  # type: ignore[operator]
-            ay = q1 + (q2 - q1) * frac  # type: ignore[operator]
-            w, h = _lp_measure(str(label), 10, weight)
-            kind = "arrow" if isinstance(ann, Arrow) else "segment"
-            boxes.append(_LabelBox(
-                idx=idx, kind=kind, text=str(label),
-                anchor_x=ax, anchor_y=ay, width=w, height=h,
-                font_size=10, priority=_LP_PRIORITY[kind],
-                candidates=_lp_ladder_compass(
-                    float(ann.label_offset_x), float(ann.label_offset_y),
-                    fixed_align,
-                ),
-                dx=float(ann.label_offset_x), dy=float(ann.label_offset_y),
-                align=fixed_align, render_align=fixed_align,
-                axis=axis,
-                base_dx=float(ann.label_offset_x),
-                base_dy=float(ann.label_offset_y),
-                sweep_x=min(40.0, canvas.width * 0.05),
-                sweep_y=canvas.height * 0.55,
-            ))
-
-    return boxes
-
-
-def _lp_seed_column_order(boxes: List[_LabelBox], canvas: _LabelCanvas) -> None:
-    """Give co-located point labels an order-preserving first candidate.
-
-    The greedy solver only knows about overlap, so two labels stacked in
-    the same x column can legally swap places -- and on a dual-axis chart
-    that is not a cosmetic defect but a wrong answer, because the reader
-    attributes each endpoint value to whichever line it sits next to.
-    Series endpoint labels are the worst case: they are the only thing
-    naming the line.
-
-    So before the greedy runs, every column of two or more point-anchored
-    labels gets a monotone stack -- pushed apart just enough to clear,
-    order fixed by anchor y -- prepended to its candidate ladder. The
-    greedy takes it when it is free and falls through to the normal
-    ladder when it is not, so this constrains ordering without ever
-    costing a placement.
-    """
-    columns: Dict[int, List[_LabelBox]] = {}
-    for box in boxes:
-        if not box.movable or box.kind not in (
-            "lastvalue", "pointlabel", "pointhighlight", "callout",
-        ):
-            continue
-        columns.setdefault(
-            int(box.anchor_x // _LP_COLUMN_TOL_PX), []
-        ).append(box)
-
-    for group in columns.values():
-        if len(group) < 2:
-            continue
-        group.sort(key=lambda b: b.anchor_y)
-        # Seed from the anchor, keeping only a house-sized nudge. A label
-        # already shoved a long way by an earlier per-type stagger pass
-        # would otherwise inherit that displacement and read as belonging
-        # to whichever line it landed next to; this pass is the authority
-        # on placement, so it re-derives the row from the datum.
-        want = [
-            b.anchor_y
-            + (b.base_dy if abs(b.base_dy) <= _LP_COLUMN_SEED_DY else 0.0)
-            for b in group
-        ]
-
-        # Push down to remove overlap, top-down, order fixed.
-        for i in range(1, len(group)):
-            floor = (
-                want[i - 1]
-                + (group[i - 1].height + group[i].height) / 2.0
-                + _LP_MIN_GAP_PX
-            )
-            want[i] = max(want[i], floor)
-
-        # If the stack ran off the bottom, slide it up and re-clear
-        # upward so the whole column stays on the panel.
-        overshoot = (
-            want[-1] + group[-1].height / 2.0
-            - (canvas.height - _LP_EDGE_PAD_PX)
-        )
-        if overshoot > 0:
-            want = [y - overshoot for y in want]
-            for i in range(len(group) - 2, -1, -1):
-                ceiling = (
-                    want[i + 1]
-                    - (group[i].height + group[i + 1].height) / 2.0
-                    - _LP_MIN_GAP_PX
-                )
-                want[i] = min(want[i], ceiling)
-
-        # Pin the row but keep the ladder's horizontal search: a label at
-        # the panel's right edge still has to flip its align to stay on
-        # the panel, and a seeded row that only offers the base dx would
-        # be rejected out of hand for being off-panel.
-        for box, y in zip(group, want):
-            dy = y - box.anchor_y
-            seeded: List[Tuple[float, float, str]] = []
-            seen: set = set()
-            for cdx, _cdy, cal in box.candidates:
-                if (cdx, cal) in seen:
-                    continue
-                seen.add((cdx, cal))
-                seeded.append((cdx, dy, cal))
-            box.candidates = seeded + box.candidates
-
-
-def _lp_solve(
-    boxes: List[_LabelBox],
-    canvas: _LabelCanvas,
-    soft_obstacles: Optional[List[Tuple[float, float, float, float]]] = None,
-) -> List[Tuple[_LabelBox, str]]:
-    """Assign every label a non-overlapping in-panel position.
-
-    Greedy by priority: each label takes the best candidate that is
-    inside the panel and clear of everything already placed. Hard
-    constraints (panel bounds, other labels) are never violated; soft
-    constraints (rules) are honoured when possible and abandoned before
-    anything is dropped.
-
-    Degradation ladder, cheapest loss first:
-      1. preferred position, clear of rules
-      2. any swept position, clear of rules
-      3. preferred position, crossing a rule
-      4. any swept position, crossing a rule
-      5. one font size step smaller, re-walking 1-4
-      6. drop -- reported, never silent
-    """
-    placed: List[Tuple[_LabelBox, Tuple[float, float, float, float]]] = []
-    soft = soft_obstacles or []
-    drops: List[Tuple[_LabelBox, str]] = []
-
-    _lp_seed_column_order(boxes, canvas)
-
-    for box in sorted(boxes, key=lambda b: (b.priority, b.anchor_x)):
-        if not box.movable:
-            placed.append((box, box.rect()))
-            continue
-
-        def _crosses(rect: Tuple[float, float, float, float]) -> bool:
-            """Would this rect invert a column's reading order?
-
-            Two labels in one x column are read as a stack against the
-            lines they name. Swapping them is not a cosmetic defect but a
-            wrong answer -- on a dual-axis chart it attributes each
-            endpoint value to the wrong series -- so order is a hard
-            constraint, not a preference.
-            """
-            cy = (rect[1] + rect[3]) / 2.0
-            for other, orect in placed:
-                if abs(other.anchor_x - box.anchor_x) > _LP_COLUMN_TOL_PX:
-                    continue
-                if other.anchor_y == box.anchor_y:
-                    continue
-                ocy = (orect[1] + orect[3]) / 2.0
-                if (box.anchor_y - other.anchor_y) * (cy - ocy) < 0:
-                    return True
-            return False
-
-        def _try(
-            candidates: List[Tuple[float, float, str]],
-            avoid_rules: bool = True,
-        ) -> bool:
-            for cdx, cdy, cal in candidates:
-                rect = box.rect(cdx, cdy, cal)
-                if box.clamp_to_panel and not _lp_inside(rect, canvas):
-                    continue
-                if any(_lp_overlaps(rect, orect) for _, orect in placed):
-                    continue
-                if _crosses(rect):
-                    continue
-                if avoid_rules and any(
-                    _lp_overlaps(rect, s, gap=0.0) for s in soft
-                ):
-                    continue
-                moved = (cdx, cdy, cal) != (box.dx, box.dy, box.align)
-                box.dx, box.dy, box.align = cdx, cdy, cal
-                if moved and box.needs_conversion:
-                    box.converted = True
-                placed.append((box, rect))
-                return True
-            return False
-
-        def _walk() -> bool:
-            return (
-                _try(box.candidates, avoid_rules=True)
-                or _try(_lp_sweep(box, canvas), avoid_rules=True)
-                or _try(box.candidates, avoid_rules=False)
-                or _try(_lp_sweep(box, canvas), avoid_rules=False)
-            )
-
-        if _walk():
-            continue
-
-        # A slightly smaller label that stays on the chart beats a
-        # correctly-sized one that gets thrown away.
-        shrunk = max(_LP_MIN_FONT_SIZE, int(box.font_size) - 2)
-        if shrunk < box.font_size:
-            weight = (
-                "bold"
-                if box.kind in ("callout", "arrow", "pointhighlight")
-                else "regular"
-            )
-            box.width, box.height = _lp_measure(box.text, shrunk, weight)
-            box.font_size = shrunk
-            if _walk():
-                continue
-
-        box.dropped = True
-        drops.append((
-            box,
-            f"{box.kind} label {box.text!r} could not be placed without "
-            f"overlapping another label inside the "
-            f"{int(canvas.width)}x{int(canvas.height)}px plot region"
-        ))
-
-    return drops
-
-
-def _lp_apply(
-    annotations: List[Annotation],
-    boxes: List[_LabelBox],
-    canvas: _LabelCanvas,
-) -> List[Annotation]:
-    """Write solved offsets back onto the annotation list.
-
-    Annotations whose class exposes offset fields are updated in place.
-    A moved Band / VLine caption has nowhere to store an offset, so it is
-    lifted off the rule/shading into an explicitly-placed PointLabel at
-    the solved row -- the same conversion the per-type stagger passes
-    use, but driven by a solved position rather than a fixed ladder.
-    """
-    out: List[Optional[Annotation]] = list(annotations)
-    extra: List[Annotation] = []
-    strip_label: set = set()
-
-    for box in boxes:
-        ann = out[box.idx]
-        if ann is None:
-            continue
-
-        if box.dropped:
-            strip_label.add(box.idx)
-            continue
-
-        if box.kind in ("pointlabel", "callout"):
-            out[box.idx] = replace(
-                ann, dx=int(round(box.dx)), dy=int(round(box.dy)),
-                align=box.align, font_size=box.font_size,
-            )
-        elif box.kind == "hline":
-            out[box.idx] = replace(
-                ann,
-                _label_dx=int(round(_lp_render_dx(box))),
-                _label_dy=int(round(box.dy)),
-            )
-        elif box.kind in ("arrow", "segment", "pointhighlight"):
-            out[box.idx] = replace(
-                ann,
-                label_offset_x=int(round(_lp_render_dx(box))),
-                label_offset_y=int(round(box.dy)),
-            )
-        elif box.kind in ("band", "vline") and box.converted:
-            x_val = canvas.x_value(box.anchor_x + box.dx)
-            y_val = canvas.y_value(box.anchor_y + box.dy, box.axis)
-            if x_val is None or y_val is None:
-                continue
-            strip_label.add(box.idx)
-            extra.append(PointLabel(
-                label=box.text,
-                x=x_val,
-                y=y_val,
-                dx=0,
-                dy=0,
-                align=box.align,
-                font_size=box.font_size,
-                axis=box.axis,
-                _x_is_semantic=True,
-            ))
-
-    for idx in strip_label:
-        current = out[idx]
-        if current is not None:
-            out[idx] = replace(current, label=None)
-
-    return [a for a in out if a is not None] + extra
-
-
-def _place_labels(
-    annotations: List[Annotation],
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    skin_config: Dict[str, Any],
-    clamped_domain: Optional[List[float]],
-    chart_width_px: int,
-    chart_height_px: int,
-    dual_axis_config: Optional[Dict[str, Any]] = None,
-    dropped_log: Optional[List[str]] = None,
-) -> List[Annotation]:
-    """Guarantee no two annotation labels overlap and none leave the plot.
-
-    This is the engine's final say on annotation geometry. It measures
-    every label with real font metrics, projects each against the axis it
-    is actually encoded on, and solves placement globally across all
-    annotation families at once. Labels it cannot place are dropped with
-    a reason on ``dropped_log`` rather than left to paint as mud.
-    """
-    canvas = _LabelCanvas(
-        df=df,
-        mapping=mapping,
-        clamped_domain=clamped_domain,
-        width_px=chart_width_px,
-        height_px=chart_height_px,
-        dual_axis_config=dual_axis_config,
-    )
-    boxes = _lp_collect(annotations, canvas, skin_config)
-    if len(boxes) < 2:
-        return annotations
-
-    drops = _lp_solve(boxes, canvas, _lp_rule_obstacles(annotations, canvas))
-    for _box, reason in drops:
-        logger.warning("[_place_labels] %s", reason)
-        if dropped_log is not None:
-            dropped_log.append(f"Annotation dropped: {reason}")
-
-    moved = sum(1 for b in boxes if b.converted or b.dropped)
-    logger.info(
-        "[_place_labels] %d label(s) considered, %d relocated/converted, "
-        "%d dropped on a %dx%dpx panel",
-        len(boxes), moved, len(drops), chart_width_px, chart_height_px,
-    )
-    return _lp_apply(annotations, boxes, canvas)
 def render_annotations(
     chart: alt.Chart,
     annotations: List[Annotation],
@@ -10780,9 +9702,7 @@ def render_annotations(
     # threaded one through.
     panel_width_px = int(chart_width) if chart_width else 700
     panel_height_px = int(chart_height) if chart_height else 350
-    annotations = _auto_stagger_band_labels(
-        annotations, df, mapping, clamped_domain, chart_width_px=panel_width_px
-    )
+    annotations = _auto_stagger_band_labels(annotations, df, mapping, clamped_domain)
     annotations = _auto_stagger_vline_labels(
         annotations, df, mapping, clamped_domain, chart_width_px=panel_width_px
     )
@@ -10796,24 +9716,6 @@ def render_annotations(
         annotations, df=df, mapping=mapping, chart_height_px=panel_height_px
     )
     annotations = _flip_hline_label_inside_band(annotations)
-
-    # ---- final placement authority -------------------------------------
-    # The passes above are per-type: each sees only its own annotation
-    # kind, so a Callout landing on a VLine caption survives all of them.
-    # This pass measures every label with real font metrics and solves
-    # placement globally, which is what makes a heavily-annotated chart
-    # one-shottable instead of something PRISM has to nudge and re-render.
-    annotations = _place_labels(
-        annotations,
-        df=df,
-        mapping=mapping,
-        skin_config=skin_config,
-        clamped_domain=clamped_domain,
-        chart_width_px=panel_width_px,
-        chart_height_px=panel_height_px,
-        dual_axis_config=dual_axis_config,
-        dropped_log=dropped_log,
-    )
 
     for annotation in annotations:
         # ---- drop universally-obvious HLines (context-aware) ----------
@@ -14127,18 +13029,7 @@ def get_axis_beautification(
         if pd.api.types.is_numeric_dtype(y_data):
             domain_min, domain_max = calculate_y_axis_domain(y_data)
 
-            # An explicit ``mapping['scale_type']`` decides both directions.
-            # The line-family default stays linear (see the docstring: a padded
-            # domain that dips through zero cannot carry a log axis), and
-            # auto-detection still runs for everything else -- but neither may
-            # overrule a caller who named the scale. Without this branch the
-            # builders' own log handling is undone here: the padded linear
-            # domain below is injected instead, which is how a chart asked to
-            # be log rendered linear with no error.
-            explicit_scale = mapping.get("scale_type")
-            if explicit_scale in {"linear", "log"}:
-                use_log = explicit_scale == "log"
-            elif chart_type in {"multi_line", "area", "line", "timeseries"}:
+            if chart_type in {"multi_line", "area", "line", "timeseries"}:
                 use_log = False
             else:
                 use_log = should_use_log_scale(y_data)
@@ -14915,19 +13806,16 @@ def _normalize_named_colors_in_mapping(mapping: Dict[str, Any]) -> None:
         mapping["color_range"] = [_resolve_named_color(v) for v in color_range]
 
 
-# Chart types whose y-axis plan consumes mapping['scale_type']. Both values
-# are honoured on every member: 'log' overrides the family default and
-# auto-detection, 'linear' overrides auto-detection. Everything else ignores
-# the kwarg, which must be LOUD: a silently-linear axis on a chart the caller
-# asked to be log renders fine and is wrong. Membership here is a promise --
-# add a type only when ``get_axis_beautification`` actually reaches its y
-# domain, or the message below starts lying.
-_SCALE_TYPE_CHART_TYPES = {"multi_line", "timeseries", "line", "area", "scatter"}
+# Chart types whose builders consume mapping['scale_type']. The line
+# family auto-detects log candidates and honours 'linear'/'log' overrides;
+# scatter honours an explicit 'log' y. Everything else ignores the kwarg,
+# which must be LOUD: a silently-linear axis on a chart the caller asked
+# to be log renders fine and is wrong.
+_SCALE_TYPE_CHART_TYPES = {"multi_line", "timeseries", "scatter"}
 
 
 def _collect_scale_type_findings(
     mapping: Dict[str, Any], chart_type: str,
-    df: Optional[pd.DataFrame] = None,
 ) -> List[ValidationError]:
     """Kwarg-fact findings for ``mapping['scale_type']``."""
     findings: List[ValidationError] = []
@@ -14939,53 +13827,13 @@ def _collect_scale_type_findings(
             f"mapping['scale_type']={val!r} is not recognised. "
             f"Valid values: 'linear', 'log'."
         ))
-        return findings
-    if chart_type not in _SCALE_TYPE_CHART_TYPES:
+    elif chart_type not in _SCALE_TYPE_CHART_TYPES:
         findings.append(ValidationError(
-            f"mapping['scale_type'] has no effect on chart_type={chart_type!r}. "
-            f"It is honoured on: "
-            f"{', '.join(sorted(_SCALE_TYPE_CHART_TYPES))}. Either use one of "
-            f"those, or pre-transform the column "
-            f"(e.g. df['y'] = np.log10(df['y'])) and say so in the axis title."
-        ))
-        return findings
-    # A log axis needs strictly positive y. Caught here, at the boundary, so
-    # every chart type reports it the same way and none of them quietly
-    # demotes to linear -- which would reintroduce exactly the silent drop
-    # honouring the kwarg was meant to remove.
-    y_field = mapping.get("y") if isinstance(mapping.get("y"), str) else None
-    if val == "log" and df is not None and y_field and y_field in df.columns:
-        y_num = pd.to_numeric(df[y_field], errors="coerce").dropna()
-        if len(y_num) and float(y_num.min()) <= 0:
-            findings.append(ValidationError(
-                f"mapping['scale_type']='log' requires every y value > 0; "
-                f"{y_field!r} has min {float(y_num.min()):g}. Filter the "
-                f"non-positive rows or drop the log override."
-            ))
-    return findings
-
-
-def _collect_legend_kwarg_findings(
-    mapping: Dict[str, Any],
-) -> List[ValidationError]:
-    """Kwarg-fact findings for ``mapping['legend']``.
-
-    ``legend`` is an internal QC override read only as ``is True`` (see
-    ``_should_auto_inject_lvl``), and it is deliberately absent from the
-    context files. It nonetheless sits in the accepted-key list, so any other
-    value passed validation and then did nothing -- and legend-label
-    validation still fired, returning the identical error to the author who
-    set ``legend=False`` precisely to escape it.
-    """
-    findings: List[ValidationError] = []
-    if "legend" in mapping and mapping["legend"] is not True:
-        findings.append(ValidationError(
-            f"mapping['legend']={mapping['legend']!r} is not honoured -- the "
-            f"engine chooses between a colour legend and direct labels "
-            f"itself, and line charts label each series at the end of its "
-            f"line rather than drawing a legend. To suppress a legend, add a "
-            f"LastValueLabel annotation on a line chart, or drop "
-            f"mapping['color'] if the colour is not carrying information."
+            f"mapping['scale_type'] is honoured on multi_line / timeseries "
+            f"(y log-scale override) and scatter (explicit log y); it has "
+            f"no effect on chart_type={chart_type!r}. Drop the kwarg, or "
+            f"pre-transform the data (e.g. np.log10) if a log axis is the "
+            f"intent."
         ))
     return findings
 
@@ -23142,17 +21990,6 @@ def profile_df(df: pd.DataFrame) -> DataProfile:
     column mappings before calling ``make_chart()``.
     """
     columns = list(df.columns)
-    # Every lookup below is ``df[col]``, which returns a *frame* rather than a
-    # series when a label repeats -- so a duplicated column turned every
-    # subsequent dtype/stat call into an AttributeError. A merge produces this
-    # easily, so name it instead of crashing on it.
-    duplicated = [c for c in dict.fromkeys(columns) if columns.count(c) > 1]
-    if duplicated:
-        raise ValidationError(
-            f"DataFrame has duplicate column labels: {duplicated}. Profiling "
-            f"and charting both address columns by name, so rename or drop "
-            f"the duplicates first (e.g. df.loc[:, ~df.columns.duplicated()])."
-        )
     dtypes = {col: str(df[col].dtype) for col in columns}
 
     temporal_columns: List[str] = []
@@ -23161,12 +21998,6 @@ def profile_df(df: pd.DataFrame) -> DataProfile:
     for col in columns:
         if pd.api.types.is_datetime64_any_dtype(df[col]):
             temporal_columns.append(col)
-        elif pd.api.types.is_complex_dtype(df[col]):
-            # ``is_numeric_dtype`` accepts complex, but a complex column has no
-            # real-valued ordering: it cannot carry a quantitative axis and
-            # ``describe()`` raises on it outright. Report it as categorical
-            # rather than inventing a magnitude the caller never asked for.
-            categorical_columns.append(col)
         elif pd.api.types.is_numeric_dtype(df[col]):
             numeric_columns.append(col)
         else:
@@ -23185,20 +22016,13 @@ def profile_df(df: pd.DataFrame) -> DataProfile:
 
     numeric_stats: Dict[str, Dict[str, float]] = {}
     for col in numeric_columns:
-        # ``describe()`` on a bool column returns count/unique/top/freq and no
-        # mean/std/min/max, so reading those keys raised ``KeyError: 'mean'``
-        # on any frame carrying a boolean flag -- and bool passes
-        # ``is_numeric_dtype``, which is how it reached this loop. Aggregate the
-        # values directly, widening bool so ``mean`` reads as the share of True.
-        series = df[col]
-        if pd.api.types.is_bool_dtype(series):
-            series = series.astype("float64")
+        stats = df[col].describe()
         numeric_stats[col] = {
-            "mean": round(float(series.mean()), 4),
-            "std": round(float(series.std()), 4),
-            "min": round(float(series.min()), 4),
-            "max": round(float(series.max()), 4),
-            "median": round(float(series.median()), 4),
+            "mean": round(float(stats["mean"]), 4),
+            "std": round(float(stats["std"]), 4),
+            "min": round(float(stats["min"]), 4),
+            "max": round(float(stats["max"]), 4),
+            "median": round(float(df[col].median()), 4),
         }
 
     return DataProfile(
@@ -23912,8 +22736,7 @@ def _make_chart(
     # against the actual category count.
     kwarg_findings.extend(_collect_color_kwarg_findings(mapping, chart_type, df))
     kwarg_findings.extend(_collect_opacity_kwarg_findings(mapping, chart_type, df))
-    kwarg_findings.extend(_collect_scale_type_findings(mapping, chart_type, df))
-    kwarg_findings.extend(_collect_legend_kwarg_findings(mapping))
+    kwarg_findings.extend(_collect_scale_type_findings(mapping, chart_type))
 
     # ---- Facet (small-multiples) early branch ---------------------------
     # When the caller sets ``mapping['facet']``, dispatch entirely into
@@ -24932,12 +23755,6 @@ LayoutType = Literal[
     "4_vertical",
     "6_grid",
 ]
-
-# Derived from the Literal above so the two can never drift. The boundary check
-# used to restate this list by hand, and every "unknown layout" message prints
-# it -- the valid set is closed and small, so there is no reason to make the
-# caller guess at it.
-_COMPOSITE_LAYOUTS: Tuple[str, ...] = get_args(LayoutType)
 
 
 # Per-layout, per-preset sub-chart dimensions. Composites scale individual
@@ -26432,10 +25249,7 @@ def _compose_charts(
         r3 = _isolate(alt.hconcat(charts[4], charts[5], spacing=spacing))
         composed = alt.vconcat(r1, r2, r3, spacing=spacing)
     else:
-        raise ValueError(
-            f"Unknown layout: {layout!r}. Valid layouts: "
-            f"{', '.join(_COMPOSITE_LAYOUTS)}."
-        )
+        raise ValueError(f"Unknown layout: {layout}")
 
     return _isolate(composed)
 
@@ -27108,28 +25922,14 @@ def _render_facet_grid(
     n_panels = len(panel_order)
 
     if n_panels < _FACET_MIN_PANELS:
-        # Name the one call that serves this exact count. The previous wording
-        # listed the composite family generically, which sent a five-panel
-        # request to a set that has no five-panel member.
-        _pack_for_count = {
-            2: "make_2pack_horizontal or make_2pack_vertical",
-            3: "make_3pack_triangle",
-            4: "make_4pack_grid",
-        }
-        route = _pack_for_count.get(n_panels)
-        remedy = (
-            f"For {n_panels} panels use {route} -- a composite, with one "
-            f"ChartSpec per panel."
-            if route else
-            "A single panel is just make_chart() without mapping['facet']."
-        )
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
             error_message=(
                 f"Facet grid requires at least {_FACET_MIN_PANELS} panels; "
-                f"got {n_panels}. {remedy} Note that composites scale each "
-                f"panel independently; a scale shared across panels needs "
-                f"{_FACET_MIN_PANELS}+ panels and this facet path."
+                f"got {n_panels}. For fewer comparisons use "
+                f"make_2pack_horizontal, make_2pack_vertical, "
+                f"make_4pack_grid, or make_6pack_grid (composites "
+                f"support up to 6 panels)."
             ),
         )
 
@@ -27322,14 +26122,7 @@ def _render_facet_grid(
         # Scatter / scatter_multi: x and y describe DIFFERENT variables
         # (e.g. CPI vs GDP) -- the y-title is needed so the reader knows
         # which axis is which. Keep it.
-        #
-        # An EXPLICIT ``mapping['y_title']`` is the exception: a facet grid
-        # carries no axis title at all otherwise, so it is the only place the
-        # caller can state a unit, and stripping it silently deleted stated
-        # intent. It survives here and is reduced to the left column by the
-        # edge-chrome block below, which is where a shared axis label belongs.
-        explicit_y_title = bool(mapping.get("y_title"))
-        if chart_type not in {"scatter", "scatter_multi"} and not explicit_y_title:
+        if chart_type not in {"scatter", "scatter_multi"}:
             _strip_axis_title_from_spec(spec_dict, "y")
 
         # ---- Always strip per-panel legends in facet mode ---------------
@@ -27373,12 +26166,6 @@ def _render_facet_grid(
                 _strip_axis_title_from_spec(spec_dict, "x")
             if not is_left_col:
                 _strip_axis_title_from_spec(spec_dict, "y")
-
-        # An explicit y_title survived the redundancy strip above. Show it once,
-        # on the left column, whether or not edge-only chrome is in play --
-        # repeating a unit on every panel is the clutter that strip prevents.
-        if explicit_y_title and not is_left_col:
-            _strip_axis_title_from_spec(spec_dict, "y")
 
         # Force per-panel width/height onto the top-level spec so the
         # grid cells stay rectangular.
@@ -27900,24 +26687,14 @@ def _make_composite(
     )
     warnings_list.extend(alias_warnings)
 
-    if layout not in _COMPOSITE_LAYOUTS:
-        _for_count = [
-            name for name in _COMPOSITE_LAYOUTS
-            if name.startswith(f"{len(charts)}_")
-        ]
+    if layout not in (
+        "2_horizontal", "2_vertical", "3_triangle", "3_inverted",
+        "3_horizontal", "3_vertical", "4_grid", "4_horizontal",
+        "4_vertical", "6_grid",
+    ):
         return CompositeResult(
             png_path=None, layout=layout, n_charts=len(charts),
-            success=False, error_message=(
-                f"Unknown layout: {layout!r}. Valid layouts: "
-                f"{', '.join(_COMPOSITE_LAYOUTS)}. "
-                + (f"For the {len(charts)} charts passed: "
-                   f"{', '.join(_for_count)}."
-                   if _for_count else
-                   f"No composite layout takes {len(charts)} charts; "
-                   f"composites cover 2, 3, 4 and 6, and "
-                   f"{_FACET_MIN_PANELS}+ panels go through "
-                   f"mapping['facet'].")
-            ),
+            success=False, error_message=f"Unknown layout: {layout}",
             skin=skin,
         )
 
@@ -27978,32 +26755,6 @@ def _make_composite(
             png_path=None, layout=layout, n_charts=n_charts,
             success=False,
             error_message=_aggregate_finding_messages(cell_type_findings),
-            skin=skin,
-        )
-
-    # Kwarg-fact validation was a property of the ENTRY POINT rather than of
-    # the argument: ``make_chart`` runs these three and the composite path ran
-    # none, so a mapping that raises through one door rendered silently through
-    # the other. Same aggregation shape as the cell-type check above -- every
-    # offending cell named in one return, because serial first-cell-only
-    # reporting costs a retry per cell.
-    cell_kwarg_findings: List[str] = []
-    for i, spec in enumerate(charts):
-        cell_mapping = spec.mapping or {}
-        for finding in (
-            _collect_color_kwarg_findings(cell_mapping, spec.chart_type, spec.df)
-            + _collect_opacity_kwarg_findings(
-                cell_mapping, spec.chart_type, spec.df)
-            + _collect_scale_type_findings(
-                cell_mapping, spec.chart_type, spec.df)
-            + _collect_legend_kwarg_findings(cell_mapping)
-        ):
-            cell_kwarg_findings.append(f"Composite cell {i + 1}: {finding}")
-    if cell_kwarg_findings:
-        return CompositeResult(
-            png_path=None, layout=layout, n_charts=n_charts,
-            success=False,
-            error_message=_aggregate_finding_messages(cell_kwarg_findings),
             skin=skin,
         )
 
@@ -29225,15 +27976,6 @@ def _tbl_cell_text(
 
 
 def _tbl_wrap_text(text: str, font, max_width_px: int) -> List[str]:
-    """Word-wrap a cell / title / caption to ``max_width_px``.
-
-    Every returned line is guaranteed to measure no wider than
-    ``max_width_px``, including lines made of a single unbreakable token.
-    That guarantee is load-bearing: the draw step paints each line with
-    ``PIL.ImageDraw.text``, which does not clip, so a line the wrap step
-    lets through oversize is a line that paints across the column rule and
-    through the neighbouring cell's text.
-    """
     if text is None:
         return [""]
     text = str(text)
@@ -29248,58 +27990,30 @@ def _tbl_wrap_text(text: str, font, max_width_px: int) -> List[str]:
         current = ""
         for word in words:
             candidate = word if not current else f"{current} {word}"
-            if font.getlength(candidate) <= max_width_px:
-                current = candidate
-                continue
-            if current:
-                out.append(current)
-                current = ""
-            # ``word`` now starts a line of its own, so it needs breaking
-            # whenever it cannot fit one. The oversize test used to sit
-            # behind a ``not current`` guard, which meant a token arriving
-            # after any shorter word skipped the break entirely and was
-            # emitted whole.
-            if font.getlength(word) > max_width_px:
-                pieces = _tbl_hard_break(word, font, max_width_px)
-                out.extend(pieces[:-1])
-                current = pieces[-1]
+            if font.getlength(candidate) <= max_width_px or not current:
+                if font.getlength(word) > max_width_px and not current:
+                    pieces = _tbl_hard_break(word, font, max_width_px)
+                    out.extend(pieces[:-1])
+                    current = pieces[-1]
+                else:
+                    current = candidate
             else:
+                out.append(current)
                 current = word
         if current:
             out.append(current)
     return out
 
 
-def _tbl_continuation_hyphen(piece: str) -> str:
-    """Append a continuation hyphen to a mid-word break, when one is needed.
-
-    A piece that already ends on a separator reads as broken without help,
-    so ``Cross-currency-`` is left alone rather than becoming
-    ``Cross-currency--``.
-    """
-    return piece if piece.endswith(("-", "_")) else f"{piece}-"
-
-
 def _tbl_hard_break(text: str, font, max_width_px: int) -> List[str]:
-    """Split one unbreakable token into pieces that each fit ``max_width_px``.
-
-    Every piece but the last carries a continuation hyphen, and that hyphen
-    is measured as part of the piece rather than appended after the fit
-    test, so hyphenating can never push a line back over the budget.
-    """
     pieces: List[str] = []
     current = ""
-    last_idx = len(text) - 1
-    for idx, ch in enumerate(text):
-        candidate = current + ch
-        # A piece that runs to the end of the token needs no hyphen, so only
-        # reserve room for one while there is more token to come.
-        probe = candidate if idx == last_idx else _tbl_continuation_hyphen(candidate)
-        if font.getlength(probe) > max_width_px and current:
-            pieces.append(_tbl_continuation_hyphen(current))
+    for ch in text:
+        if font.getlength(current + ch) > max_width_px and current:
+            pieces.append(current)
             current = ch
         else:
-            current = candidate
+            current += ch
     if current:
         pieces.append(current)
     return pieces or [text]
@@ -29567,27 +28281,21 @@ def _tbl_compress_to_fit(
     if not flex_idx:
         return list(widths)
     out = list(widths)
-    room = sum(out[i] - floors[i] for i in flex_idx)
-    take = min(overflow, room)
-    if take > 0:
+    while overflow > 0:
+        room = sum(out[i] - floors[i] for i in flex_idx)
+        if room <= 0:
+            break
+        take = min(overflow, room)
         for i in flex_idx:
             slack = out[i] - floors[i]
             if slack <= 0:
                 continue
-            share = min(slack, int(round(take * (slack / room))))
+            share = int(round(take * (slack / room)))
+            share = min(share, slack)
             out[i] -= share
-            overflow -= share
-    # A proportional share rounds to zero once the residue is smaller than
-    # the number of flexible columns, so the pass above can leave a few
-    # pixels unplaced. Spending them one at a time, widest slack first, is
-    # what makes this terminate: recomputing the proportional pass instead
-    # reproduces the same zero shares against the same state forever.
-    while overflow > 0:
-        widest = max(flex_idx, key=lambda i: out[i] - floors[i])
-        if out[widest] <= floors[widest]:
+        overflow = sum(out) - inner_target
+        if overflow <= 0 or sum(out[i] - floors[i] for i in flex_idx) <= 0:
             break
-        out[widest] -= 1
-        overflow -= 1
     return out
 
 

@@ -299,7 +299,7 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `color_sort` on `contribution` | Sets stack order as well as legend order — first entry sits nearest the zero line |
 | `bins` / `maxbins`, `bin_extent` | Histogram bins and range |
 | `extent` | Boxplot whisker IQR multiplier; default 1.5 |
-| `scale_type` | `linear` / `log` on `multi_line`, `timeseries`, `line`, `area`, `scatter`. Both values are honoured and override the default and auto-detection, so `linear` is how you turn an auto-log axis off. `log` requires every y value > 0 and is refused otherwise; on other chart types the kwarg is refused rather than ignored — pre-transform with `np.log10` and say so in the axis title |
+| `scale_type` | `linear` / `log` for line/timeseries/scatter only |
 | `orientation` | `bar`: force `vertical` instead of automatic horizontal routing |
 | `x_low`, `x_high`, `color_by`, `label`, `marker_size` | Bullet range, marker colour metric, optional label, marker area (default 200) |
 | `dual_axis_series`, `dual_axis_bind`, `invert_right_axis` | See `chart_context_dual_axis.md`; `dual_axis_config` is engine-managed |
