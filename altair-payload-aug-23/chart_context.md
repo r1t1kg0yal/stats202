@@ -190,74 +190,20 @@ then re-run; never swallow chart errors with `try/except`.
 
 The engine raises rather than truncating. These are ceilings, not targets.
 
-### 5.1 Character budgets — check these before you write the DataFrame
-
-Every one of these is a hard cap on a STRING you control. They are cheap to
-respect up front and expensive to discover from an error, so size the text
-while you are building the frame, not after a refusal.
-
-```
- y_title / x_title ........ 28    end-label series name .... 32
- bar category label ....... 22    heatmap row / column ..... 20
- PlotText.text ............ 10 words (aim 8)
- chart title / subtitle ... 2 wrapped lines at the canvas width
- composite super-title .... 63 at any preset (up to 159 on the widest)
- composite super-subtitle . 93 at any preset (up to 231 on the widest)
- table row, all columns ... ~140 total across the widest cell of each column
-```
-
-Rule of thumb for axis and category text: **8–14 characters reads cleanly at
-every canvas size.** Write `'Net Debt/EBITDA'` as `'ND/EBITDA'`, `'Free Cash
-Flow Yield'` as `'FCF Yld'`, `'Manufacturing PMI Composite'` as `'Mfg PMI'`.
-Do the abbreviating in the DataFrame — the engine never truncates, and never
-invents a shorter name for you.
-
-### 5.2 Length is not the same as fit
-
-A label can be inside its character cap and still not fit, and the two have
-**disjoint** remedies. Read which one the error names before editing anything:
-
-- **Length** — one string is too long for the space its own row or column
-  gets. Shorten that string. The error quotes it and its character count.
-- **Fit** — there are too many rows or columns for the canvas, whatever they
-  are called. Shortening labels does **nothing** here: a 16-row matrix in a
-  240px-tall cell is still 16 rows at four characters each. Change the SHAPE
-  (aggregate, top-N, render standalone) or let the engine own the canvas.
-
-Where the engine owns the canvas it already resolves fit for you, so you
-should never be selecting a size to make a matrix fit:
-
-- `make_chart(chart_type='heatmap')` with **no** `dimensions` kwarg sizes the
-  canvas from the matrix — row count sets the height, column count and the
-  longest row label set the width. A 16×16 correlation matrix renders on the
-  first call. Passing `dimensions` opts out of this and pins you to a preset.
-- `make_*pack_*` reads the same requirement off any heatmap panel and picks a
-  `dimension_preset` that fits it, overriding a smaller one you named and
-  reporting the override on `result.warnings`.
-- `make_table` reflows multi-word headers over two lines and gives back its
-  cosmetic column padding before it refuses on width.
-
-So: if a heatmap is refused for fit, the matrix is too big for a **fixed**
-cell, and the fix is to move it to its own `make_chart` call or to cut the
-number of categories — not to pick a bigger preset, and not to rename things.
-
-### 5.3 The full gate table
-
 | Gate | Current hard limit | Authoring action |
 |---|---:|---|
 | Lines per `multi_line` / `timeseries` / `area` panel | 6 | Aim for ≤4; split, facet, or aggregate |
 | Value-axis title (`y_title`, `y_title_right`; `x_title` on horizontal bars) | 28 characters | Aim for concise metric + unit |
 | Auto end-label series name | 32 characters | Rename categories before charting |
 | Bar / `contribution` category label | 22 characters | Abbreviate in the DataFrame |
-| Heatmap row or column label | 20 characters, and less on a narrow canvas — the usable budget is reported in the error | Abbreviate in the DataFrame. Only applies when the error names a specific string; a row-COUNT failure is §5.2 fit, not length |
-| Heatmap rows vs canvas height | Each row needs one label line, so a fixed cell fits `height / 15` rows | Drop the `dimensions` kwarg and let the engine size the canvas; inside a fixed cell, aggregate or take the top-N. Renaming rows buys nothing |
-| Named categories vs canvas (`bar`, `bar_horizontal`, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap (no help on a symmetric matrix — the engine says so), or switch to `bar_horizontal` for long lists |
+| Heatmap row or column label | 20 characters | Abbreviate in the DataFrame |
+| Named categories vs canvas (`bar`, `bar_horizontal`, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap, or switch to `bar_horizontal` for long lists |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
 | Series vertical share (`color`-split `multi_line` / `timeseries`) | Every series needs ≥10% of the y span, and adjacent series means stay within 3× the widest single span | Pass `y_title_right` naming the secondary metric and unit: inert when one axis suffices, and when it does not the engine routes the magnitude clusters to a dual axis in one pass. Standalone charts only — inside a composite cell declare `dual_axis_series` as well. Otherwise 2-pack, rebase to 100, or facet |
 | Categorical colour / donut slices | 10 categories | Filter or aggregate to `Other` |
 | Composite super-title / super-subtitle | `3 x int(row_px / (font_px x 0.55))` characters, where `row_px = cols x chart_width + (cols - 1) x 20` for the chosen layout and `dimension_preset`, and `font_px` is 32 (title) / 22 (subtitle). Across the presets that runs 63 to 159 characters for the title, 93 to 231 for the subtitle | Write to the 63 / 93 floor and any preset takes it; name a wider preset and spend its full budget |
-| `make_table` printed width | Body text prints at `body_font_size x 468 / canvas_px` and must clear 6pt, so the canvas stays under `78 x body_font_size` px, i.e. about 140 characters across one row (the widest cell of each column, summed), less ~2.5 per column for padding | Transpose, split by column group, drop or aggregate columns, shorten headers. The engine first wraps text columns to their floors, reflows multi-word headers onto a second line, reclaims per-column padding, and grows the body font — so a refusal here means the content itself is too wide, and the error names which columns and whether their header or their values set the floor. A square label-by-label matrix belongs in a heatmap, and the error says so |
+| `make_table` printed width | Body text prints at `body_font_size x 468 / canvas_px` and must clear 6pt, so the canvas stays under `78 x body_font_size` px, i.e. about 140 characters across one row (the widest cell of each column, summed), less ~2.5 per column for padding | Transpose, split by column group, drop or aggregate columns, shorten headers; the engine wraps text columns toward their floors to reach it |
 | Composite / facet count | Packs 2–6; facets 7–36 | See the composites or grids document |
 | `PlotText.text` | 10 words (aim ≤8) | Use caption/side text for longer prose |
 

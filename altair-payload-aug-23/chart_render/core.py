@@ -1465,63 +1465,40 @@ def _validate_dual_axis_right_title(mapping: Dict[str, Any]) -> str:
     return title
 
 
-def _suggest_bar_label_abbreviations(
-    label: str,
-    cap: int = _BAR_CATEGORY_LABEL_MAX_CHARS,
-) -> str:
-    """Produce 1-2 abbreviation suggestions for an over-cap category label.
+def _suggest_bar_label_abbreviations(label: str) -> str:
+    """Produce 1-2 abbreviation suggestions for an over-cap bar category label.
 
     Strategy:
       1. Acronym from word initials (e.g. 'Information Technology' -> 'IT').
       2. First word + acronymised rest (e.g. 'Manufacturing PMI Composite'
          -> 'Mfg PMI').
-      3. Hard truncation to ``cap``.
-
-    ``cap`` is the budget the CALLER is enforcing, not a constant: the bar
-    gate polices 22 characters while a heatmap row gutter can be down at 9,
-    and a suggestion sized against the wrong budget is a suggestion that
-    does not fix the error it is attached to.
-
-    Returns ``""`` when no strategy produces something shorter than the
-    input. That case is real -- a single-token label like ``'FCFYld'`` has no
-    acronym and no word boundary to exploit -- and the caller must then omit
-    the "try abbreviating" clause entirely rather than print a hint that
-    restates its own input. A no-op suggestion is worse than none: it reads
-    as an instruction, the author follows it, nothing changes, and the retry
-    is spent.
+    Returns both joined with ' / '; falls back to a hard truncation when
+    neither acronym strategy stays under the cap.
     """
-    cap = max(1, int(cap))
+    cap = _BAR_CATEGORY_LABEL_MAX_CHARS
     words = label.split()
-    candidates: List[str] = []
 
     initials = "".join(w[0].upper() for w in words if w and w[0].isalpha())
     if 2 <= len(initials) <= cap:
-        candidates.append(initials)
+        first_suggestion = initials
+    else:
+        first_suggestion = label[:cap]
 
     if len(words) >= 2:
+        first_word = words[0]
         rest_initials = "".join(
             w[0].upper() for w in words[1:] if w and w[0].isalpha()
         )
-        candidate = f"{words[0]} {rest_initials}".strip()
-        if len(candidate) <= cap:
-            candidates.append(candidate)
+        candidate = f"{first_word} {rest_initials}".strip()
+        second_suggestion = (
+            candidate if len(candidate) <= cap else label[:cap]
+        )
+    else:
+        second_suggestion = label[:cap]
 
-    if len(label) > cap:
-        candidates.append(label[:cap])
-
-    # Anything that is not strictly shorter than the input is a no-op.
-    seen: Set[str] = set()
-    kept: List[str] = []
-    for candidate in candidates:
-        norm = candidate.strip()
-        if not norm or len(norm) >= len(label) or norm in seen:
-            continue
-        seen.add(norm)
-        kept.append(norm)
-
-    if not kept:
-        return ""
-    return " / ".join(f"'{c}'" for c in kept[:2])
+    if first_suggestion == second_suggestion:
+        return f"'{first_suggestion}'"
+    return f"'{first_suggestion}' / '{second_suggestion}'"
 
 
 def _validate_bar_category_labels(
@@ -1555,16 +1532,9 @@ def _validate_bar_category_labels(
     offender_block = "\n".join(
         f"  - '{label}' ({len(label)} ch)" for label in shown_offenders
     )
-    suggestions = [
-        (label, _suggest_bar_label_abbreviations(label))
-        for label in shown_offenders[:3]
-    ]
     suggestion_block = "\n".join(
-        f"  '{label}' -> {hint}" for label, hint in suggestions if hint
-    )
-    suggestion_tail = (
-        f"\nSuggested abbreviations:\n{suggestion_block}"
-        if suggestion_block else ""
+        f"  '{label}' -> {_suggest_bar_label_abbreviations(label)}"
+        for label in shown_offenders[:3]
     )
 
     raise BarCategoryLabelTooLongError(
@@ -1573,9 +1543,10 @@ def _validate_bar_category_labels(
             f"{_BAR_CATEGORY_LABEL_MAX_CHARS}-character cap "
             f"({n_offenders} offender(s), longest is {max_len} ch). "
             f"Shorten the labels in the DataFrame before make_chart().\n"
-            f"Offenders ({len(shown_offenders)} of {n_offenders} shown, longest first):"
-            f"\n{offender_block}"
-            f"{suggestion_tail}"
+            f"Offenders ({len(shown_offenders)} of {n_offenders} shown, longest first):\n"
+            f"{offender_block}\n"
+            f"Suggested abbreviations:\n"
+            f"{suggestion_block}"
         ),
         offending_labels=offenders,
         category_field=category_field,
@@ -19898,61 +19869,6 @@ def _heatmap_axis_labels(
     return [str(v) for v in df[field].dropna().unique().tolist()]
 
 
-def _heatmap_row_label_font_for_pitch(
-    row_pitch_px: float,
-    base_font_size: int,
-) -> int:
-    """Largest row-label font that clears ``row_pitch_px`` of vertical room.
-
-    The row axis is the one heatmap axis with no rotation available -- row
-    labels are always horizontal -- so shrinking is its ONLY concession, the
-    way rotation-then-shrinking is the column axis's. Without this ladder the
-    row axis was the only labelled axis in the engine that refused at the
-    skin's font size instead of stepping down to
-    ``_HEATMAP_MIN_LABEL_FONT_PX``, which is what turned a 15- or 16-row
-    correlation matrix in a 250-350px composite cell into a hard failure
-    while the same matrix would have been legible two font steps down.
-
-    Floors at ``_HEATMAP_MIN_LABEL_FONT_PX``, the same floor the column
-    ladder stops at, so both axes of one matrix bottom out together.
-    """
-    fit = int(row_pitch_px) - _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX
-    return max(_HEATMAP_MIN_LABEL_FONT_PX, min(int(base_font_size), fit))
-
-
-def _heatmap_row_label_font(
-    n_rows: int,
-    chart_height: int,
-    base_font_size: int,
-    *,
-    labels: Optional[List[str]] = None,
-    gutter_px: Optional[float] = None,
-) -> int:
-    """Effective row-label font for ``n_rows`` rows in ``chart_height`` px.
-
-    Two independent constraints act on this one font: the ROW PITCH bounds
-    its height and the LEFT GUTTER bounds the width of the longest label.
-    The font has to satisfy both, so it steps down until it does or hits
-    ``_HEATMAP_MIN_LABEL_FONT_PX``. Serving only the pitch left the gutter
-    refusing a 15-character label at the pitch-derived size while the same
-    label fits comfortably three steps down -- the axis was willing to shrink
-    for one constraint and not the other, so shrinking is applied to both.
-    """
-    if n_rows <= 0:
-        return int(base_font_size)
-    font_px = _heatmap_row_label_font_for_pitch(
-        chart_height / n_rows, base_font_size,
-    )
-    if not labels or not gutter_px:
-        return font_px
-    while (
-        font_px > _HEATMAP_MIN_LABEL_FONT_PX
-        and max(_axis_label_pixel_budget(s, font_px) for s in labels) > gutter_px
-    ):
-        font_px -= 1
-    return font_px
-
-
 def _heatmap_row_label_plan(
     df: pd.DataFrame,
     y_field: Optional[str],
@@ -19962,29 +19878,20 @@ def _heatmap_row_label_plan(
     chart_height: int,
     label_font_size: int,
     composite_cell: bool,
-) -> Tuple[List[str], int, int, int]:
-    """Return (labels, max_chars, label_limit_px, font_px) for row labels.
-
-    ``font_px`` is the post-ladder font the y axis will actually render at,
-    and every budget in the tuple is computed against it -- a smaller font
-    fits more characters in the same gutter, so the ladder relaxes the
-    horizontal budget as well as the vertical one.
-    """
+) -> Tuple[List[str], int, int]:
+    """Return (labels, max_chars, label_limit_px) for validated row labels."""
     labels = _heatmap_axis_labels(df, y_field, sort_order)
     if not labels:
-        return [], 0, 16, int(label_font_size)
+        return [], 0, 16
+    px_per_char = _axis_label_px_per_char(label_font_size)
     n_rows = max(len(labels), 1)
+    per_row_px = chart_height / n_rows
     gutter_frac = (
         _HEATMAP_ROW_GUTTER_FRAC_COMPOSITE
         if composite_cell
         else _HEATMAP_ROW_GUTTER_FRAC_STANDALONE
     )
     gutter_px = chart_width * gutter_frac
-    font_px = _heatmap_row_label_font(
-        n_rows, chart_height, label_font_size,
-        labels=labels, gutter_px=gutter_px,
-    )
-    px_per_char = _axis_label_px_per_char(font_px)
     max_chars = max(1, int((gutter_px - 8) / px_per_char))
     max_chars = min(max_chars, _HEATMAP_ROW_LABEL_MAX_CHARS)
     # labelLimit must be >= the REAL rendered width of every label the
@@ -19992,9 +19899,9 @@ def _heatmap_row_label_plan(
     # "GOOGL"->"GO..." bug). Take the longest estimated width with an 18%
     # head-room margin (covers the uppercase under-measure), clamped to the
     # reserved gutter so the ceiling can never push past the label region.
-    longest_px = max(_axis_label_pixel_budget(s, font_px) for s in labels)
+    longest_px = max(_axis_label_pixel_budget(s, label_font_size) for s in labels)
     label_limit_px = max(16, min(int(gutter_px), int(longest_px * 1.18)))
-    return labels, max_chars, label_limit_px, font_px
+    return labels, max_chars, label_limit_px
 
 
 def _heatmap_row_labels_fit_horizontal(
@@ -20008,7 +19915,7 @@ def _heatmap_row_labels_fit_horizontal(
     composite_cell: bool,
 ) -> Tuple[bool, int, List[str], Optional[str]]:
     """Check whether every row label fits horizontally at angle=0."""
-    labels, max_chars, _, font_px = _heatmap_row_label_plan(
+    labels, max_chars, _ = _heatmap_row_label_plan(
         df,
         field,
         sort_order,
@@ -20019,6 +19926,7 @@ def _heatmap_row_labels_fit_horizontal(
     )
     if not labels:
         return True, 0, [], None
+    px_per_char = _axis_label_px_per_char(label_font_size)
     n_rows = max(len(labels), 1)
     per_row_px = chart_height / n_rows
     gutter_frac = (
@@ -20028,31 +19936,19 @@ def _heatmap_row_labels_fit_horizontal(
     )
     gutter_px = chart_width * gutter_frac
 
-    # Reached only once the ladder has bottomed out, so the binder here is
-    # canvas height and nothing else. The message this feeds must say so:
-    # naming label length at this point sends the author to shorten strings
-    # that were never the constraint.
     vertical_reason: Optional[str] = None
-    if font_px + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX > per_row_px:
-        rows_that_fit = max(
-            1,
-            int(chart_height // (
-                _HEATMAP_MIN_LABEL_FONT_PX + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX
-            )),
-        )
+    if label_font_size + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX > per_row_px:
         vertical_reason = (
-            f"{n_rows} rows in a {chart_height}px-tall canvas leave "
-            f"~{per_row_px:.0f}px/row, and the smallest row-label font the "
-            f"engine will use ({_HEATMAP_MIN_LABEL_FONT_PX}px) needs "
-            f"{_HEATMAP_MIN_LABEL_FONT_PX + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX}"
-            f"px, so at most {rows_that_fit} rows fit. Row-label LENGTH is not "
-            f"the constraint here -- shortening labels does not add rows"
+            f"{n_rows} rows in a {chart_height}px-tall cell leave "
+            f"~{per_row_px:.0f}px/row, below the "
+            f"{label_font_size + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX}px needed "
+            f"for {label_font_size}pt horizontal labels"
         )
 
     offending = [
         s for s in labels
         if len(s) > max_chars
-        or _axis_label_pixel_budget(s, font_px) > gutter_px
+        or _axis_label_pixel_budget(s, label_font_size) > gutter_px
     ]
     if vertical_reason:
         return False, max_chars, offending or labels, vertical_reason
@@ -20071,12 +19967,8 @@ def _validate_heatmap_row_labels(
     label_font_size: int,
     mapping: Optional[Dict[str, Any]] = None,
     composite_cell: bool = False,
-) -> Tuple[int, int]:
-    """Fail fast when row labels would truncate.
-
-    Returns ``(label_limit_px, font_px)`` -- the exact Vega-Lite
-    ``labelLimit`` and the post-ladder tick font the y axis renders at.
-    """
+) -> int:
+    """Fail fast when row labels would truncate; return exact ``labelLimit`` px."""
     fits, max_chars, offending, vertical_reason = _heatmap_row_labels_fit_horizontal(
         df,
         y_field,
@@ -20086,7 +19978,7 @@ def _validate_heatmap_row_labels(
         label_font_size=label_font_size,
         composite_cell=composite_cell,
     )
-    labels, _, label_limit_px, font_px = _heatmap_row_label_plan(
+    labels, _, label_limit_px = _heatmap_row_label_plan(
         df,
         y_field,
         sort_order,
@@ -20096,61 +19988,29 @@ def _validate_heatmap_row_labels(
         composite_cell=composite_cell,
     )
     if fits:
-        return label_limit_px, font_px
+        return label_limit_px
 
     if not offending:
         longest = max(labels, key=len) if labels else ""
         offending = [longest]
     sample = offending[0]
     n_rows = max(len(labels), 1)
-
-    # A HEIGHT failure and a LABEL-LENGTH failure are different errors with
-    # disjoint remedies, and the wrong remedy costs a full retry each time.
-    # Height gets the shape remedies; length gets the abbreviation ones.
-    if vertical_reason:
-        rows_that_fit = max(
-            1,
-            int(chart_height // (
-                _HEATMAP_MIN_LABEL_FONT_PX + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX
-            )),
-        )
-        if composite_cell:
-            remedy = (
-                f"Render this matrix through its own make_chart() call rather "
-                f"than a composite cell -- a standalone heatmap sizes its own "
-                f"canvas from the row count, so all {n_rows} rows fit without "
-                f"any dimensions kwarg. Inside this cell, aggregate "
-                f"{y_field!r} to at most {rows_that_fit} rows or take the top "
-                f"{rows_that_fit}."
-            )
-        else:
-            remedy = (
-                f"Aggregate {y_field!r} to at most {rows_that_fit} rows or "
-                f"take the top {rows_that_fit}. Drop any explicit dimensions "
-                f"kwarg so the engine sizes the canvas from the row count."
-            )
-        raise HeatmapRowLabelTooLongError(
-            f"Heatmap rows do not fit: {vertical_reason}. {remedy}",
-            offending_labels=offending,
-            y_field=y_field,
-            mapping=mapping,
-            max_chars=max_chars,
-            chart_height=chart_height,
-        )
-
     ctx = "make_*pack_*()" if composite_cell else "make_chart()"
-    abbrev_hint = _suggest_bar_label_abbreviations(sample, max_chars)
-    hint_tail = (
-        f" Try abbreviating {sample!r} -> {abbrev_hint}." if abbrev_hint else ""
-    )
+    abbrev_hint = _suggest_bar_label_abbreviations(sample)
+    if vertical_reason:
+        detail = vertical_reason
+    else:
+        detail = (
+            f"{y_field!r} value {sample!r} ({len(sample)} chars) exceeds the "
+            f"~{max_chars}-char left-gutter budget for a "
+            f"{chart_width}x{chart_height}px canvas"
+        )
     raise HeatmapRowLabelTooLongError(
         f"Heatmap row labels must stay horizontal and cannot be truncated, "
-        f"but {y_field!r} value {sample!r} ({len(sample)} chars) exceeds the "
-        f"~{max_chars}-char left-gutter budget for a "
-        f"{chart_width}x{chart_height}px canvas. Shorten row labels in the "
-        f"DataFrame before {ctx} (max {_HEATMAP_ROW_LABEL_MAX_CHARS} chars; "
-        f"aim <=~{max_chars} at {n_rows} rows / {chart_width}px width)."
-        f"{hint_tail} "
+        f"but {detail}. Shorten row labels in the DataFrame before "
+        f"{ctx} (max {_HEATMAP_ROW_LABEL_MAX_CHARS} chars; aim <=~{max_chars} "
+        f"at {n_rows} rows / {chart_width}px width). "
+        f"Try abbreviating {sample!r} -> {abbrev_hint}. "
         f"Offending: {offending[:4]}"
         f"{'...' if len(offending) > 4 else ''}.",
         offending_labels=offending,
@@ -20340,20 +20200,16 @@ def _validate_heatmap_column_labels(
         return label_limit_px
 
     sample = offenders[0]
+    n_cols = len(all_labels)
     ctx = "make_*pack_*()" if composite_cell else "make_chart()"
-    abbrev_hint = _suggest_bar_label_abbreviations(
-        sample, _HEATMAP_COLUMN_LABEL_MAX_CHARS,
-    )
-    hint_tail = (
-        f"Try abbreviating {sample!r} -> {abbrev_hint}. " if abbrev_hint else ""
-    )
+    abbrev_hint = _suggest_bar_label_abbreviations(sample)
     raise HeatmapColumnLabelTooLongError(
         f"Heatmap column labels cannot be truncated, but "
         f"{x_field!r} value {sample!r} ({len(sample)} chars) exceeds the "
         f"{_HEATMAP_COLUMN_LABEL_MAX_CHARS}-character cap on a "
         f"{chart_width}px-wide canvas at {label_angle} deg. "
         f"Shorten column labels in the DataFrame before {ctx}. "
-        f"{hint_tail}"
+        f"Try abbreviating {sample!r} -> {abbrev_hint}. "
         f"Offending: {offenders[:4]}"
         f"{'...' if len(offenders) > 4 else ''}.",
         offending_labels=offenders,
@@ -20373,43 +20229,22 @@ def _heatmap_column_crowding_error(
     n_unlabelled: int,
     mapping: Optional[Dict[str, Any]] = None,
     composite_cell: bool = False,
-    symmetric: bool = False,
 ) -> HeatmapColumnLabelTooLongError:
-    """Too many named columns to label, after rotating and shrinking.
-
-    ``symmetric`` marks a matrix whose row and column label sets are the
-    same -- a correlation matrix, overwhelmingly the shape that lands here.
-    Transposing one is the identity, so offering it as a remedy costs an
-    attempt to discover that nothing changed.
-    """
+    """Too many named columns to label, after rotating and shrinking."""
     n_cols = len(ordered_vals)
     fits = n_cols - n_unlabelled
-    remedies: List[str] = []
-    if composite_cell:
-        remedies.append(
-            "render this matrix through its own make_chart() call instead of a "
-            "composite cell -- a standalone heatmap sizes its own canvas from "
-            "the matrix shape, and a cell is roughly half the width"
-        )
-    else:
-        remedies.append(
-            "drop any explicit dimensions kwarg so the engine sizes the canvas "
-            "from the column count"
-        )
-    remedies.append(f"aggregate {x_field!r} to at most {fits} groups")
-    remedies.append(f"take the top {fits}")
-    if not symmetric:
-        remedies.append("transpose so the long side becomes rows")
+    tail = (
+        ", or render this heatmap on its own -- one composite cell is "
+        "roughly half the width of a standalone canvas"
+        if composite_cell
+        else ""
+    )
     return HeatmapColumnLabelTooLongError(
         f"Heatmap has {n_cols} named columns but only {fits} fit on a "
         f"{chart_width}px axis at -45 deg with the smallest label font, and "
-        f"a category name is never hidden. Fix by ONE of: "
-        f"{'; '.join(remedies)}."
-        + (
-            " This matrix is symmetric (the same labels on both axes), so "
-            "transposing it changes nothing."
-            if symmetric else ""
-        ),
+        f"a category name is never hidden. Aggregate {x_field!r} to at most "
+        f"{fits} groups, take the top {fits}, transpose so the long side "
+        f"becomes rows{tail}.",
         offending_labels=[str(v) for v in ordered_vals],
         x_field=x_field,
         mapping=mapping,
@@ -20422,212 +20257,6 @@ def _heatmap_column_crowding_error(
 def _heatmap_row_label_angle() -> int:
     """Heatmap row (y-axis) labels are always horizontal."""
     return 0
-
-
-def _heatmap_is_symmetric(
-    df: pd.DataFrame,
-    x_field: Optional[str],
-    y_field: Optional[str],
-) -> bool:
-    """True when the row and column label sets are identical.
-
-    The correlation matrix -- the dominant heatmap shape -- is symmetric, and
-    several remedies that make sense for a rectangular matrix (transpose, put
-    the long side on rows) are the identity on a symmetric one.
-    """
-    if not x_field or not y_field:
-        return False
-    cols = getattr(df, "columns", [])
-    if x_field not in cols or y_field not in cols:
-        return False
-    xs = set(str(v) for v in df[x_field].dropna().unique().tolist())
-    ys = set(str(v) for v in df[y_field].dropna().unique().tolist())
-    return bool(xs) and xs == ys
-
-
-# Standalone heatmaps size their own canvas from the MATRIX SHAPE. Row count,
-# column count and label lengths are all known before the call, so a preset
-# canvas is the wrong budget for the same reason a preset height is wrong for
-# a horizontal bar: a 16x16 correlation matrix on the 700x350 `wide` preset
-# gets 21.9px per row against a 22px floor and refuses, and the remedy the
-# author has to discover by rejection is a canvas keyword. The engine knows
-# the answer before it starts, so it applies it.
-#
-# The pitch is deliberately ABOVE the bare legibility floor: sizing to the
-# floor would put every auto-sized matrix one pixel from a refusal, so a
-# comfortable pitch is what makes the first call reliable rather than
-# marginal. 26px at the 18px skin font is roughly the 450x450 `square`
-# canvas that production converged on by hand for 16 rows.
-#
-# Caps stop a pathological 200-row frame from emitting a 5000px PNG; past
-# them the row / column gates raise with the aggregation remedies instead.
-_HEATMAP_AUTO_ROW_PITCH_PX = 26
-_HEATMAP_AUTO_MAX_W = 1000
-_HEATMAP_AUTO_MAX_H = 900
-
-
-def _heatmap_auto_canvas(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    base_width: int,
-    base_height: int,
-    label_font_size: int,
-) -> Tuple[int, int]:
-    """Grow a standalone heatmap canvas to fit its matrix shape.
-
-    Only ever GROWS -- a matrix small enough for the preset keeps the preset
-    exactly, so no existing heatmap changes size. Only ``make_chart`` calls
-    this, and only when it picked the preset itself: an explicit
-    ``dimension_preset`` is a promise about pixels, and composite cells never
-    reach here at all (their geometry belongs to the pack).
-
-    A CALENDAR column axis is excluded from the width calculation because it
-    thins its ticks rather than labelling every column, so a 60-month
-    seasonality heatmap needs no width per column and would otherwise inflate
-    straight to the cap.
-    """
-    y_field = _get_field(mapping, "y")
-    x_field = _get_field(mapping, "x")
-    row_labels = _heatmap_axis_labels(df, y_field, mapping.get("y_sort"))
-    col_labels = _heatmap_axis_labels(df, x_field, mapping.get("x_sort"))
-    if not row_labels and not col_labels:
-        return base_width, base_height
-
-    height = base_height
-    if row_labels:
-        height = max(base_height, min(
-            len(row_labels) * _HEATMAP_AUTO_ROW_PITCH_PX,
-            _HEATMAP_AUTO_MAX_H,
-        ))
-
-    needs: List[float] = []
-    if row_labels:
-        # The left gutter is modelled as a fraction of plot width, so the
-        # width the longest row label implies is that label divided by the
-        # fraction reserved for it.
-        longest_px = max(
-            _axis_label_pixel_budget(s, label_font_size) for s in row_labels
-        )
-        needs.append(longest_px / _HEATMAP_ROW_GUTTER_FRAC_STANDALONE)
-    if col_labels and not _heatmap_labels_are_calendar(col_labels):
-        max_len = max(len(s) for s in col_labels)
-        pitch = _heatmap_column_label_pitch_px(max_len, label_font_size, -45)
-        needs.append(
-            len(col_labels) * pitch * _HEATMAP_COLUMN_PITCH_MARGIN
-        )
-
-    width = base_width
-    if needs:
-        # +4px so a canvas sized off the -45 pitch does not land one pixel
-        # short of the margin the axis planner then re-checks it against.
-        width = max(base_width, min(
-            int(math.ceil(max(needs))) + 4, _HEATMAP_AUTO_MAX_W,
-        ))
-    return width, height
-
-
-def _heatmap_min_cell_size(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    *,
-    gutter_frac: float = _HEATMAP_ROW_GUTTER_FRAC_COMPOSITE,
-) -> Tuple[int, int]:
-    """Smallest ``(width, height)`` at which both heatmap label gates pass.
-
-    This is the FLOOR, not the comfortable size ``_heatmap_auto_canvas``
-    returns: every term is evaluated at ``_HEATMAP_MIN_LABEL_FONT_PX``,
-    the smallest font the axis planner will step down to. A composite cell
-    is scarce space, so asking for the comfortable pitch there would send
-    every matrix straight to the largest preset in the family whether it
-    needed it or not.
-
-    Both gates are mirrored exactly, so a cell at or above this size cannot
-    then be refused by them:
-      height -- one floor-font line plus its pad per row;
-      width  -- whichever is larger of the left gutter the longest row label
-                needs (the gutter is a fixed fraction of width, so the label
-                width divides by that fraction) and the -45 deg pitch every
-                column label needs, times the planner's own margin.
-    """
-    y_field = _get_field(mapping, "y")
-    x_field = _get_field(mapping, "x")
-    row_labels = _heatmap_axis_labels(df, y_field, mapping.get("y_sort"))
-    col_labels = _heatmap_axis_labels(df, x_field, mapping.get("x_sort"))
-    font = _HEATMAP_MIN_LABEL_FONT_PX
-
-    height = len(row_labels) * (font + _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX)
-
-    needs: List[float] = []
-    if row_labels:
-        longest_px = max(
-            _axis_label_pixel_budget(s, font) for s in row_labels
-        )
-        needs.append(longest_px / gutter_frac)
-    if col_labels and not _heatmap_labels_are_calendar(col_labels):
-        max_len = max(len(s) for s in col_labels)
-        pitch = _heatmap_column_label_pitch_px(max_len, font, -45)
-        needs.append(len(col_labels) * pitch * _HEATMAP_COLUMN_PITCH_MARGIN)
-    width = int(math.ceil(max(needs))) + 4 if needs else 0
-    return width, height
-
-
-def _composite_preset_for_matrix_cells(
-    charts: List[Any],
-    layout_dims: Dict[str, Tuple[int, int]],
-    preset: str,
-) -> Tuple[str, List[str]]:
-    """Pick the smallest preset in this layout family that fits every matrix.
-
-    A heatmap cell's minimum size is a pure function of its matrix shape, so
-    the engine can read it off the DataFrame before rendering anything --
-    exactly as ``make_chart`` does for a standalone heatmap. Leaving the
-    choice with the caller meant a 16-column correlation matrix in a
-    ``compact`` 2-pack refused on the column gate, and the author then had to
-    discover ``dimension_preset`` by rejection, one preset per attempt.
-
-    Only ever UPGRADES: a preset already big enough is returned untouched, so
-    no existing pack changes size. An EXPLICIT preset is upgraded too and the
-    override is reported on ``warnings``. A caller who names ``compact`` wants
-    a small pack, but they want a pack: silently honouring the request means
-    returning nothing at all, which is the one outcome that helps no-one.
-
-    When no preset in the family is large enough, the largest is returned and
-    the heatmap gate raises with its own remedies -- that failure is real (the
-    matrix does not belong in a cell) and the gate says so better than a
-    guess here would.
-    """
-    matrix_needs: List[Tuple[int, int]] = []
-    for spec in charts:
-        if getattr(spec, "chart_type", None) != "heatmap":
-            continue
-        df = getattr(spec, "df", None)
-        if df is None or not len(df):
-            continue
-        matrix_needs.append(
-            _heatmap_min_cell_size(df, getattr(spec, "mapping", None) or {})
-        )
-    if not matrix_needs:
-        return preset, []
-
-    need_w = max(w for w, _h in matrix_needs)
-    need_h = max(h for _w, h in matrix_needs)
-    have_w, have_h = layout_dims.get(preset, (0, 0))
-    if have_w >= need_w and have_h >= need_h:
-        return preset, []
-
-    ranked = sorted(layout_dims.items(), key=lambda kv: kv[1][0] * kv[1][1])
-    for name, (w, h) in ranked:
-        if w >= need_w and h >= need_h:
-            return name, [
-                f"dimension_preset={preset!r} gives {have_w}x{have_h}px cells, "
-                f"below the {need_w}x{need_h}px a heatmap panel in this pack "
-                f"needs to label every row and column without truncation. "
-                f"Upgraded to {name!r} ({w}x{h}px cells). Pass "
-                f"dimensions={name!r} to make this explicit, or render the "
-                f"matrix standalone via make_chart() to give it a full canvas."
-            ]
-    biggest = ranked[-1][0]
-    return biggest, []
 
 
 def _build_heatmap(
@@ -20743,7 +20372,7 @@ def _build_heatmap(
     # ``_raise_findings`` raises before the axis kwargs are built.
     row_label_limit_px = 16
     try:
-        row_label_limit_px, row_label_font_size = _validate_heatmap_row_labels(
+        row_label_limit_px = _validate_heatmap_row_labels(
             df,
             y_field,
             y_sort_order,
@@ -20774,7 +20403,6 @@ def _build_heatmap(
             n_unlabelled=x_unlabelled,
             mapping=mapping,
             composite_cell=composite_cell,
-            symmetric=_heatmap_is_symmetric(df, x_field, y_field),
         ))
     try:
         column_label_limit_px = _validate_heatmap_column_labels(
@@ -24574,15 +24202,6 @@ def _make_chart(
     # about pixels, and composite cells never reach here at all.
     if engine_picked_canvas and chart_type == "bar_horizontal":
         height = _bar_horizontal_auto_height(df, mapping, height)
-    # A heatmap's canvas is a pure function of its matrix shape -- row count
-    # sets the height, and column count plus the longest row label set the
-    # width. Same rule as the horizontal bar above: engine-picked canvases
-    # only, and the result only ever grows.
-    if engine_picked_canvas and chart_type == "heatmap":
-        width, height = _heatmap_auto_canvas(
-            df, mapping, width, height,
-            _heatmap_axis_label_font_size(skin_config),
-        )
 
     # ---- Validate plot-ready DataFrame (single-pass aggregation) --------
     # Tier 0 (structural) findings aggregate among themselves and gate
@@ -28454,14 +28073,6 @@ def _make_composite(
             "explicitly."
         )
 
-    # A heatmap panel's minimum cell size is readable off its matrix, so the
-    # preset is settled before anything renders rather than discovered by
-    # rejection. Runs ahead of the super-title measurement because that
-    # measurement is against cell width.
-    dimension_preset, preset_warnings = _composite_preset_for_matrix_cells(
-        charts, layout_dims, dimension_preset,
-    )
-    warnings_list.extend(preset_warnings)
     chart_width, chart_height = layout_dims.get(dimension_preset, (350, 280))
 
     # Pre-validate the composite super-title and super-subtitle. A
@@ -29285,13 +28896,6 @@ _TBL_SIDE_PAD = 12          # Left/right canvas margin (px)
 _TBL_TEXT_COL_MAX = 280     # Cap text-col natural width before wrapping
 _TBL_TEXT_COL_FLOOR = 160   # Lower bound when compressing text cols
 _TBL_MAX_TABLE_W = 1400
-# Cosmetic per-column minimum. A one-character column looks like a mistake
-# next to its neighbours, so every column claims at least this much even
-# when its content wants less. It is COSMETIC, not structural: when the
-# alternative is refusing the table for width, the compressor gives these
-# pixels back down to the measured content width. A 17-column correlation
-# matrix of "0.81"-width cells is exactly that case.
-_TBL_MIN_COL_W = 60
 
 # -------------------------------------------------------------------------
 # Option-C canvas normalization constants for ``make_table()``.
@@ -29824,70 +29428,6 @@ def _tbl_normalize_mode(
     return {"mode": s}
 
 
-def _tbl_width_attribution(
-    df: pd.DataFrame,
-    geom: "_TableLayoutGeom",
-    theme: Dict[str, Any],
-    excess_px: int,
-    *,
-    column_formats: Dict[str, str],
-    value_overrides: Optional[Dict[Any, str]] = None,
-) -> str:
-    """Name the columns paying for the width, and say what sets each one.
-
-    A refusal that reports only a total ("about 44px of column width has to
-    go") leaves the author guessing which of seventeen columns to touch, and
-    guessing costs an attempt per guess. Worse, the generic advice to shorten
-    headers is wrong for any column whose BODY is the binder -- so each named
-    column is labelled with the side that actually sets its floor, and the
-    count of columns that would have to disappear to close the gap is stated
-    outright rather than left as arithmetic.
-    """
-    widths = list(geom.col_widths)
-    if not widths or excess_px <= 0:
-        return ""
-    header_font = _tbl_load_font("bold", theme["header_font_size"])
-    body_font = _tbl_load_font("regular", theme["body_font_size"])
-    pad = 2 * _TBL_CELL_PAD_X
-
-    rows: List[Tuple[int, str, str]] = []
-    for ci, col in enumerate(df.columns):
-        header_w = int(header_font.getlength(str(col))) + pad
-        body_w = 0
-        for r_idx in range(len(df)):
-            text = _tbl_cell_text(df, r_idx, ci, column_formats, value_overrides)
-            body_w = max(body_w, int(body_font.getlength(text)) + pad)
-        driver = "header" if header_w >= body_w else "values"
-        rows.append((widths[ci], str(col), driver))
-
-    ranked = sorted(rows, key=lambda r: -r[0])
-    named = ", ".join(f"{c!r} {w}px (set by {d})" for w, c, d in ranked[:4])
-
-    # How many of the widest columns have to go to close the gap. This is the
-    # only number that converts "44px" into an action.
-    running = 0
-    to_drop = 0
-    for w, _c, _d in ranked:
-        running += w
-        to_drop += 1
-        if running >= excess_px:
-            break
-    header_bound = sum(1 for _w, _c, d in rows if d == "header")
-    header_note = (
-        f" {header_bound} of {len(rows)} columns are HEADER-bound, so option "
-        f"(4) below is live for those."
-        if header_bound else
-        f" No column is header-bound -- every floor comes from cell values, so "
-        f"option (4) below will not help here."
-    )
-    return (
-        f"Widest columns: {named}"
-        f"{'...' if len(ranked) > 4 else ''}. "
-        f"Dropping the {to_drop} widest would close the gap."
-        f"{header_note} "
-    )
-
-
 @dataclass
 class _TableLayoutGeom:
     canvas_w: int
@@ -29902,10 +29442,6 @@ class _TableLayoutGeom:
     col_xs: List[int]
     col_widths: List[int]
     col_wraps: List[bool]
-    # Wrapped leaf-header text, one list of lines per column. Single-element
-    # for every header that fits its column, which is the normal case: only a
-    # column compressed below its header width wraps.
-    header_lines: List[List[str]]
     row_heights: List[int]
     caption_y: int
     caption_h: int
@@ -29979,47 +29515,6 @@ def _tbl_is_text_col(
     return True
 
 
-def _tbl_is_pivoted_matrix(df: pd.DataFrame) -> bool:
-    """True when the frame is a square label-by-label numeric matrix.
-
-    A correlation matrix pivoted for ``make_table`` has a label column plus
-    one numeric column per label, with the two name sets identical. That
-    shape has a first-class renderer -- a heatmap, which sizes its own canvas
-    from the matrix and never hits a page-width ceiling -- so a width refusal
-    on one of these should say so rather than send the author off to split or
-    transpose a matrix that is symmetric anyway.
-    """
-    if len(df.columns) < 5:
-        return False
-    first, rest = df.columns[0], list(df.columns[1:])
-    if pd.api.types.is_numeric_dtype(df[first]):
-        return False
-    if not all(pd.api.types.is_numeric_dtype(df[c]) for c in rest):
-        return False
-    labels = {str(v) for v in df[first].dropna().tolist()}
-    return bool(labels) and labels == {str(c) for c in rest}
-
-
-def _tbl_header_min_width(label: str, header_font, pad: int) -> int:
-    """Narrowest width a header can reach by wrapping instead of shrinking.
-
-    A header wraps at word boundaries, so its floor is its widest single
-    word, not its full string. ``'Net Debt/EBITDA'`` therefore costs the
-    width of ``'Debt/EBITDA'`` rather than the whole phrase -- 30-40% of a
-    numeric column's non-compressible width, on a matrix where that
-    difference decides whether the table renders at all.
-    """
-    words = str(label).split()
-    if not words:
-        return pad
-    # Ceil, not truncate. This width becomes a compression floor that
-    # ``_tbl_wrap_text`` is then measured against, and one truncated pixel is
-    # enough for the wrapper to decide the word does not fit and hard-break it
-    # mid-token: ``'Value'`` rendered as ``'Valu-'`` / ``'e'``. The floor has
-    # to be a real upper bound on the text it is protecting.
-    return int(math.ceil(max(header_font.getlength(w) for w in words))) + pad
-
-
 def _tbl_natural_widths(
     df: pd.DataFrame,
     column_formats: Dict[str, str],
@@ -30027,28 +29522,24 @@ def _tbl_natural_widths(
     theme: Dict[str, Any],
     value_overrides: Optional[Dict[Any, str]] = None,
     no_wrap_cols: Optional[Set[Any]] = None,
-) -> Tuple[List[int], List[bool], List[int], List[int]]:
-    """Compute the per-column natural width, wrap flag, and two floors.
+) -> Tuple[List[int], List[bool], List[int]]:
+    """Compute the per-column natural width, wrap flag, and minimum
+    floor (the smallest width that still keeps the header visible).
 
-    Returns (widths, wraps, floors, hard_floors).
+    Returns (widths, wraps, floors).
       ``widths[i]``  - natural rendered width in px (already clamped to
                        ``_TBL_TEXT_COL_MAX`` for wrapping text columns).
       ``wraps[i]``   - True when the column is a text column that has
                        been capped at ``_TBL_TEXT_COL_MAX`` and so its
                        cells must wrap to fit. Numeric / datetime /
                        sparkline / minibar columns always carry False.
-      ``floors[i]``  - lowest acceptable width under normal compression.
-                       Equal to the column's natural width for
-                       non-wrapping columns and to
+      ``floors[i]``  - lowest acceptable width when the table needs to
+                       compress to fit ``_TBL_MAX_TABLE_W``. Equal to
+                       the column's natural width for non-wrapping
+                       columns (they cannot be compressed without
+                       truncation, which is forbidden) and to
                        max(header_w, ``_TBL_TEXT_COL_FLOOR``) for
                        wrapping text columns.
-      ``hard_floors[i]`` - the width the column's own CONTENT needs, with
-                       the ``_TBL_MIN_COL_W`` cosmetic minimum removed.
-                       Only spent when the table would otherwise be
-                       refused for width: a narrow numeric column padded
-                       out to a cosmetic minimum is holding pixels that a
-                       refusal makes the author pay for, and a slightly
-                       tighter column beats no table at all.
 
     ``no_wrap_cols`` names columns that must not wrap regardless of how
     wide their content is: they skip the ``_TBL_TEXT_COL_MAX`` cap and
@@ -30063,31 +29554,25 @@ def _tbl_natural_widths(
     widths: List[int] = []
     wraps: List[bool] = []
     floors: List[int] = []
-    hard_floors: List[int] = []
     for ci, col in enumerate(df.columns):
-        header_w = (
-            int(math.ceil(header_font.getlength(str(col)))) + 2 * cell_pad_x
-        )
+        header_w = int(header_font.getlength(str(col))) + 2 * cell_pad_x
         # Sparkline / minibar columns carry a graphical body (line + dot
         # or bar), so their natural body width is fixed. The HEADER, on
         # the other hand, is plain text and must fit -- otherwise the
         # header label silently overflows into the neighbouring column
         # (PIL ``draw.text`` does not clip). Width = max(graphical
         # default, header width).
-        header_min_w = _tbl_header_min_width(col, header_font, 2 * cell_pad_x)
         if col in sparkline_columns:
             w = max(120 + 2 * cell_pad_x, header_w)
             widths.append(w)
             wraps.append(False)
             floors.append(w)
-            hard_floors.append(max(120 + 2 * cell_pad_x, header_min_w))
             continue
         if col in minibar_columns:
             w = max(110 + 2 * cell_pad_x, header_w)
             widths.append(w)
             wraps.append(False)
             floors.append(w)
-            hard_floors.append(max(110 + 2 * cell_pad_x, header_min_w))
             continue
         body_max_w = 0
         for r_idx in range(len(df)):
@@ -30095,7 +29580,7 @@ def _tbl_natural_widths(
             tw = int(body_font.getlength(text)) + 2 * cell_pad_x
             if tw > body_max_w:
                 body_max_w = tw
-        natural = max(header_w, body_max_w, _TBL_MIN_COL_W)
+        natural = max(header_w, body_max_w, 60)
         is_text = _tbl_is_text_col(df, col, sparkline_columns, minibar_columns)
         if no_wrap_cols and col in no_wrap_cols:
             is_text = False
@@ -30103,79 +29588,57 @@ def _tbl_natural_widths(
             widths.append(max(header_w, _TBL_TEXT_COL_MAX))
             wraps.append(True)
             floors.append(max(header_w, _TBL_TEXT_COL_FLOOR))
-            hard_floors.append(max(header_min_w, _TBL_TEXT_COL_FLOOR))
         else:
             widths.append(natural)
             wraps.append(False)
             floors.append(natural)
-            # The body cannot wrap here (numeric / datetime / pinned), but the
-            # HEADER can, so the last-resort floor is the widest header word.
-            hard_floors.append(max(body_max_w, header_min_w))
-    return widths, wraps, floors, hard_floors
+    return widths, wraps, floors
 
 
 def _tbl_compress_to_fit(
     widths: List[int], wraps: List[bool], floors: List[int],
     side_pad: int, body_font_size: int,
-    hard_floors: Optional[List[int]] = None,
 ) -> List[int]:
-    """Compress columns toward their floors so the canvas honours BOTH the
-    soft ceiling and the paper-legibility width the ``make_table`` gate
-    enforces downstream. The legible width is the tighter of the two at every
-    font tier, so targeting ``_TBL_MAX_TABLE_W`` alone left tables that obeyed
-    the only published ceiling still failing that gate: wrap the width away at
-    source instead. Overflow the floors cannot absorb is still accepted here
-    and named by the gate. No truncation.
-
-    Two stages, cheapest loss first. Wrapping text columns give first: an
-    extra line of prose is a small, local cost. Only when that is exhausted
-    does the pass reach for ``hard_floors`` -- the cosmetic per-column minimum
-    on narrow non-wrapping columns, which holds real pixels while adding no
-    information. A matrix of two-decimal correlations spends ~10px per column
-    on that minimum, which is the whole difference between a table that ships
-    and one whose refusal names a remedy the author then has to invent.
-    """
+    """Compress wrapping text columns toward their floors uniformly so the
+    canvas honours BOTH the soft ceiling and the paper-legibility width the
+    ``make_table`` gate enforces downstream. The legible width is the tighter
+    of the two at every font tier, so targeting ``_TBL_MAX_TABLE_W`` alone
+    left tables that obeyed the only published ceiling still failing that
+    gate: wrap the width away at source instead. Overflow the floors cannot
+    absorb is still accepted here and named by the gate. No truncation."""
     legible_w = int(
         body_font_size * _TBL_LEGIBILITY_USABLE_IN * 72 / _TBL_MIN_LEGIBLE_PT
     )
     inner_target = min(_TBL_MAX_TABLE_W, legible_w) - 2 * side_pad
-    if sum(widths) <= inner_target:
+    cur = sum(widths)
+    if cur <= inner_target:
         return list(widths)
-
+    overflow = cur - inner_target
+    flex_idx = [i for i, wrapping in enumerate(wraps) if wrapping]
+    if not flex_idx:
+        return list(widths)
     out = list(widths)
-    stages: List[List[int]] = [list(floors)]
-    if hard_floors is not None:
-        stages.append(list(hard_floors))
-
-    for stage_floors in stages:
-        overflow = sum(out) - inner_target
-        if overflow <= 0:
+    room = sum(out[i] - floors[i] for i in flex_idx)
+    take = min(overflow, room)
+    if take > 0:
+        for i in flex_idx:
+            slack = out[i] - floors[i]
+            if slack <= 0:
+                continue
+            share = min(slack, int(round(take * (slack / room))))
+            out[i] -= share
+            overflow -= share
+    # A proportional share rounds to zero once the residue is smaller than
+    # the number of flexible columns, so the pass above can leave a few
+    # pixels unplaced. Spending them one at a time, widest slack first, is
+    # what makes this terminate: recomputing the proportional pass instead
+    # reproduces the same zero shares against the same state forever.
+    while overflow > 0:
+        widest = max(flex_idx, key=lambda i: out[i] - floors[i])
+        if out[widest] <= floors[widest]:
             break
-        flex_idx = [i for i in range(len(out)) if out[i] > stage_floors[i]]
-        if not flex_idx:
-            continue
-        room = sum(out[i] - stage_floors[i] for i in flex_idx)
-        take = min(overflow, room)
-        if take > 0:
-            for i in flex_idx:
-                slack = out[i] - stage_floors[i]
-                if slack <= 0:
-                    continue
-                share = min(slack, int(round(take * (slack / room))))
-                out[i] -= share
-                overflow -= share
-        # A proportional share rounds to zero once the residue is smaller
-        # than the number of flexible columns, so the pass above can leave a
-        # few pixels unplaced. Spending them one at a time, widest slack
-        # first, is what makes this terminate: recomputing the proportional
-        # pass instead reproduces the same zero shares against the same
-        # state forever.
-        while overflow > 0:
-            widest = max(flex_idx, key=lambda i: out[i] - stage_floors[i])
-            if out[widest] <= stage_floors[widest]:
-                break
-            out[widest] -= 1
-            overflow -= 1
+        out[widest] -= 1
+        overflow -= 1
     return out
 
 
@@ -30252,7 +29715,6 @@ def _tbl_normalize_theme_for_display(
     warnings: List[str] = []
     last_geom: Optional[_TableLayoutGeom] = None
     last_caption_lines: List[str] = []
-    grown_for_legibility = False
 
     for iteration in range(_TBL_NORMALIZE_MAX_ITERATIONS + 1):
         geom, caption_lines = _tbl_layout(
@@ -30275,49 +29737,8 @@ def _tbl_normalize_theme_for_display(
         body_fs = theme["body_font_size"]
         header_fs = theme["header_font_size"]
 
-        # Case 0: the printed-legibility gate would refuse this table.
-        #
-        # That gate compares POINT SIZE ON PAPER, not pixels: printed_pt =
-        # body_fs * usable_in * 72 / canvas_w. Growing the font raises the
-        # numerator faster than it raises canvas_w, because a column's width
-        # is text plus a FIXED 2 * _TBL_CELL_PAD_X of padding -- 340px of it
-        # across 17 columns -- and padding does not scale with the font. So a
-        # wide table one tier up from here prints LARGER, not smaller.
-        #
-        # This runs before every other case because the alternative to
-        # growing is a refusal, and because Case 1 shrinks the font, which
-        # moves a table that was one pixel from legible further away from it.
-        # Production lost a chart call to a 44px overshoot on this gate.
-        # The step is a RATIO jump, not one tier: point size is roughly linear
-        # in the font while canvas width grows sublinearly (the padding term
-        # is constant), so scaling the font by the shortfall lands at or above
-        # the floor. Stepping one tier at a time exhausted
-        # _TBL_NORMALIZE_MAX_ITERATIONS on the wide tables that need this most
-        # and then refused anyway, at 5.9pt against a 6.0pt floor.
-        printed_pt = body_fs * _TBL_LEGIBILITY_USABLE_IN * 72 / canvas_w
-        if printed_pt < _TBL_MIN_LEGIBLE_PT and body_fs < _TBL_FONT_TIER_CEIL:
-            new_body = min(
-                _TBL_FONT_TIER_CEIL,
-                int(math.ceil(body_fs * _TBL_MIN_LEGIBLE_PT / printed_pt)) + 1,
-            )
-            # Growing is only a win while the canvas stays inside the soft
-            # width ceiling. Past it the trade reverses: the PNG gets wider,
-            # the HTML display box does not, and the on-screen text shrinks
-            # to buy printed points. A table that needs that much growth is
-            # genuinely too wide, and the refusal below says so.
-            projected_w = canvas_w * new_body / max(1, body_fs)
-            if new_body <= body_fs or projected_w > _TBL_MAX_TABLE_W:
-                break
-            theme["body_font_size"] = new_body
-            theme["header_font_size"] = min(
-                _TBL_FONT_TIER_CEIL + 2, header_fs + (new_body - body_fs),
-            )
-            grown_for_legibility = True
-            continue
-
         # Case 1: too portrait (tall).
-        if (aspect > _TBL_MAX_ASPECT_RATIO and body_fs > _TBL_FONT_TIER_FLOOR
-                and not grown_for_legibility):
+        if aspect > _TBL_MAX_ASPECT_RATIO and body_fs > _TBL_FONT_TIER_FLOOR:
             new_body = max(_TBL_FONT_TIER_FLOOR, body_fs - 1)
             new_header = max(_TBL_FONT_TIER_FLOOR + 1, header_fs - 1)
             if new_body == body_fs and new_header == header_fs:
@@ -30410,7 +29831,7 @@ def _tbl_layout(
     side_pad = _TBL_SIDE_PAD
     auto_cols = {col for col, w in (column_widths or {}).items()
                  if isinstance(w, str)}
-    natural_w, wraps, floors, hard_floors = _tbl_natural_widths(
+    natural_w, wraps, floors = _tbl_natural_widths(
         df, column_formats, sparkline_columns, minibar_columns, theme,
         value_overrides, no_wrap_cols=auto_cols,
     )
@@ -30424,19 +29845,14 @@ def _tbl_layout(
                 # pinning the floor to it keeps compression from clawing it
                 # back and reintroducing the wrap the caller ruled out.
                 floors[ci] = natural_w[ci]
-                hard_floors[ci] = natural_w[ci]
                 continue
             pinned = max(40, int(pinned))
             if pinned < natural_w[ci]:
                 wraps[ci] = True
             natural_w[ci] = pinned
             floors[ci] = pinned
-            # An explicit pin is a caller decision, not a cosmetic default,
-            # so the second-stage pass must not reclaim it.
-            hard_floors[ci] = pinned
     col_widths = _tbl_compress_to_fit(
         natural_w, wraps, floors, side_pad, theme["body_font_size"],
-        hard_floors=hard_floors,
     )
 
     canvas_w = 2 * side_pad + sum(col_widths)
@@ -30449,25 +29865,7 @@ def _tbl_layout(
 
     n_super_levels = len(header_levels) if header_levels else 0
     header_row_h = int(theme["header_font_size"] * 1.7)
-    # Leaf headers wrap at the final column widths. Compression can push a
-    # numeric column below its header width -- the header is the only thing
-    # in such a column that CAN reflow, and reflowing it is what buys the
-    # pixels that decide between a rendered table and a width refusal.
-    header_font = _tbl_load_font("bold", theme["header_font_size"])
-    header_lines: List[List[str]] = [
-        _tbl_wrap_text(
-            str(col),
-            header_font,
-            max(1, col_widths[ci] - 2 * _TBL_CELL_PAD_X),
-        ) or [str(col)]
-        for ci, col in enumerate(df.columns)
-    ]
-    leaf_lines = max((len(lines) for lines in header_lines), default=1)
-    leaf_h = (
-        header_row_h if leaf_lines <= 1
-        else int(leaf_lines * theme["header_font_size"] * 1.35) + 10
-    )
-    header_h = header_row_h * n_super_levels + leaf_h
+    header_h = header_row_h * (n_super_levels + 1)
     body_top_y = title_h + header_h + (8 if title_h else 0)
 
     row_default_h = int(theme["body_font_size"] * 1.95 * row_height_scale)
@@ -30496,7 +29894,6 @@ def _tbl_layout(
         body_top_y=body_top_y,
         header_h=header_h, col_xs=col_xs,
         col_widths=col_widths, col_wraps=wraps,
-        header_lines=header_lines,
         row_heights=row_heights,
         caption_y=body_top_y + body_h, caption_h=caption_h,
         row_default_h=row_default_h, group_band_h=group_band_h,
@@ -30667,29 +30064,20 @@ def _tbl_draw_header(draw, df: pd.DataFrame, geom: _TableLayoutGeom,
             )
     y0 = band_y0 + n_levels * header_row_h
     cell_pad_x = _TBL_CELL_PAD_X
-    leaf_h = geom.header_h - n_levels * header_row_h
-    line_h = int(theme["header_font_size"] * 1.35)
     for i, col in enumerate(df.columns):
         x0 = geom.col_xs[i]
         x1 = geom.col_xs[i + 1]
         align = column_aligns.get(col, _tbl_default_align(col, df))
-        lines = geom.header_lines[i] if i < len(geom.header_lines) else [str(col)]
-        # Bottom-align the block so headers of different line counts share a
-        # baseline with the body rows they label.
-        block_h = len(lines) * line_h
-        top = y0 + max(0, leaf_h - block_h) - 4 + (line_h - theme["header_font_size"]) // 2
-        for li, line in enumerate(lines):
-            tw = header_font.getlength(line)
-            if align == "right":
-                tx = x1 - cell_pad_x - tw
-            elif align == "center":
-                tx = (x0 + x1) // 2 - tw / 2
-            else:
-                tx = x0 + cell_pad_x
-            draw.text(
-                (tx, top + li * line_h),
-                line, fill=theme["header_text"], font=header_font,
-            )
+        text = str(col)
+        tw = header_font.getlength(text)
+        if align == "right":
+            tx = x1 - cell_pad_x - tw
+        elif align == "center":
+            tx = (x0 + x1) // 2 - tw / 2
+        else:
+            tx = x0 + cell_pad_x
+        ty = y0 + header_row_h // 2 - theme["header_font_size"] / 2 - 1
+        draw.text((tx, ty), text, fill=theme["header_text"], font=header_font)
 
 
 def _tbl_draw_sparkline(draw, x: int, y: int, w: int, h: int,
@@ -31824,26 +31212,6 @@ def make_table(
             theme["body_font_size"] * _TBL_LEGIBILITY_USABLE_IN * 72
             / _TBL_MIN_LEGIBLE_PT
         )
-        excess = geom.canvas_w - legible_w
-        attribution = _tbl_width_attribution(
-            df, geom, theme, excess,
-            column_formats=column_formats,
-            value_overrides=value_overrides,
-        )
-        # The remedy list below is generic; for a square label-by-label matrix
-        # there is one specific answer that beats all of them, and it goes
-        # first. Production spent two attempts transposing and reformatting a
-        # symmetric correlation matrix that had a purpose-built renderer.
-        matrix_remedy = (
-            f"This frame is a square {len(df.columns) - 1}x"
-            f"{len(df.columns) - 1} label-by-label numeric matrix. Render it "
-            f"as a HEATMAP instead: make_chart(chart_type='heatmap', "
-            f"mapping={{'x': ..., 'y': ..., 'value': ...}}) on the LONG-form "
-            f"frame sizes its own canvas from the matrix shape, has no page-"
-            f"width ceiling, and shows every name. Melt the pivot back with "
-            f"df.melt(id_vars=[{df.columns[0]!r}]). "
-            if _tbl_is_pivoted_matrix(df) else ""
-        )
         return TableResult(
             success=False,
             error_message=(
@@ -31854,13 +31222,7 @@ def make_table(
                 f"{_TBL_LEGIBILITY_USABLE_IN:.1f}in usable width -- below the "
                 f"{_TBL_MIN_LEGIBLE_PT:.0f}pt legibility floor. The widest "
                 f"legible canvas at this body font is {legible_w}px, so about "
-                f"{excess}px of column width has to go. Every column here is "
-                f"already at its content floor -- the engine has spent wrapping, "
-                f"compression and the cosmetic column minimum, so there is no "
-                f"cosmetic slack left to reclaim and shortening cell VALUES will "
-                f"not recover this. "
-                f"{attribution}"
-                f"{matrix_remedy}"
+                f"{geom.canvas_w - legible_w}px of column width has to go. "
                 f"make_table never "
                 f"truncates, so an over-wide table would just shrink to an "
                 f"unreadable PNG. Reduce the rendered width by ONE of: "

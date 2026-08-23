@@ -89,28 +89,16 @@ either `reset_index()` so it becomes a named column (preferred) or set
 `show_index=True`; the default intentionally omits the index.
 
 Canvas dimensions are content-driven. Text columns wrap, every row is kept,
-and the table is never truncated. To reach the width that keeps body text at
-6pt on a portrait page the engine spends four levers in order — wrap text
-columns to their floors, reflow multi-word headers onto a second line, give
-back the cosmetic per-column padding, then grow the body font (a wider canvas
-at a bigger font prints larger, because padding does not scale) — and raises
-only when all four are exhausted. The budget is about 140 characters across
-one row: the widest cell of each column, summed, less roughly 2.5 per column
-for padding.
-
-A refusal therefore means the content itself is too wide, and it names which
-columns are paying and whether each one's floor comes from its header or its
-values — shorten the header only where the error says "set by header". Reach
+and the table is never truncated. Text columns are wrapped toward their
+floors until the canvas fits the width that keeps body text at 6pt on a
+portrait page; a table still too wide after that raises. The budget is about
+140 characters across one row -- the widest cell of each column, summed --
+less roughly 2.5 per column for padding, so transpose, split, aggregate, or
+shorten headers to reach it. Reach
 for `column_widths` / `row_height_scale` only to satisfy a stated layout
 request; the engine's own sizing is the default. For "wide enough not to
 wrap" pass `'auto'` rather than guessing a pixel count — the width depends on
 font metrics you cannot measure.
-
-**A square label-by-label numeric matrix is not a table.** A correlation
-matrix pivoted into columns hits this ceiling at around 18 columns and reads
-badly long before that. Render it with
-`make_chart(chart_type='heatmap')` on the long-form frame instead: that path
-sizes its own canvas from the matrix and has no page-width ceiling.
 
 Every column-keyed kwarg above warns rather than fails when a name matches no
 column, so a mistyped column silently styles nothing. Check `result.warnings`.

@@ -107,16 +107,6 @@ Use `dimension_preset='compact'` (the default for every pack except
 fixed `save_as` path wins over generated naming, so `filename_prefix` /
 `filename_suffix` matter only when `save_as` is omitted.
 
-A heatmap panel is the one case where you should not think about the preset at
-all. Its minimum cell size is a pure function of the matrix — rows set the
-height, column count and the longest row label set the width — so the pack
-computes it and upgrades to the smallest preset in the layout family that
-fits, overriding a smaller preset you named and reporting the override on
-`result.warnings`. When no preset in the family is large enough, the panel
-raises and the remedy is to give the matrix its own `make_chart` call or to
-cut the number of categories. **Shortening row labels never buys rows or
-columns** — see `chart_context.md` §5.2.
-
 Each cell owns its mapping, colour scale, axes, and annotations. Apply chart
 colour kwargs inside the cell's `mapping`; see `chart_context_colors.md`.
 Composite cells are narrower than standalone charts, so shorten category,
