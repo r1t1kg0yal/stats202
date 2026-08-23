@@ -15714,6 +15714,12 @@ def _blank_duplicate_axis_titles(spec: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(axis, dict):
             axis.pop("title", None)
 
+    def _drop_parent_nulls(field: Dict[str, Any]) -> None:
+        if field.get("axis") is None:
+            field.pop("axis", None)
+        if field.get("title") is None:
+            field.pop("title", None)
+
     def _blank_in_unit(node: Dict[str, Any]) -> None:
         seen: Dict[Tuple[str, str], str] = {}
 
@@ -15736,65 +15742,30 @@ def _blank_duplicate_axis_titles(spec: Dict[str, Any]) -> Dict[str, Any]:
                         title = _title_of(field)
                         key = (channel, _orient(field, channel))
                         if not title:
-                            # ``title: null`` / ``axis: null`` on a
-                            # parent encoding or a sibling hides the
-                            # keeper. Drop those keys; do not write
-                            # null back.
-                            if key in seen or not is_mark:
-                                _clear_duplicate(field, explicit_null=False)
+                            # Parent ``title: null`` hides a child
+                            # keeper. Mark-level ``title: null`` is
+                            # load-bearing (HLine / extra layers) --
+                            # popping it lets Vega-Lite fall back to
+                            # the field name and paint "value" on top
+                            # of the real axis title.
                             if not is_mark:
-                                if field.get("axis") is None:
-                                    field.pop("axis", None)
-                                if field.get("title") is None:
-                                    field.pop("title", None)
+                                _clear_duplicate(field, explicit_null=False)
+                                _drop_parent_nulls(field)
                             continue
                         norm = _norm(title)
                         if key not in seen:
                             seen[key] = norm
                         elif seen[key] == norm:
-                            _clear_duplicate(field, explicit_null=False)
-                            if not is_mark:
-                                if field.get("axis") is None:
-                                    field.pop("axis", None)
-                                if field.get("title") is None:
-                                    field.pop("title", None)
+                            if is_mark:
+                                _clear_duplicate(field, explicit_null=True)
+                            else:
+                                _clear_duplicate(field, explicit_null=False)
+                                _drop_parent_nulls(field)
             elif isinstance(obj, list):
                 for item in obj:
                     walk(item)
 
-        def strip_nulls(obj: Any) -> None:
-            # Second pass: ``title: null`` / ``axis: null`` left on
-            # earlier siblings still hide the keeper after merge.
-            if isinstance(obj, dict):
-                enc = obj.get("encoding")
-                if isinstance(enc, dict):
-                    is_mark = "mark" in obj
-                    for channel in ("x", "y"):
-                        field = enc.get(channel)
-                        if not isinstance(field, dict):
-                            continue
-                        key = (channel, _orient(field, channel))
-                        if key not in seen:
-                            continue
-                        if _title_of(field):
-                            continue
-                        _clear_duplicate(field, explicit_null=False)
-                        if not is_mark:
-                            if field.get("axis") is None:
-                                field.pop("axis", None)
-                            if field.get("title") is None:
-                                field.pop("title", None)
-                        else:
-                            if field.get("title") is None:
-                                field.pop("title", None)
-                for val in obj.values():
-                    strip_nulls(val)
-            elif isinstance(obj, list):
-                for item in obj:
-                    strip_nulls(item)
-
         walk(node)
-        strip_nulls(node)
 
     def walk_chart(node: Any) -> None:
         if not isinstance(node, dict):
