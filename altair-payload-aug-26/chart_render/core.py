@@ -2262,65 +2262,6 @@ HEATMAP_QUARTER_RE = re.compile(
 )
 
 
-def _quarter_label_to_timestamp(text: str) -> Optional[pd.Timestamp]:
-    """``16Q1`` / ``2016Q1`` / ``2024-Q1`` / ``Q1 2024`` -> quarter start."""
-    m = HEATMAP_QUARTER_RE.match(text.strip())
-    if not m:
-        return None
-    q_raw = m.group("q1") or m.group("q2") or m.group("q3") or m.group("q4")
-    y_raw = m.group("y1") or m.group("y2") or m.group("y3") or m.group("y4")
-    if q_raw is None or y_raw is None:
-        return None
-    year = int(y_raw)
-    if year < 100:
-        year += 2000
-    month = (int(q_raw) - 1) * 3 + 1
-    return pd.Timestamp(year=year, month=month, day=1)
-
-
-def _parse_bar_period_label(val: Any) -> Optional[pd.Timestamp]:
-    """Parse one bar-axis period label to a timestamp.
-
-    Same house spellings ISO bars already ride through
-    ``_normalize_intraday_x_column`` (``Jan-21``, ``Jan 21``, ``16Q1``,
-    ``2016Q1``, ``2021-01``). True categories (``US``, ``1Y``) return
-    ``None``.
-    """
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return None
-    if isinstance(val, pd.Timestamp):
-        return val
-    text = str(val).strip()
-    if not text:
-        return None
-    quarter = _quarter_label_to_timestamp(text)
-    if quarter is not None:
-        return quarter
-    return _parse_heatmap_string_to_timestamp(text)
-
-
-def _period_string_series_to_datetime(series: pd.Series) -> Optional[pd.Series]:
-    """Convert a column of house period labels to datetime, or ``None``.
-
-    Every distinct non-null value must parse, and two labels must not
-    collapse onto one timestamp -- otherwise a mixed category axis
-    (``US`` + ``Jan-21``) or a colliding spelling would silently rewrite
-    the domain.
-    """
-    uniques = [v for v in series.dropna().unique()]
-    if not uniques:
-        return None
-    parsed: Dict[Any, pd.Timestamp] = {}
-    for value in uniques:
-        stamp = _parse_bar_period_label(value)
-        if stamp is None or pd.isna(stamp):
-            return None
-        parsed[value] = stamp
-    if len(set(parsed.values())) != len(parsed):
-        return None
-    return pd.to_datetime(series.map(parsed))
-
-
 def _normalize_intraday_x_column(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -2336,9 +2277,6 @@ def _normalize_intraday_x_column(
       - tz-naive timestamps -> assumed US/Eastern wall clock
       - ISO / slash / space-separated strings -> datetime, then ET
       - unix-epoch integers (ms or s)
-      - on ``chart_type='bar'``, house period labels (``Jan-21``,
-        ``Jan 21``, ``16Q1``, ``2016Q1``) -> datetime so the temporal
-        tick planner thins them the way ISO date strings already do
       - common column aliases when the mapping carries NO x at all:
         ``date``, ``timestamp``, ``datetime``, ``time``
 
@@ -2350,13 +2288,9 @@ def _normalize_intraday_x_column(
     looks plausible and reports ``success=True``, which is strictly worse
     than failing.
 
-    ``mapping['x_type'] == 'ordinal'`` skips this on every type except
-    ``bar``: a date (or period-label) bar axis still becomes temporal
-    so the caller cannot force a label wall. Non-date ordinal bars
-    (countries, tenors) are unchanged.
+    Skipped when ``mapping['x_type'] == 'ordinal'`` -- caller owns labels.
     """
-    bar_date_axis = chart_type == "bar"
-    if mapping.get("x_type") == "ordinal" and not bar_date_axis:
+    if mapping.get("x_type") == "ordinal":
         return df
 
     x_field = _get_field(mapping, "x")
@@ -2400,58 +2334,46 @@ def _normalize_intraday_x_column(
     else:
         import warnings as _warnings
 
-        # Grouped bars facet on a nominal inner axis. A temporal tick_step
-        # injected onto that axis is the 2026-07-02 Vega error; leave
-        # period labels as categories there. Stacked / single bars can
-        # take the same temporal planner ISO strings already use.
-        grouped_bar = bool(mapping.get("color")) and (
-            mapping.get("stack", True) is False
-        )
+        # --------------- Quarter-label guard (Bug fix 2026-07-02) ------------------
+        # pd.to_datetime("24Q2") silently parses as 2024-04-01. On a grouped
+        # bar chart this converts the nominal x column to temporal, then
+        # beautification injects a temporal tick_step on the nominal inner
+        # axis -> Vega error "Only time and utc scales accept interval
+        # strings". Detect quarter-style labels and bail early.
+        _sample = series.dropna().head(20).astype(str)
+        if len(_sample) > 0 and _sample.apply(
+            lambda v: bool(HEATMAP_QUARTER_RE.match(v.strip()))
+        ).mean() >= 0.5:
+            logger.info(
+                "[chart_functions] x_field=%r looks like quarter labels "
+                "(e.g. %r); skipping intraday normalization.",
+                x_field, str(_sample.iloc[0]),
+            )
+            return df
+
         converted = None
-        if bar_date_axis and not grouped_bar:
-            converted = _period_string_series_to_datetime(series)
-
-        if converted is None:
-            # pd.to_datetime("24Q2") silently parses as 2024-04-01. On a
-            # grouped bar that conversion plus a temporal tick_step on
-            # the nominal inner axis is the 2026-07-02 Vega error, so
-            # quarter labels stay categories unless the bar path above
-            # already claimed them.
-            _sample = series.dropna().head(20).astype(str)
-            if len(_sample) > 0 and _sample.apply(
-                lambda v: bool(HEATMAP_QUARTER_RE.match(v.strip()))
-            ).mean() >= 0.5:
-                logger.info(
-                    "[chart_functions] x_field=%r looks like quarter labels "
-                    "(e.g. %r); skipping intraday normalization.",
-                    x_field, str(_sample.iloc[0]),
-                )
-                return df
-
-            for fmt in (
-                None,
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%d %H:%M",
-                "%Y-%m-%dT%H:%M:%S",
-                "%m/%d %H:%M",
-                "%m/%d/%Y %H:%M",
-                "%m/%d/%y %H:%M",
-                "%d/%m/%Y %H:%M",
-            ):
-                try:
-                    with _warnings.catch_warnings():
-                        _warnings.simplefilter("ignore")
-                        if fmt is None:
-                            converted = pd.to_datetime(
-                                series, errors="raise", utc=False,
-                            )
-                        else:
-                            converted = pd.to_datetime(
-                                series, format=fmt, errors="raise",
-                            )
-                    break
-                except (ValueError, TypeError):
-                    continue
+        for fmt in (
+            None,
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%dT%H:%M:%S",
+            "%m/%d %H:%M",
+            "%m/%d/%Y %H:%M",
+            "%m/%d/%y %H:%M",
+            "%d/%m/%Y %H:%M",
+        ):
+            try:
+                with _warnings.catch_warnings():
+                    _warnings.simplefilter("ignore")
+                    if fmt is None:
+                        converted = pd.to_datetime(series, errors="raise", utc=False)
+                    else:
+                        converted = pd.to_datetime(
+                            series, format=fmt, errors="raise",
+                        )
+                break
+            except (ValueError, TypeError):
+                continue
         if converted is None:
             return df
         converted = _to_et_naive_wall_clock(converted)
@@ -2464,21 +2386,6 @@ def _normalize_intraday_x_column(
         )
 
     df[x_field] = converted
-    grouped_bar = bool(mapping.get("color")) and (
-        mapping.get("stack", True) is False
-    )
-    if (
-        bar_date_axis
-        and not grouped_bar
-        and mapping.get("x_type") == "ordinal"
-        and pd.api.types.is_datetime64_any_dtype(converted)
-    ):
-        mapping.pop("x_type", None)
-        mapping.setdefault("_engine_notes", []).append(
-            "mapping['x_type']='ordinal' ignored on a date bar axis: "
-            "the temporal tick planner thins labels the way ISO date "
-            "strings already do."
-        )
     logger.info(
         "[chart_functions] Normalized x_field=%r to intraday wall clock "
         "(display_tz=%r, chart_type=%s).",
@@ -14725,72 +14632,6 @@ def _sample_named_scheme(scheme_name: str, n: int) -> List[str]:
     return out
 
 
-def _scheme_color_at(scheme_name: str, t: float) -> str:
-    """Hex color at ``t`` in ``[0, 1]`` along a named scheme's anchors."""
-    anchors = _SCHEME_ANCHORS.get(scheme_name) or _SCHEME_ANCHORS["blues"]
-    t = max(0.0, min(1.0, float(t)))
-    if len(anchors) == 1:
-        return anchors[0]
-    pos = t * (len(anchors) - 1)
-    lo = int(np.floor(pos))
-    hi = min(lo + 1, len(anchors) - 1)
-    frac = pos - lo
-    r1, g1, b1 = _hex_to_rgb(anchors[lo])
-    r2, g2, b2 = _hex_to_rgb(anchors[hi])
-    return _rgb_to_hex(
-        int(round(r1 + (r2 - r1) * frac)),
-        int(round(g1 + (g2 - g1) * frac)),
-        int(round(b1 + (b2 - b1) * frac)),
-    )
-
-
-def _heatmap_scale_unit(
-    value: float,
-    domain_lo: float,
-    domain_hi: float,
-    domain_mid: Optional[float] = None,
-) -> float:
-    """Map a value onto ``[0, 1]`` the way a Vega-Lite quantitative scale does.
-
-    ``domainMid`` pins the scheme's centre stop (white on a diverging
-    ramp) to that value, matching ``scale.domainMid``. Without it the
-    unit interval is the raw domain, so a diverging scheme's pale stop
-    sits at ``(lo+hi)/2``.
-    """
-    if domain_mid is not None:
-        if value <= domain_mid:
-            span = domain_mid - domain_lo
-            return 0.0 if span == 0 else 0.5 * (value - domain_lo) / span
-        span = domain_hi - domain_mid
-        return 1.0 if span == 0 else 0.5 + 0.5 * (value - domain_mid) / span
-    span = domain_hi - domain_lo
-    return 0.5 if span == 0 else (value - domain_lo) / span
-
-
-def _heatmap_label_color_for_value(
-    value: Any,
-    scheme: str,
-    scale_kwargs: Dict[str, Any],
-    v_min: float,
-    v_max: float,
-) -> str:
-    """White or near-black from the *cell* colour, not the raw value."""
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return "#222222"
-    domain = scale_kwargs.get("domain")
-    if isinstance(domain, (list, tuple)) and len(domain) == 2:
-        lo, hi = float(domain[0]), float(domain[1])
-    else:
-        lo, hi = v_min, v_max
-    mid = scale_kwargs.get("domainMid")
-    mid_f = float(mid) if mid is not None else None
-    t = _heatmap_scale_unit(float(value), lo, hi, mid_f)
-    return _tbl_readable_text_color(_scheme_color_at(scheme, t))
-
-
-_HEATMAP_LABEL_COLOR_FIELD = "_hm_label_color"
-
-
 def _smart_number_format(series_or_value: Any) -> str:
     """Pick a Vega-Lite number format string based on magnitude.
 
@@ -14901,21 +14742,15 @@ def _wrap_text_to_width(text: str, width_px: int, font_size: int) -> str:
     than ``chars_per_line`` is hard-broken into ``chars_per_line``
     chunks BEFORE wrapping, so a 500-char no-space caption no longer
     overflows the panel and triggers chart-canvas compression.
-    Explicit ``\\n`` characters in the input -- real newlines and the
-    two-character sequence models emit when they mean a break -- are
-    honoured as paragraph breaks, and each paragraph is wrapped
-    independently.
+    Explicit ``\\n`` characters in the input are honoured as paragraph
+    breaks, and each paragraph is wrapped independently.
     """
     if not text:
         return ""
-    text = str(text)
-    if "\\n" in text:
-        text = text.replace("\\n", "\n")
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
     char_w_px = max(1.0, font_size * 0.55)
     chars_per_line = max(1, int(width_px / char_w_px))
     out_lines: List[str] = []
-    for paragraph in text.split("\n"):
+    for paragraph in str(text).split("\n"):
         # First pass: hard-break any token longer than the line width.
         # This is the no-space-overflow safety net -- without it a
         # single 500-char token spills off the panel and pulls the
@@ -15621,35 +15456,30 @@ def apply_beautification_to_spec(
             #      a last-resort fallback (only on the base layer; on
             #      annotation layers this would clobber the resolved
             #      title via Vega-Lite's shared-axis merge rules).
-            #
-            # ``axis: None`` is an explicit hide (zero_fill extras,
-            # band ribbons). Do not materialise an axis or a field-name
-            # title -- either one re-joins or suppresses the real title.
-            if not (enc["y"].get("axis") is None and "axis" in enc["y"]):
-                if "axis" not in enc["y"]:
-                    enc["y"]["axis"] = {}
-                # Same no-truncation guarantee as x. A y config is normally
-                # built only for a quantitative axis, where labels are short --
-                # but ``setdefault`` keeps a builder that already sized its own
-                # nominal y gutter (horizontal bar, heatmap rows) authoritative.
-                enc["y"]["axis"].setdefault("labelLimit", y_config.label_limit)
-                axis_title = enc["y"]["axis"].get("title")
-                shorthand_title = enc["y"].get("title")
-                if axis_title is None and "title" in enc["y"]["axis"]:
-                    pass
-                elif shorthand_title is None and "title" in enc["y"]:
-                    pass
-                else:
-                    y_title = axis_title or shorthand_title
-                    if y_title is None:
-                        if allow_title_fallback:
-                            y_title = enc["y"].get("field", "")
-                        else:
-                            y_title = None
-                    if y_title:
-                        enc["y"]["axis"]["title"] = wrap_label(
-                            _dedup_axis_title(str(y_title)), words_per_line=3,
-                        )
+            if "axis" not in enc["y"]:
+                enc["y"]["axis"] = {}
+            # Same no-truncation guarantee as x. A y config is normally
+            # built only for a quantitative axis, where labels are short --
+            # but ``setdefault`` keeps a builder that already sized its own
+            # nominal y gutter (horizontal bar, heatmap rows) authoritative.
+            enc["y"]["axis"].setdefault("labelLimit", y_config.label_limit)
+            axis_title = enc["y"]["axis"].get("title")
+            shorthand_title = enc["y"].get("title")
+            if axis_title is None and "title" in enc["y"]["axis"]:
+                pass
+            elif shorthand_title is None and "title" in enc["y"]:
+                pass
+            else:
+                y_title = axis_title or shorthand_title
+                if y_title is None:
+                    if allow_title_fallback:
+                        y_title = enc["y"].get("field", "")
+                    else:
+                        y_title = None
+                if y_title:
+                    enc["y"]["axis"]["title"] = wrap_label(
+                        _dedup_axis_title(str(y_title)), words_per_line=3,
+                    )
 
     def walk(obj: Dict[str, Any], allow_title_fallback: bool) -> None:
         # Recurse into nested layer charts so beautification reaches every
@@ -15665,155 +15495,6 @@ def apply_beautification_to_spec(
         update_encoding(obj, allow_title_fallback=allow_title_fallback)
 
     walk(spec, allow_title_fallback=True)
-    return spec
-
-
-def _blank_duplicate_axis_titles(spec: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep one copy of each axis title per chart; blank later copies.
-
-    Vega-Lite joins titles from layered encodings that use different
-    fields (``zero_fill``'s ``_baseline`` / ``_fill_top`` / series;
-    a band ribbon plus its subject line). Concat children and facet
-    panels are independent charts and are walked separately so a
-    2-pack does not lose the right-hand y-title.
-    """
-
-    def _norm(title: Any) -> str:
-        return " ".join(str(title).split())
-
-    def _orient(field: Dict[str, Any], channel: str) -> str:
-        axis = field.get("axis")
-        if isinstance(axis, dict) and axis.get("orient"):
-            return str(axis["orient"])
-        if channel == "y":
-            return "left"
-        return "bottom"
-
-    def _title_of(field: Dict[str, Any]) -> Optional[str]:
-        axis = field.get("axis")
-        if isinstance(axis, dict) and "title" in axis:
-            t = axis.get("title")
-            return t if t not in (None, "") else None
-        t = field.get("title")
-        return t if t not in (None, "") else None
-
-    def _clear_duplicate(field: Dict[str, Any], *, explicit_null: bool) -> None:
-        # Mark layers need ``axis.title: null`` so Vega-Lite does not
-        # join their field into "Title, Title, Title". A parent
-        # layer-group encoding must *drop* the title key -- writing
-        # ``title: null`` there hides the shared axis even when a
-        # child mark still has the title.
-        if explicit_null:
-            if "axis" in field and isinstance(field["axis"], dict):
-                field["axis"]["title"] = None
-            else:
-                field["title"] = None
-            return
-        field.pop("title", None)
-        axis = field.get("axis")
-        if isinstance(axis, dict):
-            axis.pop("title", None)
-
-    def _blank_in_unit(node: Dict[str, Any]) -> None:
-        seen: Dict[Tuple[str, str], str] = {}
-
-        def walk(obj: Any) -> None:
-            if isinstance(obj, dict):
-                # Mark layers first. Beautification often stamps the
-                # same title on a parent encoding *and* the line that
-                # paints the axis; keeping the parent copy and blanking
-                # the mark leaves Vega with axis.title=null everywhere
-                # and the title disappears.
-                for val in obj.values():
-                    walk(val)
-                enc = obj.get("encoding")
-                if isinstance(enc, dict):
-                    is_mark = "mark" in obj
-                    for channel in ("x", "y"):
-                        field = enc.get(channel)
-                        if not isinstance(field, dict):
-                            continue
-                        title = _title_of(field)
-                        key = (channel, _orient(field, channel))
-                        if not title:
-                            # ``title: null`` / ``axis: null`` on a
-                            # parent encoding or a sibling hides the
-                            # keeper. Drop those keys; do not write
-                            # null back.
-                            if key in seen or not is_mark:
-                                _clear_duplicate(field, explicit_null=False)
-                            if not is_mark:
-                                if field.get("axis") is None:
-                                    field.pop("axis", None)
-                                if field.get("title") is None:
-                                    field.pop("title", None)
-                            continue
-                        norm = _norm(title)
-                        if key not in seen:
-                            seen[key] = norm
-                        elif seen[key] == norm:
-                            _clear_duplicate(field, explicit_null=False)
-                            if not is_mark:
-                                if field.get("axis") is None:
-                                    field.pop("axis", None)
-                                if field.get("title") is None:
-                                    field.pop("title", None)
-            elif isinstance(obj, list):
-                for item in obj:
-                    walk(item)
-
-        def strip_nulls(obj: Any) -> None:
-            # Second pass: ``title: null`` / ``axis: null`` left on
-            # earlier siblings still hide the keeper after merge.
-            if isinstance(obj, dict):
-                enc = obj.get("encoding")
-                if isinstance(enc, dict):
-                    is_mark = "mark" in obj
-                    for channel in ("x", "y"):
-                        field = enc.get(channel)
-                        if not isinstance(field, dict):
-                            continue
-                        key = (channel, _orient(field, channel))
-                        if key not in seen:
-                            continue
-                        if _title_of(field):
-                            continue
-                        _clear_duplicate(field, explicit_null=False)
-                        if not is_mark:
-                            if field.get("axis") is None:
-                                field.pop("axis", None)
-                            if field.get("title") is None:
-                                field.pop("title", None)
-                        else:
-                            if field.get("title") is None:
-                                field.pop("title", None)
-                for val in obj.values():
-                    strip_nulls(val)
-            elif isinstance(obj, list):
-                for item in obj:
-                    strip_nulls(item)
-
-        walk(node)
-        strip_nulls(node)
-
-    def walk_chart(node: Any) -> None:
-        if not isinstance(node, dict):
-            return
-        for concat_key in ("hconcat", "vconcat", "concat"):
-            children = node.get(concat_key)
-            if isinstance(children, list):
-                for child in children:
-                    walk_chart(child)
-                return
-        inner = node.get("spec")
-        if isinstance(inner, dict) and (
-            "facet" in node or "repeat" in node
-        ):
-            walk_chart(inner)
-            return
-        _blank_in_unit(node)
-
-    walk_chart(spec)
     return spec
 
 
@@ -18255,11 +17936,6 @@ def _build_timeseries(
     y_title = _format_label(y_field, mapping, "y")
     _validate_y_axis_label(y_title, mapping)
     y_axis = alt.Axis(title=y_title, titleFontWeight="normal")
-    # zero_fill prepends area layers. Vega-Lite takes the *first*
-    # layer's axis for the shared scale. The first fill carries the
-    # titled axis; the line omits ``axis`` entirely. ``axis=None``
-    # serializes as ``"axis": null`` and hides ticks + title.
-    line_y_axis = alt.Undefined if zero_fill else y_axis
 
     # ---- chart construction --------------------------------------------
     mark_config = skin_config.get("mark_config", {}).get("line", {})
@@ -18286,7 +17962,7 @@ def _build_timeseries(
             y=alt.Y(
                 y_field,
                 type="quantitative",
-                axis=line_y_axis,
+                axis=y_axis,
                 scale=y_scale,
             ),
             tooltip=tooltips,
@@ -19493,17 +19169,13 @@ def _build_baseline_fill_layers(
     fill_df["_fill_bot"] = np.where(y_vals <= baseline, y_vals, baseline)
 
     shared_x = alt.X(x_field, type="temporal", axis=x_axis)
-    # Layer order is ``area_neg, area_pos, line``. Vega-Lite paints the
-    # shared y-axis from layer 0, so the first fill carries the titled
-    # axis. Later fills omit ``axis`` -- ``title=None`` and
-    # ``axis=None`` both hide the keeper in the layered merge.
 
     area_pos = (
         alt.Chart(fill_df)
         .mark_area(color=pos_color, opacity=0.35, clip=True)
         .encode(
             shared_x,
-            y=alt.Y("_fill_top:Q", scale=y_scale),
+            y=alt.Y("_fill_top:Q", scale=y_scale, axis=y_axis),
             y2=alt.Y2("_baseline:Q"),
         )
         .properties(width=width, height=height)
@@ -22205,9 +21877,8 @@ def _build_heatmap(
     Optional ``mapping['x_sort']`` controls x-axis label order
     (Bug-5 fix; otherwise Vega-Lite's default alphabetical sort applies).
     Cell labels are auto-added when ``skin_config['heatmap_labels']`` is
-    truthy. Text colour is the table-cell rule (white on a dark fill,
-    near-black on a pale fill) applied to the colour the scale actually
-    paints -- not a value-threshold that treats "more negative" as light.
+    truthy, with text color flipping to white on dark cells (value > 0.5
+    of normalized scale).
     """
     logger.debug("[_build_heatmap] START: df.shape=%s, mapping=%s", df.shape, mapping)
 
@@ -22469,14 +22140,22 @@ def _build_heatmap(
         cells_too_narrow = per_cell_w < label_pixel_budget
 
         if skin_config.get("heatmap_labels", True) and not cells_too_narrow:
-            df = df.copy()
-            df[_HEATMAP_LABEL_COLOR_FIELD] = [
-                _heatmap_label_color_for_value(
-                    v, scheme, scale_kwargs, v_min_full, v_max_full,
+            v_min = v_min_full
+            v_max = v_max_full
+            if is_mixed_sign and not forced_scheme:
+                sym_threshold = max(abs(v_min), abs(v_max)) * 0.6
+                color_condition = alt.condition(
+                    f"abs(datum['{value_field}']) > {sym_threshold}",
+                    alt.value("white"),
+                    alt.value("#222222"),
                 )
-                for v in df[value_field]
-            ]
-            label_colors = sorted(set(df[_HEATMAP_LABEL_COLOR_FIELD]))
+            else:
+                v_threshold = (v_min + v_max) / 2.0 if v_max != v_min else v_max
+                color_condition = alt.condition(
+                    alt.datum[value_field] > v_threshold,
+                    alt.value("white"),
+                    alt.value("#222222"),
+                )
             text = (
                 alt.Chart(df)
                 .mark_text(baseline="middle", fontSize=cell_label_fontsize)
@@ -22487,12 +22166,7 @@ def _build_heatmap(
                         value_field, type="quantitative",
                         format=value_fmt,
                     ),
-                    color=alt.Color(
-                        _HEATMAP_LABEL_COLOR_FIELD,
-                        type="nominal",
-                        scale=alt.Scale(domain=label_colors, range=label_colors),
-                        legend=None,
-                    ),
+                    color=color_condition,
                 )
             )
             chart = alt.layer(chart, text).properties(width=width, height=height)
@@ -22579,12 +22253,30 @@ def _build_heatmap(
         )
 
         if skin_config.get("heatmap_labels", True):
-            bin_fill = dict(zip(value_order, bin_colors))
-            df[_HEATMAP_LABEL_COLOR_FIELD] = [
-                _tbl_readable_text_color(bin_fill.get(v, "#FFFFFF"))
-                for v in df[value_field]
+            # Dark cells (top half of the sequential ramp) get white
+            # text; light cells get near-black. Build an OR-chain of
+            # equality checks against the dark-bin labels -- vega-
+            # expression supports ``||`` and ``==`` natively without
+            # the MemberExpression-style ``[...].indexOf(...)`` that
+            # vega-expression's parser rejects as illegal callee type.
+            dark_bins = [
+                v for i, v in enumerate(value_order)
+                if (i + 1) / n_bins > 0.5
             ]
-            label_colors = sorted(set(df[_HEATMAP_LABEL_COLOR_FIELD]))
+            if dark_bins:
+                # Escape any single-quotes inside bin labels so the
+                # generated expression stays valid.
+                escaped_bins = [v.replace("'", "\\'") for v in dark_bins]
+                dark_predicate = " || ".join(
+                    f"datum['{value_field}'] == '{v}'" for v in escaped_bins
+                )
+                color_condition = alt.condition(
+                    dark_predicate,
+                    alt.value("white"),
+                    alt.value("#222222"),
+                )
+            else:
+                color_condition = alt.value("#222222")
             text = (
                 alt.Chart(df)
                 .mark_text(baseline="middle", fontSize=10)
@@ -22592,12 +22284,7 @@ def _build_heatmap(
                     x=alt.X(x_field, type="nominal", sort=x_sort_order),
                     y=alt.Y(y_field, type="nominal", sort=y_sort_order),
                     text=alt.Text(value_field, type="nominal"),
-                    color=alt.Color(
-                        _HEATMAP_LABEL_COLOR_FIELD,
-                        type="nominal",
-                        scale=alt.Scale(domain=label_colors, range=label_colors),
-                        legend=None,
-                    ),
+                    color=color_condition,
                 )
             )
             chart = alt.layer(chart, text).properties(width=width, height=height)
@@ -22913,24 +22600,9 @@ def _build_boxplot(
     # single-group boxplot in a composite matches the navy used by
     # bars / lines / scatter, instead of inheriting Vega-Lite's
     # default steelblue.
-    #
-    # Size is a fraction of the category band, capped at the skin's
-    # 40px house size. A fixed 40px in a 400px 10-theme composite cell
-    # fills the band and neighbouring boxes share an edge.
-    n_x = (
-        max(int(df[x_field].nunique()), 1)
-        if x_field and x_field in df.columns else 1
-    )
-    n_color = (
-        max(int(df[color_field].nunique()), 1)
-        if color_field and color_field in df.columns else 1
-    )
-    slot_px = width / (n_x * n_color)
-    size_cap = mark_config.get("size", 40)
-    box_size = max(10, min(size_cap, 0.55 * slot_px))
     boxplot_kwargs: Dict[str, Any] = dict(
         extent=extent,
-        size=box_size,
+        size=mark_config.get("size", 40),
         clip=True,
         opacity=box_opacity,
     )
@@ -23685,9 +23357,7 @@ def _build_band(
         )
     y_scale = alt.Scale(domain=domain, nice=False)
 
-    def _y(field: str, *, title: Optional[str] = None, hide_axis: bool = False) -> alt.Y:
-        if hide_axis:
-            return alt.Y(field, type="quantitative", scale=y_scale)
+    def _y(field: str, *, title: Optional[str]) -> alt.Y:
         return alt.Y(
             field, type="quantitative", scale=y_scale,
             axis=alt.Axis(title=title, titleFontWeight="normal"),
@@ -23696,16 +23366,13 @@ def _build_band(
     layers: List[alt.Chart] = []
 
     # ---- Layer 1..n: nested ribbons -------------------------------------
-    # Ribbons use the bound fields (y_low / y_high), not ``y``. Layer 0
-    # carries the titled axis; later ribbons omit the axis entirely.
-    # ``title=None`` on a sibling hides the keeper in VL's merge.
-    for i, (low, high, _span) in enumerate(spans):
+    for low, high, _span in spans:
         layers.append(
             alt.Chart(df)
             .mark_area(opacity=level_alpha, color=line_color, clip=True)
             .encode(
                 x=_band_x_encoding(df, x_field, mapping, x_title),
-                y=_y(low, title=y_title) if i == 0 else _y(low, hide_axis=True),
+                y=_y(low, title=y_title),
                 y2=alt.Y2(high),
                 tooltip=_build_tooltip(mapping, "band", df),
             )
@@ -23755,7 +23422,7 @@ def _build_band(
             )
             .encode(
                 x=_band_x_encoding(long, x_field, mapping, x_title),
-                y=_y("_band_value", hide_axis=True),
+                y=_y("_band_value", title=y_title),
                 color=alt.Color(
                     "_band_series:N",
                     scale=alt.Scale(
@@ -23793,7 +23460,7 @@ def _build_band(
                 )
                 .encode(
                     x=_band_x_encoding(segment, x_field, mapping, x_title),
-                    y=_y(y_field, hide_axis=True),
+                    y=_y(y_field, title=y_title),
                 )
                 .properties(width=width, height=height)
             )
@@ -23808,7 +23475,7 @@ def _build_band(
             )
             .encode(
                 x=_band_x_encoding(df, x_field, mapping, x_title),
-                y=_y(y_field, hide_axis=True),
+                y=_y(y_field, title=y_title),
                 tooltip=_build_tooltip(mapping, "band", df),
             )
             .properties(width=width, height=height)
@@ -25668,10 +25335,10 @@ def _make_chart(
     auto_beautify: bool = True,
     layers: Optional[List[Dict[str, Any]]] = None,
     user_id: Optional[str] = None,
-    caption: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
-    side_left: Union[str, Sequence[str], Dict[str, Any], None] = None,
-    side_right: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
     facet_cols: Optional[int] = None,
     share_x: bool = False,
     share_y: bool = False,
@@ -25718,18 +25385,13 @@ def _make_chart(
         layers: Optional list of extra overlay layers (regression, rule,
             point) layered on top of the base chart.
         user_id: Optional Kerberos ID resolved from the runtime context.
-        caption: Below-chart caption text. A string auto-wraps to chart
-            width; a list of strings (or ``\\n`` inside a string) forces
-            a line break at each item / newline, and each line still
-            wraps. A style-override dict
-            (``{"text": ..., "italic": True, "font_size": 10, ...}``)
-            is also accepted; ``text`` may be a string or a list of
-            lines.
+        caption: Below-chart caption text (str) or style-override dict
+            (``{"text": ..., "italic": True, "font_size": 10, ...}``).
+            Auto-wraps to chart width.
         side_left / side_right: Side narrative panels flanking the chart
-            (same shapes as ``caption``). Sit OUTSIDE the plot region
-            and stretch to chart height. Use a list or ``\\n`` for a
-            stacked note (event keys, epoch stats); do not join items
-            with ``|``.
+            (str or dict). Sit OUTSIDE the plot region and stretch to
+            chart height. Useful for paragraphs of running commentary
+            on a single chart or as part of a composite pack.
         facet_cols: When ``mapping['facet']`` is set, the number of
             columns in the panel grid. Rows derived as
             ``ceil(n_panels / facet_cols)``. Default is near-square.
@@ -26708,7 +26370,6 @@ def _make_chart(
                 spec = apply_beautification_to_spec(spec, axis_configs)
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Axis beautification skipped (non-fatal): {exc}")
-    spec = _blank_duplicate_axis_titles(spec)
 
     # ---- Typography overrides (per dimension preset) -------------------
     # When dimensions is one of {compact, teams, thumbnail}, the skin's
@@ -27069,9 +26730,9 @@ class ChartSpec:
     an Altair chart and lays them out with ``alt.hconcat`` / ``vconcat``.
 
     Per-panel text panels (``caption`` / ``side_left`` / ``side_right``)
-    accept the same string / list-of-lines / dict shape as on
-    ``make_chart``. Captions sit below their own sub-chart; side panels
-    flank that sub-chart and remain inside the composite frame.
+    accept the same string-or-dict shape as on ``make_chart``. Captions
+    sit below their own sub-chart; side panels flank that sub-chart and
+    remain inside the composite frame.
 
     Axis titles belong in ``mapping`` -- ``mapping['x_title']``,
     ``mapping['y_title']``, ``mapping['y_title_right']``. There is no
@@ -27090,10 +26751,10 @@ class ChartSpec:
     subtitle: Optional[str] = None
     annotations: Optional[List[Annotation]] = None
     layers: Optional[List[Dict[str, Any]]] = None
-    caption: Union[str, Sequence[str], Dict[str, Any], None] = None
+    caption: Union[str, Dict[str, Any], None] = None
     source: Optional[str] = None
-    side_left: Union[str, Sequence[str], Dict[str, Any], None] = None
-    side_right: Union[str, Sequence[str], Dict[str, Any], None] = None
+    side_left: Union[str, Dict[str, Any], None] = None
+    side_right: Union[str, Dict[str, Any], None] = None
     _caption_from_source: bool = field(default=False, init=False, repr=False)
 
     def __init__(
@@ -27106,10 +26767,10 @@ class ChartSpec:
         subtitle: Optional[str] = None,
         annotations: Optional[List[Annotation]] = None,
         layers: Optional[List[Dict[str, Any]]] = None,
-        caption: Union[str, Sequence[str], Dict[str, Any], None] = None,
+        caption: Union[str, Dict[str, Any], None] = None,
         source: Optional[str] = None,
-        side_left: Union[str, Sequence[str], Dict[str, Any], None] = None,
-        side_right: Union[str, Sequence[str], Dict[str, Any], None] = None,
+        side_left: Union[str, Dict[str, Any], None] = None,
+        side_right: Union[str, Dict[str, Any], None] = None,
         **extra: Any,
     ) -> None:
         if extra:
@@ -27571,7 +27232,6 @@ def _build_single_chart(
             spec.title,
             exc,
         )
-    chart_spec_dict = _blank_duplicate_axis_titles(chart_spec_dict)
 
     # Strip ``config`` and ``$schema`` -- they will be applied at the
     # composite level. Leaving them on each sub-chart causes Altair 4.x
@@ -27715,10 +27375,12 @@ def _isolate(chart: alt.Chart) -> alt.Chart:
 # 2026-05-10 readability tuning (per user feedback on the new
 # outside-only PlotText surface): bumped font_size 11 -> 12 (clearly
 # larger), color #666 -> #555 (slightly darker, better contrast),
-# padding 8 -> 5 (text starts closer to the chart edge). Side rails
-# keep a dedicated hconcat gutter (``_SIDE_PANEL_CHART_GUTTER_PX``)
-# so last-value labels do not collide with ``side_right`` / ``side_left``
-# copy; caption-below stays tight via ``chart_edge="top"``.
+# padding 8 -> 5 (text starts closer to the chart edge -- combined
+# with the hconcat spacing reduction in _wrap_with_text_panels /
+# _apply_text_panels_to_spec the visible chart-to-text gap drops
+# from ~12px to ~5px). Tighter visual coupling makes the panel
+# feel like an integrated part of the chart instead of a detached
+# annotation.
 _TEXT_PANEL_DEFAULTS: Dict[str, Any] = {
     "font_size": 12,
     # ``None`` means "take the skin's muted ink". A caller-supplied colour
@@ -27734,58 +27396,27 @@ _TEXT_PANEL_DEFAULTS: Dict[str, Any] = {
     "width_pct": None,  # side panels: fraction of chart width (default 0.22)
 }
 
-# Horizontal gutter between the plot (and any last-value labels that
-# live in the chart's right padding) and a side narrative panel.
-# Caption-below is a separate vconcat and is not affected.
-_SIDE_PANEL_CHART_GUTTER_PX: int = 12
-
-
-def _coerce_panel_text(raw: Any) -> Optional[str]:
-    """Collapse a caption / side-panel payload to a single string.
-
-    Honours the shapes the chart agent actually authors:
-
-      * a plain string, including real newlines
-      * a list / tuple of lines (joined with ``\\n``)
-      * the two-character sequence ``\\n`` that models emit when they
-        mean a line break (absorbed into a real newline)
-
-    ``\\r\\n`` / ``\\r`` are normalised to ``\\n``. Empty / whitespace-only
-    input becomes ``None``.
-    """
-    if raw is None:
-        return None
-    if isinstance(raw, (list, tuple)):
-        text = "\n".join("" if item is None else str(item) for item in raw)
-    elif isinstance(raw, str):
-        text = raw
-    else:
-        return None
-    if "\\n" in text:
-        text = text.replace("\\n", "\n")
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    if not text.strip():
-        return None
-    return text
-
 
 def _normalize_text_panel(
-    raw: Union[str, Sequence[str], Dict[str, Any], None],
+    raw: Union[str, Dict[str, Any], None],
 ) -> Optional[Dict[str, Any]]:
-    """Coerce a text-panel parameter into a normalized dict.
+    """Coerce a string-or-dict text-panel parameter into a normalized dict.
 
-    Accepts a string, a list of lines, or a style-override dict whose
-    ``text`` may itself be a string or a list of lines. Returns ``None``
-    for empty / missing input. The returned dict always carries every
-    styling key (``font_size``, ``color``, ``italic``, ``align``,
-    ``padding``, ``width_pct``) plus the ``text`` payload with explicit
-    line breaks already normalised to real ``\\n``.
+    Returns ``None`` for empty / missing input. The returned dict always
+    carries every styling key (``font_size``, ``color``, ``italic``,
+    ``align``, ``padding``, ``width_pct``) plus the ``text`` payload.
     """
     if raw is None:
         return None
+    if isinstance(raw, str):
+        if not raw.strip():
+            return None
+        cfg = dict(_TEXT_PANEL_DEFAULTS)
+        cfg["text"] = raw
+        return cfg
     if isinstance(raw, dict):
-        text = _coerce_panel_text(raw.get("text", ""))
-        if text is None:
+        text = raw.get("text", "")
+        if not isinstance(text, str) or not text.strip():
             return None
         cfg = dict(_TEXT_PANEL_DEFAULTS)
         for k in ("font_size", "color", "italic", "align", "padding", "width_pct"):
@@ -27793,16 +27424,8 @@ def _normalize_text_panel(
                 cfg[k] = raw[k]
         cfg["text"] = text
         return cfg
-    if isinstance(raw, (str, list, tuple)):
-        text = _coerce_panel_text(raw)
-        if text is None:
-            return None
-        cfg = dict(_TEXT_PANEL_DEFAULTS)
-        cfg["text"] = text
-        return cfg
     raise TypeError(
-        f"Text-panel parameter must be str, list of lines, or dict, "
-        f"got {type(raw).__name__}"
+        f"Text-panel parameter must be str or dict, got {type(raw).__name__}"
     )
 
 
@@ -27922,7 +27545,6 @@ def _build_text_panel(
             fontStyle="italic" if italic else "normal",
             color=color,
             lineBreak="\n",
-            lineHeight=line_height,
             text=wrapped,
         )
         .encode(
@@ -28089,7 +27711,7 @@ def _wrap_with_text_panels(
             right_cfg, width=right_w, height=chart_height,
             skin_config=skin_config, chart_edge="left",
         ))
-    return alt.hconcat(*h_parts, spacing=_SIDE_PANEL_CHART_GUTTER_PX).resolve_scale(
+    return alt.hconcat(*h_parts, spacing=0).resolve_scale(
         color="independent", x="independent", y="independent",
     ).resolve_legend(color="independent")
 
@@ -28236,10 +27858,9 @@ def _apply_text_panels_to_spec(
     # (a) the panel's chart-facing inner padding (``padding_chart=1``
     # in ``_build_text_panel``), (b) the panel's chart-facing outer
     # padding (``chart_edge`` -> 0 in ``_build_text_panel``), and
-    # (c) hconcat ``spacing=_SIDE_PANEL_CHART_GUTTER_PX`` so last-value
-    # labels do not collide with the rail. The remaining residual is
-    # Vega-Lite's intrinsic axis-tick-label clearance (the rightmost
-    # tick label like "18" extends past the bar's right edge to stay
+    # (c) hconcat ``spacing=0``. The remaining gap is Vega-Lite's
+    # intrinsic axis-tick-label clearance (the rightmost tick label
+    # like "18" extends past the bar's right edge to stay
     # readable) which is structural and not overridable from the
     # spec without clipping labels.
     inner.pop("padding", None)
@@ -28315,9 +27936,7 @@ def _apply_text_panels_to_spec(
             h_parts.append(
                 _panel_spec(cfg_to_use, right_w, chart_height, chart_edge="left")
             )
-        wrapped: Dict[str, Any] = {
-            "hconcat": h_parts, "spacing": _SIDE_PANEL_CHART_GUTTER_PX,
-        }
+        wrapped: Dict[str, Any] = {"hconcat": h_parts, "spacing": 0}
     else:
         wrapped = body
 
@@ -29951,10 +29570,10 @@ def _make_composite(
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
-    caption: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
-    side_left: Union[str, Sequence[str], Dict[str, Any], None] = None,
-    side_right: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Generic composite entry point used by all ``make_Npack_*`` wrappers.
 
@@ -29974,8 +29593,8 @@ def _make_composite(
       that do not declare their own source. Explicit captions are never
       rewritten, and an explicit pack ``caption`` always wins its slot.
       ``side_left`` / ``side_right`` flank the whole pack. Each accepts a
-      string, a list of lines, or a style dict (see ``make_chart``).
-      Sub-chart-level text panels live on each ``ChartSpec`` instead.
+      string or a style dict (see ``make_chart``). Sub-chart-level text
+      panels live on each ``ChartSpec`` instead.
     """
     warnings_list: List[str] = []
     dimension_preset, alias_warnings = _resolve_composite_aliases(
@@ -30437,10 +30056,10 @@ def make_2pack_horizontal(
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
-    caption: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
-    side_left: Union[str, Sequence[str], Dict[str, Any], None] = None,
-    side_right: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Two charts side-by-side. ``chart1`` is left, ``chart2`` is right."""
     return _make_composite(
@@ -30478,10 +30097,10 @@ def make_2pack_vertical(
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
-    caption: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
-    side_left: Union[str, Sequence[str], Dict[str, Any], None] = None,
-    side_right: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Two charts stacked vertically. ``chart1`` is top, ``chart2`` is bottom."""
     return _make_composite(
@@ -30520,10 +30139,10 @@ def make_3pack_triangle(
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
-    caption: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
-    side_left: Union[str, Sequence[str], Dict[str, Any], None] = None,
-    side_right: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """Three charts: one on top, two on bottom."""
     return _make_composite(
@@ -30563,10 +30182,10 @@ def make_4pack_grid(
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
-    caption: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
-    side_left: Union[str, Sequence[str], Dict[str, Any], None] = None,
-    side_right: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """2x2 grid (top-left, top-right, bottom-left, bottom-right)."""
     return _make_composite(
@@ -30609,10 +30228,10 @@ def make_6pack_grid(
     s3_manager: Optional[Any] = None,
     save_as: Optional[str] = None,
     user_id: Optional[str] = None,
-    caption: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    caption: Union[str, Dict[str, Any], None] = None,
     source: Optional[str] = None,
-    side_left: Union[str, Sequence[str], Dict[str, Any], None] = None,
-    side_right: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    side_left: Union[str, Dict[str, Any], None] = None,
+    side_right: Union[str, Dict[str, Any], None] = None,
 ) -> CompositeResult:
     """3x2 grid (3 rows, 2 columns) of charts.
 

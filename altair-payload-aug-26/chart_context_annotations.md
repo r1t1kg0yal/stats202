@@ -80,8 +80,7 @@ in `result.warnings`.
 `PlotText.text` has a 10-word hard cap; aim for eight or fewer. It occupies an
 outside panel, not the plot. Explicit `side_right`, `caption`, or `side_left`
 wins its slot; `position='auto'` tries right, bottom, then left. Use the
-top-level text kwargs for longer prose — those honour `\n` or a list of
-lines as a forced break (event keys, epoch stats). Do not join items with `|`.
+top-level text kwargs for longer prose.
 
 There are four distinct trend surfaces; choose one and do not combine them:
 

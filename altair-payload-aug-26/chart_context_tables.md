@@ -47,17 +47,16 @@ result = make_table(
 
 ## 2. Public kwargs
 
-`make_table` has no `mapping` dictionary and no side panels. Every table
-option below is a top-level `make_table(...)` kwarg. Chart mapping, chart
-colour, `side_left`, `side_right`, `annotations`, and `layers` do not apply
-and raise if passed.
+`make_table` has no `mapping` dictionary. Every table option below is a
+top-level `make_table(...)` kwarg; chart mapping and chart colour kwargs do
+not apply.
 
 | Kwarg | Purpose |
 |---|---|
 | `df` | DataFrame source; mutually exclusive with `rows` |
 | `rows` | List of dicts, tuples, or lists |
 | `columns` | Headers for tuple/list rows; order override for dict rows |
-| `title`, `subtitle` | Top labels. `title` is the finding; a figure id (`R15a`, `Exhibit 3`) is `subtitle`. Never splice an id into `title` |
+| `title`, `subtitle` | Top labels |
 | `caption` | Italic note below the table |
 | `source` | Attribution; fills an unset caption as `Source: ...` |
 | `theme_overrides` | Override individual house-palette colours, e.g. `{'row_band_color': '#FFF4E5'}`; an unknown key raises listing all of them |
@@ -84,11 +83,6 @@ and raise if passed.
 | `show_index` | Include DataFrame index; default `False` |
 | `target_html_width` | Intended display width for font normalization; default 720, use 600 for narrower email |
 | `save_as` | Stable PNG path |
-
-A figure-label instruction does not change this surface. `side_left` /
-`side_right` exist only on `make_chart` and `make_*pack_*`. Do not recover
-from that refusal by writing `title="R16a | Twenty Widest Bonds..."` or
-`title="R15a ;"` — keep `title` as the finding and put the id in `subtitle`.
 
 If a DataFrame index carries a semantic identifier such as country or ticker,
 either `reset_index()` so it becomes a named column (preferred) or set
@@ -339,7 +333,6 @@ defect it can evaluate. Common repairs are:
 
 - pass exactly one of `df` or `rows`;
 - provide `columns` for tuple/list rows;
-- do not pass `side_left` / `side_right` / `annotations` / `layers`; a figure id belongs in `subtitle`;
 - make header spans and row-group counts match the data;
 - keep color-mode values to `rwg`, `bw`, or `rag`;
 - put numeric RAG boundaries in `rag_thresholds` for every `rag` column;

@@ -95,12 +95,11 @@ layout are explicit.
 
 All helpers accept composite-level `title`, `subtitle`, `caption`, `source`,
 `side_left`, `side_right`, `dimension_preset`, `spacing`, `save_as`,
-and filename prefix/suffix. `caption` / `side_left` / `side_right` accept a
-string, a list of lines, or a style dict; `\n` forces a line break. Put
-attribution on each `ChartSpec`: identical panel sources collapse into one
-pack footer, while different sources stay beneath their panels and suppress
-an outer source. Pack-level `source` supplies otherwise-unsourced panels.
-Explicit captions are preserved.
+and filename prefix/suffix. Put attribution on each
+`ChartSpec`: identical panel sources collapse into one pack footer, while
+different sources stay beneath their panels and suppress an outer source.
+Pack-level `source` supplies otherwise-unsourced panels. Explicit captions
+are preserved.
 
 Use `dimension_preset='compact'` (the default for every pack except
 `make_2pack_vertical`, which defaults to `'wide'`), `'wide'`, or `'teams'`;

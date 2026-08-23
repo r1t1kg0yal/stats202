@@ -1786,12 +1786,10 @@ function setEveryMarkProp(spec, markType, prop, value) {
 
 function wrapTextToWidth(text, widthPx, fontSize) {
   if (!text) return "";
-  if (Array.isArray(text)) text = text.join("\n");
-  text = String(text).replace(/\\n/g, "\n").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const charW = Math.max(1.0, fontSize * 0.55);
   const perLine = Math.max(1, Math.floor(widthPx / charW));
   const out = [];
-  for (const paragraph of text.split("\n")) {
+  for (const paragraph of String(text).split("\n")) {
     const tokens = [];
     for (const raw of paragraph.split(/\s+/).filter(Boolean)) {
       if (raw.length > perLine) {
@@ -1841,7 +1839,6 @@ function rewrapTextPanel(panel, newText) {
   node.mark.text = wrapped;
   const nLines = Math.max(1, wrapped.split("\n").length);
   const lineHeight = Math.max(fontSize + 2, Math.floor(fontSize * 1.45));
-  node.mark.lineHeight = lineHeight;
   node.height = nLines * lineHeight + 2 * pad;
   return wrapped;
 }

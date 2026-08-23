@@ -123,12 +123,9 @@ result = make_chart(
 
 `title` should state the finding. `subtitle` adds context, never attribution.
 `source="Haver"` renders `Source: Haver` below the chart; an explicit
-`caption` wins. Never invent a source. `caption`, `side_left`, and
-`side_right` honour a newline or a list of strings as a forced line break
-(each line still wraps to the panel width). Use that for event keys and
-epoch-stat columns; do not join items with `|`. `intent` is `explore`
-(default), `publish` (700×400), or `monitor` (500×300). Canvas dimensions
-are otherwise engine-selected.
+`caption` wins. Never invent a source. `intent` is `explore` (default),
+`publish` (700×400), or `monitor` (500×300). Canvas dimensions are otherwise
+engine-selected.
 
 Axis titles live only in `mapping`: `mapping['x_title']`,
 `mapping['y_title']`, `mapping['y_title_right']`. There is no top-level
@@ -164,7 +161,7 @@ surfaces:
 | `VLine(...)`, `Band(...)`, etc. | Only that annotation constructor's coordinates and style parameters | Annotation coordinates/style do not belong in `mapping` or at `make_chart` top level |
 | `layers=[{...}]` | Only the strict layer dictionaries in `chart_context_annotations.md` | Do not pass annotation objects or arbitrary Vega-Lite dictionaries |
 | `ChartSpec(...)` | Per-panel `df`, `chart_type`, `mapping`, text, annotations, and layers | `dimension_preset`, spacing, filename, and save path belong on `make_*pack_*` |
-| `make_table(...)` | Table kwargs from `chart_context_tables.md`; there is no `mapping` and no side panel | Chart colour, chart mapping, `side_left` / `side_right`, `annotations`, and `layers` do not apply |
+| `make_table(...)` | Table kwargs from `chart_context_tables.md`; there is no `mapping` | Chart colour or chart mapping kwargs do not apply |
 
 Unknown `mapping` keys, unexpected top-level `make_chart` kwargs, malformed
 layer dictionaries, and engine-only keys raise `ValidationError` with a
@@ -204,7 +201,6 @@ while you are building the frame, not after a refusal.
  y_title / x_title ........ 28    legend title ............. 28
  legend series name ....... 24 + ≤40% of canvas, only where a legend renders
  PlotText.text ............ 10 words (aim 8)
- caption / side_left / side_right ... no cap; `\n` or a list of lines forces a break
  chart title / subtitle ... 2 wrapped lines at the canvas width
  composite super-title .... 63 at any preset (up to 159 on the widest)
  composite super-subtitle . 93 at any preset (up to 231 on the widest)
@@ -292,7 +288,7 @@ number of categories — not to pick a bigger preset, and not to rename things.
 | Any category label — `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile ordinals, `donut` slices, heatmap rows and columns, facet panel labels | 24 characters on the longest line, and at most 2 lines. One number for every nominal label, standalone or in a composite cell | Abbreviate in the DataFrame. The error quotes each offender with its length and suggests abbreviations where the name has an acronym or word boundary to exploit |
 | Heatmap row or column label | The same 24, and less on a narrow canvas — the gutter budget applies on top and the usable number is reported in the error | Abbreviate in the DataFrame. Only applies when the error names a specific string; a row-COUNT failure is §5.2 fit, not length |
 | Heatmap rows vs canvas height | Each row needs one label line, so a fixed cell fits `height / 15` rows | Drop the `dimensions` kwarg and let the engine size the canvas; inside a fixed cell, aggregate or take the top-N. Renaming rows buys nothing |
-| Named categories vs canvas (every nominal axis: `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile-line ordinals, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, never clips one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime, and including `bar` x values that are house period labels (`Jan-21`, `Jan 21`, `16Q1`, `2016Q1`) or a datetime column the caller marked `x_type='ordinal'`. Profile ordinals never rotate past -45 and thin which ticks are drawn instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap (no help on a symmetric matrix — the engine says so), or switch to `bar_horizontal` for long lists |
+| Named categories vs canvas (every nominal axis: `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile-line ordinals, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, never clips one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime. Profile ordinals never rotate past -45 and thin which ticks are drawn instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap (no help on a symmetric matrix — the engine says so), or switch to `bar_horizontal` for long lists |
 | Colour-legend series name | 24 characters, AND measured width ≤ 40% of canvas width (about 28 characters of mixed case at 700px, ~11 in a 280px composite cell), only where a colour legend actually renders. Standalone line / area charts with end labels take the 32-character LVL cap instead. Either legend gate can bind; the error says which and reports measured pixel widths | Rename the `color` column values in the DataFrame. This is the same repair as any other length gate — the engine will not ellipsize a series name, because two series whose names differ past the cut become indistinguishable |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
