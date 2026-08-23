@@ -604,7 +604,6 @@ _PUBLIC_CHART_MAPPING_KEYS: frozenset = frozenset({
 
 _ENGINE_ONLY_CHART_MAPPING_KEYS: frozenset = frozenset({
     "_anno_label_anchor_right_x",
-    "_auto_flipped_from_bar",
     "_bar_category_axis_plan",
     "_chart_height_px",
     "_chart_width_px",
@@ -615,10 +614,7 @@ _ENGINE_ONLY_CHART_MAPPING_KEYS: frozenset = frozenset({
     "_histogram_bin_extent",
     "_suppress_bar_total_in_y_range",
     "_suppress_bar_value_at_x",
-    "_engine_notes",
-    "_ordinal_date_axis",
     "_x_axis_type",
-    "_y_axis_type",
     "dual_axis_config",
 })
 
@@ -978,11 +974,7 @@ def _collect_layer_findings(layers: Any) -> List[ValidationError]:
 
 
 class YAxisLabelTooLongError(ValidationError):
-    """Raised when a y-axis label exceeds the configured character limit.
-
-    Flattened to a base ``ValidationError`` at ``make_chart`` / composites
-    (message preserved); the typed class is for collector diagnosis only.
-    """
+    """Raised when a y-axis label exceeds the configured character limit."""
 
     def __init__(
         self,
@@ -1003,9 +995,6 @@ class LvlSeriesNameTooLongError(ValidationError):
     end-of-line label with an ellipsis (which produces unreadable output
     like ``"United S\u2026 4.31"``), the engine fails up-front so PRISM
     rewrites the series identifier into something that fits the chart.
-
-    Flattened to a base ``ValidationError`` at ``make_chart`` / composites
-    (message preserved); the typed class is for collector diagnosis only.
     """
 
     def __init__(
@@ -1025,13 +1014,10 @@ class LegendLabelTooLongError(ValidationError):
     """Raised when a colour-legend series name exceeds the pixel budget.
 
     Vega-Lite treats ``legend.labelLimit`` as a hard ellipsis truncate --
-    there is no wrap. The engine computes the budget as 40%% of
+    there is no wrap. The engine computes the budget as 25%% of
     ``chart_width`` (``_LEGEND_MAX_WIDTH_FRAC``) and fails up-front when
     any ``color``-column value would be clipped, so PRISM shortens names
     in the DataFrame before calling ``make_chart()`` / composites.
-
-    Flattened to a base ``ValidationError`` at ``make_chart`` / composites
-    (message preserved); the typed class is for collector diagnosis only.
     """
 
     def __init__(
@@ -1062,9 +1048,6 @@ class HeatmapRowLabelTooLongError(ValidationError):
     is too tight for the axis font size), the engine fails up-front so
     PRISM shortens labels in the DataFrame before ``make_chart()`` /
     ``make_*pack_*()``.
-
-    Flattened to a base ``ValidationError`` at ``make_chart`` / composites
-    (message preserved); the typed class is for collector diagnosis only.
     """
 
     def __init__(
@@ -1094,9 +1077,6 @@ class HeatmapColumnLabelTooLongError(ValidationError):
     label exceeds the per-column pixel budget at the planned angle (or the
     15-char cap), the engine fails up-front so PRISM shortens category
     strings in the DataFrame before ``make_chart()`` / ``make_*pack_*()``.
-
-    Flattened to a base ``ValidationError`` at ``make_chart`` / composites
-    (message preserved); the typed class is for collector diagnosis only.
     """
 
     def __init__(
@@ -1133,9 +1113,6 @@ class BarCategoryLabelTooLongError(ValidationError):
     grouped (``color`` + ``stack=False``), stacked (``color`` +
     ``stack=True``), and composite cells of all of the above. Same cap
     regardless of orientation so PRISM has a single rule to follow.
-
-    Flattened to a base ``ValidationError`` at ``make_chart`` / composites
-    (message preserved); the typed class is for collector diagnosis only.
     """
 
     def __init__(
@@ -1166,9 +1143,6 @@ class NominalLabelTooLongError(ValidationError):
     when labels of legal length still cannot be seated on the axis. These
     two are not interchangeable: this one is fixed by rewriting a string,
     that one by showing fewer categories or widening the canvas.
-
-    Flattened to a base ``ValidationError`` at ``make_chart`` / composites
-    (message preserved); the typed class is for collector diagnosis only.
     """
 
     def __init__(
@@ -1194,9 +1168,6 @@ class LegendTitleTooLongError(ValidationError):
     It had no gate of any kind until 2026-08-22: Vega's 180px ``titleLimit``
     default used to clip it, and when that default was replaced by
     no-limit the clip went away without a length check taking its place.
-
-    Flattened to a base ``ValidationError`` at ``make_chart`` / composites
-    (message preserved); the typed class is for collector diagnosis only.
     """
 
     def __init__(
@@ -3088,27 +3059,11 @@ def _materialize_ordinal_datetime_x(
     # House format first; step down to finer spellings only if labels
     # collide (two stamps in one session both reading "27 Mar" would
     # silently merge two categories into one band).
-    #
-    # The ladder below the house format has to climb in PRECISION order,
-    # because the first spelling that disambiguates is the one that ships
-    # and every rung skipped is length the labels carry forever. Going
-    # straight from the house format to a spelling with a time component
-    # meant a 15-year MONTHLY series -- whose house format is year-only
-    # and therefore collides 12 ways -- landed on "01 Jan 10 00:00": a
-    # day-of-month and a midnight that are pure noise on monthly data,
-    # and 15 characters where 6 would do. Those 15 characters then read as
-    # long category names to `_build_bar`, which auto-flipped the chart to
-    # horizontal, so the caller was refused by the horizontal row-pitch
-    # gate for a vertical chart they had asked for. "%b %y" is the rung
-    # that was missing.
     labels: List[str] = []
     for fmt in (
         _temporal_house_strftime(ordered),
-        "%Y",                  # 2010
-        "%b %y",               # Jan 10
-        "%d %b %y",            # 01 Jan 10
-        "%d %b %H:%M",         # 01 Jan 00:00
-        "%d %b %y %H:%M",      # 01 Jan 10 00:00
+        "%d %b %H:%M",
+        "%d %b %y %H:%M",
         "%Y-%m-%d %H:%M:%S",
     ):
         labels = [pd.Timestamp(ts).strftime(fmt) for ts in chronological]
@@ -3118,11 +3073,6 @@ def _materialize_ordinal_datetime_x(
     label_by_stamp = dict(zip(chronological, labels))
     df = df.copy()
     df[x_field] = df[x_field].map(label_by_stamp)
-    # Once the column holds strings, nothing downstream can tell these
-    # categories came from dates -- and dropping x_type is the one remedy
-    # that clears a category-label gate outright, so the gates need to
-    # know they are allowed to suggest it.
-    mapping["_ordinal_date_axis"] = True
 
     explicit_sort = mapping.get("x_sort")
     if explicit_sort is None:
@@ -5830,160 +5780,6 @@ def _annotation_x_axis_type(
     return _resolve_axis_type(df, x_col)
 
 
-def _annotation_y_axis_type(
-    df: pd.DataFrame, y_col: str, mapping: Dict[str, Any],
-) -> str:
-    """Resolve an annotation layer's y-axis type. Mirror of the x helper.
-
-    Prefers the base builder's PUBLISHED y-axis type
-    (``mapping['_y_axis_type']``, set by the builders whose y axis is
-    categorical -- ``_build_bar_horizontal`` and ``_build_heatmap``) over
-    the column dtype, for the same reason the x side does: dtype
-    inference cannot see a category column of numeric-looking strings,
-    and an annotation that disagrees with the base layer is exactly the
-    defect this prevents.
-
-    That defect is worse on y than on x. A base band scale layered with
-    an annotation's linear scale makes Vega-Lite emit a view height it
-    never defines. Standalone the dangling reference is ``height``, which
-    resolves against the root scope by accident; wrapped in the vconcat
-    that ``_wrap_with_text_panels`` builds for a ``source`` / ``caption``
-    it becomes ``concat_0_height`` and the PNG export dies with
-    "Unrecognized signal name". Without the wrapper it renders and
-    reports success, with every annotation collapsed onto the first band
-    and a spurious second y-axis -- silently wrong, which is worse.
-    """
-    published = mapping.get("_y_axis_type")
-    if published:
-        return published
-    return _resolve_axis_type(df, y_col)
-
-
-def _annotation_y_encoding(
-    df: pd.DataFrame, mapping: Dict[str, Any],
-) -> Tuple[str, Dict[str, Any]]:
-    """``(y_field, alt.Y kwargs)`` every annotation layer should encode with.
-
-    The y-side counterpart to the
-    ``_annotation_x_axis_type`` / ``_resolve_x_sort_for_annotation`` /
-    ``_apply_nominal_axis_sort`` sequence each ``to_layer`` runs for x.
-    Annotation classes must not hand-roll ``alt.Y(f"{field}:Q")``: that
-    hardcode is right only while the y axis happens to be the value
-    axis, and it is the whole of the ``concat_N_height`` failure mode.
-    """
-    y_field_user = mapping.get("y") if isinstance(mapping.get("y"), str) else None
-    y_field = y_field_user if y_field_user else "y"
-    y_kwargs: Dict[str, Any] = {
-        "type": _annotation_y_axis_type(df, y_field, mapping),
-    }
-    explicit_sort = list(mapping.get("y_sort")) if mapping.get("y_sort") else None
-    _apply_nominal_axis_sort(y_kwargs, df, y_field, explicit_sort)
-    return y_field, y_kwargs
-
-
-def _band_scale_text_offsets(
-    y_kwargs: Dict[str, Any], dy: int,
-) -> Tuple[Optional[str], int]:
-    """``(baseline, dy)`` for a text mark against the resolved y scale.
-
-    On a continuous axis a caption is anchored at a point and ``dy=-10``
-    is a small nudge clear of the mark. On a band scale the anchor is the
-    middle of a row whose height is the whole point of the annotation, so
-    the same constant detaches the caption from the row it names -- 20
-    rows in a 350px canvas is 17.5px per row, and 10px of that is more
-    than half. The band case therefore anchors at the row's middle with
-    no vertical offset; continuous axes keep the caller's ``dy``.
-    """
-    if y_kwargs.get("type") in ("nominal", "ordinal"):
-        return "middle", 0
-    return None, dy
-
-
-def _note(mapping: Dict[str, Any], message: str) -> None:
-    """Log a degradation AND put it where the caller will actually see it.
-
-    An annotation that draws less than it was asked for is the failure
-    mode nobody detects: the render succeeds, the picture looks
-    plausible, and the missing element is only found by eye. ``to_layer``
-    has no handle on the result object, so the note rides back on the
-    mapping and ``_make_chart`` drains it into ``result.warnings``.
-    """
-    logger.warning("%s", message)
-    mapping.setdefault("_engine_notes", []).append(message)
-
-
-def _band_domain(
-    df: pd.DataFrame, field: str, sort: Any,
-) -> List[Any]:
-    """The categories of a band scale, in the order the axis draws them."""
-    if field not in df.columns:
-        return []
-    if isinstance(sort, list) and sort:
-        present = set(df[field])
-        return [c for c in sort if c in present]
-    return list(pd.unique(df[field]))
-
-
-def _band_row_slice(
-    df: pd.DataFrame,
-    y_field: str,
-    y_kwargs: Dict[str, Any],
-    y1: Any,
-    y2: Any,
-) -> List[Any]:
-    """The categories a ``y1``..``y2`` range covers, in axis order.
-
-    A rect encoded ``y``/``y2`` against a band scale is legal Vega-Lite,
-    but it spans the START of band y1 to the START of band y2, so it
-    sits half a row off the rows the caller named and stops short of the
-    last one. Emitting one full-band rect per covered category lands
-    exactly on the rows instead, and avoids the helper ``_y2`` column
-    leaking into the shared axis title.
-
-    Returns ``[]`` when either endpoint is not a category on this axis,
-    which the caller should treat as "nothing to highlight".
-    """
-    domain = _band_domain(df, y_field, y_kwargs.get("sort"))
-    try:
-        lo, hi = sorted((domain.index(y1), domain.index(y2)))
-    except ValueError:
-        return []
-    return domain[lo:hi + 1]
-
-
-def _band_positions(
-    domain: List[Any], v1: Any, v2: Any,
-) -> Tuple[float, float]:
-    """Two endpoint positions along a band axis, as domain indices.
-
-    Falls back to ``(0.0, 0.0)`` -- no movement along this axis -- when
-    either endpoint is not on the axis, which is the same thing the
-    continuous path does with an uncoercible value.
-    """
-    try:
-        return float(domain.index(v1)), float(domain.index(v2))
-    except ValueError:
-        return 0.0, 0.0
-
-
-def _band_midpoint(
-    df: pd.DataFrame, field: str, sort: Any, v1: Any, v2: Any,
-) -> Any:
-    """The category halfway between two categories, in axis order.
-
-    Averaging two category names is what several annotation classes used
-    to do implicitly; on strings it raises, on the way to being caught
-    and silently discarded. Stepping through the band domain is the
-    meaningful equivalent.
-    """
-    domain = _band_domain(df, field, sort)
-    try:
-        i1, i2 = domain.index(v1), domain.index(v2)
-    except ValueError:
-        return v1
-    return domain[(i1 + i2) // 2]
-
-
 def _resolve_x_sort_for_annotation(
     df: pd.DataFrame, mapping: Dict[str, Any], x_col: str,
 ) -> Optional[List[str]]:
@@ -6171,16 +5967,10 @@ class VLine(Annotation):
         if not self.label:
             return line
 
-        # If the base chart has a continuous y-axis, anchor the label to
-        # the data's max so it sits near the top inside the plot. If y is
-        # categorical (e.g. horizontal-bar's category axis), pin the label
-        # to the top of the chart frame using a screen-coordinate y value.
-        #
-        # The test is the RESOLVED axis type, not the column dtype: a
-        # numeric column the base builder chose to render ordinal (a
-        # tenor axis of 2/5/10/30) is numeric by dtype but a band scale on
-        # screen, and taking the continuous branch for it puts a linear
-        # scale on top of a band scale -- the dangling-height defect.
+        # If the base chart has a numeric y-axis, anchor the label to the
+        # data's max so it sits near the top inside the plot. If y is
+        # nominal (e.g. horizontal-bar's category axis), pin the label to
+        # the top of the chart frame using a screen-coordinate y value.
         #
         # On a dual-axis chart, ``df[y_field_user]`` contains BOTH sides'
         # values stacked together (long format), so ``.max()`` picks up
@@ -6193,12 +5983,10 @@ class VLine(Annotation):
         # ``dy=-10`` offset (label drawn 10px above y_pos) still lands
         # INSIDE the plot frame rather than colliding with the title
         # band above.
-        _, vline_y_kwargs = _annotation_y_encoding(df, mapping)
         if (
             y_field_user
             and y_field_user in df.columns
             and pd.api.types.is_numeric_dtype(df[y_field_user])
-            and vline_y_kwargs.get("type") not in ("nominal", "ordinal")
         ):
             dual_cfg = mapping.get("dual_axis_config") or {}
             left_domain = dual_cfg.get("y_domain_left")
@@ -6220,7 +6008,7 @@ class VLine(Annotation):
                 )
                 .encode(
                     x=alt.X(x_col, **x_kwargs),
-                    y=alt.Y(y_field, **vline_y_kwargs),
+                    y=alt.Y(f"{y_field}:Q"),
                     text=alt.value(self.label),
                 )
             )
@@ -6290,27 +6078,8 @@ class HLine(Annotation):
         # Use the base chart's y field so the line renders on the same
         # scale and Vega-Lite's shared-axis resolution doesn't override
         # the base chart's axis title with our own (null) one.
-        col_name, y_kwargs = _annotation_y_encoding(df, mapping)
-
-        # A threshold rule needs a continuous axis to sit at a level on.
-        # ``render_annotations`` already rotates HLine into VLine where the
-        # chart family is a known horizontal layout, but a heatmap has a
-        # categorical y with no value axis to rotate onto, so nothing
-        # upstream catches it. Encoding it quantitative anyway is what
-        # takes the PNG export down; skip the rule and keep the caption.
-        skip_rule = y_kwargs.get("type") in ("nominal", "ordinal")
-        if skip_rule:
-            _note(
-                mapping,
-                f"HLine(y={self.y!r}): the y-axis is categorical, so there "
-                f"is no value axis for a threshold to sit on. The rule was "
-                f"skipped; the label (if any) still renders at the named "
-                f"row. On a horizontal bar use VLine for a value threshold; "
-                f"on a heatmap, mark the row with Band(y1=..., y2=...).",
-            )
-            if not self.label:
-                return alt.Chart(pd.DataFrame({"_": []})).mark_point()
-
+        y_field = mapping.get("y") if isinstance(mapping.get("y"), str) else None
+        col_name = y_field if y_field else "y"
         line_df = pd.DataFrame({col_name: [self.y]})
         line = (
             alt.Chart(line_df)
@@ -6320,14 +6089,14 @@ class HLine(Annotation):
                 strokeDash=self.stroke_dash,
                 clip=True,
             )
-            .encode(y=alt.Y(col_name, **y_kwargs))
+            .encode(y=alt.Y(f"{col_name}:Q"))
         )
 
         if not self.label:
             return line
 
         text_color = self.label_color or self.color
-        layers: List[alt.Chart] = [] if skip_rule else [line]
+        layers: List[alt.Chart] = [line]
 
         # Class 3 absorption: when ``make_chart`` stashes a right-edge
         # anchor x in ``mapping`` (bar charts), route the label to the
@@ -6354,34 +6123,25 @@ class HLine(Annotation):
             label_x_enc = None
 
         text_encode_kwargs: Dict[str, Any] = {
-            "y": alt.Y(col_name, **y_kwargs),
+            "y": alt.Y(f"{col_name}:Q"),
             "text": alt.value(self.label),
         }
         if label_x_enc is not None:
             text_encode_kwargs["x"] = label_x_enc
-        label_baseline, label_dy_px = _band_scale_text_offsets(
-            y_kwargs, self._label_dy,
-        )
-
-        text_mark_kwargs: Dict[str, Any] = dict(
-            align=label_align,
-            dx=label_dx,
-            dy=label_dy_px,
-            fontSize=10,
-        )
-        if label_baseline:
-            text_mark_kwargs["baseline"] = label_baseline
 
         if self.halo:
             halo_layer = (
                 alt.Chart(label_df)
                 .mark_text(
+                    align=label_align,
+                    dx=label_dx,
+                    dy=self._label_dy,
+                    fontSize=10,
                     stroke=self.halo_color,
                     strokeWidth=self.halo_width,
                     strokeJoin="round",
                     strokeOpacity=1.0,
                     color=self.halo_color,
-                    **text_mark_kwargs,
                 )
                 .encode(**text_encode_kwargs)
             )
@@ -6389,7 +6149,13 @@ class HLine(Annotation):
 
         text = (
             alt.Chart(label_df)
-            .mark_text(color=text_color, **text_mark_kwargs)
+            .mark_text(
+                align=label_align,
+                dx=label_dx,
+                dy=self._label_dy,
+                fontSize=10,
+                color=text_color,
+            )
             .encode(**text_encode_kwargs)
         )
         layers.append(text)
@@ -6513,42 +6279,19 @@ class Band(Annotation):
             return band + halo_layer + text
 
         if self.y1 is not None and self.y2 is not None:
-            y_field, y_kwargs = _annotation_y_encoding(df, mapping)
-            band_y = y_kwargs.get("type") in ("nominal", "ordinal")
-
-            if band_y:
-                # Shading a range of rows (heatmap sectors, horizontal-bar
-                # names) is a real ask, but there is no midpoint between
-                # two category names to average and no continuous scale to
-                # span. Paint the covered rows themselves.
-                rows = _band_row_slice(df, y_field, y_kwargs, self.y1, self.y2)
-                if not rows:
-                    _note(
-                        mapping,
-                        f"Band(y1={self.y1!r}, y2={self.y2!r}) drew nothing: "
-                        f"the y-axis is categorical and those are not both "
-                        f"categories on it, so there is no row range to "
-                        f"shade. Pass two values that appear in "
-                        f"df[{y_field!r}].",
-                    )
-                    return alt.Chart(pd.DataFrame({"_": []})).mark_point()
-                band_df = pd.DataFrame({y_field: rows})
-                mid_y = rows[len(rows) // 2]
-            else:
-                band_df = pd.DataFrame({y_field: [self.y1], "_y2": [self.y2]})
-                mid_y = (self.y1 + self.y2) / 2
-
-            band_encoding: Dict[str, Any] = {"y": alt.Y(y_field, **y_kwargs)}
-            if not band_y:
-                band_encoding["y2"] = alt.Y2("_y2:Q")
+            band_df = pd.DataFrame({y_field: [self.y1], "_y2": [self.y2]})
             band = (
                 alt.Chart(band_df)
                 .mark_rect(color=self.color, opacity=self.opacity)
-                .encode(**band_encoding)
+                .encode(
+                    y=alt.Y(f"{y_field}:Q"),
+                    y2=alt.Y2("_y2:Q"),
+                )
             )
             if not self.label:
                 return band
 
+            mid_y = (self.y1 + self.y2) / 2
             label_color = self.label_color or "#666666"
 
             # Class 3 absorption (mirrors HLine.to_layer): when
@@ -6580,34 +6323,34 @@ class Band(Annotation):
                 label_x_enc = None
 
             text_encode_kwargs: Dict[str, Any] = {
-                "y": alt.Y(y_field, **y_kwargs),
+                "y": alt.Y(f"{y_field}:Q"),
                 "text": alt.value(self.label),
             }
             if label_x_enc is not None:
                 text_encode_kwargs["x"] = label_x_enc
 
-            label_baseline, _ = _band_scale_text_offsets(y_kwargs, 0)
-            label_mark_kwargs: Dict[str, Any] = dict(
-                fontSize=9, align=label_align, dx=label_dx,
-            )
-            if label_baseline:
-                label_mark_kwargs["baseline"] = label_baseline
-
             halo_layer = (
                 alt.Chart(label_df)
                 .mark_text(
+                    fontSize=9,
                     stroke="#FFFFFF",
                     strokeWidth=4.0,
                     strokeJoin="round",
                     strokeOpacity=1.0,
                     color="#FFFFFF",
-                    **label_mark_kwargs,
+                    align=label_align,
+                    dx=label_dx,
                 )
                 .encode(**text_encode_kwargs)
             )
             text = (
                 alt.Chart(label_df)
-                .mark_text(color=label_color, **label_mark_kwargs)
+                .mark_text(
+                    fontSize=9,
+                    color=label_color,
+                    align=label_align,
+                    dx=label_dx,
+                )
                 .encode(**text_encode_kwargs)
             )
             return band + halo_layer + text
@@ -6659,47 +6402,53 @@ class PointLabel(Annotation):
         x_col = x_col_user if x_col_user in df.columns else "x"
         x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
-        y_field, y_kwargs = _annotation_y_encoding(df, mapping)
+        y_field_user = (
+            mapping.get("y") if isinstance(mapping.get("y"), str) else None
+        )
+        y_field = y_field_user if y_field_user else "y"
         label_df = pd.DataFrame({x_col: [self.x], y_field: [self.y]})
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
-        baseline, dy = _band_scale_text_offsets(y_kwargs, self.dy)
 
         text_color = self.label_color or skin.get("primary_color", "#333333")
-        mark_kwargs: Dict[str, Any] = dict(
-            align=self.align,
-            dx=self.dx,
-            dy=dy,
-            fontSize=self.font_size,
-        )
-        if baseline:
-            mark_kwargs["baseline"] = baseline
-        encoding: Dict[str, Any] = dict(
-            x=alt.X(x_col, **x_kwargs),
-            y=alt.Y(y_field, **y_kwargs),
-            text=alt.value(self.label),
-        )
         layers: List[alt.Chart] = []
 
         if self.halo:
             halo_layer = (
                 alt.Chart(label_df)
                 .mark_text(
+                    align=self.align,
+                    dx=self.dx,
+                    dy=self.dy,
+                    fontSize=self.font_size,
                     stroke=self.halo_color,
                     strokeWidth=self.halo_width,
                     strokeJoin="round",
                     strokeOpacity=1.0,
                     color=self.halo_color,
-                    **mark_kwargs,
                 )
-                .encode(**encoding)
+                .encode(
+                    x=alt.X(x_col, **x_kwargs),
+                    y=alt.Y(f"{y_field}:Q"),
+                    text=alt.value(self.label),
+                )
             )
             layers.append(halo_layer)
 
         text_layer = (
             alt.Chart(label_df)
-            .mark_text(color=text_color, **mark_kwargs)
-            .encode(**encoding)
+            .mark_text(
+                align=self.align,
+                dx=self.dx,
+                dy=self.dy,
+                fontSize=self.font_size,
+                color=text_color,
+            )
+            .encode(
+                x=alt.X(x_col, **x_kwargs),
+                y=alt.Y(f"{y_field}:Q"),
+                text=alt.value(self.label),
+            )
         )
         layers.append(text_layer)
         return alt.layer(*layers) if len(layers) > 1 else layers[0]
@@ -6776,7 +6525,10 @@ class Arrow(Annotation):
         x_col_user = mapping.get("x", "x")
         x_col = x_col_user if x_col_user in df.columns else "x"
         x_type = _annotation_x_axis_type(df, x_col, mapping)
-        y_field, y_kwargs = _annotation_y_encoding(df, mapping)
+        y_field_user = (
+            mapping.get("y") if isinstance(mapping.get("y"), str) else None
+        )
+        y_field = y_field_user if y_field_user else "y"
 
         line_df = pd.DataFrame(
             {x_col: [self.x1], y_field: [self.y1], "_x2": [self.x2], "_y2": [self.y2]}
@@ -6792,7 +6544,7 @@ class Arrow(Annotation):
             .mark_rule(**mark_kwargs)
             .encode(
                 x=alt.X(x_col, type=x_type),
-                y=alt.Y(y_field, **y_kwargs),
+                y=alt.Y(f"{y_field}:Q"),
                 x2=alt.X2("_x2"),
                 y2=alt.Y2("_y2"),
             )
@@ -6801,9 +6553,7 @@ class Arrow(Annotation):
         layers: List[alt.Chart] = [line]
 
         if self.head_type == "triangle":
-            angle = self._compute_arrowhead_angle(
-                df, x_col, x_type, y_field, y_kwargs,
-            )
+            angle = self._compute_arrowhead_angle(df, x_col)
             head_df = pd.DataFrame({x_col: [self.x2], y_field: [self.y2]})
             head = (
                 alt.Chart(head_df)
@@ -6817,15 +6567,13 @@ class Arrow(Annotation):
                 )
                 .encode(
                     x=alt.X(x_col, type=x_type),
-                    y=alt.Y(y_field, **y_kwargs),
+                    y=alt.Y(f"{y_field}:Q"),
                 )
             )
             layers.append(head)
 
         if self.label:
-            layers.append(
-                self._label_layer(df, x_type, x_col, y_field, y_kwargs)
-            )
+            layers.append(self._label_layer(x_type, x_col, y_field))
 
         if len(layers) == 1:
             return layers[0]
@@ -6833,14 +6581,7 @@ class Arrow(Annotation):
 
     # ---- helpers --------------------------------------------------------
 
-    def _compute_arrowhead_angle(
-        self,
-        df: pd.DataFrame,
-        x_col: str,
-        x_type: str,
-        y_field: str,
-        y_kwargs: Dict[str, Any],
-    ) -> float:
+    def _compute_arrowhead_angle(self, df: pd.DataFrame, x_col: str) -> float:
         """Approximate the arrowhead rotation in pixel space.
 
         x and y axes have different units (e.g. timestamps vs basis
@@ -6848,58 +6589,34 @@ class Arrow(Annotation):
         Normalize both to [0, 1] of their visible extent, apply a default
         2:1 aspect-ratio correction (the 'wide' preset), then convert
         from math angle to Vega-Lite's clockwise-from-up convention.
-
-        A band scale has no arithmetic, so its endpoints are measured as
-        positions in the axis domain instead. Without that, a categorical
-        axis contributed a delta of zero and the head pointed straight up
-        or down no matter which way the shaft ran (nominal x, where
-        ``_to_numeric_x`` bottoms out at 0.0 for both ends), or the whole
-        annotation raised on ``y2 - y1`` between two category names and
-        was discarded as a non-fatal failure (nominal y).
         """
-        band_x = x_type in ("nominal", "ordinal")
-        band_y = y_kwargs.get("type") in ("nominal", "ordinal")
+        x1n = _to_numeric_x(self.x1)
+        x2n = _to_numeric_x(self.x2)
 
-        if band_x:
-            domain = _band_domain(df, x_col, None)
-            x1n, x2n = _band_positions(domain, self.x1, self.x2)
-            x_min, x_max = 0.0, float(max(len(domain) - 1, 1))
-        else:
-            x1n = _to_numeric_x(self.x1)
-            x2n = _to_numeric_x(self.x2)
-            if x_col in df.columns:
-                if pd.api.types.is_datetime64_any_dtype(df[x_col]):
-                    x_min = df[x_col].min().timestamp()
-                    x_max = df[x_col].max().timestamp()
-                elif pd.api.types.is_numeric_dtype(df[x_col]):
-                    x_min = float(df[x_col].min())
-                    x_max = float(df[x_col].max())
-                else:
-                    x_min, x_max = 0.0, 1.0
+        if x_col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[x_col]):
+                x_min = df[x_col].min().timestamp()
+                x_max = df[x_col].max().timestamp()
+            elif pd.api.types.is_numeric_dtype(df[x_col]):
+                x_min = float(df[x_col].min())
+                x_max = float(df[x_col].max())
             else:
                 x_min, x_max = 0.0, 1.0
-
-        if band_y:
-            domain = _band_domain(df, y_field, y_kwargs.get("sort"))
-            y1n, y2n = _band_positions(domain, self.y1, self.y2)
-            # A band y axis draws its first category at the TOP, so a
-            # rising index is a downward move on screen.
-            y1n, y2n = -y1n, -y2n
-            y_min, y_max = 0.0, float(max(len(domain) - 1, 1))
         else:
-            y1n, y2n = self.y1, self.y2
-            numeric_df = df.select_dtypes(include="number")
-            if not numeric_df.empty:
-                y_min = float(numeric_df.min().min())
-                y_max = float(numeric_df.max().max())
-            else:
-                y_min, y_max = 0.0, 1.0
+            x_min, x_max = 0.0, 1.0
+
+        numeric_df = df.select_dtypes(include="number")
+        if not numeric_df.empty:
+            y_min = float(numeric_df.min().min())
+            y_max = float(numeric_df.max().max())
+        else:
+            y_min, y_max = 0.0, 1.0
 
         x_range = (x_max - x_min) if x_max != x_min else 1.0
         y_range = (y_max - y_min) if y_max != y_min else 1.0
 
         dx_norm = (x2n - x1n) / x_range
-        dy_norm = (y2n - y1n) / y_range
+        dy_norm = (self.y2 - self.y1) / y_range
         aspect_ratio = 2.0
         dx_pixel = dx_norm * aspect_ratio
         dy_pixel = dy_norm
@@ -6907,52 +6624,32 @@ class Arrow(Annotation):
         math_angle = float(np.degrees(np.arctan2(dy_pixel, dx_pixel)))
         return (90.0 - math_angle) % 360.0
 
-    def _label_layer(
-        self,
-        df: pd.DataFrame,
-        x_type: str,
-        x_col: str,
-        y_field: str,
-        y_kwargs: Dict[str, Any],
-    ) -> alt.Chart:
-        band_y = y_kwargs.get("type") in ("nominal", "ordinal")
+    def _label_layer(self, x_type: str, x_col: str, y_field: str) -> alt.Chart:
         if self.label_position == "start":
             label_x, label_y = self.x1, self.y1
         elif self.label_position == "end":
             label_x, label_y = self.x2, self.y2
         else:  # middle
-            if x_type in ("nominal", "ordinal"):
-                label_x = _band_midpoint(df, x_col, None, self.x1, self.x2)
-            elif hasattr(self.x1, "timestamp") and hasattr(self.x2, "timestamp"):
+            if hasattr(self.x1, "timestamp") and hasattr(self.x2, "timestamp"):
                 mid_ts = (self.x1.timestamp() + self.x2.timestamp()) / 2.0
                 label_x = pd.Timestamp(mid_ts, unit="s")
             elif isinstance(self.x1, (int, float)) and isinstance(self.x2, (int, float)):
                 label_x = (self.x1 + self.x2) / 2.0
             else:
                 label_x = self.x1
-            label_y = (
-                _band_midpoint(
-                    df, y_field, y_kwargs.get("sort"), self.y1, self.y2,
-                )
-                if band_y else (self.y1 + self.y2) / 2.0
-            )
+            label_y = (self.y1 + self.y2) / 2.0
 
         label_df = pd.DataFrame({x_col: [label_x], y_field: [label_y]})
-        baseline, label_dy = _band_scale_text_offsets(
-            y_kwargs, self.label_offset_y,
-        )
         text_kwargs: Dict[str, Any] = dict(
             align="left",
             dx=self.label_offset_x,
-            dy=label_dy,
+            dy=self.label_offset_y,
             fontSize=10,
             fontWeight="bold",
         )
-        if baseline:
-            text_kwargs["baseline"] = baseline
         encoding: Dict[str, Any] = dict(
             x=alt.X(x_col, type=x_type),
-            y=alt.Y(y_field, **y_kwargs),
+            y=alt.Y(f"{y_field}:Q"),
             text=alt.value(self.label),
         )
         text = (
@@ -7117,22 +6814,22 @@ class Segment(Annotation):
         x_col = x_col_user if x_col_user in df.columns else "x"
         x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
-        y_field, y_kwargs = _annotation_y_encoding(df, mapping)
+        y_field_user = (
+            mapping.get("y") if isinstance(mapping.get("y"), str) else None
+        )
+        y_field = y_field_user if y_field_user else "y"
 
         if x_type in ("nominal", "ordinal"):
-            _note(
-                mapping,
-                "Segment: the x-axis is categorical (tenor strings, or a "
-                "low-cardinality numeric profile axis), and a ranged rule "
-                "with x/x2 does not render reliably on a band scale. The "
-                "line was skipped; the label (if any) still renders at the "
-                "configured anchor point.",
+            logger.warning(
+                "[Segment] x-axis is categorical (nominal/ordinal, e.g. "
+                "tenor strings or a low-cardinality numeric profile axis); "
+                "ranged rules with x/x2 do not render reliably on band "
+                "scales. Skipping Segment line; label (if any) will still "
+                "render at the configured anchor point."
             )
             if not self.label:
                 return alt.Chart(pd.DataFrame({"_": []})).mark_point()
-            return self._label_layer(
-                df, x_col, x_type, x_sort, y_field, y_kwargs,
-            )
+            return self._label_layer(x_col, x_type, x_sort, y_field)
 
         line_df = pd.DataFrame(
             {x_col: [self.x1], y_field: [self.y1],
@@ -7152,7 +6849,7 @@ class Segment(Annotation):
             )
             .encode(
                 x=alt.X(x_col, **x_kwargs),
-                y=alt.Y(y_field, **y_kwargs),
+                y=alt.Y(f"{y_field}:Q"),
                 x2=alt.X2("_x2"),
                 y2=alt.Y2("_y2"),
             )
@@ -7162,21 +6859,16 @@ class Segment(Annotation):
             return line
 
         layers: List[alt.Chart] = [line]
-        layers.append(
-            self._label_layer(df, x_col, x_type, x_sort, y_field, y_kwargs)
-        )
+        layers.append(self._label_layer(x_col, x_type, x_sort, y_field))
         return alt.layer(*layers)
 
     def _label_layer(
         self,
-        df: pd.DataFrame,
         x_col: str,
         x_type: str,
         x_sort: Optional[List[Any]],
         y_field: str,
-        y_kwargs: Dict[str, Any],
     ) -> alt.Chart:
-        band_y = y_kwargs.get("type") in ("nominal", "ordinal")
         if self.label_position == "start":
             label_x, label_y = self.x1, self.y1
             align = "left"
@@ -7188,15 +6880,7 @@ class Segment(Annotation):
                 label_x = (self.x1 + self.x2) / 2.0
             else:
                 label_x = self.x1
-            # Averaging two category names concatenates the strings and
-            # anchors the caption at a row that does not exist; step
-            # through the band domain instead.
-            label_y = (
-                _band_midpoint(
-                    df, y_field, y_kwargs.get("sort"), self.y1, self.y2,
-                )
-                if band_y else (self.y1 + self.y2) / 2.0
-            )
+            label_y = (self.y1 + self.y2) / 2.0
             align = "center"
         else:
             label_x, label_y = self.x2, self.y2
@@ -7206,20 +6890,15 @@ class Segment(Annotation):
         x_kwargs: Dict[str, Any] = {"type": x_type}
         if x_sort is not None:
             x_kwargs["sort"] = x_sort
-        baseline, label_dy = _band_scale_text_offsets(
-            y_kwargs, self.label_offset_y,
-        )
         text_kwargs: Dict[str, Any] = dict(
             align=align,
             dx=self.label_offset_x,
-            dy=label_dy,
+            dy=self.label_offset_y,
             fontSize=10,
         )
-        if baseline:
-            text_kwargs["baseline"] = baseline
         encoding: Dict[str, Any] = dict(
             x=alt.X(x_col, **x_kwargs),
-            y=alt.Y(y_field, **y_kwargs),
+            y=alt.Y(f"{y_field}:Q"),
             text=alt.value(self.label),
         )
         text = (
@@ -7291,15 +6970,15 @@ class PointHighlight(Annotation):
         x_col = x_col_user if x_col_user in df.columns else "x"
         x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
-        y_field, y_kwargs = _annotation_y_encoding(df, mapping)
+        y_field_user = (
+            mapping.get("y") if isinstance(mapping.get("y"), str) else None
+        )
+        y_field = y_field_user if y_field_user else "y"
 
         point_df = pd.DataFrame({x_col: [self.x], y_field: [self.y]})
 
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
-        baseline, label_dy = _band_scale_text_offsets(
-            y_kwargs, self.label_offset_y,
-        )
 
         mark_kwargs: Dict[str, Any] = {
             "shape": self.shape,
@@ -7318,7 +6997,7 @@ class PointHighlight(Annotation):
             .mark_point(**mark_kwargs)
             .encode(
                 x=alt.X(x_col, **x_kwargs),
-                y=alt.Y(y_field, **y_kwargs),
+                y=alt.Y(f"{y_field}:Q"),
             )
         )
 
@@ -7328,15 +7007,13 @@ class PointHighlight(Annotation):
         text_kwargs: Dict[str, Any] = dict(
             align="left",
             dx=self.label_offset_x,
-            dy=label_dy,
+            dy=self.label_offset_y,
             fontSize=10,
             fontWeight="bold",
         )
-        if baseline:
-            text_kwargs["baseline"] = baseline
         encoding: Dict[str, Any] = dict(
             x=alt.X(x_col, **x_kwargs),
-            y=alt.Y(y_field, **y_kwargs),
+            y=alt.Y(f"{y_field}:Q"),
             text=alt.value(self.label),
         )
         text = (
@@ -7444,16 +7121,27 @@ class Callout(Annotation):
         x_col = x_col_user if x_col_user in df.columns else "x"
         x_type = _annotation_x_axis_type(df, x_col, mapping)
         x_sort = _resolve_x_sort_for_annotation(df, mapping, x_col)
-        y_field, y_kwargs = _annotation_y_encoding(df, mapping)
+        y_field_user = (
+            mapping.get("y") if isinstance(mapping.get("y"), str) else None
+        )
+        y_field = y_field_user if y_field_user else "y"
         label_df = pd.DataFrame({x_col: [self.x], y_field: [self.y]})
 
         x_kwargs: Dict[str, Any] = {"type": x_type}
         _apply_nominal_axis_sort(x_kwargs, df, x_col, x_sort)
 
-        # Callout already anchors at ``baseline='middle'``, so on a band
-        # scale only the offset needs neutralising -- ``dy=-10`` against a
-        # 17.5px row lifts the caption off the row it names.
-        _, dy = _band_scale_text_offsets(y_kwargs, self.dy)
+        # Resolve the y-axis type the same way x is resolved so a Callout
+        # at a string y (e.g. heatmap with sector labels on the y-axis)
+        # encodes against the right scale instead of force-quantitative
+        # which would render the callout off the chart.
+        y_type = (
+            _resolve_axis_type(df, y_field) if y_field in df.columns else "quantitative"
+        )
+        y_kwargs: Dict[str, Any] = {"type": y_type}
+        explicit_y_sort = (
+            list(mapping.get("y_sort")) if mapping.get("y_sort") else None
+        )
+        _apply_nominal_axis_sort(y_kwargs, df, y_field, explicit_y_sort)
 
         text_color = self.label_color or self.color
 
@@ -7477,7 +7165,7 @@ class Callout(Annotation):
                     align=self.align,
                     baseline="middle",
                     dx=self.dx,
-                    dy=dy,
+                    dy=self.dy,
                     fontSize=self.font_size,
                     fontWeight=self.font_weight,
                     stroke=self.background_color,
@@ -7519,7 +7207,7 @@ class Callout(Annotation):
                     if self.align == "center"
                     else self.dx + self.box_padding_x
                 ),
-                yOffset=dy,
+                yOffset=self.dy,
             )
             if self.box_stroke is not None:
                 rect_kwargs["stroke"] = self.box_stroke
@@ -7541,7 +7229,7 @@ class Callout(Annotation):
                 align=self.align,
                 baseline="middle",
                 dx=self.dx,
-                dy=dy,
+                dy=self.dy,
                 fontSize=self.font_size,
                 fontWeight=self.font_weight,
                 color=text_color,
@@ -8950,7 +8638,6 @@ def _drop_right_edge_vlines(
     annotations: List[Annotation],
     df: pd.DataFrame,
     mapping: Dict[str, Any],
-    dropped_log: Optional[List[str]] = None,
 ) -> List[Annotation]:
     """Drop ``VLine`` annotations whose ``x`` falls in the right-most
     ``_VLINE_RIGHT_EDGE_REJECT_FRAC`` (5%) of the data's x-range.
@@ -9016,21 +8703,17 @@ def _drop_right_edge_vlines(
             kept.append(ann)
             continue
         if vline_val >= threshold:
-            reason = (
-                f"VLine(x={ann.x}) is in the right-most "
-                f"{int(_VLINE_RIGHT_EDGE_REJECT_FRAC * 100)}% of the data "
-                f"range [{x_min}, {x_max}]. The chart's right edge IS the "
-                f"latest x value, so a marker there reads as the chart "
-                f"edge itself rather than as an event. Move the annotation "
-                f"earlier or call the date / value out in the title / "
-                f"subtitle."
+            logger.warning(
+                "Suppressed VLine at x=%s: in the right-most %d%% of "
+                "the data range [%s, %s]. The chart's right edge IS "
+                "the latest x value, so a marker there reads as the "
+                "chart edge itself rather than as an event. Move the "
+                "annotation earlier or call the date / value out in "
+                "the title / subtitle.",
+                ann.x,
+                int(_VLINE_RIGHT_EDGE_REJECT_FRAC * 100),
+                x_min, x_max,
             )
-            logger.warning("Suppressed %s", reason)
-            # Every other annotation drop reaches the caller on
-            # ``result.warnings``; this one used to log only, so a
-            # requested marker just wasn't there and nothing said why.
-            if dropped_log is not None:
-                dropped_log.append(f"Annotation dropped: {reason}")
             continue
         kept.append(ann)
     return kept
@@ -11287,74 +10970,12 @@ def render_annotations(
             if not annotations:
                 return chart
 
-    # ---- Trendline / LastValueLabel on a band axis ----------------------
-    # These two are the annotations that cannot be re-anchored onto a
-    # band scale the way the point-and-rule ones were, so they get
-    # dropped with a reason the same way the dual-axis case above does.
-    #
-    # Trendline is the stricter of the two: a least-squares fit needs
-    # BOTH axes continuous, and it hardcodes x and y quantitative, so a
-    # categorical axis on either side takes the PNG export down with the
-    # same "Unrecognized signal name concat_N_height" a mismatched y did.
-    # That includes a plain vertical bar, whose x is the category axis.
-    #
-    # LastValueLabel only breaks on a categorical y, where it raises on
-    # float(category) and vanishes with a message about string
-    # conversion. A categorical x is fine -- it falls back to the last
-    # row in data order and labels the final bar.
-    _band_x = _annotation_x_axis_type(
-        df, mapping.get("x", "x"), mapping,
-    ) in ("nominal", "ordinal")
-    _band_y = _annotation_y_encoding(df, mapping)[1].get(
-        "type",
-    ) in ("nominal", "ordinal")
-
-    def _suppress_on_band(kind: type, axis: str, remedy: str) -> None:
-        nonlocal annotations
-        blocked = [a for a in annotations if isinstance(a, kind)]
-        if not blocked:
-            return
-        _note_drop(
-            f"{len(blocked)} {kind.__name__} annotation(s) suppressed: "
-            f"{axis} categorical on '{chart_type}', and "
-            f"{kind.__name__} needs a continuous axis to be defined on. "
-            f"{remedy}"
-        )
-        annotations = [a for a in annotations if not isinstance(a, kind)]
-
-    if _band_x or _band_y:
-        if _band_x and _band_y:
-            axis_desc = "both axes are"
-        elif _band_x:
-            axis_desc = "the x-axis is"
-        else:
-            axis_desc = "the y-axis is"
-        _suppress_on_band(
-            Trendline, axis_desc,
-            "To show a trend across ranked categories, sort the bars and "
-            "say so in the subtitle.",
-        )
-    if _band_y:
-        _suppress_on_band(
-            LastValueLabel, "the y-axis is",
-            "To label the end of a series, use a chart type with a "
-            "continuous y such as timeseries or scatter.",
-        )
-    if not annotations:
-        return chart
-
     # ---- horizontal-layout detection -----------------------------------
     # On horizontal-bar (and any chart whose value axis is x and whose
     # category axis is y), an ``HLine`` is semantically a "threshold on
     # the value axis" -- which renders as a vertical rule. Swap HLines
     # for VLines and Band(y1,y2) for Band(x1,x2) so they encode against
     # the right scale.
-    #
-    # Only a NUMERIC endpoint means "a level on the value axis". A
-    # category name in the same slot means the caller is pointing at a
-    # ROW, and rotating that onto the numeric x axis puts a string on a
-    # linear scale -- which draws nothing and says nothing. Those stay
-    # put and are handled against the band scale by their own to_layer.
     _y_field_check = mapping.get("y")
     _x_field_check = mapping.get("x")
     is_horizontal_layout = (
@@ -11367,24 +10988,16 @@ def render_annotations(
         and pd.api.types.is_numeric_dtype(df[_x_field_check])
     )
     if is_horizontal_layout:
-        def _is_value(v: Any) -> bool:
-            return isinstance(v, (int, float, np.integer, np.floating)) \
-                and not isinstance(v, bool)
-
         rotated: List[Annotation] = []
         for ann in annotations:
-            if isinstance(ann, HLine) and _is_value(ann.y):
+            if isinstance(ann, HLine):
                 rotated.append(VLine(
                     x=ann.y, label=ann.label, color=ann.color,
                     stroke_width=ann.stroke_width,
                     stroke_dash=list(ann.stroke_dash),
                     style=ann.style, label_color=ann.label_color,
                 ))
-            elif (
-                isinstance(ann, Band)
-                and _is_value(ann.y1)
-                and _is_value(ann.y2)
-            ):
+            elif isinstance(ann, Band) and ann.y1 is not None and ann.y2 is not None:
                 rotated.append(Band(
                     x1=ann.y1, x2=ann.y2,
                     label=ann.label, color=ann.color, opacity=ann.opacity,
@@ -11533,7 +11146,7 @@ def render_annotations(
     # ---- right-edge VLine reject (runs BEFORE staggering so a clustered
     # ----  labeled VLine in the right-edge zone doesn't have its label
     # ----  extracted into a surviving PointLabel) -----------------------
-    annotations = _drop_right_edge_vlines(annotations, df, mapping, dropped_log)
+    annotations = _drop_right_edge_vlines(annotations, df, mapping)
 
     # ---- auto-stagger ---------------------------------------------------
     # ``chart_width`` is the per-panel plot width passed by the caller
@@ -12576,10 +12189,6 @@ def render_annotations(
         if chart_height is not None:
             annotation_mapping["_chart_height_px"] = chart_height
         layer = annotation.to_layer(chart, df, annotation_mapping, skin_config)
-        # The copy above means anything to_layer records dies with it, so
-        # lift its degradation notes onto the caller's log before it does.
-        if dropped_log is not None:
-            dropped_log.extend(annotation_mapping.pop("_engine_notes", []))
 
         # Dual-axis safety net. Annotations that did not take a
         # dedicated branch above (HLine, Segment, PointHighlight /
@@ -13046,46 +12655,11 @@ def _bar_horizontal_y_label_font_size(
     )
 
 
-def _bar_horizontal_row_capacity(height: int) -> int:
-    """How many category rows a horizontal bar can name in ``height`` px.
-
-    The vertical gate quotes this so its message can say whether flipping
-    orientation would actually help, instead of recommending a flip into
-    the mirror-image refusal.
-    """
-    floor_pitch = _horizontal_label_min_pitch_px(
-        _BAR_HORIZONTAL_Y_LABEL_FONT_MIN,
-    )
-    return max(1, int(height // floor_pitch))
-
-
-def _bar_vertical_category_capacity(
-    labels: Sequence[Any], width: int, base_font_size: int,
-) -> int:
-    """How many category names a vertical bar can host in ``width`` px.
-
-    The mirror of ``_bar_horizontal_row_capacity``, measured at the
-    steepest rotation the ladder allows, so the horizontal gate can say
-    whether flipping to vertical would clear the count.
-    """
-    _, n_lines = _bar_category_label_shape(labels)
-    widest = _bar_category_widest_label(labels, int(base_font_size))
-    floor_pitch = _bar_category_pitch_needed(
-        widest, n_lines, -90, _BAR_CATEGORY_LABEL_FONT_MIN,
-    )
-    if floor_pitch <= 0:
-        return max(1, len(labels))
-    return max(1, int(width // floor_pitch))
-
-
 def _validate_bar_horizontal_label_pitch(
     row_pitch_px: float,
     n_categories: int,
     height: int,
     grouped: bool,
-    date_axis: bool = False,
-    mirror_capacity: Optional[int] = None,
-    auto_flipped: bool = False,
 ) -> None:
     """Raise when a horizontal bar cannot show every category name.
 
@@ -13108,45 +12682,21 @@ def _validate_bar_horizontal_label_pitch(
     if row_pitch_px >= floor_pitch:
         return
 
-    fits = _bar_horizontal_row_capacity(height)
+    fits = max(1, int(height // floor_pitch))
     grouped_hint = (
         " Setting stack=True also frees the room grouped bars spend on "
         "side-by-side bars."
         if grouped else ""
     )
-    date_hint = (
-        f"This is a date axis: drop mapping['x_type']='ordinal' and the "
-        f"category axis becomes temporal, which thins its own ticks and has "
-        f"no per-category label budget -- all {n_categories} bars render. "
-        f"Keep x_type='ordinal' only if the even category spacing matters "
-        f"more than the count. "
-        if date_axis else ""
-    )
-    mirror_hint = (
-        f" Flipping orientation will not clear this on its own -- a vertical "
-        f"bar hosts at most {mirror_capacity} categories on this canvas, "
-        f"against the {n_categories} here."
-        if mirror_capacity is not None and mirror_capacity < n_categories
-        else ""
-    )
-    flip_hint = (
-        "This chart was requested as chart_type='bar' and auto-switched to "
-        "bar_horizontal because the category labels were too long to sit "
-        "along the x axis, which is why the budget below is a row pitch "
-        "against canvas height. Pass mapping['orientation']='vertical' to "
-        "keep the requested orientation. "
-        if auto_flipped else ""
-    )
     raise ValidationError(
-        f"{flip_hint}"
         f"HORIZONTAL BAR CATEGORY-LABEL ERROR: {n_categories} categories in "
         f"a {height}px-tall canvas leaves {row_pitch_px:.1f}px per row, below "
         f"the {floor_pitch:.1f}px a category label needs at the minimum "
         f"{_BAR_HORIZONTAL_Y_LABEL_FONT_MIN}px font. The engine will not "
-        f"drop category names to make the chart fit. {date_hint}Show at most "
+        f"drop category names to make the chart fit. Show at most "
         f"{fits} categories (aggregate or take the top-N), render this "
         f"chart standalone rather than inside a composite cell, or switch to "
-        f"a heatmap for this many rows.{grouped_hint}{mirror_hint}"
+        f"a heatmap for this many rows.{grouped_hint}"
     )
 
 
@@ -13234,8 +12784,8 @@ def _bar_category_widest_label(
     """The single label with the widest rendered line.
 
     Picked once by real metrics rather than by ``len()``, because the two
-    disagree: at the skin's 18px axis font ``'wwwwwwwwww'`` renders ~130px
-    against ``'iiiiiiiiii'`` at ~40px, same character count. The ladder then
+    disagree: at the skin's 18px axis font ``'GOOGL'`` renders wider than
+    ``'1,000,000'`` despite being four characters shorter. The ladder then
     re-measures only this one label per candidate font size.
     """
     if not labels:
@@ -13308,29 +12858,17 @@ class _NominalAxisSurface(NamedTuple):
     # Exception the LENGTH gate raises. Bar keeps its own long-standing
     # class; everything else shares ``NominalLabelTooLongError``.
     error_cls: type = NominalLabelTooLongError
-    # Plural of ``unit``. Only needed where appending "s" is wrong, which
-    # today is "category" -> "categories"; the rest default correctly.
-    plural: str = ""
-    # The "flip the chart" clause, held apart from the rest of the remedy
-    # so the gate can withhold it once it knows the other orientation is
-    # too small as well. Prefixes ``remedy`` when offered.
-    flip_remedy: str = ""
-
-    @property
-    def units(self) -> str:
-        return self.plural or f"{self.unit}s"
 
 
 _BAR_SURFACE = _NominalAxisSurface(
     family="VERTICAL BAR",
     unit="category",
-    remedy="render this chart standalone rather than inside a composite cell.",
-    error_cls=BarCategoryLabelTooLongError,
-    plural="categories",
-    flip_remedy=(
-        "switch to bar_horizontal, which reads long category lists down the "
-        "page, or "
+    remedy=(
+        "render this chart standalone rather than inside a composite cell, "
+        "or switch to bar_horizontal, which reads long category lists down "
+        "the page."
     ),
+    error_cls=BarCategoryLabelTooLongError,
 )
 _BOXPLOT_SURFACE = _NominalAxisSurface(
     family="BOXPLOT",
@@ -13406,8 +12944,6 @@ def _nominal_axis_label_plan(
     grouped: bool = False,
     skip_horizontal: bool = False,
     allow_vertical: bool = True,
-    date_axis: bool = False,
-    mirror_capacity: Optional[int] = None,
 ) -> Tuple[int, int]:
     """``(label_angle, label_font_size)`` that shows EVERY label on a nominal axis.
 
@@ -13430,14 +12966,6 @@ def _nominal_axis_label_plan(
             it by house rule, so its ladder ends at -45 and it thins tick
             VALUES instead -- thinning which ticks are drawn keeps every
             drawn label whole, which is a different thing from clipping.
-        date_axis: The categories came from a date column the caller forced
-            to ordinal. Leads the remedy with dropping ``x_type``, because
-            a temporal axis thins its own ticks and has no category gate
-            at all -- the one move that clears this outright.
-        mirror_capacity: How many labels the OTHER orientation could host.
-            Without it each gate recommends the other orientation and the
-            caller ping-pongs between two refusals; with it, the message
-            says up front whether flipping can actually clear the count.
 
     Raises:
         ValidationError: When the pitch cannot host even
@@ -13482,34 +13010,15 @@ def _nominal_axis_label_plan(
         if grouped else ""
     )
     orientation = "rotated vertical" if allow_vertical else "rotated -45 deg"
-    date_hint = (
-        f"This is a date axis: drop mapping['x_type']='ordinal' and the "
-        f"{surface.unit} axis becomes temporal, which thins its own ticks "
-        f"and has no per-{surface.unit} label budget -- all {n_labels} bars "
-        f"render. Keep x_type='ordinal' only if the even category spacing "
-        f"matters more than the count. "
-        if date_axis else ""
-    )
-    mirror_too_small = (
-        mirror_capacity is not None and mirror_capacity < n_labels
-    )
-    mirror_hint = (
-        f" Flipping orientation will not clear this on its own -- the other "
-        f"orientation hosts at most {mirror_capacity} {surface.units} on "
-        f"this canvas, against the {n_labels} here."
-        if mirror_too_small else ""
-    )
-    # Never recommend the flip in the same breath as saying it won't work.
-    flip_remedy = "" if mirror_too_small else surface.flip_remedy
     raise ValidationError(
         f"{surface.family} {surface.unit.upper()}-LABEL ERROR: {n_labels} "
-        f"{surface.units} in a {extent_px}px-wide canvas leaves "
+        f"{surface.unit}s in a {extent_px}px-wide canvas leaves "
         f"{pitch_px:.1f}px per {surface.unit}, below the {floor_pitch:.1f}px "
         f"a label needs {orientation} at the minimum "
         f"{_BAR_CATEGORY_LABEL_FONT_MIN}px font. The engine will not drop "
-        f"{surface.unit} names to make the chart fit. {date_hint}"
-        f"Show at most {fits} {surface.units} (aggregate or take the "
-        f"top-N), {flip_remedy}{surface.remedy}{grouped_hint}{mirror_hint}"
+        f"{surface.unit} names to make the chart fit. Show at most {fits} "
+        f"{surface.unit}s (aggregate or take the top-N), "
+        f"{surface.remedy}{grouped_hint}"
     )
 
 
@@ -13521,8 +13030,6 @@ def _bar_category_axis_plan(
     extent_px: int,
     grouped: bool,
     skip_horizontal: bool = False,
-    date_axis: bool = False,
-    mirror_capacity: Optional[int] = None,
 ) -> Tuple[int, int]:
     """``(label_angle, label_font_size)`` that shows EVERY category name.
 
@@ -13554,8 +13061,6 @@ def _bar_category_axis_plan(
         surface=_BAR_SURFACE,
         grouped=grouped,
         skip_horizontal=skip_horizontal,
-        date_axis=date_axis,
-        mirror_capacity=mirror_capacity,
     )
 
 
@@ -17263,7 +16768,7 @@ def _calculate_legend_config(
     wrong remedy: it bought plot area by silently deleting the end of a
     name, on the one surface where the name IS the information -- an
     ellipsized legend entry makes two series indistinguishable. The
-    budget still exists and is still 40% of canvas; it is now enforced by
+    budget still exists and is still 25% of canvas; it is now enforced by
     ``_validate_legend_labels``, up-front, as an error PRISM can act on.
     """
     config = dict(base_config) if base_config else {}
@@ -20008,22 +19513,9 @@ def _build_bar(
                 "for legibility. Pass orientation='vertical' to override.",
                 max_len, avg_len, n_bars, width,
             )
-            # The caller asked for chart_type='bar' and gets a horizontal
-            # one. Silently that is confusing on success and actively
-            # misleading on failure, because every gate downstream then
-            # talks about rows and canvas HEIGHT for a chart the caller
-            # believes is vertical.
-            mapping.setdefault("_engine_notes", []).append(
-                f"chart_type='bar' auto-switched to bar_horizontal: "
-                f"{n_bars} category labels averaging {avg_len:.0f} "
-                f"characters (longest {max_len}) do not fit along a "
-                f"{width}px-wide axis. Pass mapping['orientation']="
-                f"'vertical' to keep the requested orientation."
-            )
             # The horizontal builder expects the category on y and the
             # value on x, so swap them. Also swap x_title and y_title.
             flipped = dict(mapping)
-            flipped["_auto_flipped_from_bar"] = True
             flipped["x"] = mapping.get("y")
             flipped["y"] = mapping.get("x")
             flipped["x_title"] = mapping.get("y_title")
@@ -20091,8 +19583,6 @@ def _build_bar(
             extent_px=width,
             grouped=False,
             skip_horizontal=bool(mapping.get("_facet_panel")),
-            date_axis=bool(mapping.get("_ordinal_date_axis")),
-            mirror_capacity=_bar_horizontal_row_capacity(height),
         )
     else:
         bar_label_angle = 0
@@ -20591,15 +20081,6 @@ def _build_bar_horizontal(
     if y_non_null == 0:
         raise ValidationError(f"y_field '{y_field}' has no valid values.")
 
-    # Publish the CATEGORY axis type so every annotation layer inherits it
-    # via ``_annotation_y_axis_type``. This is the y-side counterpart of
-    # what the line builders do for ``_x_axis_type``, and it is load-
-    # bearing here rather than merely tidy: dtype inference alone cannot
-    # see a category column of numeric-looking strings, and an annotation
-    # that lands on a linear scale over this band scale takes the PNG
-    # export down with an undefined-height signal.
-    mapping["_y_axis_type"] = "nominal"
-
     # Validate category label lengths. The same cap as _build_bar applies
     # because the failure modes are symmetric: 22+ ch labels truncate at
     # width=700 (B04 / G05 in the audit), 14+ ch labels truncate at
@@ -20694,11 +20175,6 @@ def _build_bar_horizontal(
             n_categories=n_unique_y,
             height=height,
             grouped=False,
-            date_axis=bool(mapping.get("_ordinal_date_axis")),
-            mirror_capacity=_bar_vertical_category_capacity(
-                [str(v) for v in df[y_field].unique()], width, label_font_size,
-            ),
-            auto_flipped=bool(mapping.get("_auto_flipped_from_bar")),
         )
 
         chart = (
@@ -20759,30 +20235,11 @@ def _build_bar_horizontal(
         #     the long y-axis tick text -- inside-at-x=0 sidesteps that
         #     while keeping the value adjacent to the bar boundary the
         #     user reads first.
-        #
-        # Class-1 absorption, same as the vertical builder: a bar already
-        # named by a Callout / PointLabel / Arrow does not also get the
-        # engine's numeric label. Both sit on the row's midline, so an
-        # un-suppressed pair overprints rather than merely crowding.
         if not color_field and df[y_field].nunique() <= 25:
             value_fmt = _smart_number_format(df[x_field])
             value_label_fs = max(8, min(11, h_y_label_font_size + 1))
-            df_for_labels = df
-            suppress_x_set = mapping.get("_suppress_bar_value_at_x") or set()
-            if suppress_x_set:
-                str_suppress = {str(x) for x in suppress_x_set}
-                df_for_labels = df[
-                    ~df[x_field].astype(str).isin(str_suppress)
-                ]
-                n_dropped = len(df) - len(df_for_labels)
-                if n_dropped > 0:
-                    logger.info(
-                        "[_build_bar_horizontal] Suppressed %d bar value "
-                        "label(s) at annotation-anchored x-position(s).",
-                        n_dropped,
-                    )
-            df_pos = df_for_labels[df_for_labels[x_field] >= 0]
-            df_neg = df_for_labels[df_for_labels[x_field] < 0].copy()
+            df_pos = df[df[x_field] >= 0]
+            df_neg = df[df[x_field] < 0].copy()
 
             if len(df_pos) > 0:
                 pos_text = (
@@ -20895,8 +20352,6 @@ def _build_bar_horizontal(
             n_categories=n_y_cats,
             height=height,
             grouped=True,
-            date_axis=bool(mapping.get("_ordinal_date_axis")),
-            auto_flipped=bool(mapping.get("_auto_flipped_from_bar")),
         )
         row_label_font_size = _bar_horizontal_label_font_for_pitch(
             row_pitch_px, label_font_size,
@@ -21932,11 +21387,6 @@ def _build_heatmap(
             "[_build_heatmap] large grid size (%d cells) may affect readability",
             grid_size,
         )
-
-    # Heatmap rows are categories on a band scale. Publish it so annotation
-    # layers inherit the type rather than defaulting to a linear scale --
-    # see ``_annotation_y_axis_type`` for what that costs.
-    mapping["_y_axis_type"] = "nominal"
 
     # Heatmap axes are labeled by their tick values (the row / column
     # categories), so an auto-derived field-name title is redundant noise
@@ -26146,21 +25596,16 @@ def _make_chart(
     except ValidationError as exc:
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
-            error_message=str(exc),
-            warnings=warnings + list(mapping.pop("_engine_notes", [])),
+            error_message=str(exc), warnings=warnings,
             audit_trail=audit_trail,
         )
     except Exception as exc:  # noqa: BLE001
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
             error_message=f"Chart build failed: {type(exc).__name__}: {exc}",
-            warnings=warnings + list(mapping.pop("_engine_notes", [])),
+            warnings=warnings,
             audit_trail=audit_trail,
         )
-
-    # Builders have no direct handle on the result, so anything they need
-    # the caller to SEE (rather than just log) rides back on the mapping.
-    warnings.extend(mapping.pop("_engine_notes", []))
 
     # ---- LastValueLabel on dual-axis: prohibited, drop with warning ----
     # LVL paints past the last data point and collides with the right-hand
@@ -26269,9 +25714,6 @@ def _make_chart(
             )
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Annotation layer failed (non-fatal): {exc}")
-        # An annotation that quietly drew less than it was asked for logs
-        # its reason onto the mapping; the caller only ever reads warnings.
-        warnings.extend(mapping.pop("_engine_notes", []))
 
     # ---- Title / subtitle / skin config ---------------------------------
     chart_props: Dict[str, Any] = {}

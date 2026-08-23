@@ -98,8 +98,7 @@ There are four distinct trend surfaces; choose one and do not combine them:
 | Scatter | `Trendline`, point classes, rules, bands, segments, arrows |
 | Single-series bar | `HLine`, `VLine`, `Band`, `Arrow`, `PointLabel` |
 | Stacked bar | `HLine` is clamped against stacked totals |
-| Horizontal bar | `HLine` becomes a vertical value threshold. Point classes, callouts, arrows, and segments take a category NAME as `y`. `Band(y1=name, y2=name)` shades the whole inclusive row range |
-| Heatmap | Same as horizontal bar: `y` is a row name. `Band(y1=..., y2=...)` shades whole rows; `HLine` renders its label at the named row without a rule |
+| Horizontal bar | `HLine` becomes a vertical value threshold |
 | Grouped bar (`stack=False`) | Annotations do not render; use title/subtitle or stack/split |
 | `multi_line` / `timeseries` | Rules, bands, segments, arrows, point classes, and callouts are supported; engine auto-injects `LastValueLabel` on a single axis |
 | Dual axis | See `chart_context_dual_axis.md`; y-bearing annotations need the correct `axis` |
@@ -117,12 +116,6 @@ silently deduplicate a redundant endpoint `Callout`, `PointLabel`, or
 `Trendline` is scatter-only and is removed from dual-axis line charts with a
 warning. For per-group fits, prefer `chart_type='scatter_multi'` with
 `mapping['trendlines']=True`.
-
-`Trendline` and `LastValueLabel` are the two classes that need a continuous
-axis and cannot be re-anchored onto a category one. Both are removed with a
-reason in `result.warnings` when the axis they depend on is categorical —
-`Trendline` on either axis (so also on a plain vertical bar), `LastValueLabel`
-on y.
 
 ## 4. Coordinates and warnings
 

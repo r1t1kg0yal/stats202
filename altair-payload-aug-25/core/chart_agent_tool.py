@@ -26,17 +26,6 @@ CACHE_TTL = "1h"
 #   "gemini_flash"  -- Gemini 3.7 Flash
 CHART_AGENT_MODEL_KEY = "opus"
 
-# How hard that model thinks. Same shape as the key above -- flip the literal -- and
-# validated against the chosen route's vocabulary when the sub-agent is built, so a
-# level the route refuses fails at attach rather than as a gateway 422.
-#  None      -- name no effort, take the route's catalog default (DEFAULT_EFFORT_LEVEL,
-#               env PRISM_EFFORT, currently "high"). This is the pre-existing behaviour.
-#  "low" | "medium" | "high" | "xhigh" | "max" -- Claude accepts all five; the OpenAI
-#               route stops at "xhigh"; gemini publishes thought text only up to "high".
-# Charting is code-writing against a fixed API rather than open-ended reasoning, so this
-# is the first knob to turn down if chart latency is the complaint.
-CHART_AGENT_EFFORT = None
-
 # Hub first, then spokes. A literal list, not a registry read; none of these are
 # registered any more.
 _CORPUS_SOURCES = (
@@ -160,6 +149,5 @@ def chart_agent_tool(worker_id: str, event_callback=None):
         attached=f"chart AgentTool attached (model={model_id}, corpus={len(corpus)}B)",
         event_callback=event_callback,
         cache_ttl=CACHE_TTL,
-        effort=CHART_AGENT_EFFORT,
         invocation_state=ChartInvocation,
     )

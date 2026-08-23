@@ -199,7 +199,7 @@ while you are building the frame, not after a refusal.
 ```
  ANY category label ....... 24    end-label series name .... 32
  y_title / x_title ........ 28    legend title ............. 28
- legend series name ....... 24 + ≤40% of canvas, only where a legend renders
+ legend series name ....... 24, and ≤40% of canvas width — either can bind
  PlotText.text ............ 10 words (aim 8)
  chart title / subtitle ... 2 wrapped lines at the canvas width
  composite super-title .... 63 at any preset (up to 159 on the widest)
@@ -209,27 +209,23 @@ while you are building the frame, not after a refusal.
 
 **One number, 24, for every category name you write** — `bar`,
 `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile
-ordinals, `donut` slices, heatmap rows and columns, and facet panel labels.
-There is nothing per-chart-type to remember here: if a string will be drawn
-as the name of a category, it gets 24 characters whichever mark ends up
-drawing it, standalone or in a composite cell. A label may also carry ONE
-newline for a deliberate two-line break (`'Q1 2024\nRevenue'`); each line
-then gets the same 24, and a third line is refused. Wrapping does not buy
-length — the engine re-wraps long bar labels for layout, but the cap is
-measured on the string you supplied.
+ordinals, `donut` slices, heatmap rows and columns, facet panel labels and
+colour-legend entries. There is nothing per-chart-type to remember here: if a
+string will be drawn as the name of a category, it gets 24 characters
+whichever mark ends up drawing it, standalone or in a composite cell. A label
+may also carry ONE newline for a deliberate two-line break
+(`'Q1 2024\nRevenue'`); each line then gets the same 24, and a third line is
+refused. Wrapping does not buy length — the engine re-wraps long bar labels
+for layout, but the cap is measured on the string you supplied.
 
-Colour-legend entries take that same 24, but only where a legend actually
-renders (dual-axis, facets, `legend=True`, donut, bar-with-color). Standalone
-`multi_line` / `timeseries` / `area` default to end labels and take the
-32-character LVL cap instead — a 27-character series name is legal there.
-The legend carries two gates when it does render, and either can bind. The
-pixel budget matters on top of the character cap because a legend column
-steals width from the plot, and because capitals and digits are wider than
-lowercase: `'GDP YOY 2024 REVISED'` spends more of the budget than its 20
-characters suggest, while 24 characters of lowercase prose can be comfortable
-at 700px and impossible in a 280px composite cell. The error names which gate
-refused and reports measured widths, so size from the error rather than
-re-deriving it.
+The legend carries two gates, and either can bind. The character cap is the
+same 24 as any other category name. The pixel budget matters on top of it
+because a legend column steals width from the plot, and because capitals and
+digits are wider than lowercase: `'GDP YOY 2024 REVISED'` spends more of the
+budget than its 20 characters suggest, while 24 characters of lowercase prose
+can be comfortable at 700px and impossible in a 280px composite cell. The
+error names which gate refused and reports measured widths, so size from the
+error rather than re-deriving it.
 
 Rule of thumb for axis and category text: **8–14 characters reads cleanly at
 every canvas size.** The 24 is a ceiling for the occasional unavoidable name,
@@ -284,12 +280,12 @@ number of categories — not to pick a bigger preset, and not to rename things.
 | Lines per `multi_line` / `timeseries` / `area` panel | 6 | Aim for ≤4; split, facet, or aggregate |
 | Axis title (`y_title`, `y_title_right`, `x_title`) | 28 characters, on either axis | Aim for concise metric + unit |
 | Legend title (the `color` / `size` field name) | 28 characters — same budget as an axis title, because it is the same kind of string | Rename the column, or pass a shorter `color_title` / `size_title` |
-| Auto end-label series name | 32 characters — the cap when a line / area chart paints series names at the right edge instead of a colour legend | Rename categories before charting |
+| Auto end-label series name | 32 characters | Rename categories before charting |
 | Any category label — `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile ordinals, `donut` slices, heatmap rows and columns, facet panel labels | 24 characters on the longest line, and at most 2 lines. One number for every nominal label, standalone or in a composite cell | Abbreviate in the DataFrame. The error quotes each offender with its length and suggests abbreviations where the name has an acronym or word boundary to exploit |
 | Heatmap row or column label | The same 24, and less on a narrow canvas — the gutter budget applies on top and the usable number is reported in the error | Abbreviate in the DataFrame. Only applies when the error names a specific string; a row-COUNT failure is §5.2 fit, not length |
 | Heatmap rows vs canvas height | Each row needs one label line, so a fixed cell fits `height / 15` rows | Drop the `dimensions` kwarg and let the engine size the canvas; inside a fixed cell, aggregate or take the top-N. Renaming rows buys nothing |
 | Named categories vs canvas (every nominal axis: `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile-line ordinals, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, never clips one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime. Profile ordinals never rotate past -45 and thin which ticks are drawn instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap (no help on a symmetric matrix — the engine says so), or switch to `bar_horizontal` for long lists |
-| Colour-legend series name | 24 characters, AND measured width ≤ 40% of canvas width (about 28 characters of mixed case at 700px, ~11 in a 280px composite cell), only where a colour legend actually renders. Standalone line / area charts with end labels take the 32-character LVL cap instead. Either legend gate can bind; the error says which and reports measured pixel widths | Rename the `color` column values in the DataFrame. This is the same repair as any other length gate — the engine will not ellipsize a series name, because two series whose names differ past the cut become indistinguishable |
+| Colour-legend series name | 24 characters, AND measured width ≤ 40% of canvas width (about 28 characters of mixed case at 700px, ~11 in a 280px composite cell). Either can bind; the error says which and reports measured pixel widths | Rename the `color` column values in the DataFrame. This is the same repair as any other length gate — the engine will not ellipsize a series name, because two series whose names differ past the cut become indistinguishable |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
 | Series vertical share (`color`-split `multi_line` / `timeseries`) | Every series needs ≥10% of the y span, and adjacent series means stay within 3× the widest single span | Pass `y_title_right` naming the secondary metric and unit: inert when one axis suffices, and when it does not the engine routes the magnitude clusters to a dual axis in one pass. Standalone charts only — inside a composite cell declare `dual_axis_series` as well. Otherwise 2-pack, rebase to 100, or facet |
@@ -375,7 +371,7 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `x`, `y`, `color` | Primary fields; `y` may be a list for line/area auto-melt, or for `band` to join actuals and forecast into one path |
 | `x_title`, `y_title`, `y_title_right` | Semantic axis title, including unit |
 | `x_sort`, `y_sort`, `color_sort`, `value_sort` | Explicit display order; use `color_sort` as the canonical legend/category order |
-| `x_type` | Force ordinal for genuine categories such as tenors; on a datetime column the engine materialises house-style date labels on evenly spaced bands. Ordinal puts every date on the axis as a named category, so a long series can exceed the category-label budget and be refused — leave a date axis temporal unless the even band spacing is the point |
+| `x_type` | Force ordinal for genuine categories such as tenors; on a datetime column the engine materialises house-style date labels on evenly spaced bands |
 | `x_timezone` | Intraday display clock; default `America/New_York` |
 | `legend` | Explicit legend override; normally leave automatic |
 | `trendline`, `trendlines` | Overall scatter fit / per-group fits |
