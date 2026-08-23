@@ -50,7 +50,6 @@ __all__ = [
     "DEFAULT_HOUSE_STYLE", "FONT_STACK",
     "GS_PRIMARY", "GS_DIVERGING", "MONO_BLUE", "MONO_GREY",
     "VIVID", "TABLEAU", "OKABE_ITO", "PASTEL",
-    "GS_RAMP_SEQUENTIAL", "GS_RAMP_DIVERGING", "GS_RAMP_NEUTRAL",
     "resolve_palette", "get_palette", "palette_colors", "label_colors",
     "list_palettes", "categorical_palette_names",
     "is_gradient", "gradient_names", "gradients_of_kind",
@@ -206,24 +205,6 @@ GS_DIVERGING_P: Dict[str, Any] = {
     "aliases": (),
     "colors": ["#C00000", "#F79646", "#FFFFFF", "#5C92CB", "#003359"],
 }
-
-# Anchors for a continuous magnitude ramp on MARKS -- the scatter colour
-# gradient. Anchors rather than a Vega scheme name because the engine
-# interpolates them in Lab and re-anchors the diverging neutral onto the
-# data's zero, and a named scheme can express neither. Both stay clear of
-# white: a heatmap cell survives a near-white fill because its neighbours
-# frame it, a 60px dot on a white canvas is simply gone.
-GS_RAMP_SEQUENTIAL: Tuple[str, ...] = (
-    "#C6DBEF", "#6BAED6", "#2171B5", "#08306B",
-)
-# What "neither side" looks like. Also spliced between a caller's own two
-# colours when their data crosses zero, so ``color_range=[warm, cool]`` reads
-# as a diverging ramp instead of blending through the mud that sits halfway
-# between two opposing hues.
-GS_RAMP_NEUTRAL: str = "#D9D9D9"
-GS_RAMP_DIVERGING: Tuple[str, ...] = (
-    "#C00000", "#F79646", GS_RAMP_NEUTRAL, "#5C92CB", "#003359",
-)
 
 
 _PALETTE_LIST: Tuple[Dict[str, Any], ...] = (

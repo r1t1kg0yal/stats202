@@ -128,39 +128,16 @@ mapping = {
     "y": "labor_share",
     "color": "date",
     "connect": True,
+    "color_range": ["#DC143C", "#003359"],
 }
 ```
 
-**Omitting every colour kwarg is the right default.** The engine reads the
-column and picks the ramp:
-
-| Colour column | Ramp |
-|---|---|
-| Crosses zero (some negative, some positive) | House diverging, red below zero to navy above, with its neutral anchored on zero however lopsided the range is |
-| One-signed numeric | House sequential, light blue to navy |
-| Temporal | House sequential — dates are one-signed, so early-to-late reads in one direction |
-
-Every ramp is interpolated in Lab and is monotone in lightness, so two dots
-can be ranked without consulting the bar. Say "colour by YTD excess" and stop;
-naming colours usually makes the chart worse, not better.
-
-Overrides, when the user actually asks for one:
-
-- `color_range=['#start', '#end']` keeps exactly those two colours at the
-  ends. On a one-signed column the ramp is a Lab blend straight between them.
-  On a column that crosses zero it is read as a diverging request: a neutral
-  is placed on zero and each colour runs out to its own side.
-- `color_scheme='viridis' | 'cividis' | 'turbo' | 'magma'` selects a named
-  Vega-Lite ramp instead.
-
-Author either `color_range` or `color_scheme`, not both; `color_map` does not
-apply to a continuous encoding.
-
-The colour bar labels itself: the field name (or `color_title`) sits over it,
-and it is ticked at round values in the data's own unit — `-10 / 0 / 10 / 20`
-for percentage points, `0.02` steps for a decimal spread, calendar years or
-months for dates. Zero is always labelled on a ramp that crosses it. Nothing
-about the ticks is caller-settable, and nothing needs to be.
+`color_range` defines early and late endpoints and wins over `color_scheme`.
+With neither override, the engine uses its red-to-blue HSV time ramp. A named
+continuous scheme such as `viridis`, `cividis`, `turbo`, or `magma` is also
+valid on the same temporal/numeric `color` encoding. Author either
+`color_range` or `color_scheme`, not both; `color_map` does not apply to a
+continuous encoding.
 
 ## 7. Chart-specific restrictions
 

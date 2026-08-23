@@ -59,6 +59,7 @@ import hashlib
 import io
 import inspect
 import json
+import colorsys
 import difflib
 import functools
 import logging
@@ -5764,7 +5765,7 @@ def _maybe_auto_recover_y_scale(
 # Common abbreviations that should retain their canonical capitalization
 # rather than being .title()-cased (which would produce 'Yoy', 'Gdp', etc.).
 _LABEL_ABBREVIATIONS: Dict[str, str] = {
-    "yoy": "YoY", "qoq": "QoQ", "mom": "MoM", "ytd": "YTD",
+    "yoy": "YoY", "qoq": "QoQ", "mom": "MoM",
     "gdp": "GDP", "cpi": "CPI", "pce": "PCE", "ppi": "PPI",
     "nfp": "NFP", "fomc": "FOMC", "fed": "Fed",
     "ecb": "ECB", "boj": "BoJ", "boe": "BoE",
@@ -15303,26 +15304,13 @@ def calculate_tick_values(
     else:
         nice_step = rough_step
 
-    # Floor the step at one ULP of the wider endpoint: a step finer than
-    # the spacing of the doubles it walks is swallowed by the addition, so
-    # the walk never advances and the caller never returns. An inverted
-    # range makes the step NaN, which this comparison also catches.
-    nice_step = max(float(nice_step),
-                    math.ulp(max(abs(data_min), abs(data_max))))
-    if not nice_step > 0:
-        return []
-
-    # Index off the start rather than accumulating, so the iteration count
-    # is arithmetic rather than something the walk has to discover.
     tick_start = np.floor(data_min / nice_step) * nice_step
-    n_ticks = int((data_max + nice_step / 2 - tick_start) / nice_step) + 1
     ticks: List[float] = []
-    for i in range(max(n_ticks, 0)):
-        tick = tick_start + i * nice_step
-        if tick > data_max + nice_step / 2:
-            break
+    tick = tick_start
+    while tick <= data_max + nice_step / 2:
         if tick >= data_min - nice_step / 2:
             ticks.append(round(float(tick), 10))
+        tick += nice_step
     return ticks
 
 
@@ -19593,162 +19581,30 @@ def _resolve_scatter_order_field(
     return None
 
 
-_GRADIENT_LEGEND_TICK_TARGET = 6
-_GRADIENT_LEGEND_TICK_MAX = 9
-
-# Both house ramps end pale, and a pale bar on a white card has no edge --
-# the reader cannot see where the low end of the scale actually stops.
-_GRADIENT_LEGEND_FRAME: Dict[str, Any] = {
-    "gradientStrokeColor": "#C8CDD3",
-    "gradientStrokeWidth": 1,
-}
-
-# Coarse to fine. The finest interval that still yields at most
-# ``_GRADIENT_LEGEND_TICK_MAX`` labels wins, so a decade of history ticks in
-# years and a fortnight ticks in days without either being told to.
-_GRADIENT_LEGEND_TIME_FREQS: Tuple[str, ...] = (
-    "50AS", "20AS", "10AS", "5AS", "2AS", "AS", "QS", "MS", "W-MON", "D",
-    "12H", "H",
-)
-
-
-def _nice_tick_step(span: float, target: int) -> float:
-    """A 1 / 2 / 5 x 10^k step giving roughly ``target`` intervals over span."""
-    rough = span / max(target, 1)
-    power = math.floor(math.log10(rough))
-    error = rough / (10.0 ** power)
-    if error >= math.sqrt(50.0):
-        multiple = 10.0
-    elif error >= math.sqrt(10.0):
-        multiple = 5.0
-    elif error >= math.sqrt(2.0):
-        multiple = 2.0
-    else:
-        multiple = 1.0
-    return multiple * (10.0 ** power)
-
-
-def _nice_numeric_ticks(lo: float, hi: float, target: int) -> List[float]:
-    """Round tick values inside ``[lo, hi]``, or the endpoints when none fit.
-
-    An over-full set is thinned by coarsening the STEP, never by dropping
-    every other tick: zero is a multiple of every step on the 1/2/5 ladder,
-    so coarsening keeps it labelled, and on a diverging ramp the zero label
-    is the one the reader is looking for.
-
-    The step is floored at one ULP of the wider endpoint because a step
-    finer than the spacing of the doubles it walks is swallowed by the
-    addition -- ``value += step`` returns ``value`` unchanged -- and the
-    walk then never reaches ``hi``. A colour field of yen notionals gets
-    there: doubles are 2.0 apart at 1e16, so a two-unit span resolves a
-    0.5 step and the render thread spins instead of raising. The ladder
-    already keeps the step within 1.5x of ``span / target``, so the floor
-    can only bind on a span narrower than a few ULPs.
-    """
-    floor_step = math.ulp(max(abs(lo), abs(hi)))
-    for candidate in (target, max(2, target // 2), 2):
-        step = max(_nice_tick_step(hi - lo, candidate), floor_step)
-        ticks: List[float] = []
-        value = math.ceil(lo / step - 1e-9) * step
-        while value <= hi + step * 1e-9:
-            ticks.append(round(value, 10))
-            if len(ticks) > _GRADIENT_LEGEND_TICK_MAX:
-                break
-            value += step
-        if 2 <= len(ticks) <= _GRADIENT_LEGEND_TICK_MAX:
-            return ticks
-    return [lo, hi]
-
-
-def _tick_decimals(values: Sequence[float]) -> int:
-    """Decimal places needed to print every tick without collapsing two."""
-    places = 0
-    for value in values:
-        text = f"{value:.10f}".rstrip("0").rstrip(".")
-        if "." in text:
-            places = max(places, len(text.split(".")[1]))
-    return min(places, 4)
-
-
-def _nice_time_ticks(lo: Any, hi: Any) -> List[pd.Timestamp]:
-    """Round calendar tick instants inside ``[lo, hi]``."""
-    lo_ts, hi_ts = pd.Timestamp(lo), pd.Timestamp(hi)
-    chosen: List[pd.Timestamp] = []
-    for freq in _GRADIENT_LEGEND_TIME_FREQS:
-        ticks = pd.date_range(lo_ts, hi_ts, freq=freq)
-        if len(ticks) > _GRADIENT_LEGEND_TICK_MAX:
-            break
-        if len(ticks) >= 2:
-            chosen = list(ticks)
-    return chosen if chosen else [lo_ts, hi_ts]
-
-
-def _gradient_label_expr(labelled: Sequence[Tuple[float, str]]) -> str:
-    """Vega expression mapping each tick position to its printed label."""
-    expr = "''"
-    for position, label in reversed(labelled):
-        safe = str(label).replace("\\", "\\\\").replace("'", "\\'")
-        expr = f"datum.value === {position!r} ? '{safe}' : {expr}"
-    return expr
-
-
 def _scatter_gradient_legend(
     df: pd.DataFrame,
     color_field: str,
     color_type: str,
     bounds: Optional[Tuple[Any, Any]] = None,
-    mapping: Optional[Dict[str, Any]] = None,
 ) -> alt.Legend:
-    """Gradient legend titled by the colour field and labelled at round ticks.
-
-    The colour channel is encoded on the normalised ``_grad_norm`` column, so
-    a tick is placed at the raw value's normalised POSITION and the label it
-    prints is resolved by ``labelExpr``. Ticks are chosen in the raw unit,
-    which is what makes them round numbers and round dates rather than the
-    unreadable data min and max.
-    """
-    title = _format_label(color_field, mapping or {}, "color") or None
+    """Gradient legend with only the first and last scale endpoints."""
     series = df[color_field].dropna()
     if series.empty:
-        return alt.Legend(title=title, **_GRADIENT_LEGEND_FRAME)
+        return alt.Legend(title=None)
     lo, hi = bounds if bounds is not None else (series.min(), series.max())
-
     if color_type == "temporal":
-        lo_ts, hi_ts = pd.Timestamp(lo), pd.Timestamp(hi)
-        if lo_ts == hi_ts:
-            fmt = _temporal_house_strftime(series)
-            return alt.Legend(
-                title=title, values=[0],
-                labelExpr=_gradient_label_expr([(0.0, lo_ts.strftime(fmt))]),
-                **_GRADIENT_LEGEND_FRAME,
-            )
         fmt = _temporal_house_strftime(series)
-        span_ns = float(hi_ts.value - lo_ts.value)
-        labelled = [
-            ((tick.value - lo_ts.value) / span_ns, tick.strftime(fmt))
-            for tick in _nice_time_ticks(lo_ts, hi_ts)
-        ]
+        lo_label = pd.Timestamp(lo).strftime(fmt).replace("'", "\\'")
+        hi_label = pd.Timestamp(hi).strftime(fmt).replace("'", "\\'")
     else:
-        lo_f, hi_f = float(lo), float(hi)
-        if lo_f == hi_f:
-            return alt.Legend(
-                title=title, values=[0],
-                labelExpr=_gradient_label_expr([(0.0, f"{lo_f:,g}")]),
-                **_GRADIENT_LEGEND_FRAME,
-            )
-        ticks = _nice_numeric_ticks(lo_f, hi_f, _GRADIENT_LEGEND_TICK_TARGET)
-        places = _tick_decimals(ticks)
-        labelled = [
-            ((tick - lo_f) / (hi_f - lo_f), f"{tick:,.{places}f}")
-            for tick in ticks
-        ]
-
-    labelled = [(round(p, 12), text) for p, text in labelled if -1e-9 <= p <= 1 + 1e-9]
+        lo_label = f"{float(lo):g}".replace("'", "\\'")
+        hi_label = f"{float(hi):g}".replace("'", "\\'")
+    if lo == hi:
+        return alt.Legend(title=None, values=[0], labelExpr=f"'{lo_label}'")
     return alt.Legend(
-        title=title,
-        values=[position for position, _ in labelled],
-        labelExpr=_gradient_label_expr(labelled),
-        **_GRADIENT_LEGEND_FRAME,
+        title=None,
+        values=[0, 1],
+        labelExpr=f"datum.value == 0 ? '{lo_label}' : '{hi_label}'",
     )
 
 
@@ -19780,9 +19636,7 @@ def _scatter_gradient_norm_series(
 
     Vega-Lite temporal color scales only interpolate between the first two
     entries of a multi-stop ``range``; encoding normalized position as
-    quantitative avoids that and lets every stop of the ramp be used. The
-    legend re-labels these positions with the raw values (see
-    ``_scatter_gradient_legend``), so the reader never sees ``0.42``.
+    quantitative avoids that and uses the full HSV rainbow.
 
     ``bounds`` overrides the endpoints the position is measured against.
     Because the normalisation -- not the scale domain -- is what carries the
@@ -19805,161 +19659,76 @@ def _scatter_gradient_norm_series(
     return ((vals - lo) / (hi - lo)).astype(float).clip(0.0, 1.0)
 
 
-_SCATTER_GRADIENT_N_STOPS = 17
+_SCATTER_GRADIENT_DEFAULT_START = "#DC143C"
+_SCATTER_GRADIENT_DEFAULT_END = "#1E90FF"
+_SCATTER_GRADIENT_N_STOPS = 9
 
 
-def _srgb_to_lab(hex_color: str) -> Tuple[float, float, float]:
-    """CIE L*a*b* (D65) for a hex colour."""
-    def _linear(c: float) -> float:
-        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+def _hsv_rainbow_stops(
+    start_hex: str,
+    end_hex: str,
+    n_stops: int = _SCATTER_GRADIENT_N_STOPS,
+) -> List[str]:
+    """Multi-stop ramp through the spectrum between two hex endpoints.
 
-    r, g, b = (_linear(c / 255.0) for c in _hex_to_rgb(hex_color))
-    x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047
-    y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
-    z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883
-
-    def _f(t: float) -> float:
-        return t ** (1.0 / 3.0) if t > 216.0 / 24389.0 else (841.0 / 108.0) * t + 4.0 / 29.0
-
-    fx, fy, fz = _f(x), _f(y), _f(z)
-    return (116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz))
-
-
-def _lab_to_hex(lab: Tuple[float, float, float]) -> str:
-    """Nearest in-gamut hex for a CIE L*a*b* (D65) triple."""
-    lightness, a_star, b_star = lab
-    fy = (lightness + 16.0) / 116.0
-    fx = fy + a_star / 500.0
-    fz = fy - b_star / 200.0
-
-    def _finv(t: float) -> float:
-        return t ** 3 if t ** 3 > 216.0 / 24389.0 else (t - 4.0 / 29.0) * 108.0 / 841.0
-
-    x, y, z = _finv(fx) * 0.95047, _finv(fy), _finv(fz) * 1.08883
-    r = 3.2404542 * x - 1.5371385 * y - 0.4985314 * z
-    g = -0.9692660 * x + 1.8760108 * y + 0.0415560 * z
-    b = 0.0556434 * x - 0.2040259 * y + 1.0572252 * z
-
-    def _gamma(c: float) -> int:
-        c = min(1.0, max(0.0, c))
-        srgb = 12.92 * c if c <= 0.0031308 else 1.055 * c ** (1.0 / 2.4) - 0.055
-        return int(round(srgb * 255.0))
-
-    return _rgb_to_hex(_gamma(r), _gamma(g), _gamma(b))
-
-
-def _lab_mix(start_hex: str, end_hex: str, t: float) -> str:
-    """Perceptually even blend of two hex colours at position ``t``."""
-    start, end = _srgb_to_lab(start_hex), _srgb_to_lab(end_hex)
-    return _lab_to_hex(tuple(s + t * (e - s) for s, e in zip(start, end)))
-
-
-def _ramp_color(anchors: Sequence[str], t: float) -> str:
-    """Colour at ``t`` in [0, 1] along a piecewise-Lab ramp through anchors."""
-    if len(anchors) == 1:
-        return anchors[0]
-    t = min(1.0, max(0.0, float(t)))
-    position = t * (len(anchors) - 1)
-    lower = min(int(position), len(anchors) - 2)
-    return _lab_mix(anchors[lower], anchors[lower + 1], position - lower)
-
-
-def _lab_ramp(anchors: Sequence[str], n_stops: int) -> List[str]:
-    """``n_stops`` evenly spaced colours along a piecewise-Lab ramp."""
+    Interpolates hue along the *longer* arc on the colour wheel so e.g.
+    red→blue passes orange, yellow, green rather than a direct RGB blend.
+    Saturation and value lerp linearly between endpoint HSV values.
+    """
     if n_stops < 2:
         raise ValueError("n_stops must be >= 2")
-    return [_ramp_color(anchors, i / (n_stops - 1)) for i in range(n_stops)]
 
+    r0, g0, b0 = (c / 255.0 for c in _hex_to_rgb(start_hex))
+    r1, g1, b1 = (c / 255.0 for c in _hex_to_rgb(end_hex))
+    h0, s0, v0 = colorsys.rgb_to_hsv(r0, g0, b0)
+    h1, s1, v1 = colorsys.rgb_to_hsv(r1, g1, b1)
 
-def _scatter_gradient_zero_pivot(
-    bounds: Optional[Tuple[Any, Any]],
-    color_type: str,
-) -> Optional[float]:
-    """Normalised position of zero when a numeric colour column straddles it."""
-    if bounds is None or color_type == "temporal":
-        return None
-    lo, hi = bounds
-    if not (isinstance(lo, (int, float, np.integer, np.floating))
-            and isinstance(hi, (int, float, np.integer, np.floating))):
-        return None
-    lo, hi = float(lo), float(hi)
-    if not lo < 0.0 < hi:
-        return None
-    return (0.0 - lo) / (hi - lo)
+    fwd_span = (h1 - h0) if h1 >= h0 else (1.0 - h0) + h1
+    bwd_span = (h0 - h1) if h0 >= h1 else h0 + (1.0 - h1)
+    span_diff = abs(fwd_span - bwd_span)
 
+    if span_diff > 0.35:
+        # Same neighbourhood on the wheel — direct (possibly decreasing) hue.
+        h_start, h_end = h0, h1
+    elif fwd_span >= bwd_span:
+        # Similar arcs (e.g. red→blue) — longer rainbow sweep forward.
+        h_start = h0
+        h_end = h1 + 1.0 if h1 < h0 else h1
+    else:
+        h_start = h0 + 1.0
+        h_end = h1
 
-def _pivoted_ramp_stops(
-    anchors: Sequence[str],
-    pivot: float,
-    n_stops: int,
-) -> List[str]:
-    """Ramp stops whose midpoint sits on ``pivot`` rather than mid-bar.
-
-    The stops stay evenly spaced so the scale is a plain ``domain=[0, 1]``
-    piecewise range; what moves is which part of the ramp each stop samples.
-    A diverging ramp that kept its neutral at the middle of the bar would
-    paint zero the colour of a moderate positive whenever the data is
-    lopsided, which is the whole failure a diverging ramp exists to avoid.
-    """
     stops: List[str] = []
     for i in range(n_stops):
-        position = i / (n_stops - 1)
-        if position <= pivot:
-            t = 0.5 * position / pivot
-        else:
-            t = 0.5 + 0.5 * (position - pivot) / (1.0 - pivot)
-        stops.append(_ramp_color(anchors, t))
+        t = i / (n_stops - 1)
+        h = (h_start + t * (h_end - h_start)) % 1.0
+        s = s0 + t * (s1 - s0)
+        v = v0 + t * (v1 - v0)
+        rr, gg, bb = colorsys.hsv_to_rgb(h, s, v)
+        stops.append(_rgb_to_hex(int(rr * 255), int(gg * 255), int(bb * 255)))
     return stops
 
 
-def _scatter_gradient_range_stops(
-    mapping: Dict[str, Any],
-    bounds: Optional[Tuple[Any, Any]] = None,
-    color_type: str = "quantitative",
-) -> Optional[List[str]]:
-    """Explicit ramp stops for a scatter gradient, or None for a named scheme.
-
-    Every ramp built here is monotone in lightness, so two dots can be
-    ranked without consulting the legend, and no colour is reused at two
-    different values.
-
-    A caller who names two colours for a column that crosses zero is asking
-    for a diverging ramp whether or not they say so, so the house neutral is
-    spliced in at zero. Interpolating straight from one hue to its opposite
-    would put mud there instead -- crimson to sea green through olive -- and
-    mud at zero is the one place a reader most needs to see a boundary.
-    """
+def _scatter_gradient_range_stops(mapping: Dict[str, Any]) -> Optional[List[str]]:
+    """HSV rainbow stops for scatter gradients, or None for a named scheme."""
     color_range = mapping.get("color_range")
     if mapping.get("color_scheme") is not None and color_range is None:
         return None
-    pivot = _scatter_gradient_zero_pivot(bounds, color_type)
     if color_range is not None:
-        anchors: Sequence[str] = (
-            [color_range[0], color_range[1]] if pivot is None
-            else [color_range[0], _house.GS_RAMP_NEUTRAL, color_range[1]]
-        )
-    elif pivot is not None:
-        anchors = _house.GS_RAMP_DIVERGING
+        start_hex, end_hex = color_range[0], color_range[1]
     else:
-        anchors = _house.GS_RAMP_SEQUENTIAL
-    if pivot is None:
-        return _lab_ramp(anchors, _SCATTER_GRADIENT_N_STOPS)
-    return _pivoted_ramp_stops(anchors, pivot, _SCATTER_GRADIENT_N_STOPS)
+        start_hex, end_hex = _SCATTER_GRADIENT_DEFAULT_START, _SCATTER_GRADIENT_DEFAULT_END
+    return _hsv_rainbow_stops(start_hex, end_hex)
 
 
-def _scatter_gradient_color_scale(
-    mapping: Dict[str, Any],
-    bounds: Optional[Tuple[Any, Any]] = None,
-    color_type: str = "quantitative",
-) -> alt.Scale:
+def _scatter_gradient_color_scale(mapping: Dict[str, Any]) -> alt.Scale:
     """Continuous color scale for scatter phase-space gradient paths.
 
-    Default: the house sequential ramp, or the house diverging ramp with its
-    neutral anchored on zero when a numeric column straddles it.
-    ``color_range=['#start', '#end']`` interpolates those two endpoints in
-    Lab. Explicit ``color_scheme`` alone selects a Vega-Lite named ramp.
+    Default (no ``color_range`` / ``color_scheme``): red→blue HSV rainbow.
+    ``color_range=['#start', '#end']``: same HSV sweep between endpoints.
+    Explicit ``color_scheme`` alone selects a Vega-Lite named ramp.
     """
-    stops = _scatter_gradient_range_stops(mapping, bounds, color_type)
+    stops = _scatter_gradient_range_stops(mapping)
     if stops is not None:
         return alt.Scale(domain=[0, 1], range=stops)
     return alt.Scale(scheme=mapping["color_scheme"])
@@ -19967,24 +19736,21 @@ def _scatter_gradient_color_scale(
 
 def _scatter_gradient_scale_spec(
     mapping: Dict[str, Any],
-    bounds: Optional[Tuple[Any, Any]] = None,
-    color_type: str = "quantitative",
 ) -> Dict[str, Any]:
     """Vega-Lite scale dict for facet gradient legend strips."""
-    stops = _scatter_gradient_range_stops(mapping, bounds, color_type)
+    stops = _scatter_gradient_range_stops(mapping)
     if stops is not None:
         return {"domain": [0, 1], "range": stops}
     return {"scheme": mapping["color_scheme"]}
 
 
 def _scatter_gradient_scale_uses_norm(scale_spec: Optional[Dict[str, Any]]) -> bool:
-    """True when the facet strip must color by normalized position, not raw dates.
-
-    Every explicit-stop scale this module builds is indexed on the [0, 1]
-    ``_grad_norm`` column, so the strip has to be too. Only a named scheme,
-    which carries no domain of ours, colours by the raw value.
-    """
-    return isinstance(scale_spec, dict) and "range" in scale_spec
+    """True when the facet strip must color by normalized position, not raw dates."""
+    return (
+        isinstance(scale_spec, dict)
+        and scale_spec.get("domain") == [0, 1]
+        and "range" in scale_spec
+    )
 
 
 def _build_baseline_fill_layers(
@@ -20446,13 +20212,7 @@ def _build_scatter(
             color_is_temporal = pd.api.types.is_datetime64_any_dtype(color_series)
             color_type = "temporal" if color_is_temporal else "quantitative"
             x2_type = "T" if x_is_temporal else "Q"
-            grad_bounds = (
-                mapping.get("_grad_color_bounds")
-                or _scatter_gradient_bounds(color_series)
-            )
-            grad_scale = _scatter_gradient_color_scale(
-                mapping, grad_bounds, color_type,
-            )
+            grad_scale = _scatter_gradient_color_scale(mapping)
             segments = (
                 alt.Chart(seg_df)
                 .mark_rule(
@@ -20469,7 +20229,7 @@ def _build_scatter(
                         scale=grad_scale,
                         legend=_scatter_gradient_legend(
                             df, color_field, color_type,
-                            grad_bounds, mapping,
+                            mapping.get("_grad_color_bounds"),
                         ),
                     ),
                     order=alt.Order("_seg_idx:Q", sort="ascending"),
@@ -20496,15 +20256,7 @@ def _build_scatter(
                 )
                 .properties(width=width, height=height)
             )
-            # Both layers read the same colour scale, but a ``point`` mark
-            # sharing it drags the merged legend down to discrete swatches --
-            # the ramp stops being a ramp and the date ticks become a list.
-            # Resolving the LEGEND independently (the scale stays shared, so
-            # the colours still agree) leaves the rule layer's gradient bar
-            # standing and the vertex layer contributing none.
-            chart = alt.layer(segments, vertices).resolve_legend(
-                color="independent",
-            )
+            chart = alt.layer(segments, vertices)
             logger.debug(
                 "[_build_scatter] connected gradient path: %d segments, order=%r",
                 len(seg_df), order_field,
@@ -20565,13 +20317,7 @@ def _build_scatter(
                 grad_df[color_field], mapping.get("_grad_color_bounds"),
             )
             embed_df = grad_df
-            grad_bounds = (
-                mapping.get("_grad_color_bounds")
-                or _scatter_gradient_bounds(color_series)
-            )
-            grad_scale = _scatter_gradient_color_scale(
-                mapping, grad_bounds, color_type,
-            )
+            grad_scale = _scatter_gradient_color_scale(mapping)
             chart = alt.Chart(grad_df).mark_point(
                 size=mark_config.get("size", 60),
                 filled=mark_config.get("filled", True),
@@ -20588,7 +20334,7 @@ def _build_scatter(
                     scale=grad_scale,
                     legend=_scatter_gradient_legend(
                         df, color_field, color_type,
-                        grad_bounds, mapping,
+                        mapping.get("_grad_color_bounds"),
                     ),
                 )
             )
@@ -20600,11 +20346,7 @@ def _build_scatter(
                 color_type,
                 mapping.get("color_range")
                 or mapping.get("color_scheme")
-                or (
-                    "house diverging (zero anchored)"
-                    if _scatter_gradient_zero_pivot(grad_bounds, color_type)
-                    else "house sequential"
-                ),
+                or f"rainbow:{_SCATTER_GRADIENT_DEFAULT_START}→{_SCATTER_GRADIENT_DEFAULT_END}",
             )
         else:
             # Always symbolOpacity=1.0 on the legend for categorical
@@ -25887,32 +25629,53 @@ def _render_chart_to_png(
     chart_or_spec: Any,
     scale: float = 2.0,
 ) -> bytes:
-    """Render an Altair chart or Vega-Lite spec dict to PNG bytes via
-    ``vl-convert-python`` (no Selenium dependency).
+    """Render an Altair chart or Vega-Lite spec dict to PNG bytes.
+
+    Tries ``vl-convert-python`` first (no Selenium dependency). When the
+    package isn't installed, falls back to ``altair_saver``-style
+    ``chart.save()`` via a temporary file.
     """
-    import vl_convert as vlc  # type: ignore[import-not-found]
-
     try:
-        # Register GS Sans / GS Sans Condensed (repo-local fonts/) so
-        # vl-convert resolves them by family name. Idempotent; harmless
-        # to call per-render. Matches the table-side font dir.
-        if _FONT_REPO_ROOT:
-            vlc.register_font_directory(
-                os.path.join(_FONT_REPO_ROOT, "web", "backend_django", "fonts")
-            )
-    except Exception:  # noqa: BLE001 - non-fatal: macOS / dev machines
-        pass
+        import vl_convert as vlc  # type: ignore[import-not-found]
 
-    if isinstance(chart_or_spec, alt.Chart) or isinstance(
-        chart_or_spec, (alt.LayerChart, alt.HConcatChart, alt.VConcatChart)
-    ):
-        spec = chart_or_spec.to_dict()
-    elif isinstance(chart_or_spec, dict):
-        spec = _json_safe_spec_value(chart_or_spec)
-    else:
-        spec = chart_or_spec.to_dict()  # last-resort duck typing
+        try:
+            # Register GS Sans / GS Sans Condensed (repo-local fonts/) so
+            # vl-convert resolves them by family name. Idempotent; harmless
+            # to call per-render. Matches the table-side font dir.
+            if _FONT_REPO_ROOT:
+                vlc.register_font_directory(
+                    os.path.join(_FONT_REPO_ROOT, "web", "backend_django", "fonts")
+                )
+        except Exception:  # noqa: BLE001 - non-fatal: macOS / dev machines
+            pass
 
-    return _compress_png(vlc.vegalite_to_png(vl_spec=spec, scale=scale))
+        if isinstance(chart_or_spec, alt.Chart) or isinstance(
+            chart_or_spec, (alt.LayerChart, alt.HConcatChart, alt.VConcatChart)
+        ):
+            spec = chart_or_spec.to_dict()
+        elif isinstance(chart_or_spec, dict):
+            spec = _json_safe_spec_value(chart_or_spec)
+        else:
+            spec = chart_or_spec.to_dict()  # last-resort duck typing
+
+        return _compress_png(vlc.vegalite_to_png(vl_spec=spec, scale=scale))
+
+    except ImportError:
+        # vl-convert not installed -- fall back to altair's own save().
+        if not hasattr(chart_or_spec, "save"):
+            raise
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            chart_or_spec.save(tmp_path, scale_factor=scale)
+            with open(tmp_path, "rb") as f:
+                return _compress_png(f.read())
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 # ===========================================================================
@@ -29405,7 +29168,6 @@ def _build_facet_gradient_legend_panel(
     scheme: str,
     width: int,
     scale_spec: Optional[Dict[str, Any]] = None,
-    title: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Horizontal gradient color bar for facet+gradient mode.
 
@@ -29471,7 +29233,7 @@ def _build_facet_gradient_legend_panel(
             "x": {
                 "field": "_x1", "type": encoding_type,
                 "axis": {
-                    "title": title or color_field,
+                    "title": color_field,
                     "labelFontSize": 24,
                     "titleFontSize": 22,
                     "labelFontWeight": "normal",
@@ -30101,19 +29863,13 @@ def _render_facet_grid(
             c_vals = pd.to_numeric(c_series, errors="coerce").dropna()
             c_min = float(c_vals.min()) if len(c_vals) else None
             c_max = float(c_vals.max()) if len(c_vals) else None
-        gradient_color_type = "temporal" if color_is_temporal else "quantitative"
         gradient_spec = _build_facet_gradient_legend_panel(
             color_field=color_field,
             color_min=c_min, color_max=c_max,
-            color_type=gradient_color_type,
+            color_type="temporal" if color_is_temporal else "quantitative",
             scheme=gradient_scheme,
             width=composite_outer_w,
-            scale_spec=_scatter_gradient_scale_spec(
-                panel_mapping,
-                None if c_min is None or c_max is None else (c_min, c_max),
-                gradient_color_type,
-            ),
-            title=_format_label(color_field, panel_mapping, "color") or None,
+            scale_spec=_scatter_gradient_scale_spec(panel_mapping),
         )
         if gradient_spec:
             _strip_schema_and_config(gradient_spec)

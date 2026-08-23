@@ -411,8 +411,7 @@ become nanoseconds after 1970 and the axis renders as a clock.
 - Intraday line x values should stay datetime-like. Do not pre-format clock
   strings or force ordinal; set `x_timezone` only when ET is wrong.
 - `scatter` + `connect=True` creates an ordered phase path and needs `order`
-  or temporal/numeric `color`. The engine picks the gradient from the column's
-  own sign and range; read `chart_context_colors.md` §6 before overriding it.
+  or temporal/numeric `color`. See `chart_context_colors.md` to override its gradient.
 - `bar` / `bar_horizontal` are categorical comparisons. Mixed value units on
   one bar axis raise. Grouped bars (`stack=False`) do not render annotations.
 - `heatmap` accepts tidy long data, an unambiguous wide frame, or a meaningful
