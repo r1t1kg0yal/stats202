@@ -49,11 +49,7 @@ and both `edge_only_*` controls are top-level `make_chart(...)` kwargs.
 | `facet_cols` | near-square layout | Number of columns; rows are derived |
 | `same_scale` | `False` | Lock the axis that matters for this chart type |
 | `share_color` | `False` | Lock the colour domain; one shared legend |
-| `edge_only_ticks` | `False` | Suppress y-tick labels on inner columns. X-tick labels always render on every panel |
-| `edge_only_axis_titles` | `False` | Suppress repeated inner axis titles |
-
-Every panel carries its own x-axis tick labels. There is no flag that hides
-them -- `edge_only_ticks` only touches the y-axis.
+| `edge_only_ticks`, `edge_only_axis_titles` | `False` | Suppress repeated inner labels |
 
 Panel count below 7 or above 36 raises. Counts from 25 through 36 render with
 an aggregation warning.
@@ -119,12 +115,9 @@ The 10-category colour cap does not apply to a continuous ramp. See
 
 ## 6. Output and failures
 
-Facet grids remove end-of-line labels; panel headers identify entities. A
-panel header is a category name, so it takes the same 24-character cap as any
-other one (`chart_context.md` §5.1) — the facet values do the work the
-end-label names would have done, and the grid raises naming the offenders
-rather than truncating them. Unsupported annotations and other non-fatal
-adjustments appear in `result.warnings`.
+Facet grids remove end-of-line labels; panel headers identify entities.
+Unsupported annotations and other non-fatal adjustments appear in
+`result.warnings`.
 
 If any panel fails validation, the complete grid raises and names every
 offending panel with its findings. A successful call returns one `ChartResult`

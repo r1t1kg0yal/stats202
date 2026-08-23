@@ -197,9 +197,8 @@ respect up front and expensive to discover from an error, so size the text
 while you are building the frame, not after a refusal.
 
 ```
- ANY category label ....... 24    end-label series name .... 32
- y_title / x_title ........ 28    legend title ............. 28
- legend series name ....... 24, and ≤40% of canvas width — either can bind
+ y_title / x_title ........ 28    end-label series name .... 32
+ bar category label ....... 22    heatmap row / column ..... 20
  PlotText.text ............ 10 words (aim 8)
  chart title / subtitle ... 2 wrapped lines at the canvas width
  composite super-title .... 63 at any preset (up to 159 on the widest)
@@ -207,54 +206,23 @@ while you are building the frame, not after a refusal.
  table row, all columns ... ~140 total across the widest cell of each column
 ```
 
-**One number, 24, for every category name you write** — `bar`,
-`bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile
-ordinals, `donut` slices, heatmap rows and columns, facet panel labels and
-colour-legend entries. There is nothing per-chart-type to remember here: if a
-string will be drawn as the name of a category, it gets 24 characters
-whichever mark ends up drawing it, standalone or in a composite cell. A label
-may also carry ONE newline for a deliberate two-line break
-(`'Q1 2024\nRevenue'`); each line then gets the same 24, and a third line is
-refused. Wrapping does not buy length — the engine re-wraps long bar labels
-for layout, but the cap is measured on the string you supplied.
-
-The legend carries two gates, and either can bind. The character cap is the
-same 24 as any other category name. The pixel budget matters on top of it
-because a legend column steals width from the plot, and because capitals and
-digits are wider than lowercase: `'GDP YOY 2024 REVISED'` spends more of the
-budget than its 20 characters suggest, while 24 characters of lowercase prose
-can be comfortable at 700px and impossible in a 280px composite cell. The
-error names which gate refused and reports measured widths, so size from the
-error rather than re-deriving it.
-
 Rule of thumb for axis and category text: **8–14 characters reads cleanly at
-every canvas size.** The 24 is a ceiling for the occasional unavoidable name,
-not a target — a chart whose categories all run to 24 is a cluttered chart
-that passed validation. Write `'Net Debt/EBITDA'` as `'ND/EBITDA'`, `'Free
-Cash Flow Yield'` as `'FCF Yld'`, `'Manufacturing PMI Composite'` as
-`'Mfg PMI'`. Do the abbreviating in the DataFrame — the engine never
-truncates, and never invents a shorter name for you, but it does suggest
-abbreviations in the error when the label has an acronym or a word boundary
-to exploit.
+every canvas size.** Write `'Net Debt/EBITDA'` as `'ND/EBITDA'`, `'Free Cash
+Flow Yield'` as `'FCF Yld'`, `'Manufacturing PMI Composite'` as `'Mfg PMI'`.
+Do the abbreviating in the DataFrame — the engine never truncates, and never
+invents a shorter name for you.
 
 ### 5.2 Length is not the same as fit
 
 A label can be inside its character cap and still not fit, and the two have
 **disjoint** remedies. Read which one the error names before editing anything:
 
-- **Length** — one string is over its cap. Shorten that string. The error
-  quotes it, gives its character count, and says *"this is a LENGTH limit,
-  not a fit limit"*. A wider canvas will not admit it, so do not reach for
-  `dimensions` or a bigger `dimension_preset`.
+- **Length** — one string is too long for the space its own row or column
+  gets. Shorten that string. The error quotes it and its character count.
 - **Fit** — there are too many rows or columns for the canvas, whatever they
   are called. Shortening labels does **nothing** here: a 16-row matrix in a
   240px-tall cell is still 16 rows at four characters each. Change the SHAPE
   (aggregate, top-N, render standalone) or let the engine own the canvas.
-
-The length gate is checked first, so when both are unhappy you get the length
-error and the cheaper fix. Never infer a length problem from a fit error: the
-fit error is about how many categories you asked for, and renaming them is
-wasted work.
 
 Where the engine owns the canvas it already resolves fit for you, so you
 should never be selecting a size to make a matrix fit:
@@ -278,14 +246,12 @@ number of categories — not to pick a bigger preset, and not to rename things.
 | Gate | Current hard limit | Authoring action |
 |---|---:|---|
 | Lines per `multi_line` / `timeseries` / `area` panel | 6 | Aim for ≤4; split, facet, or aggregate |
-| Axis title (`y_title`, `y_title_right`, `x_title`) | 28 characters, on either axis | Aim for concise metric + unit |
-| Legend title (the `color` / `size` field name) | 28 characters — same budget as an axis title, because it is the same kind of string | Rename the column, or pass a shorter `color_title` / `size_title` |
+| Value-axis title (`y_title`, `y_title_right`; `x_title` on horizontal bars) | 28 characters | Aim for concise metric + unit |
 | Auto end-label series name | 32 characters | Rename categories before charting |
-| Any category label — `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile ordinals, `donut` slices, heatmap rows and columns, facet panel labels | 24 characters on the longest line, and at most 2 lines. One number for every nominal label, standalone or in a composite cell | Abbreviate in the DataFrame. The error quotes each offender with its length and suggests abbreviations where the name has an acronym or word boundary to exploit |
-| Heatmap row or column label | The same 24, and less on a narrow canvas — the gutter budget applies on top and the usable number is reported in the error | Abbreviate in the DataFrame. Only applies when the error names a specific string; a row-COUNT failure is §5.2 fit, not length |
+| Bar / `contribution` category label | 22 characters | Abbreviate in the DataFrame |
+| Heatmap row or column label | 20 characters, and less on a narrow canvas — the usable budget is reported in the error | Abbreviate in the DataFrame. Only applies when the error names a specific string; a row-COUNT failure is §5.2 fit, not length |
 | Heatmap rows vs canvas height | Each row needs one label line, so a fixed cell fits `height / 15` rows | Drop the `dimensions` kwarg and let the engine size the canvas; inside a fixed cell, aggregate or take the top-N. Renaming rows buys nothing |
-| Named categories vs canvas (every nominal axis: `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile-line ordinals, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, never clips one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime. Profile ordinals never rotate past -45 and thin which ticks are drawn instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap (no help on a symmetric matrix — the engine says so), or switch to `bar_horizontal` for long lists |
-| Colour-legend series name | 24 characters, AND measured width ≤ 40% of canvas width (about 28 characters of mixed case at 700px, ~11 in a 280px composite cell). Either can bind; the error says which and reports measured pixel widths | Rename the `color` column values in the DataFrame. This is the same repair as any other length gate — the engine will not ellipsize a series name, because two series whose names differ past the cut become indistinguishable |
+| Named categories vs canvas (`bar`, `bar_horizontal`, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap (no help on a symmetric matrix — the engine says so), or switch to `bar_horizontal` for long lists |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
 | Series vertical share (`color`-split `multi_line` / `timeseries`) | Every series needs ≥10% of the y span, and adjacent series means stay within 3× the widest single span | Pass `y_title_right` naming the secondary metric and unit: inert when one axis suffices, and when it does not the engine routes the magnitude clusters to a dual axis in one pass. Standalone charts only — inside a composite cell declare `dual_axis_series` as well. Otherwise 2-pack, rebase to 100, or facet |

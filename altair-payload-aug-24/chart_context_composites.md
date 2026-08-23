@@ -123,13 +123,6 @@ Composite cells are narrower than standalone charts, so shorten category,
 legend, and end-label names aggressively; the engine raises with the exact
 offenders rather than truncating.
 
-The 24-character category cap from `chart_context.md` §5.1 is the same in a
-cell as standalone — it is an editorial limit, not a canvas one. What changes
-in a cell is the *pixel* budget stacked on top of it: a legend entry gets
-about 11 characters at 280px against roughly 28 at 700px, so a name that is
-comfortably legal standalone can still be refused here. Write cell labels to
-the 8–14 band and neither gate fires.
-
 ## 4. All-or-nothing failure contract
 
 An empty or all-invalid DataFrame in any `make_chart` or `ChartSpec` raises;

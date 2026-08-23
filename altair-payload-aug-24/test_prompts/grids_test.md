@@ -14,7 +14,7 @@ Build comparable return-distribution histograms for eight major assets as one fa
 
 ---
 
-Build a 4x2 facet grid of regional PMIs with an explicit business-order `facet_order`, `edge_only_ticks=True`, and `edge_only_axis_titles=True`. Confirm every panel still has its own x-axis year labels and that panel headers still identify every region. Let me know if frictions.
+Build a 4x2 facet grid of regional PMIs with an explicit business-order `facet_order`, `edge_only_ticks=True`, and `edge_only_axis_titles=True`. Confirm panel headers still identify every region. Let me know if frictions.
 
 ---
 

@@ -73,8 +73,8 @@ from dataclasses import dataclass, field, fields, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import (
-    Any, Callable, Dict, FrozenSet, List, Literal, NamedTuple, Optional,
-    Sequence, Set, Tuple, Union, get_args,
+    Any, Callable, Dict, FrozenSet, List, Literal, Optional, Sequence, Set,
+    Tuple, Union, get_args,
 )
 
 # ---------------------------------------------------------------------------
@@ -1130,61 +1130,6 @@ class BarCategoryLabelTooLongError(ValidationError):
         }
 
 
-class NominalLabelTooLongError(ValidationError):
-    """Raised when a nominal label breaks the editorial length cap.
-
-    The sibling of ``BarCategoryLabelTooLongError`` for every other nominal
-    label surface: boxplot groups, waterfall steps, bullet rows, profile
-    tenors, donut slices and facet-strip labels. Bar keeps its own class
-    because its message and context predate the unified cap; the rule and
-    the wording are now shared through ``_validate_nominal_labels``.
-
-    Distinct from the fit ladder's ``ValidationError``, which is raised
-    when labels of legal length still cannot be seated on the axis. These
-    two are not interchangeable: this one is fixed by rewriting a string,
-    that one by showing fewer categories or widening the canvas.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        offending_labels: Optional[List[str]] = None,
-        category_field: Optional[str] = None,
-        mapping: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        Exception.__init__(self, message)
-        self.context = {
-            "offending_labels": list(offending_labels or []),
-            "category_field": category_field,
-            "mapping": mapping,
-        }
-
-
-class LegendTitleTooLongError(ValidationError):
-    """Raised when a legend title exceeds the axis-title character cap.
-
-    A legend title carries the colour / size FIELD NAME, which makes it the
-    same editorial object as an axis title and puts it on the same budget.
-    It had no gate of any kind until 2026-08-22: Vega's 180px ``titleLimit``
-    default used to clip it, and when that default was replaced by
-    no-limit the clip went away without a length check taking its place.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        title: Optional[str] = None,
-        channel: Optional[str] = None,
-        mapping: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        Exception.__init__(self, message)
-        self.context = {
-            "title": title,
-            "channel": channel,
-            "mapping": mapping,
-        }
-
-
 class SeriesMisalignmentError(ValidationError):
     """Raised when a stacked area's series sit on disjoint x-grids.
 
@@ -1239,42 +1184,14 @@ class SeriesOscillationError(ValidationError):
 # ---------------------------------------------------------------------------
 # No-truncation policy (global Altair engine principle)
 # ---------------------------------------------------------------------------
-# Vega-Lite ``labelLimit`` / ``titleLimit`` enforce hard ellipsis truncation
-# on axis and legend text, and the runtime applies a default even when the
-# spec sets nothing: 180 px for axis tick labels, 160 px for legend labels,
-# 180 px for legend titles (measured against the pinned vl-convert; axis
-# titles, facet headers and chart titles have no default and never truncate).
-# So silence is not neutral here -- an axis the engine forgets to configure
-# truncates at 180 px.
-#
-# The policy has two halves, and they are deliberately NOT the same
-# mechanism:
-#
-#   1. GEOMETRY is decided by measurement. Every nominal label surface
-#      (bar categories, boxplot / waterfall / contribution / bullet
-#      categories, profile ordinals, heatmap rows + columns, legend series
-#      names, LVL names, axis titles) goes through a fit ladder that
-#      measures the labels, rotates, shrinks the font, and finally raises a
-#      typed ``*TooLongError`` so PRISM shortens the labels in the
-#      DataFrame. The engine never hides or clips a name to make an axis
-#      fit.
-#
-#   2. The NO-TRUNCATION GUARANTEE is font-independent, via
-#      ``_NO_TRUNCATE_LABEL_LIMIT``. It is not a pixel budget, because a
-#      pixel budget is only as good as the font it was measured against --
-#      and that is not the font that renders. Staging resolves Liberation
-#      Sans (or PIL's built-in default when no TTF is present); PRISM
-#      resolves GS Sans out of ``<REPO_ROOT>/web/backend_django/fonts/``.
-#      A measured limit that holds here can clip there, and the clip is
-#      silent, which is the one failure mode this policy exists to forbid.
-#
-# Keeping the two apart is what makes the guarantee hold. If the ladder's
-# measurement is slightly wrong the cost is a crowded axis -- visible, and
-# fixable. If the guarantee were a measurement, the cost would be an
-# ellipsis nobody sees until a reader notices the label is a lie.
-#
-# Vega reads ``labelLimit: 0`` / ``titleLimit: 0`` as "no limit".
-_NO_TRUNCATE_LABEL_LIMIT = 0
+# Vega-Lite ``labelLimit`` enforces hard ellipsis truncation on axis and
+# legend text. The engine NEVER relies on that silent path: every nominal
+# label surface (bar categories, heatmap columns + rows, legend series
+# names, LVL
+# names, y-axis titles) is validated up-front and raises a typed
+# ``*TooLongError`` so PRISM shortens labels in the DataFrame. After
+# validation passes, per-axis ``labelLimit`` is set to the exact validated
+# pixel budget so inherited config defaults cannot re-truncate.
 
 # Real rendered width of one axis tick-label character, as a fraction of the
 # label font size. The gs_clean skin renders axis labels at 18px in
@@ -1321,6 +1238,14 @@ _DUAL_AXIS_RIGHT_TITLE_PLACEHOLDERS = frozenset({
 _HEATMAP_ROW_GUTTER_FRAC_STANDALONE = 0.43
 _HEATMAP_ROW_GUTTER_FRAC_COMPOSITE = 0.32
 _HEATMAP_ROW_LABEL_VERTICAL_PAD_PX = 4
+# Absolute char ceiling for heatmap row labels -- aligned with bar
+# category cap so PRISM has one abbreviation discipline across matrix
+# and bar charts. Gutter math may allow more in wide canvases; this cap
+# still wins so labels stay efficient.
+_HEATMAP_ROW_LABEL_MAX_CHARS = 20
+# Absolute char ceiling for heatmap column (x) labels -- aligned with
+# row / bar caps so PRISM has one abbreviation discipline.
+_HEATMAP_COLUMN_LABEL_MAX_CHARS = 20
 _HEATMAP_FULL_MONTH_LABEL_RE = re.compile(
     r"^(January|February|March|April|May|June|July|August|"
     r"September|October|November|December)\s+\d{4}$",
@@ -1337,66 +1262,26 @@ _HEATMAP_FULL_MONTH_LABEL_RE = re.compile(
 # series carries the entity, the y-title carries the unit).
 _LVL_SERIES_NAME_MAX_CHARS = 32
 
-# Editorial cap on the length of ANY nominal label: bar / boxplot /
-# waterfall / contribution / bullet / profile category names, heatmap row
-# and column labels, donut slice names, facet-strip labels and colour-legend
-# entries. One number, because a category name is the same editorial object
-# whichever mark ends up drawing it, and PRISM should not have to remember
-# which chart type it is writing a DataFrame for.
-#
-# This is the EDITORIAL half of a two-gate design, and the distinction is
-# what makes a constant the right shape here:
-#
-#   this cap            "is this label WELL-FORMED?"  canvas-independent,
-#                       font-independent, countable without rendering
-#   the fit ladder      "does this label FIT HERE?"   canvas-dependent,
-#                       measured in pixels against real font metrics
-#
-# The cap is checked FIRST, because "shorten this string" is actionable and
-# canvas-free, whereas the ladder's remedy is "show fewer categories" -- and
-# telling PRISM to drop categories when one verbose name was the whole
-# problem is how a wave burns four retries on the wrong fix.
-#
-# Characters rather than pixels on purpose. Staging resolves Liberation Sans
-# and PRISM resolves GS Sans, so any pixel threshold calibrated here means
-# something different in production; a character count is the one budget
-# that reads the same on both sides. Pixels remain correct for the fit
-# question, which is why the ladder measures and this does not.
-#
-# 24 replaced three divergent numbers (bar 22, heatmap row 20, heatmap
-# column 20) whose own comments each described reaching for "one
-# abbreviation discipline" and then landed somewhere different. It LOOSENS
-# all three, so nothing that rendered under them stops rendering. The bar
-# cap's original justification was three truncation modes at ~17ch, 22ch and
-# 14ch; all three expired when ``labelLimit`` went to no-limit (see
-# ``_NO_TRUNCATE_LABEL_LIMIT``) and nothing truncates any more. What remains
-# is abbreviation discipline, which is a real reason but a different one.
-#
-# Measured cost of introducing it, by ``dev/probe_truncation_sweep.py
-# --mode boundary``: inert on the 14 surfaces already at or under 24, and
-# binding on the 16 that had no length gate at all -- boxplot, waterfall,
-# profile and bullet (standalone and in cells) rendered 64+ characters with
-# nothing stopping them, because the ladder's last rung is -90deg and
-# vertical text spends height rather than width.
-_NOMINAL_LABEL_MAX_CHARS = 24
-
-# Companion line cap. A nominal label may carry explicit newlines, and a
-# deliberate two-line label ("Q1 2024\nRevenue") is good typography -- but
-# the cap has to bound the whole footprint or a caller routes around it by
-# stacking lines. The character cap applies to the LONGEST LINE, this one to
-# the count, and both are measured on the string the CALLER supplied:
-# ``_build_bar`` and ``_build_contribution`` re-wrap nominal x labels at two
-# words per line for layout, and that wrap is a layout accommodation, not a
-# licence for a more verbose label.
-_NOMINAL_LABEL_MAX_LINES = 2
-
-# Absolute char ceiling for heatmap row / column labels. Same editorial
-# object as every other nominal label, so the same number; the heatmap's
-# own gutter and per-column pixel math still applies on top via ``min()``
-# and still binds first in any canvas narrow enough to matter, which is why
-# raising these from 20 to 24 is close to inert in practice.
-_HEATMAP_ROW_LABEL_MAX_CHARS = _NOMINAL_LABEL_MAX_CHARS
-_HEATMAP_COLUMN_LABEL_MAX_CHARS = _NOMINAL_LABEL_MAX_CHARS
+# Hard cap on bar-chart category label length. Long labels surface
+# multiple failure modes that no labelLimit / labelOverlap setting can
+# fix cleanly:
+#   - Vertical bar at angle -45 with default labelLimit ~180 px truncates
+#     mid-label at ~17 chars (A03 in the audit).
+#   - Horizontal bar's labelLimit cap (max(180, min(width*0.45, ...))) is
+#     plot-region-protective, not label-aware: 22+ ch labels truncate at
+#     width=700 (B04), 14+ ch labels truncate at composite width=350
+#     (D04 / E05).
+# The third failure mode this cap originally guarded -- grouped
+# horizontal bars stacking their row-facet header labels into illegible
+# noise (F03 / F04 / F05 / H01) -- was a header-alignment bug, fixed
+# 2026-07-25 (labelAlign left + labelFont pinned to the skin; see
+# dev/notes.md). That arm no longer justifies the cap; the two
+# truncation arms above still do, so 22 stands until someone re-measures
+# the real per-context boundary against the fixed geometry.
+# 22 ch was verified against every bar context (vertical / horizontal /
+# grouped / stacked / single / composite) by the long-label audit
+# gallery, since retired; re-run its methodology before moving the cap.
+_BAR_CATEGORY_LABEL_MAX_CHARS = 22
 
 # Minimum distinct (x, y) coordinates that fall inside the visible plot
 # region for a scatter to read as a relationship rather than an anecdote.
@@ -1508,44 +1393,6 @@ def _axis_label_pixel_budget(label: str, label_font_size: int) -> float:
     return len(str(label)) * _axis_label_px_per_char(label_font_size) + 8
 
 
-def _axis_text_width_px(text: Any, label_font_size: int) -> float:
-    """Widest rendered line of ``text`` at ``label_font_size``, in pixels.
-
-    Prefers real font metrics (``_lp_measure``, which is PIL against the
-    skin's TTF) and falls back to the per-character ratio when no usable
-    font is available. The ratio is a blended average, so it under-measures
-    an all-uppercase label and over-measures an all-digit one; wherever a
-    decision is per-label rather than aggregate, the real metric is what
-    keeps the two failure modes from trading places.
-
-    Never used to build a ``labelLimit`` -- see the no-truncation policy
-    note. This measures geometry so a ladder can rotate or shrink; the
-    guarantee that the chosen label renders whole is
-    ``_NO_TRUNCATE_LABEL_LIMIT``.
-    """
-    label = str(text)
-    if not label:
-        return 0.0
-    try:
-        width, _ = _lp_measure(label, int(label_font_size), "regular")
-    except Exception:  # noqa: BLE001 - metrics are an optimisation, not a gate
-        width = 0.0
-    if width > 0:
-        return float(width)
-    longest_line = max(label.split("\n"), key=len, default=label)
-    return len(longest_line) * _axis_label_px_per_char(label_font_size)
-
-
-def _axis_labels_max_width_px(
-    labels: Sequence[Any], label_font_size: int,
-) -> float:
-    """Widest rendered label in ``labels`` at ``label_font_size``."""
-    return max(
-        (_axis_text_width_px(label, label_font_size) for label in labels),
-        default=0.0,
-    )
-
-
 def _heatmap_axis_label_font_size(skin_config: Dict[str, Any]) -> int:
     """Resolve heatmap axis tick label font size from the active skin."""
     axis_cfg = skin_config.get("config", {}).get("axis", {})
@@ -1557,29 +1404,15 @@ def _heatmap_axis_label_font_size(skin_config: Dict[str, Any]) -> int:
     )
 
 
-def _validate_y_axis_label(
-    y_title: Optional[str],
-    mapping: Dict[str, Any],
-    axis: str = "y",
-) -> None:
-    """Validate an axis title's length against the shared cap.
-
-    ``axis`` only picks the wording. The cap is one number for both axes,
-    and both need checking: the x branch was added 2026-08-22 after a sweep
-    found ``x_title`` rendering 64 characters clean on every chart type
-    except ``bar_horizontal``. The cap had been declared for both axes all
-    along and enforced on one, which is worse than not declaring it, because
-    the number in the docs looked like a guarantee.
-    """
+def _validate_y_axis_label(y_title: Optional[str], mapping: Dict[str, Any]) -> None:
+    """Validate y-axis label length. Raises if it exceeds the configured cap."""
     if y_title and len(y_title) > _Y_AXIS_LABEL_MAX_CHARS:
         raise YAxisLabelTooLongError(
             (
-                f"{axis.upper()}-axis label '{y_title}' is {len(y_title)} "
-                f"characters (max {_Y_AXIS_LABEL_MAX_CHARS}). Use a shorter "
-                f"{axis}_title in mapping. "
-                f"Example: mapping={{'{axis}': "
-                f"'{mapping.get(axis, 'value')}', "
-                f"'{axis}_title': 'Shorter Label'}}"
+                f"Y-axis label '{y_title}' is {len(y_title)} characters "
+                f"(max {_Y_AXIS_LABEL_MAX_CHARS}). Use a shorter y_title in mapping. "
+                f"Example: mapping={{'y': '{mapping.get('y', 'value')}', "
+                "'y_title': 'Shorter Label'}}"
             ),
             y_title=y_title,
             mapping=mapping,
@@ -1632,9 +1465,9 @@ def _validate_dual_axis_right_title(mapping: Dict[str, Any]) -> str:
     return title
 
 
-def _suggest_label_abbreviations(
+def _suggest_bar_label_abbreviations(
     label: str,
-    cap: int = _NOMINAL_LABEL_MAX_CHARS,
+    cap: int = _BAR_CATEGORY_LABEL_MAX_CHARS,
 ) -> str:
     """Produce 1-2 abbreviation suggestions for an over-cap category label.
 
@@ -1691,120 +1524,13 @@ def _suggest_label_abbreviations(
     return " / ".join(f"'{c}'" for c in kept[:2])
 
 
-def _label_line_shape(label: str) -> Tuple[int, int]:
-    """``(longest line in characters, number of lines)`` for one label."""
-    lines = str(label).split("\n")
-    return max((len(line) for line in lines), default=0), len(lines)
-
-
-def _validate_nominal_labels(
-    labels: Sequence[Any],
-    category_field: str,
-    mapping: Dict[str, Any],
-    surface: "_NominalAxisSurface",
-) -> None:
-    """Raise when any nominal label breaks the editorial cap.
-
-    One validator for every nominal label surface -- bar, boxplot,
-    waterfall, contribution, bullet, profile, donut, facet strip -- because
-    a category name is the same editorial object whichever mark draws it.
-    Family-specific wording and the exception class both travel on
-    ``surface`` so the message stays actionable without the rule
-    fragmenting into six near-copies.
-
-    Two independent limits, both measured on the string the CALLER supplied
-    rather than on the post-wrap render:
-
-    * longest LINE over ``_NOMINAL_LABEL_MAX_CHARS`` -- the width problem.
-    * more than ``_NOMINAL_LABEL_MAX_LINES`` lines -- the height problem,
-      and the way a caller would otherwise route around the width cap.
-
-    This runs BEFORE the fit ladder. Both gates can be unhappy about the
-    same axis, but they want opposite things done about it: this one wants
-    a shorter string, the ladder wants fewer categories. Length is the
-    cheaper fix and the one a caller can apply without knowing the canvas,
-    so it is the one reported first.
-    """
-    str_labels = [str(label) for label in labels]
-    too_wide: List[str] = []
-    too_tall: List[str] = []
-    for label in dict.fromkeys(str_labels):  # de-dupe, preserve order
-        longest, n_lines = _label_line_shape(label)
-        if longest > _NOMINAL_LABEL_MAX_CHARS:
-            too_wide.append(label)
-        elif n_lines > _NOMINAL_LABEL_MAX_LINES:
-            too_tall.append(label)
-    if not too_wide and not too_tall:
-        return
-
-    unit = surface.unit
-    offenders = sorted(too_wide, key=lambda s: -_label_line_shape(s)[0])
-    if offenders:
-        widest = _label_line_shape(offenders[0])[0]
-        shown = offenders[:5]
-        offender_block = "\n".join(
-            "  - '%s' (%d ch)" % (label, _label_line_shape(label)[0])
-            for label in shown
-        )
-        suggestions = [
-            (label, _suggest_label_abbreviations(label))
-            for label in shown[:3]
-        ]
-        suggestion_block = "\n".join(
-            f"  '{label}' -> {hint}" for label, hint in suggestions if hint
-        )
-        suggestion_tail = (
-            f"\nSuggested abbreviations:\n{suggestion_block}"
-            if suggestion_block else ""
-        )
-        message = (
-            f"{surface.family} {unit.upper()}-LABEL ERROR: {unit} labels in "
-            f"field '{category_field}' exceed the "
-            f"{_NOMINAL_LABEL_MAX_CHARS}-character cap "
-            f"({len(offenders)} offender(s), longest line is {widest} ch). "
-            f"This is a LENGTH limit, not a fit limit -- a wider canvas will "
-            f"not admit them. Shorten the labels in the DataFrame before "
-            f"make_chart().\n"
-            f"Offenders ({len(shown)} of {len(offenders)} shown, "
-            f"longest first):\n{offender_block}"
-            f"{suggestion_tail}"
-        )
-        raise surface.error_cls(
-            message,
-            offending_labels=offenders,
-            category_field=category_field,
-            mapping=mapping,
-        )
-
-    shown = too_tall[:5]
-    offender_block = "\n".join(
-        "  - %r (%d lines)" % (label, _label_line_shape(label)[1])
-        for label in shown
-    )
-    raise surface.error_cls(
-        (
-            f"{surface.family} {unit.upper()}-LABEL ERROR: {len(too_tall)} "
-            f"{unit} label(s) in field '{category_field}' carry more than "
-            f"{_NOMINAL_LABEL_MAX_LINES} lines. A two-line label is good "
-            f"typography; a taller stack eats the plot region and cannot be "
-            f"read across neighbouring ticks. Use at most "
-            f"{_NOMINAL_LABEL_MAX_LINES} lines of "
-            f"{_NOMINAL_LABEL_MAX_CHARS} characters.\n"
-            f"Offenders ({len(shown)} of {len(too_tall)} shown):\n"
-            f"{offender_block}"
-        ),
-        offending_labels=too_tall,
-        category_field=category_field,
-        mapping=mapping,
-    )
-
-
 def _validate_bar_category_labels(
     labels: List[str],
     category_field: str,
     mapping: Dict[str, Any],
 ) -> None:
-    """Validate bar chart category label lengths.
+    """Validate bar chart category label lengths. Raises if any label exceeds
+    the configured cap.
 
     Applies to all bar chart types -- plain vertical, plain horizontal,
     grouped (``color`` + ``stack=False``), stacked (``color`` +
@@ -1812,69 +1538,49 @@ def _validate_bar_category_labels(
     orientation, called from the top of ``_build_bar`` (for nominal x)
     and ``_build_bar_horizontal`` (for nominal y).
     """
-    _validate_nominal_labels(labels, category_field, mapping, _BAR_SURFACE)
+    str_labels = [str(label) for label in labels]
+    offenders = sorted(
+        {label for label in str_labels if len(label) > _BAR_CATEGORY_LABEL_MAX_CHARS},
+        key=lambda s: -len(s),
+    )
+    if not offenders:
+        return
 
+    max_len = max(len(label) for label in str_labels)
+    n_offenders = len(offenders)
+    # Cap the offender list shown in the message so we don't dump 50
+    # labels into the error. 5 covers any practical bar chart.
+    shown_offenders = offenders[:5]
 
-def _nominal_label_surfaces(
-    df: pd.DataFrame,
-    chart_type: str,
-    mapping: Dict[str, Any],
-) -> List[Tuple[List[str], str, "_NominalAxisSurface"]]:
-    """Every nominal label surface this chart draws, for cap validation.
+    offender_block = "\n".join(
+        f"  - '{label}' ({len(label)} ch)" for label in shown_offenders
+    )
+    suggestions = [
+        (label, _suggest_bar_label_abbreviations(label))
+        for label in shown_offenders[:3]
+    ]
+    suggestion_block = "\n".join(
+        f"  '{label}' -> {hint}" for label, hint in suggestions if hint
+    )
+    suggestion_tail = (
+        f"\nSuggested abbreviations:\n{suggestion_block}"
+        if suggestion_block else ""
+    )
 
-    One place that answers "which strings in this frame get drawn as
-    category labels", so the cap reaches a new chart family by adding a row
-    here rather than by growing another branch inside the pre-flight
-    collector. Returns ``(labels, field, surface)`` triples.
-
-    Heatmaps are deliberately absent: ``_validate_heatmap_row_labels`` and
-    its column sibling already enforce the same cap and combine it with
-    gutter / per-column pixel math through ``min()``, so listing them here
-    would raise twice for one problem.
-    """
-    def _is_nominal(field: Any) -> bool:
-        return (
-            isinstance(field, str)
-            and field in df.columns
-            and not pd.api.types.is_datetime64_any_dtype(df[field])
-            and not pd.api.types.is_numeric_dtype(df[field])
-        )
-
-    def _present(field: Any) -> bool:
-        return isinstance(field, str) and field in df.columns
-
-    def _uniques(field: str) -> List[str]:
-        return [str(v) for v in df[field].dropna().unique()]
-
-    x_field = _get_field(mapping, "x")
-    y_field = _get_field(mapping, "y")
-    color_field = _get_field(mapping, "color")
-
-    out: List[Tuple[List[str], str, "_NominalAxisSurface"]] = []
-    if chart_type == "bar_horizontal" and _present(y_field):
-        out.append((_uniques(y_field), y_field, _BAR_SURFACE))
-    elif chart_type == "bar" and _is_nominal(x_field):
-        out.append((_uniques(x_field), x_field, _BAR_SURFACE))
-    elif chart_type == "contribution" and _present(x_field):
-        out.append((_uniques(x_field), x_field, _CONTRIBUTION_SURFACE))
-    elif chart_type == "boxplot" and _is_nominal(x_field):
-        out.append((_uniques(x_field), x_field, _BOXPLOT_SURFACE))
-    elif chart_type == "waterfall" and _is_nominal(x_field):
-        out.append((_uniques(x_field), x_field, _WATERFALL_SURFACE))
-    elif chart_type == "bullet" and _present(y_field):
-        out.append((_uniques(y_field), y_field, _BULLET_SURFACE))
-    elif chart_type == "donut" and _present(color_field):
-        out.append((_uniques(color_field), color_field, _DONUT_SURFACE))
-    elif chart_type in {"multi_line", "timeseries", "line"} and _is_nominal(x_field):
-        # Non-temporal, non-numeric x on a line family routes to
-        # ``_build_profile_line`` -- yield curves, vol smiles, tenor
-        # profiles -- where x carries tenor names rather than dates.
-        out.append((_uniques(x_field), x_field, _PROFILE_SURFACE))
-
-    facet_field = mapping.get("facet")
-    if _is_nominal(facet_field):
-        out.append((_uniques(facet_field), facet_field, _FACET_SURFACE))
-    return out
+    raise BarCategoryLabelTooLongError(
+        (
+            f"Bar category labels in field '{category_field}' exceed the "
+            f"{_BAR_CATEGORY_LABEL_MAX_CHARS}-character cap "
+            f"({n_offenders} offender(s), longest is {max_len} ch). "
+            f"Shorten the labels in the DataFrame before make_chart().\n"
+            f"Offenders ({len(shown_offenders)} of {n_offenders} shown, longest first):"
+            f"\n{offender_block}"
+            f"{suggestion_tail}"
+        ),
+        offending_labels=offenders,
+        category_field=category_field,
+        mapping=mapping,
+    )
 
 
 # Unit tokens (lower-cased) -> the unit FAMILY they belong to. Used by
@@ -4272,41 +3978,34 @@ def _collect_content_findings(
         except ValidationError as exc:
             findings.append(exc)
 
-    # ---- x-axis title ------------------------------------------------------
-    # Outside the ``bar_horizontal`` branch above (where x IS the value axis)
-    # nothing checked the x title, so an explicit ``x_title`` went straight
-    # to the renderer at any length. Validate the caller's kwarg wherever it
-    # appears; the derived title comes from a column name and is covered by
-    # the nominal / field-name gates.
-    if chart_type != "bar_horizontal" and mapping.get("x_title"):
+    # ---- bar category labels ---------------------------------------------
+    bar_would_flip = False
+    if (
+        chart_type == "contribution"
+        and isinstance(x_field, str)
+        and x_field in df.columns
+    ):
         try:
-            _validate_y_axis_label(
-                _dedup_axis_title(str(mapping["x_title"])), mapping, axis="x",
+            _validate_bar_category_labels(
+                [str(v) for v in df[x_field].unique()], x_field, mapping,
             )
         except ValidationError as exc:
             findings.append(exc)
-
-    # ---- nominal label caps (every family, one rule) ----------------------
-    for labels, field, surface in _nominal_label_surfaces(
-        df, chart_type, mapping,
-    ):
-        try:
-            _validate_nominal_labels(labels, field, mapping, surface)
-        except ValidationError as exc:
-            findings.append(exc)
-
-    bar_would_flip = False
-    if (
+    elif (
         chart_type == "bar"
         and isinstance(x_field, str)
         and x_field in df.columns
         and not pd.api.types.is_datetime64_any_dtype(df[x_field])
         and not pd.api.types.is_numeric_dtype(df[x_field])
     ):
+        raw_labels = [str(v) for v in df[x_field].unique()]
+        try:
+            _validate_bar_category_labels(raw_labels, x_field, mapping)
+        except ValidationError as exc:
+            findings.append(exc)
         # Mirror the builder's auto-flip predicate: when long-but-legal
         # labels reroute the chart to the horizontal builder, the grouped
         # path (and its cell budget) never runs.
-        raw_labels = [str(v) for v in df[x_field].unique()]
         avg_len = sum(len(l) for l in raw_labels) / max(len(raw_labels), 1)
         max_len = max((len(l) for l in raw_labels), default=0)
         n_bars = len(raw_labels)
@@ -4314,11 +4013,17 @@ def _collect_content_findings(
             (max_len > 20 or (avg_len > 12 and n_bars * 100 > width))
             and mapping.get("orientation") != "vertical"
         )
-
-    # ---- legend title ------------------------------------------------------
-    for channel in ("color", "size"):
+    elif (
+        chart_type == "bar_horizontal"
+        and isinstance(y_field, str)
+        and y_field in df.columns
+    ):
         try:
-            _validate_legend_title(mapping, channel, chart_type)
+            _validate_bar_category_labels(
+                [str(v) for v in df[y_field].unique()],
+                category_field=y_field,
+                mapping=mapping,
+            )
         except ValidationError as exc:
             findings.append(exc)
 
@@ -12269,14 +11974,7 @@ class AxisConfig:
     """Resolved axis configuration produced by ``get_axis_beautification``."""
 
     label_angle: int = 0
-    # No-limit by default, per the no-truncation policy. A plan that wants
-    # room-making has to rotate, thin or shrink -- clipping is not one of
-    # the moves available to it. See ``_NO_TRUNCATE_LABEL_LIMIT``.
-    label_limit: int = _NO_TRUNCATE_LABEL_LIMIT
-    # Post-ladder tick font. Set by the nominal-axis planner so the angle
-    # and the size that were decided together are also applied together;
-    # ``None`` leaves the skin's ``config.axis.labelFontSize`` alone.
-    label_font_size: Optional[int] = None
+    label_limit: int = 200
     tick_count: Optional[int] = None
     # When set, used as the temporal ``tickCount`` instead of an int.
     # Shape: ``{"interval": "month", "step": 6}``.
@@ -12778,38 +12476,16 @@ def _bar_category_label_shape(labels: Sequence[Any]) -> Tuple[int, int]:
     return max(max_line_chars, 1), max(max_lines, 1)
 
 
-def _bar_category_widest_label(
-    labels: Sequence[Any], reference_font_size: int,
-) -> str:
-    """The single label with the widest rendered line.
-
-    Picked once by real metrics rather than by ``len()``, because the two
-    disagree: at the skin's 18px axis font ``'GOOGL'`` renders wider than
-    ``'1,000,000'`` despite being four characters shorter. The ladder then
-    re-measures only this one label per candidate font size.
-    """
-    if not labels:
-        return ""
-    return max(
-        (str(label) for label in labels),
-        key=lambda text: _axis_text_width_px(text, reference_font_size),
-    )
-
-
 def _bar_category_pitch_needed(
-    widest_label: str,
+    max_line_chars: int,
     n_lines: int,
     label_angle: int,
     label_font_size: int,
 ) -> float:
-    """Horizontal room one category label occupies at ``label_angle``.
-
-    Only the horizontal rung spends the label's WIDTH; the rotated rungs
-    spend its glyph stack, so they are font-size-driven and text-agnostic.
-    """
+    """Horizontal room one category label occupies at ``label_angle``."""
     if label_angle == 0:
         return (
-            _axis_text_width_px(widest_label, label_font_size)
+            max_line_chars * _axis_label_px_per_char(label_font_size)
             + _BAR_CATEGORY_LABEL_GAP_PX
         )
     glyph_stack = n_lines * (label_font_size * 0.8 + 2.0)
@@ -12820,7 +12496,7 @@ def _bar_category_pitch_needed(
 
 def _bar_category_font_for_pitch(
     pitch_px: float,
-    widest_label: str,
+    max_line_chars: int,
     n_lines: int,
     label_angle: int,
     base_font_size: int,
@@ -12834,192 +12510,11 @@ def _bar_category_font_for_pitch(
         int(base_font_size), _BAR_CATEGORY_LABEL_FONT_MIN - 1, -1,
     ):
         need = _bar_category_pitch_needed(
-            widest_label, n_lines, label_angle, font_size,
+            max_line_chars, n_lines, label_angle, font_size,
         )
         if need <= pitch_px:
             return font_size
     return 0
-
-
-class _NominalAxisSurface(NamedTuple):
-    """Chart-family wording for the two nominal-label gates' failures.
-
-    Both gates are one piece of shared logic -- ``_validate_nominal_labels``
-    for length, ``_nominal_axis_label_plan`` for fit -- but the way OUT is
-    family-specific: a bar can flip to ``bar_horizontal``, a contribution
-    chart can widen its period, a boxplot can drop to fewer groups. The
-    remedy is the actionable half of the message, so it travels with the
-    caller rather than being flattened into generic advice.
-    """
-
-    family: str   # "VERTICAL BAR", "BOXPLOT", ...
-    unit: str     # "category", "group", "period", "tenor"
-    remedy: str   # family-specific ways out, as a sentence
-    # Exception the LENGTH gate raises. Bar keeps its own long-standing
-    # class; everything else shares ``NominalLabelTooLongError``.
-    error_cls: type = NominalLabelTooLongError
-
-
-_BAR_SURFACE = _NominalAxisSurface(
-    family="VERTICAL BAR",
-    unit="category",
-    remedy=(
-        "render this chart standalone rather than inside a composite cell, "
-        "or switch to bar_horizontal, which reads long category lists down "
-        "the page."
-    ),
-    error_cls=BarCategoryLabelTooLongError,
-)
-_BOXPLOT_SURFACE = _NominalAxisSurface(
-    family="BOXPLOT",
-    unit="group",
-    remedy=(
-        "show fewer groups, shorten the group names in the DataFrame, or "
-        "render this chart standalone rather than inside a composite cell."
-    ),
-)
-_CONTRIBUTION_SURFACE = _NominalAxisSurface(
-    family="CONTRIBUTION",
-    unit="period",
-    remedy=(
-        "aggregate to a coarser period (monthly -> quarterly -> annual), or "
-        "render this chart standalone rather than inside a composite cell."
-    ),
-)
-_WATERFALL_SURFACE = _NominalAxisSurface(
-    family="WATERFALL",
-    unit="step",
-    remedy=(
-        "combine the smallest steps into an 'Other' bucket, shorten the step "
-        "names, or render this chart standalone rather than inside a "
-        "composite cell."
-    ),
-)
-_PROFILE_SURFACE = _NominalAxisSurface(
-    family="PROFILE",
-    unit="tenor",
-    remedy=(
-        "shorten the tenor labels in the DataFrame, or render this chart "
-        "standalone rather than inside a composite cell."
-    ),
-)
-_BULLET_SURFACE = _NominalAxisSurface(
-    family="BULLET",
-    unit="row",
-    remedy=(
-        "show fewer rows, shorten the row names, or render this chart "
-        "standalone rather than inside a composite cell."
-    ),
-)
-# Donut slice names reach the eye through the colour legend rather than a
-# tick axis, so the fit half of this surface is the legend's pixel budget.
-# The length half is the same editorial cap as every other category name.
-_DONUT_SURFACE = _NominalAxisSurface(
-    family="DONUT",
-    unit="slice",
-    remedy=(
-        "combine the smallest slices into an 'Other' bucket, or shorten the "
-        "slice names in the DataFrame."
-    ),
-)
-# Facet-strip labels caption a panel each. They are the one nominal surface
-# with no axis under them, which is exactly why nothing was checking them.
-_FACET_SURFACE = _NominalAxisSurface(
-    family="FACET",
-    unit="panel",
-    remedy=(
-        "shorten the facet values in the DataFrame, or show fewer panels "
-        "with facet_cols."
-    ),
-)
-
-
-def _nominal_axis_label_plan(
-    labels: Sequence[Any],
-    pitch_px: float,
-    base_font_size: int,
-    *,
-    extent_px: int,
-    surface: _NominalAxisSurface,
-    grouped: bool = False,
-    skip_horizontal: bool = False,
-    allow_vertical: bool = True,
-) -> Tuple[int, int]:
-    """``(label_angle, label_font_size)`` that shows EVERY label on a nominal axis.
-
-    One ladder for every nominal label surface in the engine. Before this
-    existed, only the bar path measured: boxplot, waterfall, contribution,
-    profile and bullet each hard-coded an angle and a ``labelLimit``, which
-    means they never made a fit DECISION at all -- they asserted an angle
-    and let Vega clip whatever did not fit at 150 or 200px. On a 700px
-    canvas that is invisible; in a 280px composite cell it truncated
-    routinely, and the same chart truncated or not depending only on which
-    pack it was dropped into.
-
-    Args:
-        pitch_px: Horizontal room per label (extent / label count).
-        extent_px: Full axis extent, used only for the error's capacity math.
-        surface: Chart-family wording for the failure message.
-        grouped: Adds the stack=True hint (grouped bars only).
-        skip_horizontal: Drop the 0 deg rung and start the ladder at -45.
-        allow_vertical: Whether -90 is available. The profile family forbids
-            it by house rule, so its ladder ends at -45 and it thins tick
-            VALUES instead -- thinning which ticks are drawn keeps every
-            drawn label whole, which is a different thing from clipping.
-
-    Raises:
-        ValidationError: When the pitch cannot host even
-            ``_BAR_CATEGORY_LABEL_FONT_MIN`` text at the steepest angle
-            available. Dropping names to make the chart fit is not an
-            option the engine has.
-    """
-    if not labels:
-        return 0, int(base_font_size)
-
-    _, n_lines = _bar_category_label_shape(labels)
-    widest = _bar_category_widest_label(labels, int(base_font_size))
-    comfort = min(_BAR_CATEGORY_LABEL_FONT_COMFORT, base_font_size)
-    steepest = -90 if allow_vertical else -45
-    ladder = tuple(
-        angle for angle in _BAR_CATEGORY_ANGLE_LADDER
-        if not (skip_horizontal and angle == 0)
-        and abs(angle) <= abs(steepest)
-    )
-
-    for label_angle in ladder:
-        font_size = _bar_category_font_for_pitch(
-            pitch_px, widest, n_lines, label_angle, base_font_size,
-        )
-        if font_size >= comfort:
-            return label_angle, font_size
-
-    font_size = _bar_category_font_for_pitch(
-        pitch_px, widest, n_lines, steepest, base_font_size,
-    )
-    if font_size:
-        return steepest, font_size
-
-    floor_pitch = _bar_category_pitch_needed(
-        widest, n_lines, steepest, _BAR_CATEGORY_LABEL_FONT_MIN,
-    )
-    n_labels = len(labels)
-    fits = max(1, int(extent_px // floor_pitch))
-    grouped_hint = (
-        " Setting stack=True also frees the room grouped bars spend on "
-        "side-by-side bars and their inter-group gutters."
-        if grouped else ""
-    )
-    orientation = "rotated vertical" if allow_vertical else "rotated -45 deg"
-    raise ValidationError(
-        f"{surface.family} {surface.unit.upper()}-LABEL ERROR: {n_labels} "
-        f"{surface.unit}s in a {extent_px}px-wide canvas leaves "
-        f"{pitch_px:.1f}px per {surface.unit}, below the {floor_pitch:.1f}px "
-        f"a label needs {orientation} at the minimum "
-        f"{_BAR_CATEGORY_LABEL_FONT_MIN}px font. The engine will not drop "
-        f"{surface.unit} names to make the chart fit. Show at most {fits} "
-        f"{surface.unit}s (aggregate or take the top-N), "
-        f"{surface.remedy}{grouped_hint}"
-    )
 
 
 def _bar_category_axis_plan(
@@ -13053,14 +12548,46 @@ def _bar_category_axis_plan(
             ``_BAR_CATEGORY_LABEL_FONT_MIN`` vertical text. Dropping names
             to make the chart fit is not an option the engine has.
     """
-    return _nominal_axis_label_plan(
-        labels,
-        pitch_px,
-        base_font_size,
-        extent_px=extent_px,
-        surface=_BAR_SURFACE,
-        grouped=grouped,
-        skip_horizontal=skip_horizontal,
+    max_line_chars, n_lines = _bar_category_label_shape(labels)
+    comfort = min(_BAR_CATEGORY_LABEL_FONT_COMFORT, base_font_size)
+    ladder = tuple(
+        angle for angle in _BAR_CATEGORY_ANGLE_LADDER
+        if not (skip_horizontal and angle == 0)
+    )
+
+    for label_angle in ladder:
+        font_size = _bar_category_font_for_pitch(
+            pitch_px, max_line_chars, n_lines, label_angle, base_font_size,
+        )
+        if font_size >= comfort:
+            return label_angle, font_size
+
+    font_size = _bar_category_font_for_pitch(
+        pitch_px, max_line_chars, n_lines, -90, base_font_size,
+    )
+    if font_size:
+        return -90, font_size
+
+    floor_pitch = _bar_category_pitch_needed(
+        max_line_chars, n_lines, -90, _BAR_CATEGORY_LABEL_FONT_MIN,
+    )
+    n_categories = len(labels)
+    fits = max(1, int(extent_px // floor_pitch))
+    grouped_hint = (
+        " Setting stack=True also frees the room grouped bars spend on "
+        "side-by-side bars and their inter-group gutters."
+        if grouped else ""
+    )
+    raise ValidationError(
+        f"VERTICAL BAR CATEGORY-LABEL ERROR: {n_categories} categories in "
+        f"a {extent_px}px-wide canvas leaves {pitch_px:.1f}px per category, "
+        f"below the {floor_pitch:.1f}px a category label needs rotated "
+        f"vertical at the minimum {_BAR_CATEGORY_LABEL_FONT_MIN}px font. "
+        f"The engine will not drop category names to make the chart fit. "
+        f"Show at most {fits} categories (aggregate or take the top-N), "
+        f"render this chart standalone rather than inside a composite "
+        f"cell, or switch to bar_horizontal, which reads long category "
+        f"lists down the page.{grouped_hint}"
     )
 
 
@@ -14234,6 +13761,14 @@ def _smart_format_template(series_or_value: Any) -> str:
     return "{:" + spec + "}"
 
 
+def truncate_label(label: str, max_length: int = 20, suffix: str = "...") -> str:
+    """Truncate a label if it exceeds ``max_length``."""
+    label = str(label)
+    if len(label) <= max_length:
+        return label
+    return label[: max_length - len(suffix)] + suffix
+
+
 def _wrap_text_to_width(text: str, width_px: int, font_size: int) -> str:
     """Word-wrap a free-form text block to a target pixel width.
 
@@ -14583,25 +14118,12 @@ def get_axis_beautification(
         elif pd.api.types.is_numeric_dtype(x_data):
             configs["x"] = AxisConfig(label_angle=0)
         elif chart_type == "boxplot":
-            # ``_build_boxplot`` used to assert labelAngle=-45 here and pair
-            # it with labelLimit=200, which is not a fit decision -- it is an
-            # angle plus a clip. Measuring instead keeps -45 whenever -45
-            # works (the reason the assert existed: short strings like
-            # "EUR/USD" fool ``calculate_optimal_label_angle`` into 0 while
-            # nine of them collide on a 700px canvas) and escalates to -90 or
-            # a smaller font when it does not.
-            box_labels = [str(v) for v in x_data.unique()]
-            box_angle, box_font = _nominal_axis_label_plan(
-                box_labels,
-                pitch_px=chart_width / max(len(box_labels), 1),
-                base_font_size=_DEFAULT_AXIS_LABEL_FONT_SIZE,
-                extent_px=chart_width,
-                surface=_BOXPLOT_SURFACE,
-                skip_horizontal=True,
-            )
-            configs["x"] = AxisConfig(
-                label_angle=box_angle, label_font_size=box_font,
-            )
+            # ``_build_boxplot`` sets labelAngle=-45 on the nominal x axis.
+            # Without an explicit plan here, ``apply_beautification_to_spec``
+            # overwrites that with ``calculate_optimal_label_angle``, which
+            # often returns 0 for short tick strings (e.g. "EUR/USD") even
+            # when 9+ pairs collide horizontally on a 700px canvas.
+            configs["x"] = AxisConfig(label_angle=-45, label_limit=200)
         elif chart_type in {"multi_line", "timeseries", "line"}:
             # Profile / yield-curve / vol-smile path (non-temporal,
             # non-numeric x routes to ``_build_profile_line``). House
@@ -14612,26 +14134,9 @@ def get_axis_beautification(
             label_angle, tick_values = _profile_ordinal_axis_plan(
                 ordered_vals, chart_width,
             )
-            # ``_profile_ordinal_axis_plan`` decides the angle and WHICH
-            # ticks are drawn; it does not size the font. Drawn labels then
-            # have to survive at that size, and on a narrow cell they did
-            # not -- the old labelLimit=150 clipped them. Re-measure the
-            # surviving labels against their own pitch, with -90 forbidden
-            # (house rule for this family) so a too-tight axis shrinks the
-            # font rather than standing the tenors on end.
-            drawn = tick_values if tick_values is not None else ordered_vals
-            _, profile_font = _nominal_axis_label_plan(
-                [str(v) for v in drawn],
-                pitch_px=chart_width / max(len(drawn), 1),
-                base_font_size=_DEFAULT_AXIS_LABEL_FONT_SIZE,
-                extent_px=chart_width,
-                surface=_PROFILE_SURFACE,
-                skip_horizontal=(label_angle != 0),
-                allow_vertical=False,
-            )
             configs["x"] = AxisConfig(
                 label_angle=label_angle,
-                label_font_size=profile_font,
+                label_limit=150 if label_angle != 0 else 200,
                 tick_values=tick_values,
                 label_overlap="greedy",
             )
@@ -14641,35 +14146,10 @@ def get_axis_beautification(
             # (or coarser) ticks and keep every bar; a leftover rotate
             # here is what turned 262 quarter labels into a smear.
             plan = mapping["_contribution_axis_plan"]
-            plan_angle = int(plan.get("label_angle", 0))
-            # As with the profile path, the builder chose the angle and the
-            # tick subset but never a font, so the labels it kept were left
-            # to fit at the skin size or be clipped by labelLimit=200. A
-            # ``label_expr`` rewrites the tick text (e.g. quarter -> year),
-            # so the pre-expression values are not what renders and cannot
-            # be measured; that case keeps the skin font and relies on the
-            # expression having shortened the label, which is the whole
-            # reason the expression is there.
-            drawn = plan.get("tick_values")
-            contribution_font: Optional[int] = None
-            if not plan.get("label_expr"):
-                labels_for_fit = [
-                    str(v) for v in (
-                        drawn if drawn is not None else x_data.unique()
-                    )
-                ]
-                _, contribution_font = _nominal_axis_label_plan(
-                    labels_for_fit,
-                    pitch_px=chart_width / max(len(labels_for_fit), 1),
-                    base_font_size=_DEFAULT_AXIS_LABEL_FONT_SIZE,
-                    extent_px=chart_width,
-                    surface=_CONTRIBUTION_SURFACE,
-                    skip_horizontal=(plan_angle != 0),
-                )
             configs["x"] = AxisConfig(
-                label_angle=plan_angle,
-                label_font_size=contribution_font,
-                tick_values=drawn,
+                label_angle=int(plan.get("label_angle", 0)),
+                label_limit=200,
+                tick_values=plan.get("tick_values"),
                 label_expr=plan.get("label_expr"),
             )
         elif isinstance(mapping.get("_bar_category_axis_plan"), dict):
@@ -14681,13 +14161,10 @@ def get_axis_beautification(
             # branch used to hard-set -45 inside any composite panel, and
             # the grouped path's header thinner then deleted whichever
             # labels -45 could not seat.
-            bar_plan = mapping["_bar_category_axis_plan"]
+            plan_angle = int(mapping["_bar_category_axis_plan"]["label_angle"])
             configs["x"] = AxisConfig(
-                label_angle=int(bar_plan["label_angle"]),
-                # The builder measured the font alongside the angle; carrying
-                # only the angle here was how a plan that had already shrunk
-                # to fit got re-rendered at the skin's size.
-                label_font_size=bar_plan.get("label_font_size"),
+                label_angle=plan_angle,
+                label_limit=150 if plan_angle != 0 else 200,
             )
         else:
             unique_vals = list(x_data.unique())
@@ -14697,36 +14174,16 @@ def get_axis_beautification(
             # Without this, the helper assumes ``min(n, 10)`` ticks and
             # returns 0 (horizontal) for a chart with 35 short labels,
             # then beautification clobbers the builder's -90 with 0.
-            # Every remaining nominal x -- waterfall, bullet, and any chart
-            # type that reaches this fallback -- goes through the same
-            # measured ladder the bar path uses, rather than taking
-            # ``calculate_optimal_label_angle``'s answer and a clip. The
-            # helper is still consulted for the STARTING preference (it
-            # encodes the -45-at-a-facet-panel rule below), but whether that
-            # preference actually fits is now decided by measurement.
-            nominal_labels = [str(v) for v in unique_vals]
-            preferred = calculate_optimal_label_angle(
-                nominal_labels,
+            label_angle = calculate_optimal_label_angle(
+                [str(v) for v in unique_vals],
                 chart_width,
                 estimated_tick_count=len(unique_vals),
             )
             if mapping.get("_facet_panel"):
-                preferred = -45
-            label_angle, nominal_font = _nominal_axis_label_plan(
-                nominal_labels,
-                pitch_px=chart_width / max(len(nominal_labels), 1),
-                base_font_size=_DEFAULT_AXIS_LABEL_FONT_SIZE,
-                extent_px=chart_width,
-                surface=(
-                    _WATERFALL_SURFACE if chart_type == "waterfall"
-                    else _BULLET_SURFACE if chart_type == "bullet"
-                    else _BAR_SURFACE
-                ),
-                skip_horizontal=(preferred != 0),
-            )
+                label_angle = -45
             configs["x"] = AxisConfig(
                 label_angle=label_angle,
-                label_font_size=nominal_font,
+                label_limit=150 if label_angle != 0 else 200,
             )
 
     y_field = mapping.get("y") if isinstance(mapping.get("y"), str) else None
@@ -14866,13 +14323,8 @@ def apply_beautification_to_spec(
                 enc["x"]["axis"]["tickCount"] = ts
             elif x_config.tick_count:
                 enc["x"]["axis"]["tickCount"] = x_config.tick_count
-            # Emitted unconditionally, and 0 is the meaningful value. The
-            # old truthiness guard meant "no limit" was indistinguishable
-            # from "unset", and unset is not neutral: Vega then applies its
-            # own 180px axis default and clips. Silence truncates here.
-            enc["x"]["axis"]["labelLimit"] = x_config.label_limit
-            if x_config.label_font_size is not None:
-                enc["x"]["axis"]["labelFontSize"] = x_config.label_font_size
+            if x_config.label_limit:
+                enc["x"]["axis"]["labelLimit"] = x_config.label_limit
             enc["x"]["axis"]["labelFont"] = "GS Sans, Liberation Sans, Arial, sans-serif"
             # Explicit tick-label subset (profile / yield-curve thinning):
             # show ticks/labels only at these values so a dense ordinal
@@ -14963,11 +14415,6 @@ def apply_beautification_to_spec(
             #      title via Vega-Lite's shared-axis merge rules).
             if "axis" not in enc["y"]:
                 enc["y"]["axis"] = {}
-            # Same no-truncation guarantee as x. A y config is normally
-            # built only for a quantitative axis, where labels are short --
-            # but ``setdefault`` keeps a builder that already sized its own
-            # nominal y gutter (horizontal bar, heatmap rows) authoritative.
-            enc["y"]["axis"].setdefault("labelLimit", y_config.label_limit)
             axis_title = enc["y"]["axis"].get("title")
             shorthand_title = enc["y"].get("title")
             if axis_title is None and "title" in enc["y"]["axis"]:
@@ -15189,14 +14636,13 @@ BASE_CONFIG: Dict[str, Any] = {
     "axis_config": {
         "labelFontSize": 16,
         "titleFontSize": 18,
-        "labelLimit": _NO_TRUNCATE_LABEL_LIMIT,
+        "labelLimit": 200,
         "labelAngle": 0,
     },
     "legend_config": {
         "titleFontSize": 18,
         "labelFontSize": 16,
-        "labelLimit": _NO_TRUNCATE_LABEL_LIMIT,
-        "titleLimit": _NO_TRUNCATE_LABEL_LIMIT,
+        "labelLimit": 300,
         "orient": "right",
         "columns": 1,
         "rowPadding": 2,
@@ -15374,12 +14820,6 @@ def _build_skin(style: Dict[str, Any]) -> Dict[str, Any]:
                 # directly beneath a row of tick numbers for side-by-side
                 # comparison.
                 "titleFontSize": scale["axis_title"],
-                # The skin's floor for the no-truncation guarantee. This is
-                # the ONE setting that reaches an axis nothing else
-                # configured, and Vega's own default there is a 180px clip --
-                # so leaving it out is how a forgotten axis truncates in
-                # silence. Per-axis overrides still win; none of them clip.
-                "labelLimit": _NO_TRUNCATE_LABEL_LIMIT,
             },
             "legend": {
                 "labelFont": font,
@@ -15388,23 +14828,8 @@ def _build_skin(style: Dict[str, Any]) -> Dict[str, Any]:
                 "labelFontSize": scale["legend_label"],
                 "labelColor": ink,
                 "titleColor": ink,
-                # 800px was a generous clip, not the absence of one -- and a
-                # generous clip is still a clip. ``_validate_legend_labels``
-                # is what keeps a legend from eating the canvas now; it
-                # measures and raises rather than letting Vega ellipsize.
-                "labelLimit": _NO_TRUNCATE_LABEL_LIMIT,
-                # Legend titles carry the colour field name and clip at
-                # 180px by default, which a name like "Security Type"
-                # reaches on its own.
-                "titleLimit": _NO_TRUNCATE_LABEL_LIMIT,
+                "labelLimit": 800,
                 "rowPadding": 2,
-            },
-            # Facet-strip labels carry the category names on the grouped-bar
-            # and facet-grid paths, so they are a nominal label surface with
-            # the same contract as a tick label.
-            "header": {
-                "labelLimit": _NO_TRUNCATE_LABEL_LIMIT,
-                "titleLimit": _NO_TRUNCATE_LABEL_LIMIT,
             },
             "title": {
                 "font": font,
@@ -16474,83 +15899,30 @@ def _resolve_color_sort(
     return seen
 
 
-_LEGEND_MAX_WIDTH_FRAC: float = 0.40
-"""Share of canvas width a single legend label may occupy before the chart
-is refused (Phase 2 stress probe T5b finding F2). Without a bound, 35-50
-char series names like "United States Treasury 10-Year Constant Maturity
-Yield" make Vega-Lite reserve most of the canvas for the legend column and
-the plot region collapses.
-
-This is a VALIDATION threshold, not a render-time cap. It reaches the
-chart through ``_validate_legend_labels``, which measures each label and
-raises ``LegendLabelTooLongError``; it is never written to
-``legend.labelLimit``. The distinction is the whole point -- as a
-``labelLimit`` it bought plot area by ellipsizing series names, which
-trades a squashed chart for an unreadable one.
-
-0.40, not the 0.25 this was while it was a clip, and the two numbers mean
-different things. As a ``labelLimit`` 0.25 was where clipping STARTED, and
-the validator paired with it compared character COUNT against
-``0.25 * width / 7px`` -- 25 characters on a 700px canvas. Measured
-honestly at the 16px legend font, those 25 characters are ~275px, or 39%
-of the canvas: the character budget had been quietly admitting labels far
-past its own stated fraction, and every chart that renders acceptably
-today was admitted under it. Re-deriving the threshold in real pixels at
-0.25 would therefore have REJECTED charts that render fine -- donut and
-multi-series legends at 20-24 chars -- which is a worse regression than
-the truncation being fixed. 0.40 is the same acceptance envelope the
-engine has always had, stated in the unit that actually governs, and it is
-also the point past which the legend is wider than the plot it labels."""
+_LEGEND_MAX_WIDTH_FRAC: float = 0.25
+"""Cap legend ``labelLimit`` at 25%% of canvas width (Phase 2 stress
+probe T5b finding F2). Without this, 35-50 char series names like
+"United States Treasury 10-Year Constant Maturity Yield" cause
+Vega-Lite to reserve 40-50%% of canvas width for the legend column,
+squashing the plot region. Pair with ``_validate_legend_labels`` so
+overlong names raise ``LegendLabelTooLongError`` instead of silent
+ellipsis truncation."""
 
 _LEGEND_CHAR_WIDTH_PX: int = 7
-"""Fallback pixels-per-character for legend width, used only when no font
-metrics are available.
-
-This number used to be the budget itself, and it was the reason validated
-legends still truncated: 7px/char is roughly a 14px lowercase average, but
-the skin renders legend labels at 16-18px and series names are dense with
-capitals and digits. ``'US 10Y Treasury Yield'`` measures ~150px at the
-skin font against the ~103px this constant predicts, so a label the
-validator waved through arrived 45% over its own budget and Vega clipped
-it. ``_legend_label_width_px`` measures instead, and keeps this only for
-the no-TTF path."""
+"""Pixels per character assumed when deriving a char budget from
+``labelLimit`` (matches the ``labelLimit // 7`` wrap estimate elsewhere)."""
 
 _COMPOSITE_LEGEND_CELL_WIDTH_PX: int = 320
 """Cell widths at or below this threshold get composite-specific guidance
 in ``LegendLabelTooLongError`` (4-pack compact = 280px, 6-pack = 260px)."""
 
 
-_LEGEND_LABEL_FONT_SIZE_PX: int = 16
-"""Legend label font the width budget is measured against. Matches the
-skin's ``config.legend.labelFontSize``."""
-
-
-def _legend_budget_px(chart_width: int) -> float:
-    """Pixel width one legend label may occupy on a ``chart_width`` canvas."""
-    if chart_width <= 0:
-        return float("inf")
-    return float(chart_width) * _LEGEND_MAX_WIDTH_FRAC
-
-
-def _legend_label_width_px(label: Any) -> float:
-    """Rendered width of a legend label at the skin's legend font size."""
-    return _axis_text_width_px(label, _LEGEND_LABEL_FONT_SIZE_PX)
-
-
 def _legend_label_max_chars(chart_width: int) -> int:
-    """Advisory character budget for legend labels on this canvas.
-
-    Kept for the error message and for callers that want a round number to
-    quote, but it is no longer what the validator gates on -- characters
-    are not the unit that truncates. ``_validate_legend_labels`` measures
-    each label. Derived from the average character width at the legend
-    font rather than the old 7px guess, so the advice and the gate agree
-    to within a character or two.
-    """
+    """Maximum colour-legend label length before Vega-Lite ellipsizes."""
     if chart_width <= 0:
         return 999
-    per_char = _axis_label_px_per_char(_LEGEND_LABEL_FONT_SIZE_PX)
-    return max(1, int(_legend_budget_px(chart_width) // max(per_char, 1.0)))
+    legend_cap_px = int(chart_width * _LEGEND_MAX_WIDTH_FRAC)
+    return max(1, legend_cap_px // _LEGEND_CHAR_WIDTH_PX)
 
 
 def _color_legend_will_render(
@@ -16602,80 +15974,21 @@ def _validate_legend_labels(
     *,
     composite_cell: bool = False,
 ) -> None:
-    """Raise ``LegendLabelTooLongError`` when any legend label exceeds budget.
-
-    TWO gates, and they answer different questions:
-
-    * the editorial cap, ``_NOMINAL_LABEL_MAX_CHARS`` -- canvas-independent,
-      because a 32-character series name is unwieldy on any canvas. Checked
-      first: it is the cheaper fix and the one a caller can apply without
-      knowing how wide the chart will be.
-    * the measured pixel budget -- canvas-dependent, and the only one that
-      can protect a 280px composite cell, where 11 characters is already the
-      whole allowance.
-
-    The pixel half gates on measured width rather than character count
-    because the two disagree enough to matter: a name of capitals and digits
-    outruns a character budget calibrated on mixed-case text, which is how
-    labels that passed this check still arrived at the renderer over-width
-    and got clipped. The character half exists because that same divergence
-    runs the other way too -- 32 characters of lowercase prose measure
-    NARROWER than 24 of capitals, so the pixel budget alone waved through
-    exactly the sprawling legend entries the cap is meant to stop.
-    """
+    """Raise ``LegendLabelTooLongError`` when any legend label exceeds budget."""
     if color_field not in df.columns:
         return
     max_chars = _legend_label_max_chars(chart_width)
-    budget_px = _legend_budget_px(chart_width)
     labels = _legend_labels_for_validation(df, color_field, mapping, chart_width)
-    widths = {label: _legend_label_width_px(label) for label in set(labels)}
-
-    over_cap = sorted(
-        (label for label in widths
-         if _label_line_shape(label)[0] > _NOMINAL_LABEL_MAX_CHARS),
-        key=lambda s: -_label_line_shape(s)[0],
-    )
-    if over_cap:
-        shown = over_cap[:5]
-        block = "\n".join(
-            "  - '%s' (%d ch, %.0fpx)"
-            % (label, _label_line_shape(label)[0], widths[label])
-            for label in shown
-        )
-        hints = [(l, _suggest_label_abbreviations(l)) for l in shown[:3]]
-        hint_block = "\n".join(f"  '{l}' -> {h}" for l, h in hints if h)
-        raise LegendLabelTooLongError(
-            (
-                f"Colour-legend labels in field '{color_field}' exceed the "
-                f"{_NOMINAL_LABEL_MAX_CHARS}-character cap "
-                f"({len(over_cap)} offender(s), longest is "
-                f"{_label_line_shape(over_cap[0])[0]} ch). This is a LENGTH "
-                f"limit, not a fit limit -- a wider canvas will not admit "
-                f"them. Shorten the series names in the DataFrame before "
-                f"make_chart() / make_*pack_*().\n"
-                f"Offenders ({len(shown)} of {len(over_cap)} shown, longest "
-                f"first):\n{block}"
-                + (f"\nSuggested abbreviations:\n{hint_block}"
-                   if hint_block else "")
-            ),
-            offending_names=over_cap,
-            color_field=color_field,
-            mapping=mapping,
-            max_chars=_NOMINAL_LABEL_MAX_CHARS,
-            chart_width=chart_width,
-        )
-
     offenders = sorted(
-        (label for label, px in widths.items() if px > budget_px),
-        key=lambda s: -widths[s],
+        {label for label in labels if len(label) > max_chars},
+        key=lambda s: -len(s),
     )
     if not offenders:
         return
 
     shown = offenders[:5]
     offender_block = "\n".join(
-        f"  - '{label}' ({len(label)} ch, {widths[label]:.0f}px)"
-        for label in shown
+        f"  - '{label}' ({len(label)} ch)" for label in shown
     )
     composite_hint = (
         " Composite cells are narrow -- use super-short series names "
@@ -16687,15 +16000,12 @@ def _validate_legend_labels(
     raise LegendLabelTooLongError(
         (
             f"Colour-legend labels in field '{color_field}' exceed the "
-            f"{budget_px:.0f}px legend budget for a {chart_width}px-wide "
-            f"chart ({int(_LEGEND_MAX_WIDTH_FRAC * 100)}% of canvas, "
-            f"~{max_chars} characters at the {_LEGEND_LABEL_FONT_SIZE_PX}px "
-            f"legend font). {len(offenders)} offender(s), widest is "
-            f"{offenders[0]!r} at {widths[offenders[0]]:.0f}px. The engine "
-            f"will not ellipsize legend text to make it fit -- shorten "
-            f"names in the DataFrame before make_chart() / "
-            f"make_*pack_*().{composite_hint}\n"
-            f"Offenders ({len(shown)} of {len(offenders)} shown, widest first):\n"
+            f"{max_chars}-character budget for a {chart_width}px-wide "
+            f"chart ({len(offenders)} offender(s), longest is "
+            f"{max(offenders, key=len)!r}). Vega-Lite truncates legend "
+            f"text with an ellipsis -- shorten names in the DataFrame "
+            f"before make_chart() / make_*pack_*().{composite_hint}\n"
+            f"Offenders ({len(shown)} of {len(offenders)} shown, longest first):\n"
             f"{offender_block}"
         ),
         offending_names=offenders,
@@ -16703,46 +16013,6 @@ def _validate_legend_labels(
         mapping=mapping,
         max_chars=max_chars,
         chart_width=chart_width,
-    )
-
-
-def _validate_legend_title(
-    mapping: Dict[str, Any],
-    channel: str,
-    chart_type: str,
-) -> None:
-    """Raise when a legend title exceeds the axis-title character cap.
-
-    A legend title is the colour / size FIELD NAME, so it is the same
-    editorial object as an axis title and carries the same budget rather
-    than the shorter nominal-label one -- ``'Security Type'`` and
-    ``'Sector Contribution'`` are titles, not tick labels.
-
-    Nothing gated this before. Vega's 180px ``titleLimit`` default used to
-    clip it, which read as a working limit right up until the no-truncation
-    pass replaced that default with no-limit; the clip went away and no
-    length check took its place, so a 64-character field name rendered in
-    full and pushed the plot region over.
-    """
-    field = _get_field(mapping, channel)
-    if not isinstance(field, str) or not field:
-        return
-    title = _format_label(field, mapping, channel)
-    if not title or len(str(title)) <= _Y_AXIS_LABEL_MAX_CHARS:
-        return
-    title = str(title)
-    hint = _suggest_label_abbreviations(title, _Y_AXIS_LABEL_MAX_CHARS)
-    raise LegendTitleTooLongError(
-        (
-            f"{channel.upper()}-legend title '{title}' is {len(title)} "
-            f"characters (max {_Y_AXIS_LABEL_MAX_CHARS}). The legend title "
-            f"is the '{channel}' field name; rename the column or pass a "
-            f"shorter {channel}_title in mapping."
-            + (f" Try {hint}." if hint else "")
-        ),
-        title=title,
-        channel=channel,
-        mapping=mapping,
     )
 
 
@@ -16754,44 +16024,49 @@ def _calculate_legend_config(
 ) -> Dict[str, Any]:
     """Compute a legend kwargs dict that adapts to label length.
 
-    ``labelLimit`` / ``titleLimit`` are pinned to no-limit: this function
-    decides SPACING, never clipping. Long labels get a taller
-    ``clipHeight`` so their rows do not overlap, plus roomier
-    ``rowPadding``; short ones stay compact and drop ``clipHeight``
-    entirely (Altair rejects ``clipHeight=None``).
+    When labels are short, uses compact ``rowPadding=2`` and explicitly
+    omits ``clipHeight`` (Altair rejects ``clipHeight=None``). When
+    labels exceed the base ``labelLimit``, increases ``labelLimit`` and
+    adds dynamic ``clipHeight`` so wrapped lines don't overlap.
 
-    What used to live here was the inverse. A cap at
-    ``_LEGEND_MAX_WIDTH_FRAC`` of canvas width was applied to
-    ``labelLimit`` last, so it won on both branches, and its stated
-    purpose was to let Vega ellipsize long series names rather than let
-    the legend consume half the canvas. That is a real problem with the
-    wrong remedy: it bought plot area by silently deleting the end of a
-    name, on the one surface where the name IS the information -- an
-    ellipsized legend entry makes two series indistinguishable. The
-    budget still exists and is still 25% of canvas; it is now enforced by
-    ``_validate_legend_labels``, up-front, as an error PRISM can act on.
+    Class-8-style absorption (F2 from Phase 2 stress probe): when
+    ``chart_width`` is supplied, cap the resulting ``labelLimit`` at
+    ``_LEGEND_MAX_WIDTH_FRAC`` (25%%) of canvas width so very long
+    series names get ellipsis-truncated by Vega-Lite at render time
+    instead of consuming half the canvas. The cap is applied to the
+    final config returned (works on both the short-labels and
+    long-labels branches).
     """
     config = dict(base_config) if base_config else {}
-    config["labelLimit"] = _NO_TRUNCATE_LABEL_LIMIT
-    config["titleLimit"] = _NO_TRUNCATE_LABEL_LIMIT
     if color_field not in df.columns:
         return config
 
     unique_labels = df[color_field].unique()
-    max_label_px = max(
-        (_legend_label_width_px(label) for label in unique_labels), default=0.0,
+    max_label_len = (
+        max(len(str(label)) for label in unique_labels) if len(unique_labels) > 0 else 0
     )
+    chars_before_wrap = config.get("labelLimit", 300) // 7
 
-    # Rows only need extra height once a label is wide enough to be worth
-    # spacing out. Measured against the same budget the validator uses, so
-    # "wide" means the same thing in both places.
-    budget_px = _legend_budget_px(chart_width) if chart_width else float("inf")
-    if max_label_px > budget_px * 0.6:
-        config["clipHeight"] = 50 + int(max_label_px // max(budget_px, 1.0)) * 20
+    if max_label_len > chars_before_wrap:
+        config["labelLimit"] = 800
+        config["clipHeight"] = 50 + (max_label_len // max(chars_before_wrap, 1)) * 20
         config["rowPadding"] = 8
     else:
+        config["labelLimit"] = max(300, max_label_len * 8)
         config.pop("clipHeight", None)
         config["rowPadding"] = 2
+
+    # F2 cap (apply last so it wins on both branches).
+    if chart_width is not None and chart_width > 0:
+        legend_cap_px = int(chart_width * _LEGEND_MAX_WIDTH_FRAC)
+        if config.get("labelLimit", 0) > legend_cap_px:
+            logger.info(
+                "[_calculate_legend_config] F2 cap fired: labelLimit "
+                "%d -> %d (cap %.0f%% of %dpx canvas).",
+                config["labelLimit"], legend_cap_px,
+                _LEGEND_MAX_WIDTH_FRAC * 100, chart_width,
+            )
+            config["labelLimit"] = legend_cap_px
 
     return config
 
@@ -16937,6 +16212,63 @@ def _force_data_embedding(chart: alt.Chart, df: pd.DataFrame) -> alt.Chart:
         if pd.api.types.is_datetime64_any_dtype(df_export[col]):
             df_export[col] = df_export[col].dt.strftime("%Y-%m-%dT%H:%M:%S")
     return chart.properties(data=alt.Data(values=df_export.to_dict(orient="records")))
+
+
+def _shorten_legend_labels(
+    df: pd.DataFrame,
+    color_field: str,
+    max_chars: int = 25,
+) -> Tuple[pd.DataFrame, Dict[str, str]]:
+    """Shorten long legend labels while preserving meaning.
+
+    Vega-Lite doesn't support text wrapping in legends (it just
+    truncates with an ellipsis). When labels are longer than
+    ``max_chars`` this helper applies a series of intelligent
+    shortening rules:
+
+      1. Strip parenthetical suffixes (``"(YoY %)"``, ``"(Index)"``).
+      2. Replace common multi-word phrases with abbreviations
+         (``"Year-over-Year"`` -> ``"YoY"``, ``"Quarter-over-Quarter"``
+         -> ``"QoQ"``).
+      3. Truncate with ellipsis if still too long.
+
+    Returns:
+        Tuple of ``(modified_df, label_mapping)`` where ``label_mapping``
+        maps **short labels back to full labels** so the tooltip layer
+        can show the original on hover. The DataFrame's color column
+        is replaced in place with the shortened labels.
+    """
+    unique_labels = df[color_field].unique()
+    label_mapping: Dict[str, str] = {}
+
+    abbreviations = {
+        "Year-over-Year": "YoY",
+        "Quarter-over-Quarter": "QoQ",
+        "Month-over-Month": "MoM",
+        "Growth": "Gr",
+        "Index": "Idx",
+        "Percent": "%",
+    }
+
+    for label in unique_labels:
+        full = str(label)
+        if len(full) <= max_chars:
+            label_mapping[full] = full
+            continue
+
+        short = re.sub(r"\s*\(.+?\)$", "", full)  # Strip "(YoY %)"
+        for full_term, abbrev in abbreviations.items():
+            short = short.replace(full_term, abbrev)
+        if len(short) > max_chars:
+            short = short[: max_chars - 3] + "..."
+        label_mapping[short] = full
+
+    df_modified = df.copy()
+    reverse_mapping = {v: k for k, v in label_mapping.items()}
+    df_modified[color_field] = df_modified[color_field].map(
+        lambda x: reverse_mapping.get(str(x), str(x))
+    )
+    return df_modified, label_mapping
 
 
 def _get_y_axis(
@@ -17493,8 +16825,7 @@ def _build_timeseries(
             color_sort=color_sort,
             opacity_encoding=opacity_encoding,
             legend_kwargs={
-                "labelLimit": _NO_TRUNCATE_LABEL_LIMIT,
-                "titleLimit": _NO_TRUNCATE_LABEL_LIMIT,
+                "labelLimit": dynamic_legend_cfg.get("labelLimit", 300),
                 "rowPadding": dynamic_legend_cfg.get("rowPadding", 2),
                 "clipHeight": dynamic_legend_cfg.get("clipHeight"),
             },
@@ -18438,8 +17769,7 @@ def _build_profile_line(
             color_sort=color_sort,
             opacity_encoding=opacity_encoding,
             legend_kwargs={
-                "labelLimit": _NO_TRUNCATE_LABEL_LIMIT,
-                "titleLimit": _NO_TRUNCATE_LABEL_LIMIT,
+                "labelLimit": legend_cfg.get("labelLimit", 300),
                 "rowPadding": legend_cfg.get("rowPadding", 2),
                 "clipHeight": legend_cfg.get("clipHeight"),
             },
@@ -20135,22 +19465,21 @@ def _build_bar_horizontal(
     elif n_unique_y == 3:
         bar_size_override = min(100, max(50, height // 4))
 
+    # Compute a generous labelLimit that scales with the longest category
+    # label so long names like "Equity Derivatives Strategy" stay legible
+    # instead of being silently truncated. The skin's labelFontSize=18
+    # means we need ~12 px per character to avoid mid-word truncation.
     label_font_size = (
         skin_config.get("config", {})
         .get("axis", {})
         .get("labelFontSize", 14)
     )
-    # The row-label gutter is not capped. It used to be
-    # ``max(180, min(width * 0.45, longest * px_per_char + 16))``, whose
-    # generous-looking outer ``max`` hid the fact that the ``min`` was a
-    # clip: any name wider than 45% of the canvas -- routine in a composite
-    # cell, where 45% of 280px is 126px, about nine characters -- lost its
-    # tail to an ellipsis. Vega instead grows the left gutter to seat the
-    # widest name, and what bounds the growth is
-    # ``_validate_bar_category_labels``: it has already rejected anything
-    # over ``_BAR_CATEGORY_LABEL_MAX_CHARS``, so the gutter is bounded by a
-    # check PRISM can see and act on rather than by a silent clip.
-    y_label_limit = _NO_TRUNCATE_LABEL_LIMIT
+    px_per_char = max(7, int(label_font_size * 0.7))
+    longest_y_label = max((len(str(v)) for v in df[y_field].unique()), default=10)
+    y_label_limit = max(
+        180,
+        min(int(width * 0.45), longest_y_label * px_per_char + 16),
+    )
     h_y_label_font_size = _bar_horizontal_y_label_font_size(
         height, n_unique_y, label_font_size,
     )
@@ -20658,17 +19987,14 @@ def _heatmap_row_label_plan(
     px_per_char = _axis_label_px_per_char(font_px)
     max_chars = max(1, int((gutter_px - 8) / px_per_char))
     max_chars = min(max_chars, _HEATMAP_ROW_LABEL_MAX_CHARS)
-    # No ceiling. The previous value was
-    # ``max(16, min(gutter_px, longest_estimated_px * 1.18))`` -- a measured
-    # limit with a head-room margin bolted on, which is the shape of a fix
-    # applied twice to the same class of bug ("GOOGL" -> "GO..."). The
-    # margin existed because the estimate under-measures uppercase; the
-    # ``min`` re-introduced the clip whenever a label genuinely exceeded its
-    # gutter. Neither survives contact with a different font, and PRISM
-    # renders in GS Sans while this measures Liberation Sans. The row-label
-    # ladder above is what decides the geometry, ``_validate_heatmap_row_labels``
-    # is what refuses a chart whose labels do not fit, and this stays out of it.
-    return labels, max_chars, _NO_TRUNCATE_LABEL_LIMIT, font_px
+    # labelLimit must be >= the REAL rendered width of every label the
+    # validator already accepted, or Vega-Lite ellipsis-truncates (the
+    # "GOOGL"->"GO..." bug). Take the longest estimated width with an 18%
+    # head-room margin (covers the uppercase under-measure), clamped to the
+    # reserved gutter so the ceiling can never push past the label region.
+    longest_px = max(_axis_label_pixel_budget(s, font_px) for s in labels)
+    label_limit_px = max(16, min(int(gutter_px), int(longest_px * 1.18)))
+    return labels, max_chars, label_limit_px, font_px
 
 
 def _heatmap_row_labels_fit_horizontal(
@@ -20723,14 +20049,10 @@ def _heatmap_row_labels_fit_horizontal(
             f"the constraint here -- shortening labels does not add rows"
         )
 
-    # Real metrics, not the per-character ratio. This is the gate that
-    # decides whether a heatmap renders, and the ratio is a blended average
-    # that reads an all-caps ticker as narrower than it is -- exactly the
-    # population of row labels a heatmap carries.
     offending = [
         s for s in labels
         if len(s) > max_chars
-        or _axis_text_width_px(s, font_px) + 8 > gutter_px
+        or _axis_label_pixel_budget(s, font_px) > gutter_px
     ]
     if vertical_reason:
         return False, max_chars, offending or labels, vertical_reason
@@ -20817,7 +20139,7 @@ def _validate_heatmap_row_labels(
         )
 
     ctx = "make_*pack_*()" if composite_cell else "make_chart()"
-    abbrev_hint = _suggest_label_abbreviations(sample, max_chars)
+    abbrev_hint = _suggest_bar_label_abbreviations(sample, max_chars)
     hint_tail = (
         f" Try abbreviating {sample!r} -> {abbrev_hint}." if abbrev_hint else ""
     )
@@ -20952,21 +20274,21 @@ def _heatmap_column_label_plan(
     label_font_size: int,
     tick_values: Optional[List[Any]],
 ) -> Tuple[List[str], List[str], int]:
-    """Return (all_labels, visible_labels, label_limit_px).
-
-    ``label_limit_px`` is always no-limit -- the column ladder in
-    ``_heatmap_x_axis_plan`` already rotates and shrinks to fit, so a
-    ceiling here could only ever clip a label the ladder had accepted.
-    """
+    """Return (all_labels, visible_labels, label_limit_px)."""
     all_labels = [str(v) for v in ordered_vals]
     if not all_labels:
-        return [], [], _NO_TRUNCATE_LABEL_LIMIT
+        return [], [], 16
     visible = (
         [str(v) for v in tick_values]
         if tick_values is not None
         else all_labels
     )
-    return all_labels, visible, _NO_TRUNCATE_LABEL_LIMIT
+    budget_labels = visible or all_labels
+    longest_px = max(
+        _axis_label_pixel_budget(s, label_font_size) for s in budget_labels
+    )
+    label_limit_px = max(16, int(longest_px * 1.18))
+    return all_labels, visible, label_limit_px
 
 
 def _validate_heatmap_column_labels(
@@ -21019,7 +20341,7 @@ def _validate_heatmap_column_labels(
 
     sample = offenders[0]
     ctx = "make_*pack_*()" if composite_cell else "make_chart()"
-    abbrev_hint = _suggest_label_abbreviations(
+    abbrev_hint = _suggest_bar_label_abbreviations(
         sample, _HEATMAP_COLUMN_LABEL_MAX_CHARS,
     )
     hint_tail = (
@@ -21419,7 +20741,7 @@ def _build_heatmap(
 
     # Placeholder limits are never consumed on the failure path --
     # ``_raise_findings`` raises before the axis kwargs are built.
-    row_label_limit_px = _NO_TRUNCATE_LABEL_LIMIT
+    row_label_limit_px = 16
     try:
         row_label_limit_px, row_label_font_size = _validate_heatmap_row_labels(
             df,
@@ -21467,7 +20789,7 @@ def _build_heatmap(
         )
     except ValidationError as _exc:
         _label_findings.append(_exc)
-        column_label_limit_px = _NO_TRUNCATE_LABEL_LIMIT
+        column_label_limit_px = 16
 
     _raise_findings(_label_findings)
     y_label_angle = _heatmap_row_label_angle()
@@ -22038,8 +21360,7 @@ def _build_boxplot(
             sort=mapping.get("x_sort"),
             title=x_title,
             axis=alt.Axis(
-                titleFontWeight="normal", labelAngle=-45,
-                labelLimit=_NO_TRUNCATE_LABEL_LIMIT,
+                titleFontWeight="normal", labelAngle=-45, labelLimit=200,
             ),
         )
 
@@ -24858,13 +24179,12 @@ def _make_chart(
             histograms share x. Equivalent to setting share_x /
             share_y by hand for each chart_type but cheaper.
         edge_only_ticks: When ``mapping['facet']`` is set, suppress
-            y-tick labels on inner columns -- only the leftmost column
-            keeps them. X-tick labels always render on every panel;
-            this flag cannot hide them. Tick MARKS still render so
-            panel boundaries stay aligned across the grid. Default False.
+            tick labels on inner panels -- only the bottom row keeps
+            x-tick labels and only the leftmost column keeps y-tick
+            labels. Tick MARKS still render so panel boundaries stay
+            aligned across the grid. Default False.
         edge_only_axis_titles: Same as ``edge_only_ticks`` but for
-            axis titles (x titles still drop on non-bottom rows).
-            Default False.
+            axis titles. Default False.
 
     Returns:
         Public ``make_chart`` returns a successful ``ChartResult`` and raises
@@ -26787,23 +26107,16 @@ def _build_single_chart(
 
 
 def _isolate(chart: alt.Chart) -> alt.Chart:
-    """Apply per-panel resolve so Vega-Lite doesn't merge scales/legends/axes.
+    """Apply per-panel resolve so Vega-Lite doesn't merge scales/legends.
 
     ``resolve_*`` on an outer concat only governs its DIRECT children. When
     a composite nests ``hconcat`` rows inside a ``vconcat`` (4-pack /
     6-pack), each row would otherwise inherit shared color/x/y scales for
     its own children, which is what produces the merged "all series"
     legend and the squashed shared y-axis.
-
-    Scale independence is not enough for tick labels. Vega-Lite's default
-    ``resolve.axis`` is ``shared``, so a vconcat of same-window time
-    series hides x-axis labels on every row except the bottom. Packs
-    resolve axes independently so every subplot keeps its own chrome.
     """
     return chart.resolve_scale(
         color="independent", y="independent", x="independent",
-    ).resolve_axis(
-        x="independent", y="independent",
     ).resolve_legend(color="independent")
 
 
@@ -27384,7 +26697,6 @@ def _apply_text_panels_to_spec(
 
     wrapped["resolve"] = {
         "scale": {"color": "independent", "x": "independent", "y": "independent"},
-        "axis": {"x": "independent", "y": "independent"},
         "legend": {"color": "independent"},
     }
     if schema is not None:
@@ -27518,11 +26830,9 @@ def _compose_charts(
 ) -> alt.Chart:
     """Lay out built sub-charts according to ``layout``.
 
-    Composites always resolve color, x, and y scales -- and x/y axes --
-    independently so each sub-chart keeps its own palette, axis range,
-    and tick labels. Scale independence alone is not enough: Vega-Lite
-    still shares the axis guide when domains coincide, which hid x
-    labels on every pack row except the bottom.
+    Composites always resolve color, x, and y scales independently so
+    each sub-chart keeps its own palette and axis range -- otherwise
+    Vega-Lite shares scales across panels and crushes small-range series.
     Inner concat groups (rows of a grid) get their own ``resolve_*`` too;
     outer-level ``resolve_*`` does not propagate into inner concats.
     """
@@ -27813,10 +27123,8 @@ def _strip_axis_labels_from_spec(
 
     The tick MARKS still render (so panel boundaries stay aligned across
     the grid); only the label text is suppressed. Used to implement
-    ``edge_only_ticks=True`` for the y-axis: left-column panels keep
-    labels, inner columns pass through this helper. X-axis labels are
-    never stripped -- every grid panel keeps its own year / category
-    ticks even when the caller opts into compact chrome.
+    ``edge_only_ticks=True``: outer panels keep labels, inner panels
+    pass through this helper.
     """
     if not isinstance(spec, dict):
         return
@@ -28035,13 +27343,6 @@ def _compose_facet_grid(
     Returns a top-level Vega-Lite spec with ``vconcat`` of ``hconcat``
     rows. The caller is responsible for adding a top-level title /
     config / schema.
-
-    ``resolve.axis.x`` is independent at both concat levels. Vega-Lite's
-    default axis resolve is ``shared``, so a vconcat of same-window
-    series would otherwise print year labels on the bottom row only --
-    the production 4x4 pair-trade grid defect. Y-axis resolve stays at
-    Vega-Lite's default (shared when domains match); ``edge_only_ticks``
-    is the opt-in to hide inner-column y labels.
     """
     n = len(panel_specs)
     n_cells = rows * cols
@@ -28065,33 +27366,35 @@ def _compose_facet_grid(
             "width": blank_w, "height": blank_h,
         })
 
-    # Independent x-axis at every concat node. Scale independence alone
-    # does not keep tick labels: VL still shares the guide when domains
-    # coincide (the usual same-horizon grid).
-    _grid_resolve: Dict[str, Any] = {
-        "scale": {
-            "color": "independent",
-            "x": "independent",
-            "y": "independent",
-        },
-        "axis": {"x": "independent"},
-        "legend": {"color": "independent"},
-    }
-
     rows_specs: List[Dict[str, Any]] = []
     for r in range(rows):
         row_cells = cells[r * cols:(r + 1) * cols]
+        # Each row is an hconcat with independent scales/legends.
         row_spec = {
             "hconcat": row_cells,
             "spacing": spacing,
-            "resolve": dict(_grid_resolve),
+            "resolve": {
+                "scale": {
+                    "color": "independent",
+                    "x": "independent",
+                    "y": "independent",
+                },
+                "legend": {"color": "independent"},
+            },
         }
         rows_specs.append(row_spec)
 
     composed = {
         "vconcat": rows_specs,
         "spacing": spacing,
-        "resolve": dict(_grid_resolve),
+        "resolve": {
+            "scale": {
+                "color": "independent",
+                "x": "independent",
+                "y": "independent",
+            },
+            "legend": {"color": "independent"},
+        },
     }
     return composed
 
@@ -28235,21 +27538,6 @@ def _render_facet_grid(
             error_message=str(exc),
         )
     n_panels = len(panel_order)
-
-    # Facet-strip labels are a nominal label surface with no axis under
-    # them, which is why nothing was checking their length until the
-    # 2026-08-22 cap pass. The facet flow dispatches before
-    # ``_collect_content_findings`` runs and its per-panel mappings no
-    # longer carry ``facet``, so the surface has to be validated here.
-    try:
-        _validate_nominal_labels(
-            panel_order, facet_col, mapping, _FACET_SURFACE,
-        )
-    except ValidationError as exc:
-        return ChartResult(
-            chart_type=chart_type, skin=skin, success=False,
-            error_message=str(exc),
-        )
 
     if n_panels < _FACET_MIN_PANELS:
         # Name the one call that serves this exact count. The previous wording
@@ -28507,10 +27795,8 @@ def _render_facet_grid(
         is_left_col = (col_idx == 0)
 
         if edge_only_ticks:
-            # X-axis labels stay on every panel. Compact chrome is a
-            # y-axis choice -- repeating a year row under each subplot
-            # is the readable default, and hiding it was the production
-            # 4x4 pair-trade defect.
+            if not is_bottom_row:
+                _strip_axis_labels_from_spec(spec_dict, "x")
             if not is_left_col:
                 _strip_axis_labels_from_spec(spec_dict, "y")
 
