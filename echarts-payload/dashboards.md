@@ -7,6 +7,8 @@
 
 ECharts is the only sanctioned path for persistent PRISM dashboards, including analytical monitors and productivity/workflow workspaces. PRISM authors Python plus a JSON manifest and calls the public `dashboards` APIs. Do not hand-roll HTML/CSS/JS, use another dashboard framework, or use Altair composites as dashboards.
 
+Every dashboard is tabbed: `layout.kind` is `"tabs"` with an `Overview` tab, on the first build and every build after. Inherited grid layouts stay valid to edit; never author a new one.
+
 ## L2 registration
 
 This router is the sole context-registry entry for dashboard construction (`pillar: tools`, `order: 1`). `dashboards_hub.md` and the ten `dashboards/*.md` spokes are not registry entries; fetch them only through the short-path `list_ai_repo(..., mode="full")` routes below. The registry footer explicitly forbids retrieving `chart_context.md` while building dashboards.

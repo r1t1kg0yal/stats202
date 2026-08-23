@@ -99,6 +99,12 @@ would appear nearly flat and for severe level disparity. When a semantic
 and records the decision in `result.audit_trail`. Without that title, it raises
 and asks for explicit binding and both axis titles.
 
+Both gates only raise on a time axis, where colour separates different series
+and a flattened one has lost its shape. On a cross-section — a tenor, expiry,
+strike or rating axis — colour almost always separates snapshots of the same
+measurement, so flat curves at separated levels are the finding rather than a
+defect: the engine renders and notes the compression in `result.warnings`.
+
 Automatic recovery is not available inside a `ChartSpec` composite cell.
 Declare the binding and `y_title_right` inside that cell's `mapping`.
 

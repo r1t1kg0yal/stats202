@@ -91,7 +91,7 @@ manifest = {
 | `datasets.<name>.field_provenance` | Optional per-column lineage authored in the template and owned by [pipelines.md](dashboards/pipelines.md#field-provenance); never inferred from sidecars or `df.attrs` |
 | `datasets.<name>.description` | What the dataset is for; same contract as widget/filter `description` in [widgets.md](dashboards/widgets.md#description) |
 | `filters` / `links` | See [filters.md](dashboards/filters.md#filter-catalog) |
-| `layout` | Grid or tabs; every row is a list of widgets |
+| `layout` | Tabbed surface; every row is a list of widgets |
 
 The engine stamps data-domain, pull, build, and refresh-cycle timestamps. Do not author generated timestamps when the engine can derive them.
 
@@ -282,17 +282,14 @@ on the name rather than opening a retrieval path the audit cannot see.
 
 ## Layouts
 
-```python
-# Grid
-{"kind": "grid", "cols": 12, "rows": [[widget, widget], [widget]],
- "groups": [{"id": "regime", "title": "Regime",
-             "start_row": 0, "end_row": 1}]}
+Every authored layout is tabs. A first build opens with one `Overview` tab and earns further tabs as the product grows.
 
-# Tabs
+```python
 {"kind": "tabs", "cols": 12, "tabs": [
     {"id": "overview", "label": "Overview",
-     "description": "Headline view", "rows": [[widget, widget]],
-     "groups": []},
+     "description": "Headline view", "rows": [[widget, widget], [widget]],
+     "groups": [{"id": "regime", "title": "Regime",
+                 "start_row": 0, "end_row": 1}]},
 ]}
 ```
 
@@ -301,8 +298,10 @@ on the name rather than opening a retrieval path the audit cannot see.
 - Standard chart widgets are exactly two-up (`w=6`) or three-up (`w=4`) on a 12-column layout. Omitted chart width defaults to two-up. One decision-critical chart may set `hero: true, w: 12` and occupy its own row.
 - Non-chart widgets may span any legal width.
 - `data_grid` is full-width and virtualized. Named `groups` are non-overlapping inclusive row ranges with unique ids and required titles.
-- Use tabs when the information has distinct jobs; use a grid for one coherent scan path.
+- Open a new tab when information has a distinct job; keep one tab for a single coherent scan path.
 - Stable tab and widget ids are selectors, state keys, and relationship targets. Do not rename them casually.
+
+An inherited dashboard may carry `{"kind": "grid", "cols": 12, "rows": [...], "groups": [...]}`, with rows at the layout root and no tabs. That shape stays valid to read and to edit through widget operations; tab operations require a tabbed layout.
 
 ## Header actions
 

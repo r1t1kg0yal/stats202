@@ -382,9 +382,9 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `x_type` | Force ordinal for genuine categories such as tenors; on a datetime column the engine materialises house-style date labels on evenly spaced bands. Ordinal puts every date on the axis as a named category, so a long series can exceed the category-label budget and be refused — leave a date axis temporal unless the even band spacing is the point |
 | `x_timezone` | Intraday display clock; default `America/New_York` |
 | `legend` | Explicit legend override; normally leave automatic |
-| `trendline`, `trendlines` | Overall scatter fit / per-group fits |
+| `trendline`, `trendlines` | Overall scatter fit / per-group fits; needs a numeric or temporal `x`, refused on a category axis |
 | `size` | `scatter`: column name bound to the dot-size channel for a bubble scatter |
-| `connect`, `order` | Ordered scatter path; incompatible with trendline |
+| `connect`, `order` | Ordered scatter path; incompatible with trendline. `order` is required on a numeric or temporal `x` and inferred from the category order on an ordinal one |
 | `zero_fill`, `zero_fill_baseline` | Single-line above/below-baseline fill |
 | `stack` | `bar`/`area` with colour: stacked by default; `False` groups/layers |
 | `strokeDash`, `strokeDashScale`, `strokeDashLegend` | Single-axis line-style encoding |

@@ -226,7 +226,7 @@ Template rules:
 - A first build requires exact acknowledgment even when its `DashboardReview.status` is `CLEAR`. Always inspect the one-line-per-panel receipt, drill into every flagged panel with `review.panel(id)`, then call `publish_dashboard` with a real rationale (or the equivalent `acknowledge_dashboard_review` + `build_dashboard`).
 - `BLOCK` is unacknowledgeable (`publish_dashboard` refuses it). Repair the deterministic defect and review the new signature.
 - The first successful `build_dashboard` creates the baseline definition version; later successful builds create a version only when the template or either persisted script changed.
-- Default to tabs when the product has separable jobs or is likely to grow; stable ids make later edits surgical.
+- Author `layout.kind: "tabs"` on every first build, opening with a single `Overview` tab even when the product has one job today. Stable ids make later edits surgical, and a tabbed page grows through one `add_tab` instead of a rebuild.
 - Template dataset entries are slots, not embedded live rows.
 - Every displayed dataset follows the lineage placement owned by [pipelines.md](pipelines.md#field-provenance).
 - Set the same refresh-frequency token in metadata and the registry.

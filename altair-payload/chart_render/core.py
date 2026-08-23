@@ -5042,6 +5042,22 @@ def _validate_y_scale_homogeneity(
     smallest = flat_series[0][0]
     threshold_pct = int(_MIN_SERIES_VERTICAL_SHARE * 100)
 
+    if _x_axis_is_profile(df, mapping):
+        _note(mapping, (
+            f"Y-SCALE NOTE: {len(flat_series)} of {len(series_spans)} series "
+            f"span less than {threshold_pct}% of the y-axis ({flat_desc}). On "
+            f"a cross-section x this is usually a snapshot overlay -- the same "
+            f"curve at several observation dates -- where flat curves at "
+            f"separated levels IS the finding, so the chart renders. If these "
+            f"are different quantities rather than snapshots of one, the "
+            f"individual shapes will not be readable: switch to "
+            f"`make_2pack_horizontal(...)` or `mapping['facet']="
+            f"'{color_field}'`. Do NOT reach for `dual_axis_series` here -- it "
+            f"routes away from the profile builder and takes the "
+            f"evenly-spaced category axis with it."
+        ))
+        return
+
     raise ValidationError(
         f"Y-AXIS SCALE MISMATCH: {len(flat_series)} of {len(series_spans)} "
         f"series would compress below {threshold_pct}% of the visible "
@@ -5160,6 +5176,21 @@ def _validate_y_level_disparity(
 
     mean_lo = series_stats[name_lo][0]
     mean_hi = series_stats[name_hi][0]
+
+    if _x_axis_is_profile(df, mapping):
+        _note(mapping, (
+            f"Y-LEVEL NOTE: the series sit at separated levels (largest mean "
+            f"gap {max_gap:.4g} between '{name_lo}' and '{name_hi}' against a "
+            f"largest individual span of {largest_span:.4g}, ratio "
+            f"{ratio:.2f}x). On a cross-section x this is usually a snapshot "
+            f"overlay, where the level separation IS the finding, so the "
+            f"chart renders. If these are different quantities rather than "
+            f"snapshots of one, use `make_2pack_horizontal(...)` or "
+            f"`mapping['facet']='{color_field}'`. Do NOT reach for "
+            f"`dual_axis_series` here -- it routes away from the profile "
+            f"builder and takes the evenly-spaced category axis with it."
+        ))
+        return
 
     raise ValidationError(
         f"Y-AXIS LEVEL DISPARITY: {len(series_stats)} series each have "
@@ -5902,6 +5933,102 @@ def _profile_x_axis_type(df: pd.DataFrame, x_field: Optional[str]) -> str:
     if pd.api.types.is_numeric_dtype(series) and series.nunique() > 15:
         return "quantitative"
     return "ordinal"
+
+
+def _resolve_point_family_x_encoding(
+    df: pd.DataFrame,
+    x_field: str,
+    mapping: Dict[str, Any],
+) -> Tuple[str, Optional[List[Any]]]:
+    """``(x_axis_type, category_order)`` for the scatter / area builders.
+
+    The point / area counterpart to ``_profile_x_axis_type``, which is the
+    same authority for the line family. It returns an order alongside the
+    type because a categorical axis is meaningless without one: Vega-Lite
+    sorts a nominal domain alphabetically, so an unsorted tenor ladder
+    reads ``1m, 1w, 1y, 3m, 6m``.
+
+    Two rules, both of which these builders used to be missing:
+
+    1. ``mapping['x_type'] == 'ordinal'`` is honoured. The line, bar and
+       heatmap builders read that key, and three pre-dispatch coercion
+       helpers branch on it, so a caller who sets it has every reason to
+       expect it to mean something everywhere.
+    2. A column that is neither datetime nor numeric resolves to
+       ``ordinal``, never ``quantitative``. Declaring ``quantitative``
+       over ``"1w" / "3m" / "1y"`` makes Vega-Lite coerce every value to
+       null, and because the axes, legend, title and even the y domain
+       are all derived from metadata rather than from the marks, the
+       result is a fully furnished, correctly scaled, completely empty
+       plot region that reports success.
+
+    A datetime column always wins: ``x_type='ordinal'`` over real
+    timestamps is materialised into display labels before dispatch by
+    ``_materialize_ordinal_datetime_x``, so a column that is still
+    datetime here was never meant to be a band scale.
+    """
+    series = df[x_field]
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return "temporal", None
+    if mapping.get("x_type") == "ordinal":
+        return "ordinal", _resolve_profile_x_order(df, x_field, mapping)
+    if pd.api.types.is_numeric_dtype(series):
+        return "quantitative", None
+    return "ordinal", _resolve_profile_x_order(df, x_field, mapping)
+
+
+def _ordinal_x_axis(
+    df: pd.DataFrame,
+    x_field: str,
+    mapping: Dict[str, Any],
+    x_sort: Optional[List[Any]],
+    x_title: Optional[str],
+    width: int,
+) -> alt.X:
+    """A band-scale x encoding carrying the profile family's tick plan.
+
+    Shared by the scatter and area builders so a tenor ladder gets the
+    same never-vertical label ladder in all three families rather than
+    whatever Vega-Lite's default rotation happens to be.
+    """
+    label_angle, tick_values = _profile_ordinal_axis_plan(
+        x_sort if x_sort is not None
+        else _resolve_profile_x_order(df, x_field, mapping),
+        width,
+    )
+    axis_kwargs: Dict[str, Any] = dict(
+        title=x_title,
+        titleFontWeight="normal",
+        labelAngle=label_angle,
+        labelOverlap="greedy",
+        labelSeparation=8,
+    )
+    if tick_values is not None:
+        axis_kwargs["values"] = tick_values
+    return alt.X(
+        x_field,
+        type="ordinal",
+        sort=x_sort if x_sort is not None else alt.Undefined,
+        axis=alt.Axis(**axis_kwargs),
+    )
+
+
+def _x_axis_is_profile(df: pd.DataFrame, mapping: Dict[str, Any]) -> bool:
+    """True when x is a cross-section (tenor / strike / rating) not a timeline.
+
+    The distinction matters to the y-scale gates. On a timeline the colour
+    dimension separates DIFFERENT series, so a series compressed to a flat
+    rail has lost its shape and the chart has failed. On a cross-section
+    the colour dimension almost always separates SNAPSHOTS of one
+    measurement -- four dates of the same vol term structure -- where flat
+    curves at separated levels is the finding, not the defect.
+    """
+    if mapping.get("x_type") == "ordinal":
+        return True
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        return False
+    return not pd.api.types.is_datetime64_any_dtype(df[x_field])
 
 
 def _annotation_x_axis_type(
@@ -17982,6 +18109,189 @@ def _validate_spec_has_data(
             )
 
 
+# Positional channels only. A colour or size channel that coerces to null
+# degrades the chart; a positional one deletes it, because a mark with no
+# x or y has nowhere to be drawn.
+_ENCODING_AUDIT_CHANNELS: Tuple[str, ...] = ("x", "x2", "y", "y2")
+
+_SHORTHAND_TYPE_CODES: Dict[str, str] = {
+    "Q": "quantitative", "T": "temporal", "O": "ordinal", "N": "nominal",
+}
+
+
+def _encoding_audit_target(channel_def: Any) -> Tuple[Optional[str], Optional[str]]:
+    """``(field, declared_type)`` for one Altair channel, or ``(None, None)``.
+
+    Returns nothing for the channels this audit cannot reason about:
+    ``alt.value()`` / ``alt.datum()`` constants carry no field, and an
+    aggregate or timeUnit channel is computed by Vega-Lite from the raw
+    column rather than read straight off it.
+    """
+    if channel_def is None or channel_def is alt.Undefined:
+        return None, None
+    for attr in ("aggregate", "timeUnit", "bin"):
+        value = getattr(channel_def, attr, alt.Undefined)
+        if value is not alt.Undefined and value is not None and value is not False:
+            return None, None
+
+    field = getattr(channel_def, "field", alt.Undefined)
+    if field is alt.Undefined or field is None:
+        field = getattr(channel_def, "shorthand", alt.Undefined)
+    if not isinstance(field, str) or not field:
+        return None, None
+
+    declared = getattr(channel_def, "type", alt.Undefined)
+    if declared is alt.Undefined or declared is None:
+        declared = None
+    if ":" in field:
+        field, _, code = field.rpartition(":")
+        declared = declared or _SHORTHAND_TYPE_CODES.get(code.strip())
+    return (field or None), declared
+
+
+def _encoding_audit_source(node: Any) -> Any:
+    """The rows attached to one Altair node: a DataFrame, inline records, or None.
+
+    Both shapes occur on the same chart. Builders start from
+    ``alt.Chart(df)``, then ``_force_data_embedding`` re-attaches the same
+    rows as ``alt.Data(values=[...])`` so they survive the static-spec
+    round-trip -- so by the time a chart reaches the dispatch chokepoint
+    its data is usually records, not a frame.
+    """
+    data = getattr(node, "data", alt.Undefined)
+    if isinstance(data, pd.DataFrame):
+        return data
+    values = getattr(data, "values", None)
+    if isinstance(values, list) and values and isinstance(values[0], dict):
+        return values
+    return None
+
+
+def _encoding_audit_column(source: Any, field: str) -> Optional[pd.Series]:
+    """One named column out of either data shape, or ``None`` if absent.
+
+    Absent means transform-derived (``transform_regression``,
+    ``transform_calculate``), which this audit deliberately does not judge.
+    """
+    if isinstance(source, pd.DataFrame):
+        return source[field] if field in source.columns else None
+    if not source or field not in source[0]:
+        return None
+    return pd.Series([row.get(field) for row in source])
+
+
+def _iter_encoding_audit_targets(node: Any, inherited: Any) -> Any:
+    """Walk an Altair object tree yielding ``(source, channel, field, type)``.
+
+    Operates on the Altair objects rather than on ``to_dict()`` output so
+    it can run at the dispatch chokepoint -- before the spec exists, and
+    on every composite panel -- without paying to serialise the embedded
+    data twice.
+    """
+    source = _encoding_audit_source(node)
+    if source is None:
+        source = inherited
+
+    encoding = getattr(node, "encoding", alt.Undefined)
+    if source is not None and encoding is not alt.Undefined and encoding is not None:
+        for channel in _ENCODING_AUDIT_CHANNELS:
+            field, declared = _encoding_audit_target(
+                getattr(encoding, channel, alt.Undefined)
+            )
+            if field and declared in ("quantitative", "temporal"):
+                yield source, channel, field, declared
+
+    for attr in ("layer", "hconcat", "vconcat", "concat"):
+        children = getattr(node, attr, alt.Undefined)
+        if isinstance(children, (list, tuple)):
+            for child in children:
+                yield from _iter_encoding_audit_targets(child, source)
+    child = getattr(node, "spec", alt.Undefined)
+    if child is not alt.Undefined and child is not None:
+        yield from _iter_encoding_audit_targets(child, source)
+
+
+def _validate_encoding_types_render(chart: Any, context: str = "") -> None:
+    """Reject a chart that declares an encoding type its data cannot satisfy.
+
+    THE BLANK-CHART GATE. A positional channel typed ``quantitative`` over
+    a column of strings, or ``temporal`` over something ``pd.to_datetime``
+    cannot read, makes Vega-Lite coerce every value to null and draw
+    nothing. Everything else about the chart still renders -- title, axis
+    titles, legend, and a y domain computed in pandas from the real
+    values, so it is even correctly scaled -- which makes the result a
+    fully furnished empty plot region that reports ``success=True`` with
+    no warnings. Silence is the enemy (Principle #8c): this is the one
+    failure the caller cannot detect without looking at the PNG, and the
+    caller cannot see the PNG.
+
+    Deliberately a HARD failure while the heuristics in
+    ``_validate_spec_has_data`` stay soft. Those reason about whether data
+    propagated and vl-convert is forgiving about the edges; this one is a
+    proof. Zero of N values survive the coercion Vega-Lite is about to
+    apply, so zero marks will exist.
+
+    Runs at the ``_dispatch_builder`` chokepoint, which is what puts it in
+    front of composite panels as well as single charts -- a 4-pack cell
+    had no spec validation of any kind before this.
+
+    A field absent from the frame is skipped: it was produced by a
+    transform (``transform_regression``, ``transform_calculate``) and the
+    raw column is not what Vega-Lite will read.
+    """
+    seen: set = set()
+    for source, channel, field, declared in _iter_encoding_audit_targets(chart, None):
+        key = (id(source), channel, field, declared)
+        if key in seen:
+            continue
+        seen.add(key)
+        column = _encoding_audit_column(source, field)
+        if column is None:
+            continue
+
+        present = int(column.notna().sum())
+        if present == 0:
+            continue  # The all-null gates own the empty-column case.
+
+        if declared == "quantitative":
+            survivors = int(pd.to_numeric(column, errors="coerce").notna().sum())
+            reads_as = "a number"
+        else:
+            import warnings as _warnings
+
+            with _warnings.catch_warnings():
+                _warnings.simplefilter("ignore")
+                survivors = int(
+                    pd.to_datetime(column, errors="coerce").notna().sum()
+                )
+            reads_as = "a date"
+        if survivors > 0:
+            continue
+
+        samples = [repr(v) for v in column.dropna().unique()[:4]]
+        where = f" in {context}" if context else ""
+        remedy = (
+            "Either pass a genuinely numeric column, or ask for a "
+            "categorical axis with `mapping['x_type']='ordinal'` (the "
+            "engine derives the category order -- tenor ladders and "
+            "relative-time labels sort correctly without an explicit "
+            "`x_sort`)."
+            if channel.startswith("x") and declared == "quantitative"
+            else
+            "Convert the column to the declared type before charting, or "
+            "map a different column to this channel."
+        )
+        raise ValidationError(
+            f"BLANK CHART{where}: the {channel}-channel declares type "
+            f"'{declared}' for column {field!r}, but not one of its "
+            f"{present} values can be read as {reads_as} (dtype "
+            f"{column.dtype}, e.g. {', '.join(samples)}). Vega-Lite "
+            f"coerces every value to null, so the axes, legend and title "
+            f"render and NO MARK IS DRAWN -- an empty plot region that "
+            f"would otherwise report success. {remedy}"
+        )
+
+
 def _apply_heatmap_config(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Apply heatmap-specific configuration overrides.
 
@@ -19627,13 +19937,14 @@ def _build_scatter(
             f"only {len(valid_pairs)} overlap. Need >=2 points to plot."
         )
 
-    # ---- temporal x detection -------------------------------------------
-    x_is_temporal = pd.api.types.is_datetime64_any_dtype(df[x_field])
-    x_type = "temporal" if x_is_temporal else "quantitative"
-    if x_is_temporal:
-        logger.debug(
-            "[_build_scatter] temporal x-axis detected: %s", x_field,
-        )
+    # ---- x encoding type -------------------------------------------------
+    x_type, x_sort = _resolve_point_family_x_encoding(df, x_field, mapping)
+    x_is_temporal = x_type == "temporal"
+    x_is_ordinal = x_type == "ordinal"
+    logger.debug(
+        "[_build_scatter] x-axis %r -> %s (dtype=%s)",
+        x_field, x_type, df[x_field].dtype,
+    )
 
     # ---- outlier handling ('expand' explicit domain or 'truncate' IQR) --
     if outlier_handling == "truncate":
@@ -19724,12 +20035,29 @@ def _build_scatter(
             "Pick one: a time-ordered path (connect) or a linear regression "
             "(trendline)."
         )
+    if x_is_ordinal and mapping.get("trendline"):
+        raise ValidationError(
+            f"scatter mapping['trendline']=True needs a continuous x, but "
+            f"x={x_field!r} is a categorical axis ({df[x_field].dtype} values "
+            f"like {df[x_field].dropna().iloc[0]!r}). A regression has no "
+            f"slope to fit against evenly-spaced categories. Either map a "
+            f"numeric x (e.g. tenor in years rather than '2Y') or drop the "
+            f"trendline."
+        )
 
     order_field = (
         _resolve_scatter_order_field(mapping, df, color_field)
         if connect_path
         else None
     )
+    if connect_path and not order_field and x_is_ordinal and x_sort:
+        # On a band scale the category order IS the path order. Demanding a
+        # separate sequence column here would make the caller restate what
+        # the axis already says, and cost a retry to find that out.
+        rank = {value: position for position, value in enumerate(x_sort)}
+        df = df.copy()
+        df["_ordinal_path_order"] = df[x_field].map(rank)
+        order_field = "_ordinal_path_order"
     if connect_path and not order_field:
         raise ValidationError(
             "scatter mapping['connect']=True requires mapping['order'] "
@@ -19820,16 +20148,19 @@ def _build_scatter(
         mapping, opacity_field, df, base_opacity,
     )
 
-    x_enc = alt.X(
-        x_field,
-        type=x_type,
-        axis=alt.Axis(title=x_title, titleFontWeight="normal"),
-        scale=(
-            alt.Scale(domain=x_domain)
-            if x_domain is not None
-            else alt.Undefined
-        ),
-    )
+    if x_is_ordinal:
+        x_enc = _ordinal_x_axis(df, x_field, mapping, x_sort, x_title, width)
+    else:
+        x_enc = alt.X(
+            x_field,
+            type=x_type,
+            axis=alt.Axis(title=x_title, titleFontWeight="normal"),
+            scale=(
+                alt.Scale(domain=x_domain)
+                if x_domain is not None
+                else alt.Undefined
+            ),
+        )
     y_enc = alt.Y(
         y_field,
         type="quantitative",
@@ -19856,6 +20187,16 @@ def _build_scatter(
             order_enc = alt.Order(order_field, sort="ascending")
 
         connect_gradient = has_color and _is_gradient_color
+        if connect_gradient and x_is_ordinal:
+            raise ValidationError(
+                f"A gradient-coloured connected scatter draws its path as "
+                f"per-edge rules, which need a continuous x to span from one "
+                f"point to the next -- x={x_field!r} is a categorical axis. "
+                f"Either map a numeric x, or use a categorical "
+                f"mapping['color'] so the path renders as one line per "
+                f"series, or switch to chart_type='multi_line', which owns "
+                f"the ordinal-x profile shape."
+            )
         if connect_gradient:
             # mark_line + temporal/numeric color splits every row into its
             # own series (disconnected dots). Render one mark_rule per edge.
@@ -20114,8 +20455,16 @@ def _build_scatter_multi(
             base = _apply_extra_layers(base, df, layers, skin_config)
         return base
 
-    x_is_temporal = pd.api.types.is_datetime64_any_dtype(df[x_field])
-    x_type = "temporal" if x_is_temporal else "quantitative"
+    x_type, _x_sort = _resolve_point_family_x_encoding(df, x_field, mapping)
+    if x_type == "ordinal":
+        raise ValidationError(
+            f"scatter_multi mapping['trendlines']=True needs a continuous x, "
+            f"but x={x_field!r} is a categorical axis ({df[x_field].dtype} "
+            f"values like {df[x_field].dropna().iloc[0]!r}). A per-group "
+            f"regression has no slope to fit against evenly-spaced "
+            f"categories. Either map a numeric x (e.g. tenor in years rather "
+            f"than '2Y') or drop the trendlines."
+        )
 
     trend_layers: List[alt.Chart] = []
     skipped_groups: List[str] = []
@@ -21319,13 +21668,26 @@ def _build_area(
         raise ValidationError(f"y_field '{y_field}' has no valid values.")
 
     df = df.copy()
-    if not pd.api.types.is_datetime64_any_dtype(df[x_field]):
+    if (
+        mapping.get("x_type") != "ordinal"
+        and not pd.api.types.is_datetime64_any_dtype(df[x_field])
+    ):
         try:
-            df[x_field] = pd.to_datetime(df[x_field])
+            import warnings as _warnings
+
+            with _warnings.catch_warnings():
+                _warnings.simplefilter("ignore")
+                df[x_field] = pd.to_datetime(df[x_field])
         except Exception:  # noqa: BLE001 - leave as-is if non-temporal
             pass
 
-    x_title = None  # Time axis is self-evident on area charts.
+    x_type, x_sort = _resolve_point_family_x_encoding(df, x_field, mapping)
+    # A time axis is self-evident, so it stays untitled; a cross-section
+    # axis has to say what it is measuring.
+    x_title = (
+        None if x_type == "temporal"
+        else _format_label(x_field, mapping, "x")
+    )
     y_title = _format_label(y_field, mapping, "y")
     _validate_y_axis_label(y_title, mapping)
 
@@ -21337,11 +21699,19 @@ def _build_area(
         mark_config.get("opacity", 0.7),
     )
 
+    # ``stack=False`` overlays the series instead of summing them, the
+    # same key the bar family reads. It used to be dropped here, so a
+    # caller asking for four translucent overlaid curves got one additive
+    # stack whose top band sat at four times the real level -- a chart
+    # that is wrong rather than absent, and therefore harder to catch.
+    has_color = bool(color_field) and color_field in df.columns
+    stacked = has_color and mapping.get("stack", True) is not False
+
     # For stacked areas, set an explicit scale.domain that covers the
     # per-x stacked sum so the y-axis frame includes the full stack
     # (otherwise axis beautification injects a min/max from the raw
     # series values and only the topmost area is visible).
-    if color_field and color_field in df.columns:
+    if stacked:
         try:
             stack_sum = df.groupby(x_field)[y_field].sum()
             stacked_min = float(min(stack_sum.min(), 0.0))
@@ -21361,20 +21731,16 @@ def _build_area(
             clip=True,
         )
         .encode(
-            x=alt.X(
-                x_field,
-                type=(
-                    "temporal"
-                    if pd.api.types.is_datetime64_any_dtype(df[x_field])
-                    else "quantitative"
-                ),
-                axis=alt.Axis(title=x_title),
+            x=(
+                _ordinal_x_axis(df, x_field, mapping, x_sort, x_title, width)
+                if x_type == "ordinal"
+                else alt.X(x_field, type=x_type, axis=alt.Axis(title=x_title))
             ),
             y=alt.Y(
                 y_field,
                 type="quantitative",
                 axis=alt.Axis(title=y_title, titleFontWeight="normal"),
-                stack="zero" if color_field else None,
+                stack="zero" if stacked else None,
                 scale=stacked_scale,
             ),
             tooltip=_build_tooltip(mapping, "area", df),
@@ -21382,7 +21748,7 @@ def _build_area(
         .properties(width=width, height=height)
     )
 
-    if color_field and color_field in df.columns:
+    if has_color:
         chart = _encode_categorical_color_and_opacity(
             chart,
             mapping,
@@ -26452,6 +26818,7 @@ def _make_chart(
             chart_type, df, mapping, skin_config, width, height, layers,
             composite_cell=False,
         )
+        _validate_encoding_types_render(chart)
     except ValidationError as exc:
         return ChartResult(
             chart_type=chart_type, skin=skin, success=False,
@@ -27335,10 +27702,15 @@ def _build_single_chart(
             cell_tier1.append(ValidationError(str(exc)))
     _raise_findings(cell_tier1)
 
-    # Build.
+    # Build. The blank-chart gate runs per panel: a composite cell reaches
+    # no other spec validation, and the pack reports success for however
+    # many of its panels drew nothing.
     chart = _dispatch_builder(
         chart_type, df, mapping, skin_config, width, height, spec.layers,
         composite_cell=True,
+    )
+    _validate_encoding_types_render(
+        chart, context=f"panel {spec.title!r}" if spec.title else "this panel",
     )
 
     # Per-sub-chart title/subtitle. Length-validated + auto-wrapped so a
