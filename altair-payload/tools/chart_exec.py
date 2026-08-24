@@ -236,8 +236,7 @@ def _wrap_chart_func(func, recorder, session_path=None, user_id=None):
     return wrapper
 
 
-def format_chart_delivery_hint(chart_count: int, medium: str = "",
-                               linked: bool = False) -> str:
+def format_chart_delivery_hint(chart_count: int, medium: str = "") -> str:
     """One-line reminder of how to deliver charts on the active medium.
 
     Emitted whenever a run produced at least one chart PNG.
@@ -245,9 +244,6 @@ def format_chart_delivery_hint(chart_count: int, medium: str = "",
     Args:
         chart_count: Number of successfully-rendered chart PNGs in this run.
         medium: Raw medium_query value; normalized through the medium SSOT.
-        linked: True when the report already lists a short link for every chart,
-            so the hint points at those rather than asking for a mint that would
-            return the same deterministic slug.
 
     Returns:
         Markdown footer string, or '' when chart_count == 0.
@@ -260,10 +256,8 @@ def format_chart_delivery_hint(chart_count: int, medium: str = "",
         how = ("embed each chart by referencing its S3 path in the inline JSON "
                "image spec")
     elif channel in (COMPOSER, GSAI):
-        how = ("render each chart as `![title](link)` using the link listed beside its "
-               "path above" if linked else
-               "mint a link with `generate_download_links(<s3_path>)` and render "
-               "each as `![title](short_url)`")
+        how = ("render each chart as `![title](link)` using the link listed beside "
+               "its path above")
     else:
         how = "reference each chart by its S3 path"
     return (
@@ -476,9 +470,7 @@ def format_report(session_path: str, chart_paths: List[str], links: List[Dict[st
             out.append(f"{i}. {_describe_artifact(by_path.get(path, {}), path)}\n")
             short = short_by_path.get(path)
             out.append(f"   `{path}`" + (f" -> {short}\n" if short else "\n"))
-        out.append(format_chart_delivery_hint(
-            len(chart_paths), medium,
-            linked=len(short_by_path) == len(chart_paths)))
+        out.append(format_chart_delivery_hint(len(chart_paths), medium))
     else:
         out.append("No chart PNG was written by this run.\n")
     out.append(f"\n{DELIVERY_CLOSE}\n\n")
@@ -563,10 +555,13 @@ async def render_charts(session_path: str, chart_code: str,
         # is scoped to this invocation and dies with it, so holding the count past
         # the ceiling strands nothing.
         invocation.attempt = attempt
-        detail = (f'{CHART_ATTEMPT_CEILING} render_charts calls already '
-                  f'made for this session; nothing was executed')
         logger.warning(f"[chart_exec] session={resolved_path} refused: attempt "
                        f"{attempt} past the ceiling of {CHART_ATTEMPT_CEILING}")
+        detail = (f'{CHART_ATTEMPT_CEILING} render_charts calls already '
+                  f'made for this session; nothing was executed')
+        # Recorded even though nothing ran. The code a refused call carried is
+        # precisely what an audit of a runaway ladder wants to read, and a
+        # refusal is the one outcome that leaves no other trace at all.
         record_render_call(
             session_path=resolved_path, invocation_token=invocation.token,
             attempt=attempt, chart_code=chart_code, data_files=data_files,
@@ -630,6 +625,9 @@ async def render_charts(session_path: str, chart_code: str,
     else:
         invocation.attempt, invocation.findings = attempt, n_findings
 
+    # Every attempt, not only the ones that drew something: a retry overwrites
+    # the previous attempt's specs and PNGs, so without this the failures leave
+    # nothing behind but a hash in the thought trail.
     record_render_call(
         session_path=resolved_path, invocation_token=invocation.token,
         attempt=attempt, chart_code=chart_code, data_files=data_files,
