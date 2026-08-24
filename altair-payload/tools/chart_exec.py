@@ -36,7 +36,7 @@ from prism_mcp.utils.session_registry import resolve_or_create as _resolve_or_cr
 logger = logging.getLogger('chart_exec')
 
 # Rendering is CPU-bound and local; past this it is a runaway loop, not a slow chart.
-CHART_EXECUTION_TIMEOUT_SECONDS = 90
+CHART_EXECUTION_TIMEOUT_SECONDS = 180
 
 # The operating contract tells the sub-agent to stop at five calls and to stop when
 # the finding count stops falling. Both are prose, and a model is free to ignore

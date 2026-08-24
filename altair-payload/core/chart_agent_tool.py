@@ -35,7 +35,7 @@ CHART_AGENT_MODEL_KEY = "opus"
 #               route stops at "xhigh"; gemini publishes thought text only up to "high".
 # Charting is code-writing against a fixed API rather than open-ended reasoning, so this
 # is the first knob to turn down if chart latency is the complaint.
-CHART_AGENT_EFFORT = None
+CHART_AGENT_EFFORT = "low"
 
 # Hub first, then spokes. A literal list, not a registry read; none of these are
 # registered any more.
