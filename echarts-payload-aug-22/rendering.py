@@ -44,6 +44,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -66,7 +68,6 @@ from config import (
     HEATMAP_SIZE_MIN_FRAC, HEATMAP_SIZE_MAX_FRAC,
 )
 
-from chrome_render import find_chrome, render_via_chrome
 from dashboard_share import SHARE_CONTROLLER_JS
 from dashboard_user_input import USER_INPUT_CONTROLLER_JS
 
@@ -344,35 +345,6 @@ __APP__
 # JS app: apply functions + knob wiring + tabs + spec sheets
 # ---------------------------------------------------------------------------
 
-REVIVE_FNS_JS = r"""  function __evalJs(body) {
-    return new Function(body)();
-  }
-  // Revive string-encoded JS functions (renderItem, formatter, filter)
-  // into real functions. Python emits them as strings because JSON cannot
-  // carry code; ECharts needs real functions at setOption() time.
-  function _isFnStr(s) {
-    return typeof s === 'string' && /^\s*function\s*\(/.test(s);
-  }
-  function reviveFns(x) {
-    if (x == null) return x;
-    if (_isFnStr(x)) {
-      try { return __evalJs('return (' + x + ')'); }
-      catch(e) { return x; }
-    }
-    if (Array.isArray(x)) {
-      for (var i = 0; i < x.length; i++) x[i] = reviveFns(x[i]);
-      return x;
-    }
-    if (typeof x === 'object') {
-      for (var k in x) {
-        if (Object.prototype.hasOwnProperty.call(x, k)) {
-          x[k] = reviveFns(x[k]);
-        }
-      }
-    }
-    return x;
-  }"""
-
 APP_JS = r"""
 (function(){
   'use strict';
@@ -433,7 +405,30 @@ APP_JS = r"""
     };
   }
 
-  __REVIVE_FNS__
+  // Revive string-encoded JS functions into real functions before any
+  // setOption call. The editor uses this for every mutation + reset path.
+  function _isFnStr(s) {
+    return typeof s === 'string' && /^\s*function\s*\(/.test(s);
+  }
+  function reviveFns(x) {
+    if (x == null) return x;
+    if (_isFnStr(x)) {
+      try { return new Function('return (' + x + ')')(); }
+      catch(e) { return x; }
+    }
+    if (Array.isArray(x)) {
+      for (var i = 0; i < x.length; i++) x[i] = reviveFns(x[i]);
+      return x;
+    }
+    if (typeof x === 'object') {
+      for (var k in x) {
+        if (Object.prototype.hasOwnProperty.call(x, k)) {
+          x[k] = reviveFns(x[k]);
+        }
+      }
+    }
+    return x;
+  }
 
   var state = {
     originalOption: JSON.parse(JSON.stringify(PAYLOAD.option)),
@@ -1281,8 +1276,6 @@ APP_JS = r"""
   if (state.activeSheet && state.sheets[state.activeSheet]) applySheet(state.sheets[state.activeSheet]);
 })();
 """
-
-APP_JS = APP_JS.replace("__REVIVE_FNS__", REVIVE_FNS_JS)
 
 
 def _essential_names_map() -> Dict[str, bool]:
@@ -4811,7 +4804,31 @@ DASHBOARD_APP_JS = r"""
     };
   }
 
-  __REVIVE_FNS__
+  // Revive string-encoded JS functions (renderItem, formatter, filter)
+  // into real functions. Python emits them as strings because JSON cannot
+  // carry code; ECharts needs real functions at setOption() time.
+  function _isFnStr(s) {
+    return typeof s === 'string' && /^\s*function\s*\(/.test(s);
+  }
+  function reviveFns(x) {
+    if (x == null) return x;
+    if (_isFnStr(x)) {
+      try { return new Function('return (' + x + ')')(); }
+      catch(e) { return x; }
+    }
+    if (Array.isArray(x)) {
+      for (var i = 0; i < x.length; i++) x[i] = reviveFns(x[i]);
+      return x;
+    }
+    if (typeof x === 'object') {
+      for (var k in x) {
+        if (Object.prototype.hasOwnProperty.call(x, k)) {
+          x[k] = reviveFns(x[k]);
+        }
+      }
+    }
+    return x;
+  }
 
   // register themes so echarts can use them
   try {
@@ -15159,11 +15176,11 @@ __USER_INPUT_CONTROLLER__
     try {
       // The source string defines `function compute(inputs){...}`.
       // Wrap it so `compute` becomes the return value of the IIFE.
-      var fn = __evalJs(
+      var fn = new Function(
         '"use strict";\n' +
         source + '\n' +
         'return (typeof compute === "function") ? compute : null;'
-      );
+      )();
       TOOL_FN_CACHE[wid] = fn;
       return fn;
     } catch (e) {
@@ -17174,7 +17191,6 @@ function fitForceGraphView(inst){
 }
 """
 
-DASHBOARD_APP_JS = DASHBOARD_APP_JS.replace("__REVIVE_FNS__", REVIVE_FNS_JS)
 DASHBOARD_APP_JS = DASHBOARD_APP_JS.replace("__GRAPH_FIT__", GRAPH_FIT_JS)
 DASHBOARD_APP_JS = DASHBOARD_APP_JS.replace(
     "__SHARE_CONTROLLER__", SHARE_CONTROLLER_JS
@@ -19508,7 +19524,31 @@ html,body{{margin:0;padding:0;width:{width}px;height:{height}px;
 <script>
 {graph_fit_js}
 (function(){{
-  {revive_js}
+  // Revive string-encoded functions (renderItem, formatter, filter) into
+  // real JS functions. Python emits function bodies as strings because JSON
+  // cannot carry code; ECharts needs real functions at setOption() time.
+  function _isFnStr(s) {{
+    return typeof s === 'string' && /^\\s*function\\s*\\(/.test(s);
+  }}
+  function _reviveFns(x) {{
+    if (x == null) return x;
+    if (_isFnStr(x)) {{
+      try {{ return new Function('return (' + x + ')')(); }}
+      catch(e) {{ return x; }}
+    }}
+    if (Array.isArray(x)) {{
+      for (var i = 0; i < x.length; i++) x[i] = _reviveFns(x[i]);
+      return x;
+    }}
+    if (typeof x === 'object') {{
+      for (var k in x) {{
+        if (Object.prototype.hasOwnProperty.call(x, k)) {{
+          x[k] = _reviveFns(x[k]);
+        }}
+      }}
+    }}
+    return x;
+  }}
 
   var OPTION = {option_json};
   var THEMES = {themes_json};
@@ -19528,7 +19568,7 @@ html,body{{margin:0;padding:0;width:{width}px;height:{height}px;
     (Array.isArray(OPTION.series) ? OPTION.series : [OPTION.series])
       .forEach(function(s){{ s.animation = false; }});
   }}
-  OPTION = reviveFns(OPTION);
+  OPTION = _reviveFns(OPTION);
   inst.setOption(OPTION, true);
   fitForceGraphView(inst);
   inst.on('finished', function(){{ document.title = 'rendered'; }});
@@ -19537,6 +19577,36 @@ html,body{{margin:0;padding:0;width:{width}px;height:{height}px;
 </body>
 </html>
 """
+
+
+def find_chrome() -> str:
+    """Locate the Chrome/Chromium binary. Raises RuntimeError if not found.
+
+    Resolution order:
+      1. $CHROME_BIN env var (absolute path)
+      2. /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+      3. PATH lookup for google-chrome / chromium / chromium-browser / chrome
+    """
+    env = os.environ.get("CHROME_BIN")
+    if env:
+        p = Path(env).expanduser()
+        if p.is_file():
+            return str(p)
+        raise RuntimeError(
+            f"CHROME_BIN={env!r} is set but the file does not exist."
+        )
+    mac = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if Path(mac).is_file():
+        return mac
+    for candidate in ("google-chrome", "chromium", "chromium-browser",
+                       "chrome", "Chromium"):
+        path = shutil.which(candidate)
+        if path:
+            return path
+    raise RuntimeError(
+        "PNG export needs a Chrome/Chromium binary. Install Google Chrome "
+        "or set the CHROME_BIN environment variable to the binary path."
+    )
 
 
 def save_chart_png(
@@ -19608,7 +19678,6 @@ def save_chart_png(
         themes_json=json.dumps(themes_payload, default=str),
         theme_name_json=json.dumps(theme),
         graph_fit_js=GRAPH_FIT_JS,
-        revive_js=REVIVE_FNS_JS,
     )
 
     chrome = find_chrome()
@@ -19616,23 +19685,41 @@ def save_chart_png(
     try:
         harness = tmp / "chart.html"
         harness.write_text(html, encoding="utf-8")
-        return render_via_chrome(
+        cmd = [
             chrome,
-            harness,
-            output_path,
-            flags=(
-                "--no-sandbox",
-                "--hide-scrollbars",
-                "--mute-audio",
-                "--allow-file-access-from-files",
-            ),
-            width=width,
-            height=height,
-            scale=scale,
-            virtual_time_ms=virtual_time_ms,
-            timeout_s=timeout_s,
-            verbose=verbose,
-        )
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--hide-scrollbars",
+            "--mute-audio",
+            "--allow-file-access-from-files",
+            f"--window-size={int(width)},{int(height)}",
+            f"--force-device-scale-factor={int(scale)}",
+            f"--virtual-time-budget={int(virtual_time_ms)}",
+            "--run-all-compositor-stages-before-draw",
+            f"--screenshot={output_path}",
+            f"file://{harness}",
+        ]
+        if verbose:
+            print("  [png_export] " + " ".join(cmd))
+        res = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout_s)
+        if verbose:
+            if res.stdout:
+                print(res.stdout.strip())
+            if res.stderr:
+                print(res.stderr.strip(), file=sys.stderr)
+        if res.returncode != 0:
+            raise RuntimeError(
+                f"headless Chrome failed (exit {res.returncode}): "
+                f"{(res.stderr or res.stdout).strip()}"
+            )
+        if not output_path.is_file():
+            raise RuntimeError(
+                f"Chrome did not write PNG to {output_path}. stderr: "
+                f"{res.stderr.strip()}"
+            )
+        return output_path
     finally:
         try:
             for f in tmp.iterdir():
@@ -19976,18 +20063,39 @@ def save_dashboard_html_png(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     chrome = find_chrome()
-    return render_via_chrome(
+    cmd = [
         chrome,
-        html_path,
-        output_path,
-        flags=("--hide-scrollbars", "--no-sandbox"),
-        width=width,
-        height=height,
-        scale=scale,
-        virtual_time_ms=virtual_time_ms,
-        timeout_s=timeout_s,
-        verbose=verbose,
-    )
+        "--headless=new",
+        "--disable-gpu",
+        "--hide-scrollbars",
+        "--no-sandbox",
+        f"--window-size={int(width)},{int(height)}",
+        f"--force-device-scale-factor={int(scale)}",
+        f"--virtual-time-budget={int(virtual_time_ms)}",
+        "--run-all-compositor-stages-before-draw",
+        f"--screenshot={output_path}",
+        f"file://{html_path}",
+    ]
+    if verbose:
+        print("  [png_export] " + " ".join(cmd))
+    res = subprocess.run(cmd, capture_output=True, text=True,
+                          timeout=timeout_s)
+    if verbose:
+        if res.stdout:
+            print(res.stdout.strip())
+        if res.stderr:
+            print(res.stderr.strip(), file=sys.stderr)
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"headless Chrome failed (exit {res.returncode}): "
+            f"{(res.stderr or res.stdout).strip()}"
+        )
+    if not output_path.is_file():
+        raise RuntimeError(
+            f"Chrome did not write PNG to {output_path}. stderr: "
+            f"{res.stderr.strip()}"
+        )
+    return output_path
 
 
 # =============================================================================
