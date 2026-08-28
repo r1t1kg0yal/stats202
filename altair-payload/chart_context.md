@@ -131,8 +131,10 @@ epoch-stat columns; do not join items with `|`. `intent` is `explore`
 are otherwise engine-selected.
 
 Axis titles live only in `mapping`: `mapping['x_title']`,
-`mapping['y_title']`, `mapping['y_title_right']`. There is no top-level
-axis-title kwarg. Leave `interactive`, `auto_beautify`, `dimension_preset`, and
+`mapping['y_title']`, `mapping['y_title_right']`. Legend titles for the
+colour and size channels live there too: `mapping['color_title']`,
+`mapping['size_title']`. There is no top-level axis-title or legend-title
+kwarg. Leave `interactive`, `auto_beautify`, `dimension_preset`, and
 runtime-injected kwargs at their defaults unless an external artifact
 constraint explicitly requires otherwise.
 
@@ -172,8 +174,9 @@ placement or spelling hint. `dual_axis_config` is engine-managed; never pass
 it.
 
 Canonical names where a generic plotting prior suggests otherwise: `color`
-(the categorical field), `x_title` / `y_title` (axis titles), `value` (heatmap
-magnitude), `x_timezone` (display clock), `color_sort` (legend order).
+(the categorical field), `x_title` / `y_title` (axis titles), `color_title` /
+`size_title` (legend titles), `value` (heatmap magnitude), `x_timezone`
+(display clock), `color_sort` (legend order).
 
 Results are dataclasses; use dot notation.
 
@@ -287,7 +290,7 @@ number of categories — not to pick a bigger preset, and not to rename things.
 |---|---:|---|
 | Lines per `multi_line` / `timeseries` / `area` panel | 6 | Aim for ≤4; split, facet, or aggregate |
 | Axis title (`y_title`, `y_title_right`, `x_title`) | 28 characters, on either axis | Aim for concise metric + unit |
-| Legend title (the `color` / `size` field name) | 28 characters — same budget as an axis title, because it is the same kind of string | Rename the column, or pass a shorter `color_title` / `size_title` |
+| Legend title (`color_title`, `size_title`) | 28 characters — same budget as an axis title, because it is the same kind of string | Pass a shorter `color_title` / `size_title` |
 | Auto end-label series name | 32 characters — the cap when a line / area chart paints series names at the right edge instead of a colour legend | Rename categories before charting |
 | Any category label — `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile ordinals, `donut` slices, heatmap rows and columns, facet panel labels | 24 characters on the longest line, and at most 2 lines. One number for every nominal label, standalone or in a composite cell | Abbreviate in the DataFrame. The error quotes each offender with its length and suggests abbreviations where the name has an acronym or word boundary to exploit |
 | Heatmap row or column label | The same 24, and less on a narrow canvas — the gutter budget applies on top and the usable number is reported in the error | Abbreviate in the DataFrame. Only applies when the error names a specific string; a row-COUNT failure is §5.2 fit, not length |
@@ -346,6 +349,11 @@ become nanoseconds after 1970 and the axis renders as a clock.
 # Relationship
 {"x": "financial_conditions", "y": "growth", "trendline": True}
 
+# Bubble scatter: authored legend titles, same placement as axis titles
+{"x": "te", "y": "ret_vs_spx", "color": "beta_1y", "size": "ann_vol",
+ "x_title": "Ann. tracking error (%)", "y_title": "1Y return vs SPX (%)",
+ "color_title": "Beta 1Y", "size_title": "Annualised Vol"}
+
 # Line style by a nominal grouping column; legend is opt-in
 {"x": "date", "y": "value", "color": "pair",
  "strokeDash": "pair_tier", "strokeDashLegend": True}
@@ -378,12 +386,13 @@ become nanoseconds after 1970 and the axis renders as a clock.
 |---|---|
 | `x`, `y`, `color` | Primary fields; `y` may be a list for line/area auto-melt, or for `band` to join actuals and forecast into one path |
 | `x_title`, `y_title`, `y_title_right` | Semantic axis title, including unit |
+| `color_title`, `size_title` | Authored legend title for the colour / size channel, including unit. Same 28-character budget as an axis title. A size legend prints the column name unless `size_title` is set |
 | `x_sort`, `y_sort`, `color_sort`, `value_sort` | Explicit display order; use `color_sort` as the canonical legend/category order |
 | `x_type` | Force ordinal for genuine categories such as tenors; on a datetime column the engine materialises house-style date labels on evenly spaced bands. Ordinal puts every date on the axis as a named category, so a long series can exceed the category-label budget and be refused — leave a date axis temporal unless the even band spacing is the point |
 | `x_timezone` | Intraday display clock; default `America/New_York` |
 | `legend` | Explicit legend override; normally leave automatic |
 | `trendline`, `trendlines` | Overall scatter fit / per-group fits; needs a numeric or temporal `x`, refused on a category axis |
-| `size` | `scatter`: column name bound to the dot-size channel for a bubble scatter |
+| `size` | `scatter`: column name bound to the dot-size channel for a bubble scatter. Always pair it with `size_title` |
 | `connect`, `order` | Ordered scatter path; incompatible with trendline. `order` is required on a numeric or temporal `x` and inferred from the category order on an ordinal one |
 | `zero_fill`, `zero_fill_baseline` | Single-line above/below-baseline fill |
 | `stack` | `bar`/`area` with colour: stacked by default; `False` groups/layers |
@@ -413,6 +422,10 @@ become nanoseconds after 1970 and the axis renders as a clock.
 - `scatter` + `connect=True` creates an ordered phase path and needs `order`
   or temporal/numeric `color`. The engine picks the gradient from the column's
   own sign and range; read `chart_context_colors.md` §6 before overriding it.
+- `scatter` with `size` is a bubble chart. Pass `size_title` (and
+  `color_title` when `color` is quantitative) the same way you pass
+  `x_title` / `y_title`. The size legend prints the column name if
+  `size_title` is omitted.
 - `bar` / `bar_horizontal` are categorical comparisons. Mixed value units on
   one bar axis raise. Grouped bars (`stack=False`) do not render annotations.
 - `heatmap` accepts tidy long data, an unambiguous wide frame, or a meaningful
@@ -427,8 +440,11 @@ become nanoseconds after 1970 and the axis renders as a clock.
   decomposition every period. Pass tidy long data, one row per
   `(period, component)`. A datetime `x` is converted to house period labels
   automatically — do not pre-format it. Long windows thin the axis ticks to
-  year (or coarser) labels the way a date column does; every bar still draws.
-  The net line, the zero rule, and the
+  year (or coarser) labels the way a date column does. Do not pre-aggregate
+  a long window to dodge dense bars: when periods pack tighter than a bar
+  can read, the engine drops the net-line markers and then closes the bar
+  gutters so the stack is a field rather than a comb. The period grain is
+  unchanged. The net line, the zero rule, and the
   per-period value labels are engine-supplied; `net` only needs naming when
   the published total differs from the sum of the components. A named `net`
   column sits on the components' own axis — repeat the period's total on

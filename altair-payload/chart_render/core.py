@@ -583,7 +583,7 @@ def _raise_findings(findings: List[Exception]) -> None:
 _PUBLIC_CHART_MAPPING_KEYS: frozenset = frozenset({
     "bin_extent", "bins",
     "color", "color_by", "color_map", "color_range",
-    "color_scheme", "color_sort", "connect",
+    "color_scheme", "color_sort", "color_title", "connect",
     "dual_axis_bind", "dual_axis_legend_suffix",
     "dual_axis_legend_suffix_left", "dual_axis_legend_suffix_right",
     "dual_axis_legend_tags", "dual_axis_series",
@@ -591,7 +591,7 @@ _PUBLIC_CHART_MAPPING_KEYS: frozenset = frozenset({
     "label", "legend", "marker_size", "maxbins",
     "net", "net_label",
     "opacity", "opacity_map", "order", "orientation", "scale_type",
-    "size", "stack", "strokeDash", "strokeDashLegend",
+    "size", "size_title", "stack", "strokeDash", "strokeDashLegend",
     "strokeDashScale", "theta", "trendline", "trendlines",
     "type", "value", "value_sort",
     "x", "x_high", "x_low", "x_sort", "x_timezone", "x_title",
@@ -608,6 +608,7 @@ _ENGINE_ONLY_CHART_MAPPING_KEYS: frozenset = frozenset({
     "_chart_height_px",
     "_chart_width_px",
     "_contribution_axis_plan",
+    "_contribution_density_plan",
     "_contribution_period_axis",
     "_facet_panel",
     "_grad_color_bounds",
@@ -12903,12 +12904,17 @@ class AxisConfig:
     scale_type: str = "linear"  # 'linear', 'log', 'sqrt'
     # Explicit subset of axis values whose ticks/labels should render.
     # Used to thin a dense ordinal x-axis (profile / yield-curve charts)
-    # so labels stop colliding without dropping any of the plotted data.
+    # so labels stop colliding without dropping any of the plotted data,
+    # and to pin a quantitative axis to an engine-owned 1/2/5 cadence.
     tick_values: Optional[List[Any]] = None
     # When set, forces a Vega-Lite ``labelOverlap`` strategy even on
     # nominal / ordinal axes (which the renderer leaves un-thinned by
-    # default). ``'greedy'`` drops residual colliding labels.
-    label_overlap: Optional[str] = None
+    # default). ``'greedy'`` drops residual colliding labels. ``False``
+    # disables hiding -- required when the engine already chose a tick
+    # set that fits, because greedy then becomes the defect: it drops
+    # the wider minus-signed labels and zero while keeping a denser
+    # positive cadence.
+    label_overlap: Optional[Union[str, bool]] = None
 
 
 @dataclass
@@ -15326,12 +15332,207 @@ def calculate_tick_values(
     return ticks
 
 
+# Quantitative tick planning.
+#
+# Vega's default on a linear axis is "emit a dense nice set, then hide
+# whichever labels collide". ``labelOverlap='greedy'`` walks left to
+# right and drops any label that overlaps the last one it kept. Minus
+# signs make negatives wider, so the scan keeps a 0.2 cadence on the
+# positive side and a 0.4 cadence on the negative side, and zero --
+# sitting between two wide neighbours -- is the first casualty. The
+# ticks stay; only the labels vanish (opacity=0), so ChartResult is
+# silent. The house rule is the same one the gradient-legend ticker
+# already documents: coarsen the STEP, never drop a label. Zero is a
+# multiple of every 1/2/5 step, so a straddling domain keeps it.
+_QUANT_TICK_GAP_PX = 12.0
+_QUANT_TICK_MIN = 3
+_QUANT_TICK_MAX = {"horizontal": 10, "vertical": 8}
+_QUANT_TICK_SLACK = 0.88
+_QUANT_X_ENCODING_TYPES = frozenset({
+    "bar_horizontal", "scatter", "histogram",
+    "line", "multi_line", "area", "timeseries",
+})
+_QUANT_ZERO_CHART_TYPES = frozenset({
+    "bar", "bar_horizontal", "waterfall", "bullet", "contribution",
+})
+
+
+def _format_quant_tick_label(value: float, decimals: int) -> str:
+    """Print one quantitative tick the way Vega will, minus-sign included."""
+    if abs(value) < 10.0 ** (-(decimals + 2)):
+        value = 0.0
+    text = f"{value:,.{decimals}f}"
+    if text.startswith("-"):
+        return "\u2212" + text[1:]
+    return text
+
+
+def _quant_tick_format(ticks: Sequence[float]) -> str:
+    """d3-format that keeps every tick distinct and equally decimalled."""
+    decimals = _tick_decimals(ticks)
+    if decimals == 0:
+        return ",.0f"
+    return f",.{decimals}f"
+
+
+def _quant_bracket_ticks(lo: float, hi: float, step: float) -> List[float]:
+    """1/2/5 ticks that bracket ``[lo, hi]``, including both ends."""
+    floor_step = math.ulp(max(abs(lo), abs(hi), 1.0))
+    step = max(float(step), floor_step)
+    start = math.floor(lo / step) * step
+    end = math.ceil(hi / step) * step
+    n = int(round((end - start) / step)) + 1
+    ticks = [round(start + i * step, 10) for i in range(max(n, 0))]
+    if ticks and ticks[-1] < hi - step * 1e-9:
+        ticks.append(round(ticks[-1] + step, 10))
+    return ticks
+
+
+def _quant_ticks_fit(
+    labels: Sequence[str],
+    extent_px: float,
+    font_size: int,
+    orient: str,
+) -> bool:
+    """True when every label in ``labels`` fits ``extent_px`` at ``orient``."""
+    if not labels or extent_px <= 0:
+        return False
+    if orient == "vertical":
+        pitch = font_size * 1.25
+        return len(labels) * pitch <= extent_px
+    widest = _axis_labels_max_width_px(labels, font_size)
+    return len(labels) * (widest + _QUANT_TICK_GAP_PX) <= extent_px
+
+
+def plan_quantitative_ticks(
+    lo: float,
+    hi: float,
+    extent_px: float,
+    *,
+    font_size: int = _DEFAULT_AXIS_LABEL_FONT_SIZE,
+    orient: str = "horizontal",
+) -> Tuple[List[float], Optional[str]]:
+    """Nice 1/2/5 ticks that all fit. Coarsen the step; never drop a label.
+
+    ``orient`` is the axis direction the labels run along: ``horizontal``
+    for a quantitative x (width-constrained, minus signs cost pixels) and
+    ``vertical`` for a quantitative y (height-constrained). Returns
+    ``(ticks, d3_format)``. A collapsed or inverted range falls back to
+    the endpoints.
+    """
+    if not math.isfinite(lo) or not math.isfinite(hi):
+        return [], None
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi == lo:
+        pad = abs(lo) * 0.05 if lo != 0 else 1.0
+        lo, hi = lo - pad, hi + pad
+    budget_px = max(extent_px * _QUANT_TICK_SLACK, 1.0)
+    sample = [
+        _format_quant_tick_label(lo, 2),
+        _format_quant_tick_label(hi, 2),
+        _format_quant_tick_label(0.0, 2),
+    ]
+    if orient == "vertical":
+        cap = int(budget_px / max(font_size * 1.25, 1.0))
+    else:
+        widest = _axis_labels_max_width_px(sample, font_size)
+        cap = int(budget_px / max(widest + _QUANT_TICK_GAP_PX, 1.0))
+    cap = min(max(cap, _QUANT_TICK_MIN), _QUANT_TICK_MAX[orient])
+    chosen: List[float] = []
+    chosen_fmt: Optional[str] = None
+    max_ticks = _QUANT_TICK_MAX[orient]
+    for target in range(cap, _QUANT_TICK_MIN - 1, -1):
+        step = _nice_tick_step(hi - lo, max(target - 1, 1))
+        ticks = _quant_bracket_ticks(lo, hi, step)
+        if len(ticks) < 2 or len(ticks) > max_ticks:
+            continue
+        fmt = _quant_tick_format(ticks)
+        decimals = _tick_decimals(ticks)
+        labels = [_format_quant_tick_label(v, decimals) for v in ticks]
+        if _quant_ticks_fit(labels, budget_px, font_size, orient):
+            chosen, chosen_fmt = ticks, fmt
+            break
+    if not chosen:
+        step = _nice_tick_step(hi - lo, 2)
+        ticks = _quant_bracket_ticks(lo, hi, step)
+        while len(ticks) > max_ticks:
+            step *= 2
+            ticks = _quant_bracket_ticks(lo, hi, step)
+        if len(ticks) < 2:
+            ticks = [lo, hi]
+        chosen = ticks
+        chosen_fmt = _quant_tick_format(chosen)
+    return chosen, chosen_fmt
+
+
+def _quantitative_axis_extent(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+    axis: str,
+) -> Optional[Tuple[float, float]]:
+    """Visible numeric extent of ``axis``, including stacked totals and 0."""
+    field = mapping.get(axis) if isinstance(mapping.get(axis), str) else None
+    if not field or field not in df.columns:
+        return None
+    series = pd.to_numeric(df[field], errors="coerce").dropna()
+    if series.empty:
+        return None
+    color_field = mapping.get("color")
+    stack = mapping.get("stack", True)
+    other = "y" if axis == "x" else "x"
+    other_field = mapping.get(other) if isinstance(mapping.get(other), str) else None
+    if (
+        chart_type in {"bar", "bar_horizontal"}
+        and color_field
+        and stack
+        and isinstance(color_field, str)
+        and color_field in df.columns
+        and other_field
+        and other_field in df.columns
+    ):
+        totals = (
+            df.assign(_quant_v=series)
+            .groupby(other_field, dropna=False)["_quant_v"]
+            .sum()
+        )
+        lo, hi = float(totals.min()), float(totals.max())
+    else:
+        lo, hi = float(series.min()), float(series.max())
+    if chart_type in _QUANT_ZERO_CHART_TYPES:
+        if lo > 0:
+            lo = 0.0
+        if hi < 0:
+            hi = 0.0
+    if lo == hi:
+        pad = abs(lo) * 0.05 if lo != 0 else 1.0
+        return lo - pad, hi + pad
+    return lo, hi
+
+
+def _x_axis_is_quantitative_encoding(
+    chart_type: str, mapping: Dict[str, Any],
+) -> bool:
+    """True when x will render as a linear value axis, not named categories.
+
+    Integer year / tenor columns are numeric dtype but the bar / waterfall
+    builders encode them as nominal. Planning 1/2/5 ticks on those would
+    drop category names. Only the families whose x IS the measure -- or
+    a line/scatter whose x is a real number -- go through the planner.
+    """
+    if mapping.get("x_type") == "ordinal":
+        return False
+    return chart_type in _QUANT_X_ENCODING_TYPES
+
+
 def get_axis_beautification(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
     chart_type: str,
     chart_width: int = 600,
     chart_height: int = 400,
+    label_font_size: int = _DEFAULT_AXIS_LABEL_FONT_SIZE,
 ) -> Dict[str, AxisConfig]:
     """Return an ``{'x': AxisConfig, 'y': AxisConfig}`` plan for the chart.
 
@@ -15380,7 +15581,22 @@ def get_axis_beautification(
                 label_overlap="parity" if is_intraday else None,
             )
         elif pd.api.types.is_numeric_dtype(x_data):
-            configs["x"] = AxisConfig(label_angle=0)
+            x_cfg = AxisConfig(label_angle=0)
+            if (
+                _x_axis_is_quantitative_encoding(chart_type, mapping)
+                and mapping.get("scale_type") != "log"
+            ):
+                extent = _quantitative_axis_extent(df, mapping, chart_type, "x")
+                if extent is not None:
+                    ticks, fmt = plan_quantitative_ticks(
+                        extent[0], extent[1], chart_width,
+                        font_size=label_font_size, orient="horizontal",
+                    )
+                    if ticks:
+                        x_cfg.tick_values = ticks
+                        x_cfg.format = fmt
+                        x_cfg.label_overlap = False
+            configs["x"] = x_cfg
         elif chart_type == "boxplot":
             # ``_build_boxplot`` used to assert labelAngle=-45 here and pair
             # it with labelLimit=200, which is not a fit decision -- it is an
@@ -15544,9 +15760,18 @@ def get_axis_beautification(
         "bar", "bar_horizontal", "waterfall", "contribution", "band",
     }
 
-    if y_field and y_field in df.columns and not skip_y_domain:
+    if y_field and y_field in df.columns:
         y_data = df[y_field]
-        if pd.api.types.is_numeric_dtype(y_data):
+        y_is_numeric = pd.api.types.is_numeric_dtype(y_data)
+        y_is_quant_axis = (
+            y_is_numeric
+            and chart_type != "bar_horizontal"
+            and not mapping.get("dual_axis_series")
+        )
+        use_log = False
+        domain_min: Optional[float] = None
+        domain_max: Optional[float] = None
+        if y_is_quant_axis and not skip_y_domain:
             domain_min, domain_max = calculate_y_axis_domain(y_data)
 
             # An explicit ``mapping['scale_type']`` decides both directions.
@@ -15577,6 +15802,23 @@ def get_axis_beautification(
                 domain_max=domain_max,
                 scale_type="log" if use_log else "linear",
             )
+
+        if y_is_quant_axis and not use_log:
+            if domain_min is None or domain_max is None:
+                extent = _quantitative_axis_extent(df, mapping, chart_type, "y")
+            else:
+                extent = (domain_min, domain_max)
+            if extent is not None:
+                ticks, fmt = plan_quantitative_ticks(
+                    extent[0], extent[1], chart_height,
+                    font_size=label_font_size, orient="vertical",
+                )
+                if ticks:
+                    y_cfg = configs.get("y") or AxisConfig()
+                    y_cfg.tick_values = ticks
+                    y_cfg.format = fmt
+                    y_cfg.label_overlap = False
+                    configs["y"] = y_cfg
 
     return configs
 
@@ -15678,17 +15920,23 @@ def apply_beautification_to_spec(
             # axis stops colliding. The plotted line keeps every knot.
             if x_config.tick_values is not None:
                 enc["x"]["axis"]["values"] = x_config.tick_values
-            # Safety net: even when ``tick_step`` is honoured, a
-            # narrow composite sub-chart can still ask for too many
-            # ticks. ``labelOverlap='greedy'`` drops every other label
-            # until they fit; ``labelSeparation`` adds a minimum gap
-            # so neighbouring labels don't visually merge. Applied to
-            # temporal / quantitative axes by default, and to any axis
-            # whose config explicitly opts in via ``label_overlap``
-            # (the profile ordinal path does, since the house rule
-            # forbids the vertical fallback that would otherwise let
-            # every nominal label render intact).
-            if x_config.label_overlap:
+            # Safety net for axes the engine did not fully plan: a
+            # narrow composite can still ask for too many temporal
+            # ticks, and ``labelOverlap='greedy'`` drops colliding
+            # labels until they fit. Quantitative axes are different --
+            # the engine owns the 1/2/5 cadence, so greedy is the
+            # defect (asymmetric minus-sign thinning, missing zero).
+            # ``False`` and an engine-owned tick set both turn it off.
+            # Profile ordinals still opt in via ``label_overlap``
+            # because the house rule forbids the vertical fallback
+            # that would otherwise let every tenor render intact.
+            if x_config.label_overlap is False or (
+                x_config.tick_values is not None
+                and x_config.label_overlap is None
+                and enc["x"].get("type") == "quantitative"
+            ):
+                enc["x"]["axis"]["labelOverlap"] = False
+            elif x_config.label_overlap:
                 enc["x"]["axis"].setdefault("labelOverlap", x_config.label_overlap)
                 enc["x"]["axis"].setdefault("labelSeparation", 8)
             elif enc["x"].get("type") in ("temporal", "quantitative"):
@@ -15789,6 +16037,20 @@ def apply_beautification_to_spec(
                         enc["y"]["axis"]["title"] = wrap_label(
                             _dedup_axis_title(str(y_title)), words_per_line=3,
                         )
+                if y_config.format and "format" not in enc["y"]["axis"]:
+                    enc["y"]["axis"]["format"] = y_config.format
+                if y_config.tick_values is not None:
+                    enc["y"]["axis"]["values"] = y_config.tick_values
+                if y_config.label_overlap is False or (
+                    y_config.tick_values is not None
+                    and y_config.label_overlap is None
+                ):
+                    enc["y"]["axis"]["labelOverlap"] = False
+                elif y_config.label_overlap:
+                    enc["y"]["axis"].setdefault(
+                        "labelOverlap", y_config.label_overlap,
+                    )
+                    enc["y"]["axis"].setdefault("labelSeparation", 8)
 
     def walk(obj: Dict[str, Any], allow_title_fallback: bool) -> None:
         # Recurse into nested layer charts so beautification reaches every
@@ -17805,7 +18067,10 @@ def _build_tooltip(
             alt.Tooltip(
                 size_field, type="quantitative",
                 format=_smart_number_format(df[size_field]),
-                title=size_field.replace("_", " ").title(),
+                title=(
+                    mapping.get("size_title")
+                    or size_field.replace("_", " ").title()
+                ),
             )
         )
 
@@ -20624,7 +20889,12 @@ def _build_scatter(
             )
 
     if size_field and size_field in df.columns and not connect_path:
-        chart = chart.encode(size=alt.Size(size_field, type="quantitative"))
+        size_kwargs: Dict[str, Any] = {"type": "quantitative"}
+        if mapping.get("size_title"):
+            size_kwargs["legend"] = alt.Legend(
+                title=_format_label(size_field, mapping, "size"),
+            )
+        chart = chart.encode(size=alt.Size(size_field, **size_kwargs))
 
     if mapping.get("trendline") and not connect_path:
         trend = (
@@ -24425,6 +24695,38 @@ def _build_band(
 # readable and start being a texture; the line alone carries the shape.
 _CONTRIB_MAX_VALUE_LABELS = 14
 
+# Vega point size 45 is ~7.6px across. Dots start colliding with each
+# other and overflowing the bar once pitch drops below a comfortable
+# multiple of that. The line stays; only the knots drop.
+_CONTRIB_MARKER_MIN_PITCH_PX = 12.0
+
+# Below this, band-scale gutters (Vega default paddingInner=0.1) turn
+# the stack into a zipper. Close them so the stack reads as a solid
+# field. Grain is unchanged -- this is a mark change, not a resample.
+_CONTRIB_GAPLESS_MAX_PITCH_PX = 5.0
+
+
+def _contribution_density_plan(
+    n_periods: int,
+    width: int,
+) -> Dict[str, Any]:
+    """Pick contribution mark density from pixel pitch.
+
+    Short windows keep the published shape (gapped bars + net-line
+    knots). Once bars get thinner than a marker, the knots become a
+    bead texture and drop. Once bars get thinner than the gutter
+    between them, the gutters close so the baseline is a field
+    rather than a comb. The period grain does not change.
+    """
+    pitch = float(width) / max(int(n_periods), 1)
+    return {
+        "n_periods": int(n_periods),
+        "width": int(width),
+        "pitch_px": pitch,
+        "show_markers": pitch >= _CONTRIB_MARKER_MIN_PITCH_PX,
+        "gapless": pitch < _CONTRIB_GAPLESS_MAX_PITCH_PX,
+    }
+
 
 def _vega_label_lookup(label_map: Dict[str, str]) -> str:
     """Vega expr: look up ``datum.value`` in a string-to-string table."""
@@ -24454,12 +24756,15 @@ def _plan_contribution_axis(
     mapping: Dict[str, Any],
     width: int,
 ) -> Dict[str, Any]:
-    """Pick contribution x-axis ticks. Bars stay; only the labels thin.
+    """Pick contribution x-axis ticks. Labels thin; the period grain stays.
 
     Date-originated windows reuse ``determine_date_format`` so a 65-year
     quarterly stack gets the same year stride a timeseries would (1970,
     1980, ...). Named categories that were never dates keep every name,
-    or raise through the bar pitch gate when they cannot fit.
+    or raise through the bar pitch gate when they cannot fit. When the
+    bars themselves would zipper, ``_contribution_density_plan`` closes
+    gutters and drops net-line knots -- that is a mark change, not a
+    tick change.
     """
     labels = [str(v) for v in x_order]
     meta = mapping.get("_contribution_period_axis")
@@ -24559,9 +24864,11 @@ def _build_contribution(
     and any decomposition where the sign flips over time.
 
     Pipeline structure:
-      Layer 1 (bars): signed mark_bar with stack='zero'.
+      Layer 1 (bars): signed mark_bar with stack='zero'. Dense windows
+        close the band gutters so the stack is a field, not a comb.
       Layer 2 (zero rule): the baseline every signed stack is read against.
       Layer 3 (net line + points): the total the components sum to.
+        Points drop once they are wider than a bar.
       Layer 4 (labels): per-period net values + the total's name.
 
     Every layer encodes y as ``_contrib_y`` so Vega-Lite merges the axes
@@ -24636,17 +24943,38 @@ def _build_contribution(
 
     axis_plan = _plan_contribution_axis(x_order, mapping, width)
     mapping["_contribution_axis_plan"] = axis_plan
+    density = _contribution_density_plan(len(x_order), width)
+    mapping["_contribution_density_plan"] = density
+    if net_df is not None and not density["show_markers"]:
+        _note(mapping, (
+            f"Contribution net-line markers omitted: {density['n_periods']} "
+            f"periods span {density['width']}px "
+            f"({density['pitch_px']:.1f}px each); markers would overflow "
+            f"the bars. The line still draws."
+        ))
+    if density["gapless"]:
+        _note(mapping, (
+            f"Contribution bar gutters closed: {density['n_periods']} "
+            f"periods span {density['width']}px "
+            f"({density['pitch_px']:.1f}px each), which would zipper "
+            f"the baseline. Stack grain is unchanged."
+        ))
     x_axis_kwargs: Dict[str, Any] = dict(titleFontWeight="normal")
     x_axis_kwargs["labelAngle"] = int(axis_plan.get("label_angle") or 0)
     if axis_plan.get("tick_values") is not None:
         x_axis_kwargs["values"] = list(axis_plan["tick_values"])
     if axis_plan.get("label_expr"):
         x_axis_kwargs["labelExpr"] = axis_plan["label_expr"]
+    x_scale = (
+        alt.Scale(paddingInner=0, paddingOuter=0)
+        if density["gapless"] else alt.Undefined
+    )
 
     def _x(frame: pd.DataFrame, *, title: Optional[str]) -> alt.X:
         return alt.X(
             x_field, type="nominal", sort=x_order,
             axis=alt.Axis(title=title, **x_axis_kwargs),
+            scale=x_scale,
         )
 
     def _y(*, title: Optional[str], stack: Any = None) -> alt.Y:
@@ -24661,11 +24989,17 @@ def _build_contribution(
     )
 
     # ---- Layer 1: signed stacked bars ------------------------------------
+    # Hairline rounded tops read as a second bead texture on a dense
+    # stack, so corner radius dies with the knots.
+    bar_radius = (
+        0 if (density["gapless"] or not density["show_markers"])
+        else mark_config.get("cornerRadius", 0)
+    )
     bars = (
         alt.Chart(df)
         .mark_bar(
             opacity=bar_opacity,
-            cornerRadius=mark_config.get("cornerRadius", 0),
+            cornerRadius=bar_radius,
         )
         .encode(
             x=_x(df, title=x_title),
@@ -24705,12 +25039,13 @@ def _build_contribution(
             .encode(x=_x(net_df, title=None), y=_y(title=None))
             .properties(width=width, height=height)
         )
-        layers.append(
-            alt.Chart(net_df)
-            .mark_point(color=ink, filled=True, size=45, opacity=1.0)
-            .encode(x=_x(net_df, title=None), y=_y(title=None))
-            .properties(width=width, height=height)
-        )
+        if density["show_markers"]:
+            layers.append(
+                alt.Chart(net_df)
+                .mark_point(color=ink, filled=True, size=45, opacity=1.0)
+                .encode(x=_x(net_df, title=None), y=_y(title=None))
+                .properties(width=width, height=height)
+            )
 
         # The net line runs THROUGH the stack, so its labels land on top of
         # bars as often as on whitespace. Each one is drawn twice -- a fat
@@ -27276,8 +27611,16 @@ def _make_chart(
                         eff_mapping["x_title"] = mapping.get("y_title")
                         eff_mapping["y_title"] = mapping.get("x_title")
                         eff_chart_type = "bar_horizontal"
+            axis_font = _DEFAULT_AXIS_LABEL_FONT_SIZE
+            if dimensions and dimensions in TYPOGRAPHY_OVERRIDES:
+                axis_font = int(
+                    TYPOGRAPHY_OVERRIDES[dimensions].get(
+                        "axis_labelFontSize", axis_font,
+                    )
+                )
             axis_configs = get_axis_beautification(
-                df, eff_mapping, eff_chart_type, width, height
+                df, eff_mapping, eff_chart_type, width, height,
+                label_font_size=axis_font,
             )
             if axis_configs:
                 spec = apply_beautification_to_spec(spec, axis_configs)
@@ -28121,7 +28464,8 @@ def _build_single_chart(
                     eff_mapping_b["y_title"] = mapping.get("x_title")
                     eff_chart_type_b = "bar_horizontal"
         axis_configs = get_axis_beautification(
-            df, eff_mapping_b, eff_chart_type_b, width, height
+            df, eff_mapping_b, eff_chart_type_b, width, height,
+            label_font_size=_DEFAULT_AXIS_LABEL_FONT_SIZE,
         )
         if axis_configs:
             # ``force_x_label_angle`` (the temporal-consensus angle from

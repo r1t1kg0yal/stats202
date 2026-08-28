@@ -22,6 +22,10 @@ Build a scatter of MOVE vs VIX for the last 3 years with a regression trendline 
 
 ---
 
+Build a bubble scatter of tracking error vs 1Y relative return, colour = 1Y beta, size = annualised vol. Pass `color_title` and `size_title` as English legend titles (not the column names), the same way you pass `x_title` / `y_title`. Let me know if frictions.
+
+---
+
 Pull a Haver-coded series for US payrolls (`LANAGRA@USECON` or similar) and chart it with `mapping['y_title']='Payrolls (M)'` to verify the coded column gets a semantic rendered y-axis label. Let me know if frictions.
 
 ---

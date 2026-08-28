@@ -156,11 +156,13 @@ Overrides, when the user actually asks for one:
 Author either `color_range` or `color_scheme`, not both; `color_map` does not
 apply to a continuous encoding.
 
-The colour bar labels itself: the field name (or `color_title`) sits over it,
-and it is ticked at round values in the data's own unit — `-10 / 0 / 10 / 20`
-for percentage points, `0.02` steps for a decimal spread, calendar years or
-months for dates. Zero is always labelled on a ramp that crosses it. Nothing
-about the ticks is caller-settable, and nothing needs to be.
+The colour bar labels itself: pass `color_title` for the authored English
+title (same placement and 28-character budget as `x_title` / `size_title`).
+The bar is ticked at round values in the data's own unit — `-10 / 0 / 10
+/ 20` for percentage points, `0.02` steps for a decimal spread, calendar
+years or months for dates. Zero is always labelled on a ramp that
+crosses it. Nothing about the ticks is caller-settable, and nothing
+needs to be.
 
 ## 7. Chart-specific restrictions
 
