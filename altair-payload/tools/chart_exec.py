@@ -269,12 +269,15 @@ def format_chart_delivery_hint(chart_count: int, medium: str = "") -> str:
     """
     if chart_count <= 0:
         return ""
-    from core.configs.mediums import COMPOSER, EMAIL, GSAI, normalize_medium
+    # The GS AI entrypoint is retired. "gsai" survives only as an alias the
+    # medium SSOT folds into COMPOSER, so there is no second constant to branch
+    # on -- importing one is an ImportError at first call, not a dead branch.
+    from core.configs.mediums import COMPOSER, EMAIL, normalize_medium
     channel = normalize_medium(medium)
     if channel == EMAIL:
         how = ("embed each chart by referencing its S3 path in the inline JSON "
                "image spec")
-    elif channel in (COMPOSER, GSAI):
+    elif channel == COMPOSER:
         how = ("render each chart as `![title](link)` using the link listed beside "
                "its path above")
     else:
@@ -556,7 +559,7 @@ async def render_charts(session_path: str, chart_code: str,
         warnings, stdout and any traceback; it is for your retry loop and must
         not appear in your reply.
     """
-    from core.configs.mediums import COMPOSER, GSAI, normalize_medium
+    from core.configs.mediums import COMPOSER, normalize_medium
     from core.code_execution import _execute_sync
 
     baggage_info = _resolve_kerberos_info_from_baggage()
@@ -671,7 +674,7 @@ async def render_charts(session_path: str, chart_code: str,
         elapsed_s=time.perf_counter() - started, executed=not refusal)
 
     links = []
-    if recorder.chart_paths and normalize_medium(medium) in (COMPOSER, GSAI):
+    if recorder.chart_paths and normalize_medium(medium) == COMPOSER:
         links = generate_download_links_for_sandbox(recorder.chart_paths)
 
     logger.info(
