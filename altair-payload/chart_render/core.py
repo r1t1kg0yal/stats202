@@ -80,6 +80,7 @@ from typing import (
 # Third-party
 # ---------------------------------------------------------------------------
 import altair as alt
+import jsonschema.validators
 import numpy as np
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
@@ -94,6 +95,24 @@ from PIL import Image, ImageDraw, ImageFont
 from prism_mcp.chart_render.units import guess_units_from_name
 from prism_mcp.chart_render import house_style as _house
 from prism_mcp.chart_render.house_style import GS_PRIMARY
+
+_SUBSCHEMA_INDEXES: Dict[int, tuple] = {}
+
+
+def _share_jsonschema_subschema_index() -> None:
+    build = jsonschema.validators._RefResolver._get_subschemas_cache.__wrapped__
+
+    def _shared(self):
+        entry = _SUBSCHEMA_INDEXES.get(id(self.referrer))
+        if entry is None:
+            # the referrer is held so id() cannot be reused by another dict
+            entry = _SUBSCHEMA_INDEXES[id(self.referrer)] = (self.referrer, build(self))
+        return entry[1]
+
+    jsonschema.validators._RefResolver._get_subschemas_cache = _shared
+
+
+_share_jsonschema_subschema_index()
 
 # ---------------------------------------------------------------------------
 # Module logger
