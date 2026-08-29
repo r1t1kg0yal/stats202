@@ -170,6 +170,15 @@ PRISM right now.
 │                                       `bbg_*.md`); PRISM target      │
 │                                       `context/modules/static/bloomberg/` │
 │                                       · awaits first round-trip      │
+│  harness      ████░░░░░░░░░░░░░░░░  research corpus, not a payload  │
+│                                     yet. YouTube pipeline built:    │
+│                                     enumerate/enrich/score/fetch,   │
+│                                     cached + resumable. 1073 AI     │
+│                                     Engineer talks enumerated and   │
+│                                     scored on a 10-theme rubric;    │
+│                                     transcripts carry [mm:ss]       │
+│                                     anchors. Synthesis per theme    │
+│                                     into harness-payload/ is next.  │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -181,6 +190,7 @@ PRISM right now.
 | apis | 9 PRISM-shape clients (treasury / treasury_direct / bis migrated; statcan / bank_of_canada / wid / ai_buildout / ilo / imf net-new), rule codified, Session 8 in flight + net-new sources through 2026-06-14 (imf) | `projects/apis/` | `projects/apis/apis-payload/clients/*.py` + `apis-payload/modules/*.md` | `core/mcp/clients/*_client.py` (prism-main parent tree; transport at `core/mcp/gs_app_proxy_negotiate.py` — verified 2026-07-07) + `prism-core/context/modules/static/{data_guides,instruments,tools}/*.md` (guide paths not yet re-verified post-reorg) | `.cursor/rules/api-clients.mdc` | `gs-proxy.md`, `api-clients.md`, `data-functions.md` §0 | `projects/apis/dev/endeavors/apis_endeavor.md` (8-session plan) |
 | frontend | MVP RUNNING + FULL REFACTOR + UI UPLIFT IN FLIGHT | `projects/frontend/` | `projects/frontend/frontend-payload/ai_development/` | `ai_development/mysite/` + `ai_development/mysite/news/static/css/{tokens,fonts,base}.css` + settings.py PATCH (STATICFILES_DIRS) + URL-grammar unification (10 legacy URLs 301 to canonical) + filesystem reads from `ai_development/context/white_papers/` (was S3 `secondary/technical_docs/`) + frontmatter-driven `_doc_registry()` pipeline in views.py + enriched `doc_page.html` chrome (TOC, breadcrumbs, related, prev/next) + topic-chip listings + home featured-resources block | — | `dashboards-portal.md`, `architecture.md` §10 | `projects/frontend/dev/specs/ui_uplift.md` (per-surface UI uplift plan; locked 2026-05-03); `projects/frontend/dev/specs/design_system.md` (token + component SSOT); `staging/prompts/open/2026-05-02_frontend_full_context.md` (PRISM-verbatim sync prompt) |
 | whitepapers | intake VERIFIED + workshop PLAN LOCKED + frontmatter on all 5 inherited docs | `projects/whitepapers/` | `projects/whitepapers/whitepapers-payload/*.md` | `ai_development/context/white_papers/{whitepaper_data_integrations,whitepaper_user_personalization,whitepaper_world_state_and_reasoning,faq,email_usage_guide}.md` (filenames change to canonical slugs once workshop pass renames per `dev/specs/whitepaper_workshop.md` §8) | — | sourced from `projects/whitepapers/dev/scans/2026-05-02_whitepapers_intake.md` (OCR) + `2026-05-02_whitepapers_s3_verify_reply.md` (S3 verbatim verify). Plan: `projects/whitepapers/dev/specs/whitepaper_workshop.md`. | All 5 inherited docs now have YAML frontmatter (slug + title + format + topic + audience + last_updated + reading_time + summary + related + sequence + featured). Body workshop pass: collapse to 6-doc target set (3 whitepapers + 3 guides; "What is Prism" + "Getting started" are NEW). Spread across whitepapers turns 2-4 (workshop_spec §7). Dual-surface lock DEFERRED — workshop customer-facing first, L2 alignment is follow-up. |
+| harness | research project, started 2026-08-27. Not a payload project yet and deliberately so — `harness-payload/` is empty until findings exist to put in it. Collects external material on agent harness design (conference talks, papers, agent scaffolds) and distills it into markdown that can be applied to PRISM's own agent loop, tool surfaces, context system and sub-agent topology. YouTube acquisition pipeline is built and run: `enumerate → enrich → score → fetch`, each stage cached to disk and independently resumable. `@aiDotEngineer` fully enumerated (1073 videos), enriched with descriptions/chapters/dates, and scored against a 10-theme rubric with weighted anti-themes; selected talks land as markdown with YAML frontmatter and `[mm:ss]` anchors so every quote is citable. The bottleneck is NOT acquisition — it is that `prism/` documents PRISM's topology well and its harness mechanics barely at all, so most findings cannot yet name the PRISM behaviour they would change. Seven gaps (G1–G7: main-agent system instruction, agent-loop mechanics, self-modification boundary, error surfaces as the model sees them, history/compaction, retry and self-correction, token accounting) are enumerated in the endeavor and close through PRISM context-extraction prompts, not inference. | `projects/harness/` | `projects/harness/harness-payload/` (empty by design) | undecided — the distilled markdown is expected to be engineering specs applied to PRISM's code and prompts rather than L2 context PRISM loads at runtime; locked once the first theme synthesis exists | — | `subagents.md`, `mcp-tools.md`, `context-system.md`, `code-sandbox.md` | `projects/harness/dev/endeavors/harness_endeavor.md` (7-session plan); specs at `dev/specs/{source_taxonomy,harvest_protocol}.md` |
 | bloomberg | hub-and-spoke landed 2026-05-16; flat `bloomberg-payload/` mirrors PRISM `context/modules/static/bloomberg/`; awaits PRISM round-trip | `projects/bloomberg/` | `projects/bloomberg/bloomberg-payload/` — hub `bloomberg_excel.md` + eight sibling `bbg_*.md` files | `ai_development/context/modules/static/bloomberg/` (same nine files byte-identical); registry hub `static/bloomberg/bloomberg_excel.md`; spokes fetched via `list_ai_repo(file_paths=["context/modules/static/bloomberg/bbg_<spoke>.md"], mode="full")` per hub §10 | — | — | `projects/bloomberg/README.md` — SSOT for mapping, triggers, and registry example. Workshop pass + RBR deferred until first PRISM round-trip surfaces frictions. |
 
 PRISM destinations are expressed against the single `prism-main`
@@ -447,6 +457,34 @@ which is why this design exists.
 | Stub mirror | None. No engine, no Python imports, nothing to stub. The skill is markdown-only. |
 | Next step | (a) User reviews the skill content; (b) drop all payload files into PRISM at `ai_development/context/modules/static/bloomberg/` + registry entry pointing at `static/bloomberg/bloomberg_excel.md`; (c) end-usage round-trip — user prompts PRISM for a Bloomberg workbook; (d) frictions drive a workshop pass HERE; (e) iterate. RBR optional. No `.cursor/rules/bloomberg.mdc` yet — same wait-for-pattern discipline as whitepapers / apis. |
 | PRISM references for context | None — `prism/` is no longer maintained per the staleness notice at top of this README. The skill is self-contained against PRISM's already-known openpyxl + sandbox surface. |
+
+---
+
+### harness — research corpus on agent harness design
+
+The only project here that does not build something for PRISM to run. It
+builds something for *us* to read: an evidence base on how the rest of the
+field designs agent harnesses, distilled into markdown that can be applied to
+PRISM's agent loop, tool surfaces, context system and sub-agent topology.
+
+The constraint that shapes everything: PRISM's environment cannot receive
+repos, videos, or PDFs. Only markdown we author crosses. A finding that is not
+written down clearly — with its source, its locator, and the named PRISM
+surface it lands on — does not exist.
+
+| Aspect | Value |
+|---|---|
+| Status | Started 2026-08-27. Acquisition pipeline built and run against `@aiDotEngineer`. No findings distilled yet; `harness-payload/` is empty by design. |
+| Canonical payload | `projects/harness/harness-payload/` — empty until the first per-theme synthesis exists. Shape deliberately undecided; the expectation is engineering specs applied to PRISM's code and prompts, not L2 context PRISM loads at runtime. |
+| PRISM destination | Undecided. Locked once the first theme file exists and we can see whether it reads as a spec for us or as context for PRISM. |
+| Raw corpus | `transcripts/` (YouTube), `papers/` (arXiv via `paper2md`), `github/` (agent scaffolds). Immutable — re-fetch rather than hand-edit, or the next pipeline run silently reverts the fix. |
+| Pipeline | `dev/pipeline/harvest_youtube.py` — `enumerate → enrich → score → fetch`, each stage cached to disk and independently resumable. Interactive menu with no arguments; full argparse mirror for every action. Runs on the root `.venv` (`yt-dlp` added to `requirements.txt`). |
+| Relevance model | 10 themes (agent loop, tool surface, context engineering, sub-agents, skills/instructions, self-modification, code execution, eval/reliability, human steering, runtime economics), each mapped to the PRISM surface it would change. Weighted term rubric at `dev/pipeline/rubric.json` with field multipliers, per-theme caps, five anti-theme groups and duration rules; optional LLM scorer over title+description. Reasoning at `dev/specs/source_taxonomy.md`. |
+| Transcript format | One `.md` per talk: YAML frontmatter (speakers, affiliation, date, duration, relevance score, matched themes) + description + chapter list + transcript in ~40s paragraphs, each anchored `[mm:ss]`. Raw `json3` caption payload kept alongside in `raw/`. Auto-caption talks carry an explicit reliability warning. |
+| Harvest discipline | Three passes — triage, extract, synthesise. Synthesis is per THEME across sources, never per talk; per-talk summaries are the failure mode the project exists to avoid. Standard at `dev/specs/harvest_protocol.md`. |
+| Blocker | `prism/` documents PRISM's topology well (`subagents.md`, `mcp-tools.md`, `context-system.md`, `code-sandbox.md`) and its harness *mechanics* barely at all. Every finding needs a "what PRISM does today" line, and for the highest-value themes we cannot write one. |
+| Next step | Session 2 of the endeavor: write gaps G1–G7 as PRISM context-extraction prompts under `staging/prompts/open/`, fold the replies into a new `prism/harness.md`, and only then start Pass-3 synthesis. |
+| PRISM references for context | `subagents.md` (ADK topology), `mcp-tools.md` (tool registry, request lifecycle), `context-system.md` (L2 registry), `code-sandbox.md` (execution surface) |
 
 ---
 

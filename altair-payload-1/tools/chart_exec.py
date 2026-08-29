@@ -14,7 +14,7 @@ import logging
 import re
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -23,24 +23,14 @@ import pandas as pd
 from core.agent_base import Invocation, current_invocation
 from core.s3_bucket_manager import s3_manager
 from core.swallowed_exceptions import log_swallowed_exception
-from prism_mcp.tools.artifact_report import ReportShape, format_report as _format_report
 from prism_mcp.utils.baggage import (
     resolve_kerberos_info_from_baggage as _resolve_kerberos_info_from_baggage,
     resolve_medium_from_baggage as _resolve_medium_from_baggage,
 )
 from prism_mcp.utils.chart_call_log import record_render_call
-from prism_mcp.utils.code_preprocess_utils import (
-    check_for_entitled_imports,
-    check_for_forbidden_imports,
-    check_for_network_access,
-    check_for_s3_full_listing,
-    check_for_sandbox_escape,
-    check_for_sys_exit,
-    check_for_sys_modules_mutation,
-    check_for_sys_path_mutation,
-    preprocess_script_code,
-)
+from prism_mcp.utils.code_preprocess_utils import preprocess_script_code
 from prism_mcp.utils.download_links import generate_download_links_for_sandbox
+from prism_mcp.utils.output_limits import SCRIPT_STDOUT_INLINE_BYTES
 from prism_mcp.utils.session_registry import resolve_or_create as _resolve_or_create
 
 logger = logging.getLogger('chart_exec')
@@ -98,19 +88,11 @@ class ChartInvocation(Invocation):
     ordinary script did the same thing with no concurrency involved at all --
     charts survived only because their names carry a second-resolution timestamp
     and a render usually crosses a second boundary.
-
-    ``delivered`` is what the last ``render_charts`` call wrote to S3, and the
-    caller's pictures are built from it at the AgentTool seam rather than from
-    the report the sub-agent forwards -- a renderer that summarised its reply,
-    or dropped a line, still hands the caller its own renders. Assigned rather
-    than extended, so a retry supersedes its own earlier attempt instead of
-    offering the caller both.
     """
 
     attempt: int = 0
     findings: int = 0
     sequence: int = 0
-    delivered: List[str] = field(default_factory=list)
 
     def next_key_token(self) -> str:
         """The nonce for the next artifact this invocation writes."""
@@ -118,20 +100,19 @@ class ChartInvocation(Invocation):
         return f"{self.token}{self.sequence}"
 
 
-# See prism/subagents.md for the open question about stripping these.
-_SHAPE = ReportShape(
-    noun='CHART', plural='Charts', artifact='chart PNG',
-    ceiling=CHART_ATTEMPT_CEILING,
-    describe=lambda art, path: _describe_artifact(art, path),
-    delivery_hint=lambda count, medium: format_chart_delivery_hint(count, medium),
-)
-
-DELIVERY_OPEN = _SHAPE.delivery_open
-DELIVERY_CLOSE = _SHAPE.delivery_close
-DIAGNOSTICS_OPEN = _SHAPE.diagnostics_open
-DIAGNOSTICS_CLOSE = _SHAPE.diagnostics_close
-
-format_report = functools.partial(_format_report, _SHAPE)
+# The sub-agent forwards its reply verbatim, so the report has to say for itself
+# which half is the caller's and which half is scaffolding. Sentinels rather than
+# headings, because a heading has to be recognised by meaning while these can be
+# recognised by an exact line match, and chart titles are free to contain anything.
+#
+# Nothing strips them today: the sub-agent is told not to echo the sentinel lines
+# and that instruction is the only thing standing between them and a chat answer.
+# Exact-matchability is what makes a mechanical strip cheap to add later; it is not
+# itself that strip. See prism/subagents.md for the open question.
+DELIVERY_OPEN = "===CHART_DELIVERY_START==="
+DELIVERY_CLOSE = "===CHART_DELIVERY_END==="
+DIAGNOSTICS_OPEN = "===CHART_DIAGNOSTICS_START==="
+DIAGNOSTICS_CLOSE = "===CHART_DIAGNOSTICS_END==="
 
 # The engine folds 2+ validation findings into one frame under this exact header
 # (`chart_render/core.py::_aggregate_finding_messages`). A lone finding is re-raised
@@ -286,60 +267,12 @@ def format_chart_delivery_hint(chart_count: int, medium: str = "") -> str:
     )
 
 
-# The key set of an artifact record, and the only place it is written down.
-# `format_report` and `record_render_call` both read these dicts, so the shape is
-# a contract between three functions and was previously only a convention held in
-# one dict literal.
-ARTIFACT_KEYS = ('call', 'title', 'chart_type', 'path', 'encoding',
-                 'n_rows', 'n_cols', 'n_charts', 'warnings')
-
-
-def _new_artifact(func, kwargs, result) -> Dict[str, Any]:
-    """One chart call described: what was asked for, and what came back.
-
-    Every key in ``ARTIFACT_KEYS`` is written unconditionally, missing values as
-    None or empty rather than as an absent key. Readers are still tolerant, but
-    they are tolerant of something that does not happen -- which is the property
-    a factory can guarantee and a dict literal at a call site cannot.
-    """
-    mapping = kwargs.get('mapping') or {}
-    return {
-        'call': getattr(func, '__name__', 'chart'),
-        'title': kwargs.get('title'),
-        'chart_type': kwargs.get('chart_type'),
-        'path': getattr(result, 'png_path', None),
-        'encoding': ', '.join(
-            f'{key}={mapping[key]}'
-            for key in ('x', 'y', 'color', 'value', 'theta', 'facet')
-            if isinstance(mapping.get(key), str)
-        ),
-        'n_rows': getattr(result, 'n_rows', None),
-        'n_cols': getattr(result, 'n_cols', None),
-        'n_charts': getattr(result, 'n_charts', None),
-        'warnings': list(getattr(result, 'warnings', None) or []),
-    }
-
-
 class _ChartPathRecorder:
-    """S3 surface recording every ``.png`` key written, plus what wrote it.
+    """S3 proxy recording every ``.png`` key written, plus what wrote it.
 
     The write is the only signal that cannot be lost -- generated code is free to
-    discard the returned ChartResult. ``put`` records; the rest of the surface is
-    the bucket manager's gated verbs, so routing and the ACL gate stay with the
-    singleton.
-
-    Delegation is explicit methods rather than ``__getattr__``: this object is
-    bound as ``s3_manager`` in a namespace running model-authored Python, and a
-    proxy would re-export the whole manager, raw boto3 client included -- one
-    generated line reaching ``s3_client`` reads and overwrites the bucket with no
-    ACL in the path. The delegated set is the bucket manager's gated verbs;
-    ``s3_client`` and ``bucket_name`` are not among them. Adding a verb should
-    cost someone a line of thought.
-
-    This narrows the reach; it does not contain it. ``self._manager`` is an ordinary
-    attribute, so generated code can still walk to the raw client through it. Only the
-    execution substrate can close that -- the point here is that reaching it now takes
-    a line that reads like what it is.
+    discard the returned ChartResult. Everything but ``put`` delegates, so routing
+    and the ACL gate stay with the singleton.
 
     ``chart_paths`` is ground truth for what reached S3. ``artifacts`` is the
     richer story ``_wrap_chart_func`` hands over on the way past: the title, the
@@ -360,25 +293,25 @@ class _ChartPathRecorder:
 
     def record(self, func, kwargs, result) -> None:
         """Capture one chart call's intent and outcome, keyed by the path it wrote."""
-        self.artifacts.append(_new_artifact(func, kwargs, result))
+        mapping = kwargs.get('mapping') or {}
+        self.artifacts.append({
+            'call': getattr(func, '__name__', 'chart'),
+            'title': kwargs.get('title'),
+            'chart_type': kwargs.get('chart_type'),
+            'path': getattr(result, 'png_path', None),
+            'encoding': ', '.join(
+                f'{key}={mapping[key]}'
+                for key in ('x', 'y', 'color', 'value', 'theta', 'facet')
+                if isinstance(mapping.get(key), str)
+            ),
+            'n_rows': getattr(result, 'n_rows', None),
+            'n_cols': getattr(result, 'n_cols', None),
+            'n_charts': getattr(result, 'n_charts', None),
+            'warnings': list(getattr(result, 'warnings', None) or []),
+        })
 
-    def get(self, path):
-        return self._manager.get(path)
-
-    def exists(self, path) -> bool:
-        return self._manager.exists(path)
-
-    def show_all(self, prefix: str = ""):
-        return self._manager.show_all(prefix)
-
-    def list(self, prefix: str = ""):
-        return self._manager.list(prefix)
-
-    def delete(self, path):
-        return self._manager.delete(path)
-
-    def move(self, src, tgt):
-        return self._manager.move(src, tgt)
+    def __getattr__(self, name):
+        return getattr(self._manager, name)
 
 
 def _chart_namespace(session_base_path: str, user_id: Optional[str],
@@ -438,27 +371,10 @@ def _load_data_files(namespace: Dict[str, Any], data_files: Optional[List[str]])
         namespace[f'df{i}'] = pd.read_csv(io.BytesIO(csv_bytes), index_col=0, parse_dates=True)
 
 
-# check_for_local_file_writes is deliberately excluded: custom figures write a
-# local buffer on the way to S3, and that path is the one the engine owns.
-_CHART_PREEXEC_CHECKS = (
-    check_for_forbidden_imports,
-    check_for_entitled_imports,
-    check_for_sys_path_mutation,
-    check_for_sys_modules_mutation,
-    check_for_sys_exit,
-    check_for_s3_full_listing,
-    check_for_network_access,
-    check_for_sandbox_escape,
-)
-
-
-def _refuse_unsafe_chart_code(code: str) -> str:
-    """The first gate's refusal message, or '' when every gate passes."""
-    for check in _CHART_PREEXEC_CHECKS:
-        refusal = check(code)
-        if refusal:
-            return refusal
-    return ''
+def _truncate(text: str) -> str:
+    if len(text.encode('utf-8')) <= SCRIPT_STDOUT_INLINE_BYTES:
+        return text
+    return text[:SCRIPT_STDOUT_INLINE_BYTES] + "\n... [stdout truncated]"
 
 
 def _ladder_step() -> Tuple[ChartInvocation, int, int]:
@@ -521,6 +437,67 @@ def _describe_artifact(art: Dict[str, Any], path: str = '') -> str:
         facts.append(art['encoding'])
     facts = [fact for fact in facts if fact and fact != 'None']
     return f"{head} -- {' | '.join(facts)}" if facts else head
+
+
+def format_report(session_path: str, chart_paths: List[str], links: List[Dict[str, Any]],
+                  stdout: str, error: str, medium: str,
+                  artifacts: Optional[List[Dict[str, Any]]] = None,
+                  status: str = 'OK', status_detail: str = '',
+                  n_findings: int = 0, attempt: int = 1,
+                  previous_findings: int = 0) -> str:
+    """Assemble the two-block report the sub-agent reads and half-forwards.
+
+    Everything the sub-agent returns is pasted into the caller's answer, so the
+    report separates what is meant to travel from what never should. The delivery
+    block holds paths, links and one line per artifact saying what it shows. The
+    diagnostics block holds warnings, stdout and tracebacks -- the retry loop's
+    material, and nothing a reader should ever see.
+
+    ``links`` is the ``generate_download_links_for_sandbox`` result for
+    ``chart_paths``, or empty on media where a shortlink reaches nothing.
+    """
+    short_by_path = {
+        link['s3_path']: link['short_url']
+        for link in links if link.get('success') and link.get('short_url')
+    }
+    artifacts = artifacts or []
+    by_path = {art['path']: art for art in artifacts if art.get('path')}
+
+    out = [DELIVERY_OPEN, "\n\n", f"**Session**: `{session_path}`\n\n"]
+    if chart_paths:
+        out.append(f"**Charts**: {len(chart_paths)} PNG(s)\n\n")
+        for i, path in enumerate(chart_paths, 1):
+            out.append(f"{i}. {_describe_artifact(by_path.get(path, {}), path)}\n")
+            short = short_by_path.get(path)
+            out.append(f"   `{path}`" + (f" -> {short}\n" if short else "\n"))
+        out.append(format_chart_delivery_hint(len(chart_paths), medium))
+    else:
+        out.append("No chart PNG was written by this run.\n")
+    out.append(f"\n{DELIVERY_CLOSE}\n\n")
+
+    out.append(f"{DIAGNOSTICS_OPEN}\n")
+    out.append("Yours alone. Never quote, paraphrase or summarise any of it.\n\n")
+    out.append(f"status: {status}")
+    out.append(f" ({n_findings} finding(s))\n" if n_findings else "\n")
+    out.append(f"attempt: {attempt} of {CHART_ATTEMPT_CEILING}\n")
+    if status_detail:
+        out.append(f"reason: {status_detail}\n")
+    # The ceiling is a hard stop; this is the softer one the contract asks for, and
+    # the model cannot compute it -- each call is all it can see.
+    if status == 'RETRYABLE' and previous_findings and n_findings >= previous_findings:
+        out.append(f"findings did not fall (was {previous_findings}, now {n_findings}); "
+                   f"this approach is not converging -- change it or stop\n")
+    flagged = [(art, w) for art in artifacts for w in art['warnings']]
+    if flagged:
+        out.append(f"\nwarnings ({len(flagged)}):\n")
+        for art, warning in flagged:
+            out.append(f"- {art.get('title') or art.get('call')}: {warning}\n")
+    if stdout.strip():
+        out.append(f"\nstdout:\n```\n{_truncate(stdout)}\n```\n")
+    if error:
+        out.append(f"\ntraceback:\n```\n{error}\n```\n")
+    out.append(DIAGNOSTICS_CLOSE)
+    return "".join(out)
 
 
 async def render_charts(session_path: str, chart_code: str,
@@ -591,9 +568,6 @@ async def render_charts(session_path: str, chart_code: str,
             status='FATAL', status_detail=detail, n_findings=0,
             previous_findings=previous_findings, chart_paths=[], artifacts=[],
             stdout='', error='', elapsed_s=0.0, executed=False)
-        # Nothing ran, so nothing is offered: a refusal must not re-attach the pictures
-        # of the attempt before it.
-        invocation.delivered = []
         return format_report(
             resolved_path, [], [], "", "", medium, artifacts=[], status='FATAL',
             status_detail=detail, attempt=attempt)
@@ -610,7 +584,6 @@ async def render_charts(session_path: str, chart_code: str,
     stdout = ""
     error = ""
     status, status_detail, n_findings = 'OK', '', 0
-    refusal = ''
     started = time.perf_counter()
     # Reading the CSVs belongs inside the guard: a path relayed from the caller is
     # the likeliest thing in this call to be wrong, and raising out of the tool
@@ -620,18 +593,11 @@ async def render_charts(session_path: str, chart_code: str,
         _load_data_files(namespace, data_files)
         stage = 'exec'
         code, _preprocess_notes = preprocess_script_code(chart_code)
-        refusal = _refuse_unsafe_chart_code(code)
-        if refusal:
-            # FATAL, non-retryable: a sub-agent that keeps probing for phrasing
-            # that slips the gate would otherwise spend the rest of its budget
-            # searching rather than stopping.
-            status, status_detail = 'FATAL', refusal
-        else:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(_execute_sync, code, namespace),
-                timeout=CHART_EXECUTION_TIMEOUT_SECONDS,
-            )
-            stdout = result['stdout']
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_execute_sync, code, namespace),
+            timeout=CHART_EXECUTION_TIMEOUT_SECONDS,
+        )
+        stdout = result['stdout']
     except Exception as exc:
         # why: a failing chart script is a result the sub-agent retries against,
         # not an abort of the parent's turn -- the traceback has to reach the
@@ -668,7 +634,7 @@ async def render_charts(session_path: str, chart_code: str,
         status=status, status_detail=status_detail, n_findings=n_findings,
         previous_findings=previous_findings, chart_paths=recorder.chart_paths,
         artifacts=artifacts, stdout=stdout, error=error,
-        elapsed_s=time.perf_counter() - started, executed=not refusal)
+        elapsed_s=time.perf_counter() - started, executed=True)
 
     links = []
     if recorder.chart_paths and normalize_medium(medium) in (COMPOSER, GSAI):
@@ -679,10 +645,6 @@ async def render_charts(session_path: str, chart_code: str,
         f"medium={medium} status={status} findings={n_findings} "
         f"attempt={attempt}/{CHART_ATTEMPT_CEILING}"
     )
-    # Ground truth for the seam: what reached S3, not what the sub-agent says
-    # reached it. NO_ARTIFACTS and a failed attempt both leave it empty, which
-    # is the correct offer.
-    invocation.delivered = list(recorder.chart_paths)
     return format_report(resolved_path, recorder.chart_paths, links, stdout, error, medium,
                          artifacts=artifacts, status=status, status_detail=status_detail,
                          n_findings=n_findings, attempt=attempt,

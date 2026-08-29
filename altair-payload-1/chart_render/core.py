@@ -72,8 +72,8 @@ from dataclasses import dataclass, field, fields, replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import (
-    Any, Callable, Dict, FrozenSet, Iterator, List, Literal, NamedTuple,
-    Optional, Sequence, Set, Tuple, Union, get_args,
+    Any, Callable, Dict, FrozenSet, List, Literal, NamedTuple, Optional,
+    Sequence, Set, Tuple, Union, get_args,
 )
 
 # ---------------------------------------------------------------------------
@@ -2025,71 +2025,6 @@ def _grouped_bar_cell_budget(
     return n_x_cats, facet_width, per_bar_px, spacing_overhead
 
 
-def _is_grouped_bar(mapping: Dict[str, Any], chart_type: str) -> bool:
-    """True when this call renders vertical grouped bars via column faceting.
-
-    The grouped path is the only one in the engine that REPURPOSES the x
-    channel. ``_build_bar`` puts ``mapping['x']`` on ``column`` (one facet
-    per category) and gives ``x`` to the colour field, so by render time the
-    field on x is not the field any upstream pass planned x against.
-
-    Every pass that reasons about ``mapping['x']`` as though it will still be
-    on the x channel has to know about this shape, which is why the predicate
-    is shared rather than re-derived at each site. ``bar_horizontal`` is
-    deliberately excluded: it groups by ROW faceting off ``mapping['y']``,
-    leaving x as the quantitative value axis, so nothing is swapped there.
-    """
-    return (
-        chart_type == "bar"
-        and bool(mapping.get("color"))
-        and mapping.get("stack", True) is False
-    )
-
-
-# Chart types whose builder hard-codes ``alt.X(..., type="nominal")``, so x
-# is a discrete band scale no matter what dtype the column holds. Verified
-# against the ``alt.X`` call in each builder; keep this list in step with
-# them. ``bar`` is deliberately absent -- an unfaceted bar with a date x
-# DOES get a temporal axis, which is why W3 renders thinned year ticks.
-# ``bar_horizontal`` and ``bullet`` are absent because their x is the
-# quantitative value axis. ``heatmap`` is absent because
-# ``_normalize_heatmap_x_column`` has already turned its x into strings by
-# the time any of this runs.
-_BAND_SCALE_X_CHART_TYPES: frozenset = frozenset({
-    "boxplot",
-    "waterfall",
-    "donut",
-})
-
-
-def _x_renders_on_band_scale(mapping: Dict[str, Any], chart_type: str) -> bool:
-    """True when x will be a discrete band scale at render time.
-
-    The invariant behind the 20x20 stub, stated once. A temporal axis plan
-    -- an interval ``tickCount``, a strftime ``format``, a ``timeFormat()``
-    ``labelExpr`` -- is meaningful only on a time scale. Vega rejects the
-    first two outright and the view never resolves; vl-convert then answers
-    with a blank canvas or a bare TypeError instead of raising something the
-    engine could report.
-
-    Two different routes reach that same band scale, which is why the first
-    fix (grouped bars only) was too narrow:
-
-      * the builder always encodes x as nominal (``_BAND_SCALE_X_CHART_TYPES``)
-      * the builder MOVES x elsewhere and gives the channel to another field
-        (``_is_grouped_bar``)
-
-    Deliberately excludes ``mapping['x_type'] == 'ordinal'``. That key has
-    its own documented interaction with the date bar axis -- it is ignored
-    there on purpose -- so callers of this predicate combine the two
-    themselves rather than having it folded in here.
-    """
-    return (
-        chart_type in _BAND_SCALE_X_CHART_TYPES
-        or _is_grouped_bar(mapping, chart_type)
-    )
-
-
 def _get_field(mapping: Dict[str, Any], key: str) -> Optional[str]:
     """Extract a field name from a mapping dict, accepting either ``str`` or
     ``{'field': '...'}`` value forms. Returns ``None`` if the key is absent
@@ -2103,25 +2038,6 @@ def _get_field(mapping: Dict[str, Any], key: str) -> Optional[str]:
     if isinstance(val, dict) and "field" in val:
         return val["field"]
     return None
-
-
-def _is_orderable(series: pd.Series) -> bool:
-    """Whether the column's values can be put in a total order.
-
-    An object column holding a str beside an int -- what a hand-built frame
-    or a ragged CSV export produces -- raises ``TypeError`` from
-    ``sort_values``. Attempting the sort is the only reliable test, because
-    the dtype is ``object`` either way and element types can be anything.
-    Cheap enough to run once per validation: the frames the engine charts
-    are thousands of rows, not millions.
-    """
-    if series.dtype != object:
-        return True
-    try:
-        series.dropna().sort_values()
-    except TypeError:
-        return False
-    return True
 
 
 def _extract_fields(mapping: Dict[str, Any]) -> List[str]:
@@ -2484,38 +2400,23 @@ def _normalize_intraday_x_column(
     else:
         import warnings as _warnings
 
-        # On a band scale a string category is a label the caller already
-        # chose, so it ships verbatim. (A datetime column is the opposite --
-        # values with no chosen spelling -- and
-        # ``_materialize_ordinal_datetime_x`` gives those house labels.)
-        #
-        # Coercing here is also what produced the 2026-07-02 Vega error: a
-        # datetime dtype earns a temporal axis plan, and a temporal plan on a
-        # band scale aborts the whole view. This guard used to wrap only the
-        # ``_period_string_series_to_datetime`` call below, which is a hole
-        # wide enough to drive the bug through -- that helper returns None
-        # for anything that is not a house period label, and a bare "2019" is
-        # not one, so control fell into the generic ``pd.to_datetime`` ladder
-        # and coerced anyway. It was also scoped to grouped bars alone, while
-        # boxplot, waterfall and donut encode a nominal x unconditionally.
-        if _x_renders_on_band_scale(mapping, chart_type):
-            logger.info(
-                "[chart_functions] x_field=%r left categorical: %s renders x "
-                "on a band scale, where a datetime dtype would earn a "
-                "temporal axis plan Vega cannot apply.",
-                x_field, chart_type,
-            )
-            return df
-
+        # Grouped bars facet on a nominal inner axis. A temporal tick_step
+        # injected onto that axis is the 2026-07-02 Vega error; leave
+        # period labels as categories there. Stacked / single bars can
+        # take the same temporal planner ISO strings already use.
+        grouped_bar = bool(mapping.get("color")) and (
+            mapping.get("stack", True) is False
+        )
         converted = None
-        if bar_date_axis:
+        if bar_date_axis and not grouped_bar:
             converted = _period_string_series_to_datetime(series)
 
         if converted is None:
-            # pd.to_datetime("24Q2") silently parses as 2024-04-01, which on
-            # a quarter-labelled axis is a different chart than the one the
-            # caller asked for, so quarter labels stay categories unless the
-            # bar path above already claimed them.
+            # pd.to_datetime("24Q2") silently parses as 2024-04-01. On a
+            # grouped bar that conversion plus a temporal tick_step on
+            # the nominal inner axis is the 2026-07-02 Vega error, so
+            # quarter labels stay categories unless the bar path above
+            # already claimed them.
             _sample = series.dropna().head(20).astype(str)
             if len(_sample) > 0 and _sample.apply(
                 lambda v: bool(HEATMAP_QUARTER_RE.match(v.strip()))
@@ -2563,9 +2464,12 @@ def _normalize_intraday_x_column(
         )
 
     df[x_field] = converted
+    grouped_bar = bool(mapping.get("color")) and (
+        mapping.get("stack", True) is False
+    )
     if (
         bar_date_axis
-        and not _is_grouped_bar(mapping, chart_type)
+        and not grouped_bar
         and mapping.get("x_type") == "ordinal"
         and pd.api.types.is_datetime64_any_dtype(converted)
     ):
@@ -2758,17 +2662,8 @@ def _coerce_heatmap_x_value_to_timestamp(val: Any) -> Optional[pd.Timestamp]:
                 return pd.Timestamp(n, unit="s")
         m = HEATMAP_QUARTER_RE.match(s)
         if m:
-            # All FOUR alternatives, matching ``_quarter_label_to_timestamp``.
-            # This read only q1..q3, so the two-digit-year spelling the regex
-            # exists to catch -- ``24Q2``, group q4/y4 -- matched and then
-            # crashed on int(None) instead of parsing.
-            q_raw = (m.group("q1") or m.group("q2") or m.group("q3")
-                     or m.group("q4"))
-            y_raw = (m.group("y1") or m.group("y2") or m.group("y3")
-                     or m.group("y4"))
-            if q_raw is None or y_raw is None:
-                return None
-            q = int(q_raw)
+            q = int(m.group("q1") or m.group("q2") or m.group("q3"))
+            y_raw = m.group("y1") or m.group("y2") or m.group("y3")
             year = int(y_raw)
             if year < 100:
                 year += 2000
@@ -3249,9 +3144,8 @@ def _materialize_ordinal_datetime_x(
     mapping: Dict[str, Any],
     chart_type: str,
 ) -> pd.DataFrame:
-    """Turn a datetime x column into readable labels wherever x lands on a
-    BAND scale -- when the caller forced ``mapping['x_type'] = 'ordinal'``,
-    and on the vertical grouped-bar path, which puts x there by construction.
+    """Turn a datetime x column into readable labels when the caller forced
+    ``mapping['x_type'] = 'ordinal'``.
 
     An ordinal / nominal encoding puts x on a BAND scale, where tick values
     are category indices rather than dates. The axis plan is chosen from the
@@ -3267,24 +3161,9 @@ def _materialize_ordinal_datetime_x(
     for the nominal-x heatmap path. The caller gets the evenly-spaced
     categorical date axis they asked for, with dates on it.
 
-    Boxplot, waterfall, donut and the grouped bar reach the same band scale
-    without anyone asking for it -- see ``_x_renders_on_band_scale``. Leaving
-    timestamps in the column there costs twice. The labels print as raw
-    machine tokens (a grouped bar's facet headers print epoch milliseconds,
-    because a temporal tooltip on the field is enough to make Vega-Lite's
-    ``parse: "auto"`` read the embedded ISO strings straight back into
-    Dates). And the temporal axis plan the dtype earns gets written onto a
-    nominal scale, which Vega refuses outright. Materialising here means no
-    pass downstream ever sees a datetime, so neither failure has a source.
-
     Skipped for heatmaps (``_normalize_heatmap_x_column`` owns that path).
     """
-    if chart_type == "heatmap":
-        return df
-    if (
-        mapping.get("x_type") != "ordinal"
-        and not _x_renders_on_band_scale(mapping, chart_type)
-    ):
+    if mapping.get("x_type") != "ordinal" or chart_type == "heatmap":
         return df
 
     x_field = _get_field(mapping, "x")
@@ -3336,12 +3215,7 @@ def _materialize_ordinal_datetime_x(
     # categories came from dates -- and dropping x_type is the one remedy
     # that clears a category-label gate outright, so the gates need to
     # know they are allowed to suggest it.
-    #
-    # Only when the caller actually set x_type, though. The grouped-bar
-    # path arrives here without having asked for anything, so flagging it
-    # would let a gate recommend dropping a key the caller never passed.
-    if mapping.get("x_type") == "ordinal":
-        mapping["_ordinal_date_axis"] = True
+    mapping["_ordinal_date_axis"] = True
 
     explicit_sort = mapping.get("x_sort")
     if explicit_sort is None:
@@ -4356,59 +4230,15 @@ def _collect_integrity_findings(
                 f"Check for timezone issues or invalid datetime values."
             ))
 
-    # Validation 4: measure values are finite (not inf).
-    #
-    # Every numeric channel, not just y. A histogram's measure is on x and a
-    # heatmap's is on value, so a y-only check left both unguarded: the
-    # histogram reached its tick-position maths and died on
-    # ``int(round(inf))`` with a bare OverflowError, and the heatmap rendered
-    # a full grid whose colour scale had been flattened by an infinite
-    # domain -- a wrong chart with no complaint at all.
-    for channel in ("x", "y", "value"):
-        field = _get_field(mapping, channel)
-        if not field or field not in df.columns:
-            continue
-        if not pd.api.types.is_numeric_dtype(df[field]):
-            continue
-        inf_count = int(np.isinf(df[field].dropna()).sum())
-        if inf_count == 0:
-            continue
-        findings.append(ValidationError(
-            f"CHART DATA INTEGRITY ERROR: {channel}-axis contains "
-            f"{inf_count} infinite values.\n"
-            f"Column '{field}' has inf values that cannot be plotted.\n"
-            f"Use df['{field}'].replace([np.inf, -np.inf], np.nan) to "
-            f"remove them."
-        ))
-
-    # Validation 4a: the x column holds one kind of thing.
-    #
-    # A ragged CSV or a hand-built frame produces an object column mixing
-    # numbers with strings. The category order the band-scale builders derive
-    # from it is then a mixed-type list, which Altair's schema rejects -- and
-    # the caller received a raw ``SchemaValidationError`` dump naming a JSON
-    # ``anyOf`` branch rather than the column at fault.
-    #
-    # Refusing rather than casting to str, because the cast is not safe: a
-    # column holding both ``2`` and ``"2"`` would silently collapse two
-    # categories into one band, and a merged category is a wrong chart that
-    # reports success. Only the caller knows which of the two was meant.
-    if x_field and x_field in df.columns and not _is_orderable(df[x_field]):
-        kinds = sorted({
-            type(v).__name__ for v in df[x_field].dropna().head(200)
-        })
-        findings.append(ValidationError(
-            f"CHART DATA INTEGRITY ERROR: column '{x_field}' mixes "
-            f"{len(kinds)} value types ({', '.join(kinds)}).\n"
-            f"An axis needs one kind of value to order and label. Convert "
-            f"the column to a single type first -- df['{x_field}'] = "
-            f"df['{x_field}'].astype(str) if these are category names, or "
-            f"pd.to_numeric(df['{x_field}'], errors='coerce') if they are "
-            f"measurements.\n"
-            f"Casting for you is not safe here: if the column holds both 2 "
-            f"and '2', astype(str) merges them into one category without "
-            f"saying so."
-        ))
+    # Validation 4: y values are finite (not inf).
+    if y_field and y_field in df.columns and pd.api.types.is_numeric_dtype(df[y_field]):
+        inf_count = int(np.isinf(df[y_field].dropna()).sum())
+        if inf_count > 0:
+            findings.append(ValidationError(
+                f"CHART DATA INTEGRITY ERROR: y-axis contains {inf_count} infinite values.\n"
+                f"Column '{y_field}' has inf values that cannot be plotted.\n"
+                f"Use df[y_field].replace([np.inf, -np.inf], np.nan) to remove them."
+            ))
 
     # Validation 4b: empty-body / line coverage. Catches the canonical
     # "chart rendered but the plot body is empty" failure -- a line-shaped
@@ -5305,14 +5135,9 @@ def _validate_y_level_disparity(
     # Per-series mean + span; collect side-by-side.
     series_stats: Dict[str, Tuple[float, float]] = {}
     for name in series_names:
-        # ``astype(float)`` because ``pd.to_numeric`` leaves a boolean column
-        # boolean, and ``max() - min()`` on booleans is a numpy TypeError.
-        # A validator that raises instead of reporting turns an input the
-        # engine could have described into a traceback the caller cannot act
-        # on -- the opposite of this layer's job.
         s = pd.to_numeric(
             df.loc[df[color_field] == name, y_field], errors="coerce"
-        ).dropna().astype(float)
+        ).dropna()
         if len(s) == 0:
             continue
         series_stats[str(name)] = (float(s.mean()), float(s.max() - s.min()))
@@ -5620,15 +5445,6 @@ def _validate_series_oscillation(
     if x_field not in df.columns or y_field not in df.columns:
         return
     if not pd.api.types.is_numeric_dtype(df[y_field]):
-        return
-
-    # Oscillation is measured along x, so an x that cannot be put in order
-    # has no oscillation to measure. A mixed-type object column (str beside
-    # int, which is what a hand-built frame or a ragged CSV produces) raises
-    # from ``sort_values``; skipping is right, because the alternative is
-    # this diagnostic aborting the whole chart with a numpy comparison error
-    # in place of the finding it exists to report.
-    if not _is_orderable(df[x_field]):
         return
 
     color_field = _get_field(mapping, "color")
@@ -7400,20 +7216,6 @@ class Trendline(Annotation):
         x_field = mapping["x"] if isinstance(mapping["x"], str) else mapping["x"]["field"]
         y_field = mapping["y"] if isinstance(mapping["y"], str) else mapping["y"]["field"]
 
-        # Inherit the base layer's x type instead of asserting ``:Q``. This
-        # was the last annotation still hardcoding one, and on a time series
-        # it cost twice over. Vega-Lite resolved the temporal base and the
-        # quantitative trend onto INDEPENDENT x scales -- the duplicate-axis
-        # defect ``_annotation_x_axis_type`` exists to prevent -- and the
-        # temporal axis plan then landed on the quantitative scale, where an
-        # interval tickCount makes Vega abandon the view. A trendline on a
-        # date axis, which is most of them, could not render at all.
-        #
-        # No categorical branch is needed here: ``render_annotations``
-        # suppresses Trendline on a band scale before ``to_layer`` runs, off
-        # this same predicate.
-        x_type = _annotation_x_axis_type(df, x_field, mapping)
-
         method = self.method
         order: Optional[int] = None
         if self.method == "quad":
@@ -7435,7 +7237,7 @@ class Trendline(Annotation):
                 strokeDash=self.stroke_dash,
             )
             .encode(
-                x=alt.X(x_field, type=x_type),
+                x=alt.X(f"{x_field}:Q"),
                 y=alt.Y(f"{y_field}:Q"),
             )
         )
@@ -7452,7 +7254,7 @@ class Trendline(Annotation):
                 color=self.label_color or self.color,
             )
             .encode(
-                x=alt.X(x_field, type=x_type),
+                x=alt.X(f"{x_field}:Q"),
                 y=alt.Y(f"{y_field}:Q"),
                 text=alt.value(self.label),
             )
@@ -15762,21 +15564,9 @@ def get_axis_beautification(
         # normally converts those columns to display labels upstream; this
         # keeps the categorical branch authoritative for any path that
         # bypasses it.
-        #
-        # A band-scale chart type is excluded for a different and sharper
-        # reason: this plan is keyed ``"x"`` and ``apply_beautification_to_spec``
-        # writes it onto whatever encoding holds the x channel, but by then
-        # the builder has either encoded x as nominal outright (boxplot,
-        # waterfall, donut) or moved the column to ``column`` and given x to
-        # the colour field (grouped bar). Vega rejects an interval tickCount
-        # and a strftime format on a band scale, and the view aborts -- into
-        # a 20x20 blank that still reports success, or into a bare TypeError
-        # out of vl-convert, depending on the shape. See
-        # ``_x_renders_on_band_scale``.
         if (
             pd.api.types.is_datetime64_any_dtype(x_data)
             and mapping.get("x_type") != "ordinal"
-            and not _x_renders_on_band_scale(mapping, chart_type)
         ):
             date_config = determine_date_format(x_data, chart_width)
             is_intraday = _is_intraday_datetime_series(x_data)
@@ -21848,19 +21638,6 @@ def _build_bar(
             labelPadding=14,
             labelFontSize=facet_label_font_size,
             labelFont=_facet_header_label_font(skin_config),
-            # The plan above measures the WRAPPED shape of each name --
-            # the widest LINE, not the whole string -- because
-            # ``_build_bar`` has already broken these at two words per
-            # line. A Vega-Lite facet header draws its label as one text
-            # mark and ignores the newline, so without this split the
-            # arithmetic describes a layout the renderer never produces:
-            # it clears 0 deg against a 112px line, then paints 193px of
-            # unbroken text into a 140px pitch and the names overprint
-            # each other. ``split`` yields an array, which is Vega's
-            # multi-line text form. This is a transform, not the
-            # label-deleting ``labelExpr`` whitelist this path used to
-            # carry -- every category still renders.
-            labelExpr=r"split(datum.label, '\n')",
         )
 
         # When labels are rotated, align them so they don't overlap the chart
@@ -22419,20 +22196,9 @@ def _build_area(
         raise ValidationError(f"y_field '{y_field}' has no valid values.")
 
     df = df.copy()
-    # A numeric x is a MEASURED axis -- a volatility level, a strike, a
-    # tenor in years -- and ``pd.to_datetime()`` reads those as NANOSECONDS
-    # since the epoch, so 14.75 becomes 1970-01-01T00:00:00.000000014 and
-    # the whole domain collapses below one pixel: an empty panel reporting
-    # success with no warnings. Nothing downstream catches it, because
-    # ``_validate_temporal_x_plausibility`` runs before dispatch and tests
-    # the CALLER's dtype, which is still float at that point. Genuine epoch
-    # integers and date strings are already datetime by the time the
-    # builder runs (``_normalize_intraday_x_column`` infers the s / ms unit
-    # pre-dispatch), so a column still numeric here was never a timestamp.
     if (
         mapping.get("x_type") != "ordinal"
         and not pd.api.types.is_datetime64_any_dtype(df[x_field])
-        and not pd.api.types.is_numeric_dtype(df[x_field])
     ):
         try:
             import warnings as _warnings
@@ -22444,11 +22210,6 @@ def _build_area(
             pass
 
     x_type, x_sort = _resolve_point_family_x_encoding(df, x_field, mapping)
-    # Publish the resolved type so annotation layers inherit it through
-    # ``_annotation_x_axis_type`` instead of re-deriving it from the
-    # caller's frame. A base/annotation disagreement makes Vega-Lite
-    # resolve the two onto independent scales and paint a second x axis.
-    mapping["_x_axis_type"] = x_type
     # A time axis is self-evident, so it stays untitled; a cross-section
     # axis has to say what it is measuring.
     x_title = (
@@ -23940,11 +23701,7 @@ def _build_boxplot(
     extent = mapping.get("extent", 1.5)
 
     def _domain_bounds(series: pd.Series) -> Tuple[float, float]:
-        # ``astype(float)`` because a boolean column passes the numeric-dtype
-        # gate upstream and then makes ``quantile`` fail inside numpy's
-        # interpolation, where booleans cannot be subtracted. A 0/1 series is
-        # a legitimate thing to box-plot; it just has to arrive as numbers.
-        s = pd.to_numeric(series, errors="coerce").dropna().astype(float)
+        s = series.dropna()
         if len(s) == 0:
             return float("nan"), float("nan")
         s_min = float(s.min())
@@ -24413,36 +24170,6 @@ def _build_bullet(
     return chart
 
 
-def _assert_waterfall_complete(
-    df: pd.DataFrame, x_field: str, y_field: str,
-) -> None:
-    """Refuse a bridge with a gap in it.
-
-    A waterfall is a running total, so ONE missing value is not one missing
-    bar. ``_build_waterfall`` accumulates ``running`` in a Python float, and
-    a NaN carries forward: every bar after the gap gets a NaN start and end,
-    Vega draws none of them, and the caller received bare axes with
-    ``success=True`` and no warning. The whole decomposition disappeared
-    because one component was absent.
-
-    Refusing is the only honest answer, because no repair is safe. Dropping
-    the row renames the bridge, and zero-filling asserts a contribution of
-    zero that nobody measured.
-    """
-    missing = df[y_field].isna()
-    if not missing.any():
-        return
-    count = int(missing.sum())
-    names = [str(v) for v in df.loc[missing, x_field].head(6)]
-    raise ValidationError(
-        f"Column '{y_field}' has {count} missing value(s) at: "
-        f"{', '.join(names)}{' ...' if count > 6 else ''}. A waterfall is a "
-        f"running total, so a gap does not blank one bar -- it blanks every "
-        f"bar after it. Supply a value for each category, or drop those rows "
-        f"from df yourself if they genuinely do not belong in the bridge."
-    )
-
-
 def _build_waterfall(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -24504,7 +24231,6 @@ def _build_waterfall(
         raise ValidationError(
             f"Column '{y_field}' has no valid numeric values."
         )
-    _assert_waterfall_complete(df, x_field, y_field)
 
     # ---- determine bar types (explicit column or auto-detect) -----------
     if type_field and type_field in df.columns:
@@ -24969,51 +24695,36 @@ def _build_band(
 # readable and start being a texture; the line alone carries the shape.
 _CONTRIB_MAX_VALUE_LABELS = 14
 
-# One density threshold, in pixels of canvas per period. Above it the
-# published shape holds: gapped bars, a net-line knot on every period.
-# Below it a bar is asserting a discreteness the reader cannot resolve --
-# a knot (size 45) is ~7.6px across, so at this pitch the dot is already
-# wider than the bar it sits on -- and the stack switches to a signed
-# area while the knots thin to the latest period alone.
-#
-# Closing the band gutters is deliberately NOT a rung here. It was one
-# from 2026-08-24 to 2026-08-28 and it failed twice over. The floor it
-# needed (pitch < 5px) sat just below a monthly decade on the default
-# 700px canvas, which lands at 5.04px, so the most common dense shape
-# this chart family has never reached it. And when forced, every
-# adjacent bar pair still met on a subpixel boundary that vl-convert
-# antialiases into a pale seam: a white comb becomes a grey one. The
-# seam is a property of drawing N rectangles, not of the space between
-# them, so the only way out is to stop drawing rectangles.
-_CONTRIB_MARK_PITCH_PX = 12.0
+# Vega point size 45 is ~7.6px across. Dots start colliding with each
+# other and overflowing the bar once pitch drops below a comfortable
+# multiple of that. The line stays; only the knots drop.
+_CONTRIB_MARKER_MIN_PITCH_PX = 12.0
+
+# Below this, band-scale gutters (Vega default paddingInner=0.1) turn
+# the stack into a zipper. Close them so the stack reads as a solid
+# field. Grain is unchanged -- this is a mark change, not a resample.
+_CONTRIB_GAPLESS_MAX_PITCH_PX = 5.0
 
 
 def _contribution_density_plan(
     n_periods: int,
     width: int,
 ) -> Dict[str, Any]:
-    """Pick the contribution stack mark and knot policy from pixel pitch.
+    """Pick contribution mark density from pixel pitch.
 
-    Short windows keep the published shape: gapped bars with a net-line
-    knot on every period. Once each period owns less canvas than a knot
-    is wide, the same signed stack is drawn as an area and the knots
-    thin to the latest period. The period grain does not change either
-    way, and neither do the totals -- this is a mark decision, not a
-    resample.
-
-    Both flags come off the one threshold on purpose. The mark and the
-    knots are answering the same question (is a single period resolvable
-    at this pitch?), so splitting them into two floors only creates a
-    band where the engine has half-committed to each answer.
+    Short windows keep the published shape (gapped bars + net-line
+    knots). Once bars get thinner than a marker, the knots become a
+    bead texture and drop. Once bars get thinner than the gutter
+    between them, the gutters close so the baseline is a field
+    rather than a comb. The period grain does not change.
     """
     pitch = float(width) / max(int(n_periods), 1)
-    dense = pitch < _CONTRIB_MARK_PITCH_PX
     return {
         "n_periods": int(n_periods),
         "width": int(width),
         "pitch_px": pitch,
-        "as_area": dense,
-        "endpoint_knot_only": dense,
+        "show_markers": pitch >= _CONTRIB_MARKER_MIN_PITCH_PX,
+        "gapless": pitch < _CONTRIB_GAPLESS_MAX_PITCH_PX,
     }
 
 
@@ -25051,9 +24762,9 @@ def _plan_contribution_axis(
     quarterly stack gets the same year stride a timeseries would (1970,
     1980, ...). Named categories that were never dates keep every name,
     or raise through the bar pitch gate when they cannot fit. When the
-    bars themselves would zipper, ``_contribution_density_plan`` swaps
-    them for a signed area and thins the knots to the endpoint -- that
-    is a mark change, not a tick change.
+    bars themselves would zipper, ``_contribution_density_plan`` closes
+    gutters and drops net-line knots -- that is a mark change, not a
+    tick change.
     """
     labels = [str(v) for v in x_order]
     meta = mapping.get("_contribution_period_axis")
@@ -25153,11 +24864,11 @@ def _build_contribution(
     and any decomposition where the sign flips over time.
 
     Pipeline structure:
-      Layer 1 (stack): signed mark_bar with stack='zero', or the same
-        stacking as mark_area once a period owns less canvas than a knot.
+      Layer 1 (bars): signed mark_bar with stack='zero'. Dense windows
+        close the band gutters so the stack is a field, not a comb.
       Layer 2 (zero rule): the baseline every signed stack is read against.
-      Layer 3 (net line + knots): the total the components sum to. The
-        knots thin to the latest period on a dense window.
+      Layer 3 (net line + points): the total the components sum to.
+        Points drop once they are wider than a bar.
       Layer 4 (labels): per-period net values + the total's name.
 
     Every layer encodes y as ``_contrib_y`` so Vega-Lite merges the axes
@@ -25234,14 +24945,19 @@ def _build_contribution(
     mapping["_contribution_axis_plan"] = axis_plan
     density = _contribution_density_plan(len(x_order), width)
     mapping["_contribution_density_plan"] = density
-    if density["as_area"]:
+    if net_df is not None and not density["show_markers"]:
         _note(mapping, (
-            f"Contribution stack drawn as a signed area: "
-            f"{density['n_periods']} periods span {density['width']}px "
-            f"({density['pitch_px']:.1f}px each), narrower than a bar can "
-            f"read. Period grain and per-period totals are unchanged -- "
-            f"only the mark differs. Net-line knots thin to the latest "
-            f"period."
+            f"Contribution net-line markers omitted: {density['n_periods']} "
+            f"periods span {density['width']}px "
+            f"({density['pitch_px']:.1f}px each); markers would overflow "
+            f"the bars. The line still draws."
+        ))
+    if density["gapless"]:
+        _note(mapping, (
+            f"Contribution bar gutters closed: {density['n_periods']} "
+            f"periods span {density['width']}px "
+            f"({density['pitch_px']:.1f}px each), which would zipper "
+            f"the baseline. Stack grain is unchanged."
         ))
     x_axis_kwargs: Dict[str, Any] = dict(titleFontWeight="normal")
     x_axis_kwargs["labelAngle"] = int(axis_plan.get("label_angle") or 0)
@@ -25249,12 +24965,9 @@ def _build_contribution(
         x_axis_kwargs["values"] = list(axis_plan["tick_values"])
     if axis_plan.get("label_expr"):
         x_axis_kwargs["labelExpr"] = axis_plan["label_expr"]
-    # An area interpolates between band centres, so the default band
-    # padding would hold the polygon a half-period short of each edge and
-    # leave two wedges of empty plot the bars never left.
     x_scale = (
         alt.Scale(paddingInner=0, paddingOuter=0)
-        if density["as_area"] else alt.Undefined
+        if density["gapless"] else alt.Undefined
     )
 
     def _x(frame: pd.DataFrame, *, title: Optional[str]) -> alt.X:
@@ -25275,25 +24988,19 @@ def _build_contribution(
         mapping, color_field, df, mark_config.get("opacity", 1.0),
     )
 
-    # ---- Layer 1: the signed stack ---------------------------------------
-    # Below the pitch floor the identical stacking is drawn as an area:
-    # one polygon per component instead of one rectangle per period, which
-    # is the only way to lose the per-period seam. Interpolation is linear
-    # deliberately -- a monotone curve would invent shape between prints
-    # that the data does not contain, which is a worse lie than a comb.
-    if density["as_area"]:
-        base = alt.Chart(df).mark_area(
+    # ---- Layer 1: signed stacked bars ------------------------------------
+    # Hairline rounded tops read as a second bead texture on a dense
+    # stack, so corner radius dies with the knots.
+    bar_radius = (
+        0 if (density["gapless"] or not density["show_markers"])
+        else mark_config.get("cornerRadius", 0)
+    )
+    bars = (
+        alt.Chart(df)
+        .mark_bar(
             opacity=bar_opacity,
-            interpolate="linear",
-            line=False,
+            cornerRadius=bar_radius,
         )
-    else:
-        base = alt.Chart(df).mark_bar(
-            opacity=bar_opacity,
-            cornerRadius=mark_config.get("cornerRadius", 0),
-        )
-    stack_layer = (
-        base
         .encode(
             x=_x(df, title=x_title),
             y=_y(title=y_title, stack="zero"),
@@ -25302,12 +25009,12 @@ def _build_contribution(
         )
         .properties(width=width, height=height)
     )
-    stack_layer = _encode_categorical_color_and_opacity(
-        stack_layer, mapping, skin_config, color_field, df,
+    bars = _encode_categorical_color_and_opacity(
+        bars, mapping, skin_config, color_field, df,
         color_sort=color_sort,
         opacity_encoding=opacity_enc,
     )
-    layers: List[alt.Chart] = [stack_layer]
+    layers: List[alt.Chart] = [bars]
 
     # ---- Layer 2: the zero baseline --------------------------------------
     # A signed stack is meaningless without a visible zero: it is the line
@@ -25332,26 +25039,13 @@ def _build_contribution(
             .encode(x=_x(net_df, title=None), y=_y(title=None))
             .properties(width=width, height=height)
         )
-        # A knot's job changes with density. On a short window one per
-        # period ties the line to the bar it sits over. Once periods stop
-        # being individually resolvable that reading is gone, and a knot on
-        # every one welds into a caterpillar that thickens the line and
-        # destroys the shape it exists to show. So the knot stops meaning
-        # "a datum exists here" and starts meaning "read this one" -- which
-        # leaves exactly the latest print, the point a reader looks for by
-        # name. Deleting knots outright was the 2026-08-24 answer and it
-        # threw that anchor away with the texture.
-        endpoint_only = density["endpoint_knot_only"]
-        knot_df = net_df.iloc[[-1]] if endpoint_only else net_df
-        layers.append(
-            alt.Chart(knot_df)
-            .mark_point(
-                color=ink, filled=True, opacity=1.0,
-                size=70 if endpoint_only else 45,
+        if density["show_markers"]:
+            layers.append(
+                alt.Chart(net_df)
+                .mark_point(color=ink, filled=True, size=45, opacity=1.0)
+                .encode(x=_x(net_df, title=None), y=_y(title=None))
+                .properties(width=width, height=height)
             )
-            .encode(x=_x(knot_df, title=None), y=_y(title=None))
-            .properties(width=width, height=height)
-        )
 
         # The net line runs THROUGH the stack, so its labels land on top of
         # bars as often as on whitespace. Each one is drawn twice -- a fat
@@ -26524,150 +26218,12 @@ def _json_safe_spec_value(value: Any) -> Any:
     return value
 
 
-class _SpecInvariantError(RuntimeError):
-    """An engine-built spec violated an invariant the renderer depends on.
-
-    Deliberately NOT a ``ValidationError``: nothing the caller passed is
-    wrong, the engine mis-assembled the spec. It is raised on the render
-    path so the three ``_render_chart_to_png`` call sites convert it into
-    ``success=False`` plus an error mail, rather than letting a spec Vega
-    will refuse reach the rasteriser and come back as a blank canvas.
-    """
-
-
-# A strftime token is ``%`` followed by an optional flag and a letter
-# (``%Y``, ``%b``, ``%-d``). d3 NUMBER formats also contain ``%`` -- as the
-# trailing percent type in ``.1%`` -- so matching a bare ``%`` would reject
-# every percentage axis in the engine. The letter is the discriminator.
-_STRFTIME_TOKEN_RE = re.compile(r"%[-_0^#]?[A-Za-z]")
-
-# Channels whose tick/label plan is chosen from a scale, and therefore break
-# when the plan disagrees with the scale's type.
-_PLANNED_LABEL_SURFACES = ("axis", "header")
-
-# Below this many device pixels on either side, a render did not produce a
-# chart. vl-convert answers an unresolvable view with a ~20x20 blank rather
-# than raising, and every legitimate output is an order of magnitude larger:
-# the smallest composite cell in ``COMPOSITE_DIMENSIONS`` is 160 CSS px,
-# which is 320 device px before axis chrome at the default scale of 2.0.
-_MIN_RENDERED_CANVAS_PX = 64
-
-
-def _iter_spec_encodings(node: Any) -> Iterator[Tuple[str, Dict[str, Any]]]:
-    """Yield ``(channel, definition)`` for every encoding in a nested spec."""
-    if isinstance(node, list):
-        for item in node:
-            yield from _iter_spec_encodings(item)
-        return
-    if not isinstance(node, dict):
-        return
-    encoding = node.get("encoding")
-    if isinstance(encoding, dict):
-        for channel, definition in encoding.items():
-            if isinstance(definition, dict):
-                yield channel, definition
-    for key in ("layer", "hconcat", "vconcat", "concat", "spec", "facet"):
-        if key in node:
-            yield from _iter_spec_encodings(node[key])
-
-
-def _assert_temporal_plans_match_scales(spec: Dict[str, Any]) -> None:
-    """Reject a temporal tick plan sitting on a scale that is not temporal.
-
-    Vega refuses an interval ``tickCount`` on anything but a time or utc
-    scale, and d3 refuses a strftime string as a number format. Either one
-    aborts the whole view -- and because vl-convert reports the abort on the
-    process's stderr and still returns a valid blank PNG, nothing downstream
-    can tell the difference between that and a chart. The engine has shipped
-    ~100-byte 20x20 stubs with ``success=True`` on the back of exactly this.
-
-    The mismatch is always an internal wiring fault rather than bad input,
-    and it has a specific recurring source: a plan computed from one field
-    being applied to a channel that now carries a different field. The
-    grouped-bar path is the one that swaps channels (see ``_is_grouped_bar``),
-    so it is the one that keeps producing this, but the check is
-    channel-agnostic on purpose -- it should catch the next such path too.
-    """
-    for channel, definition in _iter_spec_encodings(spec):
-        if definition.get("type") == "temporal":
-            continue
-        field = definition.get("field", "<unnamed>")
-        for surface_key in _PLANNED_LABEL_SURFACES:
-            surface = definition.get(surface_key)
-            if not isinstance(surface, dict):
-                continue
-
-            tick_count = surface.get("tickCount")
-            if isinstance(tick_count, dict) and "interval" in tick_count:
-                raise _SpecInvariantError(
-                    f"Temporal tick interval on a non-temporal scale: "
-                    f"encoding.{channel}.{surface_key}.tickCount="
-                    f"{tick_count!r} but encoding.{channel} is typed "
-                    f"{definition.get('type')!r} on field {field!r}. Vega "
-                    f"raises 'Only time and utc scales accept interval "
-                    f"strings.' and renders nothing."
-                )
-
-            fmt = surface.get("format")
-            if isinstance(fmt, str) and _STRFTIME_TOKEN_RE.search(fmt):
-                raise _SpecInvariantError(
-                    f"Date format on a non-temporal scale: "
-                    f"encoding.{channel}.{surface_key}.format={fmt!r} but "
-                    f"encoding.{channel} is typed "
-                    f"{definition.get('type')!r} on field {field!r}. d3 "
-                    f"reads it as a number format and raises "
-                    f"'invalid format: {fmt}'."
-                )
-
-            label_expr = surface.get("labelExpr")
-            if isinstance(label_expr, str) and "timeFormat(" in label_expr:
-                raise _SpecInvariantError(
-                    f"timeFormat() labelExpr on a non-temporal scale: "
-                    f"encoding.{channel}.{surface_key}.labelExpr="
-                    f"{label_expr!r} but encoding.{channel} is typed "
-                    f"{definition.get('type')!r} on field {field!r}. Band "
-                    f"scales pass category indices, so every tick prints "
-                    f"'NaN:NaN'."
-                )
-
-
-def _assert_canvas_not_degenerate(png_bytes: bytes) -> None:
-    """Reject a rendered PNG too small to be a chart.
-
-    The backstop behind ``_assert_temporal_plans_match_scales``: that gate
-    knows one failure mode, this one knows the SHAPE every such failure
-    takes. Any spec Vega cannot resolve comes back as a tiny blank canvas
-    with no exception raised, so without a size check the engine's only
-    report is ``success=True`` and a handle to a file the user cannot read.
-    Per Principle #8, an artifact that is wrong but valid is worse than an
-    error, because a retry cannot be triggered by something nobody detected.
-    """
-    with Image.open(io.BytesIO(png_bytes)) as im:
-        width, height = im.size
-    if min(width, height) >= _MIN_RENDERED_CANVAS_PX:
-        return
-    raise _SpecInvariantError(
-        f"Render produced a degenerate {width}x{height} canvas "
-        f"({len(png_bytes)} bytes), which is a blank placeholder rather "
-        f"than a chart. vl-convert returns one of these instead of raising "
-        f"whenever the Vega view fails to resolve; the underlying error is "
-        f"on the renderer's stderr."
-    )
-
-
 def _render_chart_to_png(
     chart_or_spec: Any,
     scale: float = 2.0,
 ) -> bytes:
     """Render an Altair chart or Vega-Lite spec dict to PNG bytes via
     ``vl-convert-python`` (no Selenium dependency).
-
-    Guarded on both sides. Before rasterising, the spec is checked for a
-    tick plan that contradicts its scale; afterwards, the bytes are checked
-    for the degenerate canvas vl-convert hands back in place of an
-    exception. Both raise ``_SpecInvariantError``, which every call site
-    converts into ``success=False`` -- the engine must never return a handle
-    to an image that is not a chart.
     """
     import vl_convert as vlc  # type: ignore[import-not-found]
 
@@ -26691,10 +26247,7 @@ def _render_chart_to_png(
     else:
         spec = chart_or_spec.to_dict()  # last-resort duck typing
 
-    _assert_temporal_plans_match_scales(spec)
-    png_bytes = _compress_png(vlc.vegalite_to_png(vl_spec=spec, scale=scale))
-    _assert_canvas_not_degenerate(png_bytes)
-    return png_bytes
+    return _compress_png(vlc.vegalite_to_png(vl_spec=spec, scale=scale))
 
 
 # ===========================================================================

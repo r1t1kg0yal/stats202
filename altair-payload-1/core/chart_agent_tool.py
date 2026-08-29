@@ -103,46 +103,6 @@ diagnostics but quoting none of it.
 """
 
 
-# Fenced so a mechanical strip can take the block without reading it. Two
-# things follow: the block a reader sees stays clean, and a marker reaching an
-# answer is a defect a test can name rather than a judgement call about model
-# compliance.
-TRANSPORT_OPEN = "===CHART_IMAGE_TRANSPORT==="
-TRANSPORT_CLOSE = "===CHART_IMAGE_TRANSPORT_END==="
-
-# The one form core.gs_llm2._IMAGE_MARKER_RE reads. Written out here rather than
-# imported: the reader sits inside that module's promotion block, and a formatter
-# beside the regex is the SSOT this pair should collapse into.
-_IMAGE_MARKER = "[[image: {key}]]"
-
-# A report turn drives 15-25 exhibits through this one tool, so it would spend the
-# whole per-turn image budget (gs_llm2.IMAGE_PROMOTION_MAX_IMAGES) on exhibits nobody
-# asked to look at, and reach the cap before the writer wants any one of them.
-_TRAILER_SUPPRESSED_SPECIALIZATIONS = frozenset({
-    "report_planner", "report_worker", "report_writer", "report_proofreader",
-})
-
-
-def _image_transport_trailer(state, reply: str) -> str:
-    """Append the pixels of what this invocation rendered to the reply the caller reads.
-
-    Built from `ChartInvocation.delivered` -- the S3 keys `render_charts` recorded as
-    written -- so the caller sees its own renders whether or not the model copied a line.
-    """
-    from prism_mcp.utils.baggage import baggage_specialization_var
-
-    delivered = list(getattr(state, "delivered", ()) or ())
-    if not delivered or baggage_specialization_var.get() in _TRAILER_SUPPRESSED_SPECIALIZATIONS:
-        return reply
-
-    markers = "\n".join(_IMAGE_MARKER.format(key=key) for key in delivered)
-    return (f"{reply}\n\n{TRANSPORT_OPEN}\n"
-            f"{len(delivered)} render(s) attached for you to LOOK AT, appended by the tool "
-            f"and not by the renderer. Check each one says what you asked it to say. This "
-            f"block is transport: never paste any of it into an answer.\n"
-            f"{markers}\n{TRANSPORT_CLOSE}")
-
-
 def _chart_corpus() -> str:
     """Concatenate the chart hub and its spokes into one instruction block."""
     from context.loader import MODULES_DIR
@@ -202,5 +162,4 @@ def chart_agent_tool(worker_id: str, event_callback=None):
         cache_ttl=CACHE_TTL,
         effort=CHART_AGENT_EFFORT,
         invocation_state=ChartInvocation,
-        result_trailer=_image_transport_trailer,
     )

@@ -442,10 +442,10 @@ become nanoseconds after 1970 and the axis renders as a clock.
   automatically — do not pre-format it. Long windows thin the axis ticks to
   year (or coarser) labels the way a date column does. Do not pre-aggregate
   a long window to dodge dense bars: when periods pack tighter than a bar
-  can read, the engine draws the same signed stack as an area and keeps a
-  single net-line marker on the latest period. Period grain and per-period
-  totals are unchanged; only the mark differs. The net line, the zero rule,
-  and the per-period value labels are engine-supplied; `net` only needs naming when
+  can read, the engine drops the net-line markers and then closes the bar
+  gutters so the stack is a field rather than a comb. The period grain is
+  unchanged. The net line, the zero rule, and the
+  per-period value labels are engine-supplied; `net` only needs naming when
   the published total differs from the sum of the components. A named `net`
   column sits on the components' own axis — repeat the period's total on
   every row of that period, and keep it in the same unit as `y`, since a
