@@ -214,26 +214,16 @@ while you are building the frame, not after a refusal.
  table row, all columns ... ~140 total across the widest cell of each column
 ```
 
-**One number, 24, for every category name you write** — `bar`, `boxplot`,
-`waterfall`, `contribution`, `bullet`, profile ordinals, `donut` slices,
-heatmap rows and columns, and facet panel labels. There is nothing
-per-chart-type to remember here: if a string will be drawn as the name of a
-category, it gets 24 characters whichever mark ends up drawing it,
-standalone or in a composite cell. A label may also carry ONE newline for a
-deliberate two-line break (`'Q1 2024\nRevenue'`); each line then gets the
-same 24, and a third line is refused. Wrapping does not buy length — the
-engine re-wraps long bar labels for layout, but the cap is measured on the
-string you supplied.
-
-The one exception is the horizontal bar, whose category names run along
-the tall side of the canvas and have room: **40 characters** on
-`bar_horizontal`, and on a `bar` the engine flips horizontal because its
-labels do not fit along the x axis. The cap follows the orientation that
-will actually render, so a 30-character label that is refused on
-`mapping['orientation']='vertical'` renders on the same data unpinned (with
-a warning naming the flip) or as `bar_horizontal`. The error names the
-family — `VERTICAL BAR` at 24, `HORIZONTAL BAR` at 40 — so read the cap
-from it rather than shortening by reflex.
+**One number, 24, for every category name you write** — `bar`,
+`bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile
+ordinals, `donut` slices, heatmap rows and columns, and facet panel labels.
+There is nothing per-chart-type to remember here: if a string will be drawn
+as the name of a category, it gets 24 characters whichever mark ends up
+drawing it, standalone or in a composite cell. A label may also carry ONE
+newline for a deliberate two-line break (`'Q1 2024\nRevenue'`); each line
+then gets the same 24, and a third line is refused. Wrapping does not buy
+length — the engine re-wraps long bar labels for layout, but the cap is
+measured on the string you supplied.
 
 Colour-legend entries take that same 24, but only where a legend actually
 renders (dual-axis, facets, `legend=True`, donut, bar-with-color). Standalone
@@ -302,8 +292,7 @@ number of categories — not to pick a bigger preset, and not to rename things.
 | Axis title (`y_title`, `y_title_right`, `x_title`) | 28 characters, on either axis | Aim for concise metric + unit |
 | Legend title (`color_title`, `size_title`) | 28 characters — same budget as an axis title, because it is the same kind of string | Pass a shorter `color_title` / `size_title` |
 | Auto end-label series name | 32 characters — the cap when a line / area chart paints series names at the right edge instead of a colour legend | Rename categories before charting |
-| Any category label — `bar`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile ordinals, `donut` slices, heatmap rows and columns, facet panel labels | 24 characters on the longest line, and at most 2 lines. One number for every nominal label, standalone or in a composite cell | Abbreviate in the DataFrame. The error quotes each offender with its length and suggests abbreviations where the name has an acronym or word boundary to exploit |
-| Horizontal bar category label — `bar_horizontal`, and a `bar` the engine flips horizontal | 40 characters on the longest line, at most 2 lines; the error says `HORIZONTAL BAR` | Abbreviate in the DataFrame, or if the label was refused at 24 as `VERTICAL BAR` under a pinned `orientation='vertical'`, unpin it or request `bar_horizontal` |
+| Any category label — `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile ordinals, `donut` slices, heatmap rows and columns, facet panel labels | 24 characters on the longest line, and at most 2 lines. One number for every nominal label, standalone or in a composite cell | Abbreviate in the DataFrame. The error quotes each offender with its length and suggests abbreviations where the name has an acronym or word boundary to exploit |
 | Heatmap row or column label | The same 24, and less on a narrow canvas — the gutter budget applies on top and the usable number is reported in the error | Abbreviate in the DataFrame. Only applies when the error names a specific string; a row-COUNT failure is §5.2 fit, not length |
 | Heatmap rows vs canvas height | Each row needs one label line, so a fixed cell fits `height / 15` rows | Drop the `dimensions` kwarg and let the engine size the canvas; inside a fixed cell, aggregate or take the top-N. Renaming rows buys nothing |
 | Named categories vs canvas (every nominal axis: `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile-line ordinals, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, never clips one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime, and including `bar` x values that are house period labels (`Jan-21`, `Jan 21`, `16Q1`, `2016Q1`) or a datetime column the caller marked `x_type='ordinal'`. Profile ordinals never rotate past -45 and thin which ticks are drawn instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap (no help on a symmetric matrix — the engine says so), or switch to `bar_horizontal` for long lists |
@@ -406,8 +395,7 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `size` | `scatter`: column name bound to the dot-size channel for a bubble scatter. Always pair it with `size_title` |
 | `connect`, `order` | Ordered scatter path; incompatible with trendline. `order` is required on a numeric or temporal `x` and inferred from the category order on an ordinal one |
 | `zero_fill`, `zero_fill_baseline` | Single-line above/below-baseline fill |
-| `stack` | `bar`/`area` with colour: stacked by default; `False` groups/layers. A stacked bar stacks in legend order — the first legend entry is the top segment on a vertical bar and the leftmost on a horizontal one — so `color_sort` orders both at once |
-| `segment_labels` | `bar` / `bar_horizontal` stacked by colour: `True` paints each segment's own value at its midpoint, in white or dark ink by the segment's fill; the vertical bar keeps its stack total above the bar as well. A segment too short to hold its number is left unlabelled and named on `warnings` (`Segment labels: N of M segment(s) are too short ...`) rather than overprinted — widen the chart or aggregate the smallest segments to label them all. Bool only; refused on a bar with no colour, a grouped (`stack=False`) bar, or any other chart type; ignored with a warning when the stacked column has negative values. A `PointLabel` restating a segment's value is absorbed the same way one restating a bar total is |
+| `stack` | `bar`/`area` with colour: stacked by default; `False` groups/layers |
 | `strokeDash`, `strokeDashScale`, `strokeDashLegend` | Single-axis line-style encoding |
 | `value`, `theta`, `type` | Heatmap value, donut magnitude, waterfall type |
 | `y_low`, `y_high` | `band` interval bounds; equal-length lists give nested levels, paired by position (`y_low[0]` with `y_high[0]`) |
@@ -416,7 +404,7 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `color_sort` on `contribution` | Sets stack order as well as legend order — first entry sits nearest the zero line |
 | `bins` / `maxbins`, `bin_extent` | Histogram bins and range |
 | `extent` | Boxplot whisker IQR multiplier; default 1.5 |
-| `scale_type` | `linear` / `log` on `multi_line`, `timeseries`, `area`, `scatter`, `bar`, `bar_horizontal`. Both values are honoured and override the default and auto-detection, so `linear` is how you turn an auto-log axis off. Pass the raw column — never `np.log10` it yourself; the engine draws the axis in real units (`1 / 10 / 100 / 1,000`), labels each bar with its true value at its own precision (`432,000` beside `0.07` on one axis) and spaces end-of-line labels on the log axis. Lines and scatter need every y value > 0 and are refused otherwise; their axis runs from a labelled tick at or under the smallest value to one at or over the largest, on a complete `1 / 2 / 5` ladder (`2, 5, 10, 20, 50 ...`, powers of ten only past three decades), so no series sits below the lowest label. Bars accept zero: a zero row draws as a mark at the axis floor with its value labelled and is named on `warnings`; negatives are refused, and so are stacked colour bars (one bar per category with a colour is fine; `stack=False` groups). A log bar axis also needs the positive values to span at least one decade (a factor of 10 between the smallest positive and the largest) — under that a linear axis reads better and the request is refused toward it, which also means a single-bar chart cannot take `log`. `area` with a colour column is refused on `log` — a stacked total on a log axis is not a chart of any series; use `multi_line` with the same mapping. Any other chart type refuses the kwarg rather than ignoring it |
+| `scale_type` | `linear` / `log` on `multi_line`, `timeseries`, `area`, `scatter`, `bar`, `bar_horizontal`. Both values are honoured and override the default and auto-detection, so `linear` is how you turn an auto-log axis off. Pass the raw column — never `np.log10` it yourself; the engine draws the axis in real units (`1 / 10 / 100 / 1,000`), labels bars with their true values and spaces end-of-line labels on the log axis. Lines and scatter need every y value > 0 and are refused otherwise. Bars accept zero: a zero row draws as a mark at the axis floor with its value labelled and is named on `warnings`; negatives are refused, and so are stacked colour bars (one bar per category with a colour is fine; `stack=False` groups). `area` with a colour column is refused on `log` — a stacked total on a log axis is not a chart of any series; use `multi_line` with the same mapping. Any other chart type refuses the kwarg rather than ignoring it |
 | `orientation` | `bar`: force `vertical` instead of automatic horizontal routing |
 | `x_low`, `x_high`, `color_by`, `label`, `marker_size` | Bullet range, marker colour metric, optional label, marker area (default 200) |
 | `dual_axis_series`, `dual_axis_bind`, `invert_right_axis` | See `chart_context_dual_axis.md`; `dual_axis_config` is engine-managed |
@@ -439,20 +427,10 @@ become nanoseconds after 1970 and the axis renders as a clock.
   `x_title` / `y_title`. The size legend prints the column name if
   `size_title` is omitted.
 - `bar` / `bar_horizontal` are categorical comparisons. Mixed value units on
-  one bar axis raise. Every bar carries the engine's value label, grouped
-  bars (`stack=False`) included; grouped bars also take value-axis
-  reference lines (`HLine` on a vertical, `VLine` on a horizontal) and drop
-  every other annotation with a reason on `warnings`. On any bar, a
-  `PointLabel` / `Callout` that restates the bar's own number is absorbed
-  into the engine label, and one that adds information (`vs 71 LY`,
-  `record`) is kept and drawn in the engine's value-label style unless you
-  set a colour or size on it. Values spanning orders of magnitude (1 day
-  beside 1,500; 14 beside 87,910) take `scale_type='log'` on the raw
-  column: real-unit ticks, each label at its own precision, zero rows
-  marked at the axis floor and reported. Values inside one decade stay
-  linear — `log` is refused there. A single-category vertical bar drops the
-  derived x-axis title, which would otherwise stack under the lone tick
-  and read as one two-line label; pass `x_title` if you want it.
+  one bar axis raise. Grouped bars (`stack=False`) do not render annotations.
+  Values spanning orders of magnitude (1 day beside 1,500; 14 beside 87,910)
+  take `scale_type='log'` on the raw column: real-unit ticks, true-value
+  labels, zero rows marked at the axis floor and reported.
 - `heatmap` accepts tidy long data, an unambiguous wide frame, or a meaningful
   indexed matrix. Numeric values use a quantitative scale; categorical bins
   may have at most 10 ordered labels via `value_sort`.

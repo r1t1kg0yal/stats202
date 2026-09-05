@@ -635,7 +635,6 @@ _PUBLIC_CHART_MAPPING_KEYS: frozenset = frozenset({
     "label", "legend", "marker_size", "maxbins",
     "net", "net_label",
     "opacity", "opacity_map", "order", "orientation", "scale_type",
-    "segment_labels",
     "size", "size_title", "stack", "strokeDash", "strokeDashLegend",
     "strokeDashScale", "theta", "trendline", "trendlines",
     "type", "value", "value_sort",
@@ -653,7 +652,6 @@ _ENGINE_ONLY_CHART_MAPPING_KEYS: frozenset = frozenset({
     "_bar_category_wrap_map",
     "_bar_value_labels_forced",
     "_grouped_bar_rules",
-    "_log_axis_ticks",
     "_log_value_domain",
     "_chart_height_px",
     "_chart_width_px",
@@ -1484,16 +1482,6 @@ _NOMINAL_LABEL_MAX_CHARS = 24
 # more verbose label.
 _NOMINAL_LABEL_MAX_LINES = 2
 
-# Horizontal bars read their category names down the page in a gutter that
-# grows to fit, so the width argument behind the 24-character cap does not
-# apply to them: the row pitch is set by the count of categories, not by
-# the length of their names. Long names are the reason a caller reaches for
-# the orientation in the first place, and ``_build_bar`` itself routes long
-# labels here. The cap that remains is editorial -- past 40 characters a
-# tick label is a sentence, and the gutter it demands leaves the bars no
-# room to differ. Vertical bars and every other surface keep the 24.
-_HBAR_LABEL_MAX_CHARS = 40
-
 # Absolute char ceiling for heatmap row / column labels. Same editorial
 # object as every other nominal label, so the same number; the heatmap's
 # own gutter and per-column pixel math still applies on top via ``min()``
@@ -1819,8 +1807,7 @@ def _validate_nominal_labels(
     Two independent limits, both measured on the string the CALLER supplied
     rather than on the post-wrap render:
 
-    * longest LINE over ``surface.max_chars`` -- the width problem. Every
-      surface but the horizontal bar carries ``_NOMINAL_LABEL_MAX_CHARS``.
+    * longest LINE over ``_NOMINAL_LABEL_MAX_CHARS`` -- the width problem.
     * more than ``_NOMINAL_LABEL_MAX_LINES`` lines -- the height problem,
       and the way a caller would otherwise route around the width cap.
 
@@ -1830,13 +1817,12 @@ def _validate_nominal_labels(
     cheaper fix and the one a caller can apply without knowing the canvas,
     so it is the one reported first.
     """
-    max_chars = surface.max_chars
     str_labels = [str(label) for label in labels]
     too_wide: List[str] = []
     too_tall: List[str] = []
     for label in dict.fromkeys(str_labels):  # de-dupe, preserve order
         longest, n_lines = _label_line_shape(label)
-        if longest > max_chars:
+        if longest > _NOMINAL_LABEL_MAX_CHARS:
             too_wide.append(label)
         elif n_lines > _NOMINAL_LABEL_MAX_LINES:
             too_tall.append(label)
@@ -1853,7 +1839,7 @@ def _validate_nominal_labels(
             for label in shown
         )
         suggestions = [
-            (label, _suggest_label_abbreviations(label, cap=max_chars))
+            (label, _suggest_label_abbreviations(label))
             for label in shown[:3]
         ]
         suggestion_block = "\n".join(
@@ -1866,7 +1852,7 @@ def _validate_nominal_labels(
         message = (
             f"{surface.family} {unit.upper()}-LABEL ERROR: {unit} labels in "
             f"field '{category_field}' exceed the "
-            f"{max_chars}-character cap "
+            f"{_NOMINAL_LABEL_MAX_CHARS}-character cap "
             f"({len(offenders)} offender(s), longest line is {widest} ch). "
             f"This is a LENGTH limit, not a fit limit -- a wider canvas will "
             f"not admit them. Shorten the labels in the DataFrame before "
@@ -1895,7 +1881,7 @@ def _validate_nominal_labels(
             f"typography; a taller stack eats the plot region and cannot be "
             f"read across neighbouring ticks. Use at most "
             f"{_NOMINAL_LABEL_MAX_LINES} lines of "
-            f"{max_chars} characters.\n"
+            f"{_NOMINAL_LABEL_MAX_CHARS} characters.\n"
             f"Offenders ({len(shown)} of {len(too_tall)} shown):\n"
             f"{offender_block}"
         ),
@@ -1909,53 +1895,22 @@ def _validate_bar_category_labels(
     labels: List[str],
     category_field: str,
     mapping: Dict[str, Any],
-    surface: "_NominalAxisSurface",
 ) -> None:
     """Validate bar chart category label lengths.
 
-    Applies to all bar chart types -- plain, grouped (``color`` +
-    ``stack=False``), stacked (``color`` + ``stack=True``), and composite
-    cells. The cap follows the orientation the chart will actually render
-    in: ``_build_bar`` passes ``_BAR_SURFACE`` for a vertical bar and
-    ``_build_bar_horizontal`` passes ``_HBAR_SURFACE`` whether it was asked
-    for directly or reached through the vertical builder's auto-flip.
+    Applies to all bar chart types -- plain vertical, plain horizontal,
+    grouped (``color`` + ``stack=False``), stacked (``color`` +
+    ``stack=True``), and composite cells. Same cap regardless of
+    orientation, called from the top of ``_build_bar`` (for nominal x)
+    and ``_build_bar_horizontal`` (for nominal y).
     """
-    _validate_nominal_labels(labels, category_field, mapping, surface)
-
-
-def _bar_would_auto_flip(
-    raw_labels: Sequence[str],
-    mapping: Dict[str, Any],
-    width: int,
-) -> bool:
-    """The vertical builder's reroute-to-horizontal predicate.
-
-    Long category names do not fit along a vertical bar's x axis: any label
-    over 20 characters, or an average over 12 on a chart dense enough that
-    the bars would sit closer than 100px, sends ``chart_type='bar'`` to
-    ``_build_bar_horizontal``. ``mapping['orientation']='vertical'`` pins
-    the requested orientation.
-
-    One predicate, three readers: the builder that flips, the pre-flight
-    pass that has to know which builder's gates will run, and the nominal
-    label collector that has to apply the cap of the orientation the chart
-    will render in.
-    """
-    if mapping.get("orientation") == "vertical":
-        return False
-    if not raw_labels:
-        return False
-    avg_len = sum(len(l) for l in raw_labels) / len(raw_labels)
-    max_len = max(len(l) for l in raw_labels)
-    n_bars = len(raw_labels)
-    return max_len > 20 or (avg_len > 12 and n_bars * 100 > width)
+    _validate_nominal_labels(labels, category_field, mapping, _BAR_SURFACE)
 
 
 def _nominal_label_surfaces(
     df: pd.DataFrame,
     chart_type: str,
     mapping: Dict[str, Any],
-    width: int,
 ) -> List[Tuple[List[str], str, "_NominalAxisSurface"]]:
     """Every nominal label surface this chart draws, for cap validation.
 
@@ -1963,11 +1918,6 @@ def _nominal_label_surfaces(
     category labels", so the cap reaches a new chart family by adding a row
     here rather than by growing another branch inside the pre-flight
     collector. Returns ``(labels, field, surface)`` triples.
-
-    A ``bar`` request is routed by the orientation it will render in: when
-    ``_bar_would_auto_flip`` says the vertical builder will hand it to the
-    horizontal one, the horizontal cap applies and the message names
-    HORIZONTAL BAR, because that is the chart the caller gets.
 
     Heatmaps are deliberately absent: ``_validate_heatmap_row_labels`` and
     its column sibling already enforce the same cap and combine it with
@@ -1994,14 +1944,9 @@ def _nominal_label_surfaces(
 
     out: List[Tuple[List[str], str, "_NominalAxisSurface"]] = []
     if chart_type == "bar_horizontal" and _present(y_field):
-        out.append((_uniques(y_field), y_field, _HBAR_SURFACE))
+        out.append((_uniques(y_field), y_field, _BAR_SURFACE))
     elif chart_type == "bar" and _is_nominal(x_field):
-        labels = _uniques(x_field)
-        surface = (
-            _HBAR_SURFACE if _bar_would_auto_flip(labels, mapping, width)
-            else _BAR_SURFACE
-        )
-        out.append((labels, x_field, surface))
+        out.append((_uniques(x_field), x_field, _BAR_SURFACE))
     elif chart_type == "contribution" and _present(x_field):
         out.append((_uniques(x_field), x_field, _CONTRIBUTION_SURFACE))
     elif chart_type == "boxplot" and _is_nominal(x_field):
@@ -4719,7 +4664,7 @@ def _collect_content_findings(
 
     # ---- nominal label caps (every family, one rule) ----------------------
     for labels, field, surface in _nominal_label_surfaces(
-        df, chart_type, mapping, width,
+        df, chart_type, mapping,
     ):
         try:
             _validate_nominal_labels(labels, field, mapping, surface)
@@ -4734,10 +4679,16 @@ def _collect_content_findings(
         and not pd.api.types.is_datetime64_any_dtype(df[x_field])
         and not pd.api.types.is_numeric_dtype(df[x_field])
     ):
-        # When long-but-legal labels reroute the chart to the horizontal
-        # builder, the grouped path (and its cell budget) never runs.
-        bar_would_flip = _bar_would_auto_flip(
-            [str(v) for v in df[x_field].unique()], mapping, width,
+        # Mirror the builder's auto-flip predicate: when long-but-legal
+        # labels reroute the chart to the horizontal builder, the grouped
+        # path (and its cell budget) never runs.
+        raw_labels = [str(v) for v in df[x_field].unique()]
+        avg_len = sum(len(l) for l in raw_labels) / max(len(raw_labels), 1)
+        max_len = max((len(l) for l in raw_labels), default=0)
+        n_bars = len(raw_labels)
+        bar_would_flip = (
+            (max_len > 20 or (avg_len > 12 and n_bars * 100 > width))
+            and mapping.get("orientation") != "vertical"
         )
 
     # ---- legend title ------------------------------------------------------
@@ -7203,9 +7154,6 @@ class PointLabel(Annotation):
     # must keep treating x as pinned rather than granting the x budget a
     # user-authored PointLabel gets.
     _x_is_semantic: bool = field(default=False, repr=False)
-    # Internal: set by the bar arbitration when an unstyled caption is
-    # restyled to match the engine's value labels, which are bold.
-    _font_weight: Optional[str] = field(default=None, repr=False)
 
     def to_layer(
         self,
@@ -7234,8 +7182,6 @@ class PointLabel(Annotation):
             dy=dy,
             fontSize=self.font_size,
         )
-        if self._font_weight:
-            mark_kwargs["fontWeight"] = self._font_weight
         if baseline:
             mark_kwargs["baseline"] = baseline
         encoding: Dict[str, Any] = dict(
@@ -9486,39 +9432,6 @@ def _caption_to_default_colour(ann: "Annotation") -> "Annotation":
     return replace(ann, label_color=None)
 
 
-# How the bar builders paint their own value labels. A caption that
-# survives arbitration on a bar chart that also carries engine labels is
-# restyled to this unless the caller styled it, so one chart reads in one
-# label style.
-_BAR_VALUE_LABEL_COLOR = "#222222"
-_BAR_VALUE_LABEL_FONT_SIZE = 11
-
-
-def _caption_is_unstyled(ann: "Annotation") -> bool:
-    """True when the caller left every visual field of the caption at its default."""
-    if isinstance(ann, PointLabel):
-        return ann.label_color is None and ann.font_size == 10
-    if isinstance(ann, Callout):
-        return (
-            ann.label_color is None and ann.color == "#333333"
-            and ann.font_size == 10 and ann.font_weight == "normal"
-        )
-    return False
-
-
-def _caption_in_bar_value_style(ann: "Annotation") -> "Annotation":
-    """Restyle an unstyled caption to the engine's bar value-label style."""
-    if isinstance(ann, PointLabel):
-        return replace(
-            ann, label_color=_BAR_VALUE_LABEL_COLOR,
-            font_size=_BAR_VALUE_LABEL_FONT_SIZE, _font_weight="bold",
-        )
-    return replace(
-        ann, color=_BAR_VALUE_LABEL_COLOR,
-        font_size=_BAR_VALUE_LABEL_FONT_SIZE, font_weight="bold",
-    )
-
-
 def _arbitrate_bar_labels(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -9597,22 +9510,18 @@ def _arbitrate_bar_labels(
     # The numbers the ENGINE will paint per category -- a caption is only
     # absorbed when the engine's own label replaces it. Single-series and
     # grouped bars label every bar; the vertical stacked bar labels each
-    # stack's total (and holds back entirely on mixed-sign data); with
-    # ``segment_labels`` on, either stacked orientation also labels every
-    # segment. The horizontal stacked bar paints no totals, so a total
-    # caption there is the caller's to keep.
+    # stack's total (and holds back entirely on mixed-sign data); the
+    # horizontal stacked bar paints no labels, so a segment caption there
+    # is the caller's to keep.
     values_by_cat: Dict[str, List[float]] = {}
     # Where each bar visibly ends along the value axis (its value, or the
     # positive stack total), for deciding whether a caption sits at the
     # end of the bar or inside it.
     bar_end_by_cat: Dict[str, float] = {}
     stacked = bool(color_field) and not grouped
-    engine_labels_totals = engine_labels_segments = False
     if pd.api.types.is_numeric_dtype(df[val_field]):
-        signed = (df[val_field] < 0).any()
-        engine_labels_totals = stacked and not horizontal and not signed
-        engine_labels_segments = (
-            stacked and not signed and mapping.get("segment_labels") is True
+        engine_labels_totals = (
+            stacked and not horizontal and not (df[val_field] < 0).any()
         )
         for cat, group in df.groupby(cat_field, sort=False)[val_field]:
             vals = [float(v) for v in group.dropna()]
@@ -9621,12 +9530,7 @@ def _arbitrate_bar_labels(
                     sum(v for v in vals if v > 0) if stacked else max(vals)
                 )
             if stacked:
-                painted: List[float] = []
-                if engine_labels_totals:
-                    painted.append(sum(vals))
-                if engine_labels_segments:
-                    painted.extend(vals)
-                vals = painted
+                vals = [sum(vals)] if engine_labels_totals else []
             values_by_cat[_bar_category_key(cat)] = vals
     # The value axis reaches at least the longest bar; using exactly that
     # under-estimates every bar's pixel length a little, which errs on the
@@ -9771,27 +9675,6 @@ def _arbitrate_bar_labels(
             f"value label on every bar instead, so each number paints once.",
         )
 
-    # One label style per chart. Where the engine paints value labels --
-    # bold, dark, 11px -- a surviving caption on another bar is the same
-    # kind of object and read as a second, smaller, blue label style when
-    # left at PointLabel's point-annotation defaults. A caption the caller
-    # styled (colour, size, weight) is theirs and keeps that styling.
-    engine_paints = (
-        engine_labels_totals or engine_labels_segments
-        or (
-            not color_field
-            and (len(canonical) <= (25 if horizontal else 15) or bool(absorbed))
-        )
-    )
-    if engine_paints and categorical_axis and not grouped:
-        for i, ann in enumerate(kept):
-            if (
-                isinstance(ann, (PointLabel, Callout))
-                and getattr(ann, point_cat_attr, None) is not None
-                and _caption_is_unstyled(ann)
-            ):
-                kept[i] = _caption_in_bar_value_style(ann)
-
     if grouped:
         rules: List[Annotation] = []
         dropped: List[str] = []
@@ -9844,192 +9727,13 @@ def _arbitrate_bar_labels(
     return kept
 
 
-# Column the bar builders add to the frame on a log value axis: every row's
-# value pre-rendered by ``_format_log_value_label``. Vega-Lite applies one
-# ``format`` per text layer, so per-datum precision has to arrive as text.
-_BAR_LOG_LABEL_FIELD = "_bar_label"
-
-
-def _bar_value_text(
-    value_field: str, value_fmt: Optional[str], label_field: Optional[str],
-) -> alt.Text:
-    """The text channel for a bar value label.
-
-    On a linear axis the numeric column is formatted by Vega-Lite with one
-    ``value_fmt`` for the layer. On a log axis ``label_field`` names the
-    pre-rendered per-datum strings and is encoded nominally.
-    """
-    if label_field:
-        return alt.Text(label_field, type="nominal")
-    return alt.Text(value_field, type="quantitative", format=value_fmt)
-
-
-# Segment labels on a stacked bar: one text per segment, set at the
-# segment's midpoint in a colour that reads against its fill.
-_SEGMENT_MID_FIELD = "_seg_mid"
-_SEGMENT_LABEL_FIELD = "_seg_label"
-_SEGMENT_LABEL_FONT_SIZE = 10
-# Clearance between the text box and the segment's edges, each side.
-_SEGMENT_LABEL_PAD_PX = 3.0
-# Fills darker than this luminance take white text; lighter take the
-# default dark text. The GS palette's navy and mid blues sit well below,
-# its light blue and greys well above.
-_SEGMENT_LABEL_LIGHT_FILL_LUMINANCE = 0.40
-
-
-def _stacked_segment_fill_by_category(
-    df: pd.DataFrame,
-    color_field: str,
-    mapping: Dict[str, Any],
-    skin_config: Dict[str, Any],
-    color_sort: Optional[Sequence[Any]],
-) -> Dict[str, str]:
-    """The hex each colour category renders in, as the bar layer resolves it.
-
-    Mirrors ``_resolve_categorical_color_scale``: an explicit domain/range
-    pairs directly; a range-only scale is assigned in legend (``sort``)
-    order, which is how the bar layer encodes it.
-    """
-    scale = _resolve_categorical_color_scale(mapping, skin_config, color_field, df)
-    domain = getattr(scale, "domain", None)
-    rng = getattr(scale, "range", None)
-    out: Dict[str, str] = {}
-    if (
-        isinstance(domain, (list, tuple)) and domain
-        and isinstance(rng, (list, tuple)) and rng
-    ):
-        for d, r in zip(domain, rng):
-            out[str(d)] = str(r)
-    elif isinstance(rng, (list, tuple)) and rng:
-        legend_order = [str(v) for v in (color_sort or [])]
-        for v in df[color_field].astype(str):
-            if v not in legend_order:
-                legend_order.append(v)
-        for i, name in enumerate(legend_order):
-            out[name] = str(rng[i % len(rng)])
-    return out
-
-
-def _stacked_segment_label_layers(
-    df: pd.DataFrame,
-    *,
-    category_field: str,
-    value_field: str,
-    color_field: str,
-    color_sort: Optional[Sequence[Any]],
-    horizontal: bool,
-    value_axis_px: int,
-    category_type: str,
-    category_sort: Any,
-    mapping: Dict[str, Any],
-    skin_config: Dict[str, Any],
-) -> List[alt.Chart]:
-    """Text layers labelling every segment of a stacked bar that can hold one.
-
-    ``mapping['segment_labels']=True`` asks for the value inside each
-    segment; the stack total the builder already paints stays. Each
-    segment's midpoint is computed here from the same order the bar layer
-    stacks in (``_STACK_ORDER_FIELD``), so the text lands on its own
-    segment. A segment shorter than its label -- height on a vertical bar,
-    width on a horizontal one -- is left unlabelled and named on
-    ``result.warnings``: a label straddling two segments is a wrong
-    number, not a tight one. Text is white on dark fills and dark on light
-    ones, decided per segment from the palette the bars resolve to.
-    """
-    if (df[value_field] < 0).any():
-        _note(
-            mapping,
-            "segment_labels ignored: the stacked column has negative values, "
-            "and a segment label has no single position on a bar that grows "
-            "both ways from zero. Split the signs into separate charts to "
-            "label segments.",
-        )
-        return []
-    work = df[[category_field, value_field, color_field, _STACK_ORDER_FIELD]].copy()
-    work = work.sort_values([category_field, _STACK_ORDER_FIELD], kind="stable")
-    work["_seg_upper"] = work.groupby(category_field, sort=False)[value_field].cumsum()
-    work[_SEGMENT_MID_FIELD] = work["_seg_upper"] - work[value_field] / 2.0
-    work[_SEGMENT_LABEL_FIELD] = work[value_field].map(_smart_format_value)
-
-    extent = float(work.groupby(category_field)[value_field].sum().max() or 0.0)
-    if extent <= 0:
-        return []
-    px_per_unit = value_axis_px / extent
-    fits: List[bool] = []
-    for value, label in zip(work[value_field], work[_SEGMENT_LABEL_FIELD]):
-        try:
-            text_w, text_h = _lp_measure(label, _SEGMENT_LABEL_FONT_SIZE, "bold")
-        except Exception:  # noqa: BLE001
-            text_w = len(label) * _SEGMENT_LABEL_FONT_SIZE * 0.6
-            text_h = _SEGMENT_LABEL_FONT_SIZE * 1.2
-        need = (text_w if horizontal else text_h) + 2 * _SEGMENT_LABEL_PAD_PX
-        fits.append(float(value) * px_per_unit >= need)
-    work["_fits"] = fits
-    dropped = work[~work["_fits"]]
-    if len(dropped):
-        names = [
-            f"{c} / {s} = {label}"
-            for c, s, label in zip(
-                dropped[category_field], dropped[color_field],
-                dropped[_SEGMENT_LABEL_FIELD],
-            )
-        ]
-        _note(
-            mapping,
-            f"Segment labels: {len(dropped)} of {len(work)} segment(s) are too "
-            f"{'narrow' if horizontal else 'short'} to hold their label and "
-            f"were left unlabelled ({'; '.join(names[:6])}"
-            f"{'; ...' if len(names) > 6 else ''}). The stack total still "
-            f"labels each bar; widen the chart or aggregate the smallest "
-            f"segments to label them all.",
-        )
-    work = work[work["_fits"]]
-    if not len(work):
-        return []
-
-    fills = _stacked_segment_fill_by_category(
-        df, color_field, mapping, skin_config, color_sort,
-    )
-
-    def _light_text(series_name: Any) -> bool:
-        lum = _relative_luminance(fills.get(str(series_name)))
-        return lum is not None and lum < _SEGMENT_LABEL_LIGHT_FILL_LUMINANCE
-
-    work["_light"] = work[color_field].map(_light_text)
-    layers: List[alt.Chart] = []
-    for light, colour in ((True, "white"), (False, "#222222")):
-        rows = work[work["_light"] == light]
-        if not len(rows):
-            continue
-        rows = rows[[category_field, _SEGMENT_MID_FIELD, _SEGMENT_LABEL_FIELD]]
-        mark = alt.Chart(rows).mark_text(
-            align="center", baseline="middle",
-            fontSize=_SEGMENT_LABEL_FONT_SIZE, fontWeight="bold",
-            color=colour,
-        )
-        if horizontal:
-            layers.append(mark.encode(
-                y=alt.Y(category_field, type="nominal", sort=category_sort),
-                x=alt.X(_SEGMENT_MID_FIELD, type="quantitative"),
-                text=alt.Text(_SEGMENT_LABEL_FIELD, type="nominal"),
-            ))
-        else:
-            layers.append(mark.encode(
-                x=alt.X(category_field, type=category_type, sort=category_sort),
-                y=alt.Y(_SEGMENT_MID_FIELD, type="quantitative"),
-                text=alt.Text(_SEGMENT_LABEL_FIELD, type="nominal"),
-            ))
-    return layers
-
-
 def _bar_value_label_font(
     values: pd.Series,
-    value_fmt: Optional[str],
+    value_fmt: str,
     pitch_px: float,
     *,
     along_axis: str,
     base_font_size: int = 11,
-    labels: Optional[Sequence[str]] = None,
 ) -> Optional[int]:
     """Largest font at which every value label fits its bar's pitch.
 
@@ -10039,23 +9743,14 @@ def _bar_value_label_font(
     labels sit past the bar end, so the text height must fit the row
     pitch. Steps down from ``base_font_size`` to 8; ``None`` means even
     8px does not fit and the caller should omit the labels and say so.
-
-    ``labels`` are the strings that will actually be drawn when the caller
-    has pre-rendered them (the log-axis path); otherwise every value is
-    formatted with ``value_fmt``.
     """
-    if labels is not None:
-        rendered = [str(s) for s in labels if s is not None and str(s) != ""]
-        if not rendered:
-            return None
-    else:
-        clean = pd.to_numeric(values, errors="coerce").dropna()
-        if len(clean) == 0:
-            return None
-        try:
-            rendered = [format(float(v), value_fmt or "") for v in clean]
-        except (TypeError, ValueError):
-            rendered = [str(v) for v in clean]
+    clean = pd.to_numeric(values, errors="coerce").dropna()
+    if len(clean) == 0:
+        return None
+    try:
+        rendered = [format(float(v), value_fmt) for v in clean]
+    except (TypeError, ValueError):
+        rendered = [str(v) for v in clean]
     widest = max(rendered, key=len)
     for fs in range(int(base_font_size), 7, -1):
         try:
@@ -10081,7 +9776,6 @@ def _grouped_bar_value_layers(
     per_bar_px: float,
     horizontal: bool,
     mapping: Dict[str, Any],
-    label_field: Optional[str] = None,
 ) -> List[alt.Chart]:
     """Engine value labels for one grouped-bar facet cell.
 
@@ -10092,16 +9786,11 @@ def _grouped_bar_value_layers(
     single-series bar so a grouped chart reads like its neighbours.
     When no font down to 8px fits the bar pitch the labels are omitted
     and the omission is reported on ``_engine_notes``.
-
-    ``label_field`` names a pre-rendered text column (the log-axis path,
-    where each bar is formatted from its own magnitude); otherwise the
-    value column is formatted with one magnitude-aware format.
     """
-    value_fmt = None if label_field else _smart_number_format(df_cells[value_field])
+    value_fmt = _smart_number_format(df_cells[value_field])
     fs = _bar_value_label_font(
         df_cells[value_field], value_fmt, per_bar_px,
         along_axis="y" if horizontal else "x",
-        labels=list(df_cells[label_field]) if label_field else None,
     )
     if fs is None:
         n_bars = int(df_cells[category_field].nunique()) * max(
@@ -10116,7 +9805,6 @@ def _grouped_bar_value_layers(
         )
         return []
     text_kwargs = dict(fontSize=fs, fontWeight="bold")
-    text_enc = _bar_value_text(value_field, value_fmt, label_field)
     if horizontal:
         cat_enc = alt.Y(color_field, type="nominal", sort=color_sort)
         pos = (
@@ -10126,7 +9814,7 @@ def _grouped_bar_value_layers(
             .encode(
                 y=cat_enc,
                 x=alt.X(position_field, type="quantitative"),
-                text=text_enc,
+                text=alt.Text(value_field, type="quantitative", format=value_fmt),
             )
         )
         neg = (
@@ -10137,7 +9825,7 @@ def _grouped_bar_value_layers(
             .encode(
                 y=cat_enc,
                 x=alt.X("_anchor_x", type="quantitative"),
-                text=text_enc,
+                text=alt.Text(value_field, type="quantitative", format=value_fmt),
             )
         )
         return [pos, neg]
@@ -10149,7 +9837,7 @@ def _grouped_bar_value_layers(
         .encode(
             x=cat_enc_x,
             y=alt.Y(position_field, type="quantitative"),
-            text=text_enc,
+            text=alt.Text(value_field, type="quantitative", format=value_fmt),
         )
     )
     neg = (
@@ -10159,7 +9847,7 @@ def _grouped_bar_value_layers(
         .encode(
             x=cat_enc_x,
             y=alt.Y(value_field, type="quantitative"),
-            text=text_enc,
+            text=alt.Text(value_field, type="quantitative", format=value_fmt),
         )
     )
     return [pos, neg]
@@ -13056,19 +12744,20 @@ def render_annotations(
             # 10% padding below stretched to nice tick boundaries via
             # Vega-Lite, dragging zero into view on indexed-performance
             # charts whose data starts well above zero.)
-            if explicit_log:
-                # The line-family planner decides the log axis here exactly
-                # as ``_build_timeseries`` and ``get_axis_beautification``
-                # do, so the annotation pass, the base layer and the tick
-                # writer all land on one domain.
-                line_log_plan = _line_log_axis_plan(df[y_field])
-                clamped_domain = [line_log_plan.floor, line_log_plan.ceiling]
-                _publish_line_log_plan(mapping, line_log_plan)
-            else:
-                d_lo, d_hi = calculate_y_axis_domain(
-                    df[y_field], handle_outliers=False, prevent_zero_start=True,
-                )
-                clamped_domain = [float(d_lo), float(d_hi)]
+            d_lo, d_hi = calculate_y_axis_domain(
+                df[y_field], handle_outliers=False, prevent_zero_start=True,
+            )
+            if explicit_log and d_lo <= 0:
+                # The same floor repair ``apply_beautification_to_spec``
+                # performs when it finds a non-positive floor under a log
+                # scale: half the smallest positive value.
+                y_pos = pd.to_numeric(df[y_field], errors="coerce")
+                y_pos = y_pos[y_pos > 0]
+                if len(y_pos):
+                    d_lo = float(y_pos.min()) * 0.5
+            clamped_domain = [float(d_lo), float(d_hi)]
+            if explicit_log and clamped_domain[0] > 0:
+                mapping["_log_value_domain"] = list(clamped_domain)
 
         if (
             not is_dual_axis
@@ -14932,10 +14621,6 @@ class _NominalAxisSurface(NamedTuple):
     # so the gate can withhold it once it knows the other orientation is
     # too small as well. Prefixes ``remedy`` when offered.
     flip_remedy: str = ""
-    # Longest line the LENGTH gate admits. Every surface shares the
-    # editorial 24 except the horizontal bar, whose gutter grows to fit and
-    # whose whole purpose is long category names.
-    max_chars: int = _NOMINAL_LABEL_MAX_CHARS
 
     @property
     def units(self) -> str:
@@ -14952,22 +14637,6 @@ _BAR_SURFACE = _NominalAxisSurface(
         "switch to bar_horizontal, which reads long category lists down the "
         "page, or "
     ),
-)
-# The horizontal bar is where long category names are SUPPOSED to go, so
-# its gate cannot offer a flip and admits ``_HBAR_LABEL_MAX_CHARS``. Reached
-# both by an explicit ``bar_horizontal`` request and by ``_build_bar``'s
-# auto-flip, so a caller who asked for a vertical bar and got this message
-# is being told about the chart they will actually receive.
-_HBAR_SURFACE = _NominalAxisSurface(
-    family="HORIZONTAL BAR",
-    unit="category",
-    remedy=(
-        "shorten the category names in the DataFrame, or render this chart "
-        "standalone rather than inside a composite cell."
-    ),
-    error_cls=BarCategoryLabelTooLongError,
-    plural="categories",
-    max_chars=_HBAR_LABEL_MAX_CHARS,
 )
 _BOXPLOT_SURFACE = _NominalAxisSurface(
     family="BOXPLOT",
@@ -16511,12 +16180,8 @@ def _smart_number_format(series_or_value: Any) -> str:
     LastValueLabel value suffixes -- routes through this helper so a
     raw float like ``99.917898193`` never reaches the canvas.
 
-    Whole numbers print whole: an integer dtype, or a float column whose
-    every value is integral (``124.0 / 88.0 / 210.0`` -- the usual shape of
-    a rounded PnL or count column after a pandas aggregation), short-
-    circuits to ``",.0f"``. A ``.0`` on every label restates that the
-    column is float, which is a dtype fact and not a data fact.
-    Magnitude buckets otherwise (uses ``|value|.max()`` for a Series, or
+    Integer dtype short-circuits to ``",.0f"`` -- a count is not a level.
+    Magnitude buckets (uses ``|value|.max()`` for a Series, or
     ``|value|`` for a scalar):
 
     | Magnitude     | Format    | Example         |
@@ -16535,7 +16200,7 @@ def _smart_number_format(series_or_value: Any) -> str:
             clean = series_or_value.dropna()
             if len(clean) == 0 or not pd.api.types.is_numeric_dtype(clean):
                 return ".2f"
-            if pd.api.types.is_integer_dtype(clean) or _all_integral(clean):
+            if pd.api.types.is_integer_dtype(clean):
                 return ",.0f"
             max_abs = float(clean.abs().max())
         else:
@@ -16544,8 +16209,6 @@ def _smart_number_format(series_or_value: Any) -> str:
             v = float(series_or_value)
             if pd.isna(v):
                 return ".2f"
-            if v == math.floor(v):
-                return ",.0f"
             max_abs = abs(v)
     except (TypeError, ValueError):
         return ".2f"
@@ -16580,8 +16243,6 @@ def _smart_format_value(value: Any) -> str:
         return str(value) if value is not None else ""
     if pd.isna(v):
         return ""
-    if v == math.floor(v):
-        return f"{v:,.0f}"
     abs_v = abs(v)
     if abs_v >= 1000:
         return f"{v:,.0f}"
@@ -16594,43 +16255,6 @@ def _smart_format_value(value: Any) -> str:
     if abs_v >= 0.01:
         return f"{v:.3f}"
     return f"{v:.4f}"
-
-
-def _all_integral(values: pd.Series) -> bool:
-    """True when every finite value in ``values`` is a whole number."""
-    arr = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
-    arr = arr[np.isfinite(arr)]
-    if arr.size == 0:
-        return False
-    return bool(np.all(np.equal(np.mod(arr, 1.0), 0.0)))
-
-
-def _format_log_value_label(value: Any) -> str:
-    """Render one value for a label on a log value axis.
-
-    A log axis exists because the column spans decades, so one precision
-    cannot serve every bar: ``,.1f`` prints 0.07 as ``0.1`` and ``,.0f``
-    prints 0.4 as ``0`` -- the second indistinguishable from the engine's
-    honest rendering of a real zero. Each value is therefore formatted from
-    its own magnitude, to three significant figures at most with trailing
-    zeros trimmed, and never rounded above the decimal point: ``432000``
-    prints ``432,000``, ``950`` prints ``950``, ``3.2`` prints ``3.2``,
-    ``0.07`` prints ``0.07``. Whole numbers print whole.
-    """
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return str(value) if value is not None else ""
-    if pd.isna(v):
-        return ""
-    if v == 0 or v == math.floor(v):
-        return f"{v:,.0f}"
-    magnitude = math.floor(math.log10(abs(v)))
-    decimals = max(0, 2 - magnitude)
-    text = f"{v:,.{decimals}f}"
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text
 
 
 def _smart_format_template(series_or_value: Any) -> str:
@@ -17420,14 +17044,6 @@ def get_axis_beautification(
             configs["y"] = AxisConfig(
                 domain_min=domain_min, domain_max=domain_max, scale_type="log",
             )
-            # The line-family planner published its ticks with the domain;
-            # the bar planner writes its own onto the builder's axis and
-            # publishes none.
-            published_ticks = mapping.get(_LOG_AXIS_TICKS_KEY)
-            if isinstance(published_ticks, dict) and published_ticks.get("values"):
-                configs["y"].tick_values = list(published_ticks["values"])
-                configs["y"].format = published_ticks.get("format")
-                configs["y"].label_overlap = False
         elif y_is_quant_axis and not skip_y_domain:
             domain_min, domain_max = calculate_y_axis_domain(y_data)
 
@@ -17447,29 +17063,18 @@ def get_axis_beautification(
             else:
                 use_log = should_use_log_scale(y_data)
 
-            if use_log and not (y_data > 0).any():
-                use_log = False
+            if use_log and domain_min <= 0:
+                positive_vals = y_data[y_data > 0]
+                if len(positive_vals) > 0:
+                    domain_min = float(positive_vals.min()) * 0.5
+                else:
+                    use_log = False
 
-            if use_log:
-                # One planner for every line-family log axis: floor and
-                # ceiling on 1 / 2 / 5 tick values with the full ladder
-                # between them, so no series sits under the lowest label.
-                line_log_plan = _line_log_axis_plan(y_data)
-                _publish_line_log_plan(mapping, line_log_plan)
-                configs["y"] = AxisConfig(
-                    domain_min=line_log_plan.floor,
-                    domain_max=line_log_plan.ceiling,
-                    scale_type="log",
-                    tick_values=list(line_log_plan.ticks),
-                    format=line_log_plan.tick_format,
-                    label_overlap=False,
-                )
-            else:
-                configs["y"] = AxisConfig(
-                    domain_min=domain_min,
-                    domain_max=domain_max,
-                    scale_type="linear",
-                )
+            configs["y"] = AxisConfig(
+                domain_min=domain_min,
+                domain_max=domain_max,
+                scale_type="log" if use_log else "linear",
+            )
 
         # A bar family log axis is planned inside its builder (the domain
         # branch above skips bars), so it must not receive linear 1/2/5
@@ -17646,23 +17251,31 @@ def apply_beautification_to_spec(
                 if "scale" not in enc["y"]:
                     enc["y"]["scale"] = {}
                 enc["y"]["scale"]["type"] = "log"
-                # A log scale requires a strictly-positive domain, and a
-                # builder may have set a LINEAR one whose floor sits at or
-                # below zero (additive padding under a small positive
-                # minimum). Bolting ``type:'log'`` onto that yields an
-                # invalid scale: Vega-Lite drops every axis tick and
-                # collapses all marks to the top edge. The config's domain
-                # is the planned log axis, so every layer takes it whole --
-                # a layer left on its own padded bounds would widen the
-                # shared scale past the planned ticks.
+                # A log scale requires a strictly-positive domain. A
+                # builder may have already set a LINEAR domain whose floor
+                # sits at or below zero -- e.g. ``_build_scatter``'s
+                # additive padding pushes the floor below a small positive
+                # data min (realized move 0.10 -> domain floor -1.11).
+                # Because the domain-injection above only fires when the
+                # builder set none, that negative-floored domain survives,
+                # and bolting ``type:'log'`` onto it yields an invalid
+                # scale: Vega-Lite drops every axis tick and collapses all
+                # marks to the top edge. Repair the floor in place with
+                # the log-safe minimum the config already computed
+                # (``positive_min * 0.5``), leaving the upper bound as the
+                # builder set it so no point is newly clipped.
+                log_domain = enc["y"]["scale"].get("domain")
                 if (
-                    y_config.domain_min is not None
-                    and y_config.domain_max is not None
+                    isinstance(log_domain, (list, tuple))
+                    and len(log_domain) == 2
+                    and isinstance(log_domain[0], (int, float))
+                    and not isinstance(log_domain[0], bool)
+                    and log_domain[0] <= 0
+                    and y_config.domain_min is not None
                 ):
                     enc["y"]["scale"]["domain"] = [
-                        y_config.domain_min, y_config.domain_max,
+                        y_config.domain_min, log_domain[1],
                     ]
-                    enc["y"]["scale"]["nice"] = False
 
             # y-axis label wrapping (3 words per line).
             #
@@ -18547,33 +18160,6 @@ def _collect_scale_type_findings(
                 f"{value_field!r} value > 0 to plan the axis; every value "
                 f"is 0."
             ))
-        else:
-            # A log axis earns its place by compressing a range that a
-            # linear axis cannot show at once. Positive values inside one
-            # decade have no such range: the axis floor the planner must
-            # choose then decides every bar's length, and a single 4,200
-            # bar drawn from a floor of 1,000 says nothing true about
-            # 4,200. Refused here, at the boundary, in the same place the
-            # sign and all-zero rules live.
-            pos = v_num[v_num > 0]
-            p_min, p_max = float(pos.min()), float(pos.max())
-            span = math.log10(p_max / p_min) if p_min > 0 else 0.0
-            if span < _BAR_LOG_MIN_SPAN_DECADES:
-                if len(pos) == 1:
-                    shape = f"has one positive value ({p_max:,g})"
-                else:
-                    shape = (
-                        f"runs {p_min:,g} to {p_max:,g} "
-                        f"({10.0 ** span:.1f}x, under a factor of 10)"
-                    )
-                findings.append(ValidationError(
-                    f"mapping['scale_type']='log' needs the positive "
-                    f"{value_field!r} values to span at least one decade "
-                    f"(a factor of 10) on a bar chart; the column {shape}. A "
-                    f"log axis compresses nothing over that range and the "
-                    f"floor it requires makes bar length arbitrary. Drop the "
-                    f"log override and draw the bars on a linear axis."
-                ))
         return findings
 
     # A log axis needs strictly positive y. Caught here, at the boundary, so
@@ -18599,11 +18185,6 @@ _BAR_LOG_HEADROOM_DECADES = 0.25
 # Below this many decades the axis carries 1 / 2 / 5 ticks per decade; above
 # it, powers of ten only.
 _BAR_LOG_DENSE_TICKS_MAX_DECADES = 3.0
-# The positive values of a log bar chart must span at least this many
-# decades, or the request is refused at the boundary
-# (``_collect_scale_type_findings``): under one decade a linear axis shows
-# the same range without a floor that decides every bar's length.
-_BAR_LOG_MIN_SPAN_DECADES = 1.0
 
 
 class _BarLogAxisPlan(NamedTuple):
@@ -18632,21 +18213,9 @@ def _bar_log_axis_plan(values: pd.Series) -> _BarLogAxisPlan:
     Ticks are explicit and in data units -- ``1, 10, 100, 1,000`` -- never
     exponents. Zero-valued rows are counted, not refused: the builders draw
     them as a zero-length mark at the floor with their true value labelled.
-
-    Raises ``ValidationError`` when no value is positive. The public path
-    refuses that column before reaching here
-    (``_collect_scale_type_findings``); this guard is for the composite
-    and direct-builder callers that do not pass through it, so the failure
-    is the same sentence everywhere and never a ``NaN``-to-integer trace.
     """
     v = pd.to_numeric(values, errors="coerce").dropna()
     pos = v[v > 0]
-    if not len(pos):
-        raise ValidationError(
-            f"mapping['scale_type']='log' needs at least one "
-            f"{values.name!r} value > 0 to plan the axis; every value is "
-            f"{'0' if len(v) else 'missing'}."
-        )
     v_min = float(pos.min())
     v_max = float(pos.max())
     zero_rows = int((v == 0).sum())
@@ -18685,121 +18254,6 @@ def _bar_log_axis_plan(values: pd.Series) -> _BarLogAxisPlan:
         floor=floor, ceiling=ceiling, ticks=ticks,
         tick_format=tick_format, zero_rows=zero_rows,
     )
-
-
-class _LineLogAxisPlan(NamedTuple):
-    """Everything the line / scatter family needs to draw a log value axis."""
-    floor: float            # domain minimum; a tick value at or below the data
-    ceiling: float          # domain maximum; a tick value at or above the data
-    ticks: List[float]      # explicit tick values, in data units
-    tick_format: str        # d3 format for the tick labels
-
-
-# Multiplicative clearance between the data extremes and the axis ends,
-# before the ends are pulled out to the nearest tick value. Enough that a
-# series does not run along the frame.
-_LINE_LOG_PAD_FACTOR = 1.1
-# Above this many decades a line axis carries powers of ten only; at or
-# below, the 1 / 2 / 5 mantissas, which is what makes a floor of 2 or 5
-# nameable instead of leaving a decade of data under the lowest label.
-_LINE_LOG_DENSE_TICKS_MAX_DECADES = 3.0
-# Key the plan's tick set is published under so ``get_axis_beautification``
-# writes the planned ticks rather than leaving Vega to pick its own subset.
-_LOG_AXIS_TICKS_KEY = "_log_axis_ticks"
-
-
-def _line_log_axis_plan(values: pd.Series) -> _LineLogAxisPlan:
-    """Plan a log value axis for lines and points: floor, ceiling, ticks.
-
-    One planner for every place a line-family log axis is decided --
-    ``_build_timeseries`` (auto-log and explicit), ``_build_scatter``, the
-    annotation compositor and ``get_axis_beautification`` -- so they agree
-    on the axis and none of them leaves data below the lowest label.
-
-    The domain ends are tick values: the largest 1 / 2 / 5 mantissa at or
-    under ``min / pad`` and the smallest at or over ``max * pad``. Every
-    series therefore has a labelled tick beneath it and one above it. The
-    ticks are the complete 1 / 2 / 5 ladder between the ends (powers of ten
-    only past ``_LINE_LOG_DENSE_TICKS_MAX_DECADES``), so the labels read as
-    one cadence -- 2, 5, 10, 20, 50 -- rather than whichever subset Vega
-    keeps at the current pixel height.
-
-    Raises ``ValidationError`` when no value is positive; callers on the
-    public path have already refused that column at the boundary.
-    """
-    v = pd.to_numeric(values, errors="coerce").dropna()
-    pos = v[v > 0]
-    if not len(pos):
-        raise ValidationError(
-            f"mapping['scale_type']='log' needs at least one "
-            f"{values.name!r} value > 0 to plan the axis."
-        )
-    lo = float(pos.min()) / _LINE_LOG_PAD_FACTOR
-    hi = float(pos.max()) * _LINE_LOG_PAD_FACTOR
-    mantissas = (1.0, 2.0, 5.0)
-
-    def _nice_down(x: float) -> float:
-        exp = math.floor(math.log10(x))
-        base = 10.0 ** exp
-        best = base
-        for m in mantissas:
-            if m * base <= x * (1 + 1e-12):
-                best = m * base
-        return best
-
-    def _nice_up(x: float) -> float:
-        exp = math.floor(math.log10(x))
-        base = 10.0 ** exp
-        for m in mantissas:
-            if m * base >= x * (1 - 1e-12):
-                return m * base
-        return 10.0 * base
-
-    floor = float(f"{_nice_down(lo):.10g}")
-    ceiling = float(f"{_nice_up(hi):.10g}")
-    if ceiling <= floor:
-        ceiling = float(f"{_nice_up(floor * 10.0 ** 0.5):.10g}")
-
-    decades = math.log10(ceiling) - math.log10(floor)
-    tick_mantissas = (
-        mantissas if decades <= _LINE_LOG_DENSE_TICKS_MAX_DECADES else (1.0,)
-    )
-    ticks: List[float] = []
-    exp = math.floor(math.log10(floor))
-    while 10.0 ** exp <= ceiling * (1 + 1e-12):
-        for m in tick_mantissas:
-            t = float(f"{m * (10.0 ** exp):.10g}")
-            if floor * (1 - 1e-12) <= t <= ceiling * (1 + 1e-12):
-                ticks.append(t)
-        exp += 1
-    if floor not in ticks:
-        ticks.insert(0, floor)
-    if ceiling not in ticks:
-        ticks.append(ceiling)
-
-    smallest_tick = min(ticks)
-    if smallest_tick >= 1.0:
-        tick_format = ",.0f"
-    else:
-        decimals = max(1, -int(math.floor(math.log10(smallest_tick))))
-        tick_format = f",.{decimals}~f"
-    return _LineLogAxisPlan(
-        floor=floor, ceiling=ceiling, ticks=ticks, tick_format=tick_format,
-    )
-
-
-def _publish_line_log_plan(mapping: Dict[str, Any], plan: _LineLogAxisPlan) -> None:
-    """Record the planned log axis on the mapping for the later stages.
-
-    The annotation compositor keeps this domain instead of re-encoding a
-    padded linear one; ``LastValueLabel`` and the label canvas measure gaps
-    on it; ``get_axis_beautification`` writes the planned ticks onto every
-    layer's axis.
-    """
-    mapping["_log_value_domain"] = [plan.floor, plan.ceiling]
-    mapping[_LOG_AXIS_TICKS_KEY] = {
-        "values": list(plan.ticks), "format": plan.tick_format,
-    }
 
 
 def _bar_log_zero_note(
@@ -18848,44 +18302,6 @@ def _collect_legend_kwarg_findings(
             f"line rather than drawing a legend. To suppress a legend, add a "
             f"LastValueLabel annotation on a line chart, or drop "
             f"mapping['color'] if the colour is not carrying information."
-        ))
-    return findings
-
-
-def _collect_segment_labels_findings(
-    mapping: Dict[str, Any], chart_type: str,
-) -> List[ValidationError]:
-    """Kwarg-fact findings for ``mapping['segment_labels']``.
-
-    The key asks for a value label inside every segment of a STACKED bar.
-    Anywhere else there are no segments, and a key that is accepted but
-    does nothing is the silent failure mode this boundary exists to
-    remove.
-    """
-    findings: List[ValidationError] = []
-    if "segment_labels" not in mapping:
-        return findings
-    val = mapping["segment_labels"]
-    if not isinstance(val, bool):
-        findings.append(ValidationError(
-            f"mapping['segment_labels']={val!r} must be True or False."
-        ))
-        return findings
-    if not val:
-        return findings
-    color_field = mapping.get("color")
-    stacked = (
-        chart_type in _BAR_LOG_CHART_TYPES
-        and isinstance(color_field, str)
-        and mapping.get("stack", True) is not False
-    )
-    if not stacked:
-        findings.append(ValidationError(
-            "mapping['segment_labels']=True labels the segments of a stacked "
-            "bar and has no effect here: it needs chart_type 'bar' or "
-            "'bar_horizontal' with mapping['color'] set and stack left on. "
-            "Single-series and grouped bars already label every bar with its "
-            "value; drop the key."
         ))
     return findings
 
@@ -19717,41 +19133,6 @@ def _resolve_color_sort(
     if relative_sort is not None:
         return relative_sort
     return seen
-
-
-# Numeric rank each stacked-bar row takes in the ``order`` channel, so the
-# segments stack in the order the legend lists them rather than in the
-# alphabetical order Vega falls back to.
-_STACK_ORDER_FIELD = "_stack_order"
-
-
-def _assign_stack_order(
-    df: pd.DataFrame,
-    color_field: str,
-    color_sort: Optional[Sequence[Any]],
-    *,
-    horizontal: bool,
-) -> None:
-    """Write ``_STACK_ORDER_FIELD`` onto ``df`` so segments follow the legend.
-
-    Vega stacks in ``order`` -- the first-ordered row sits at the baseline
-    -- and without an explicit order it sorts the colour field's values
-    alphabetically, so a legend reading Flow / Structured / Financing sat
-    over bars stacked Financing / Flow / Structured and the reader had to
-    match by hue. The legend is the reference: on a vertical bar its first
-    entry is the TOP segment, so the baseline rank runs from the last entry
-    up; on a horizontal bar its first entry is the segment nearest the axis,
-    so the rank runs in legend order left to right. Any value the sort does
-    not name stacks after the ones it does.
-    """
-    order = [str(v) for v in (color_sort or [])]
-    for v in df[color_field].astype(str):
-        if v not in order:
-            order.append(v)
-    if not horizontal:
-        order = order[::-1]
-    rank = {name: i for i, name in enumerate(order)}
-    df[_STACK_ORDER_FIELD] = df[color_field].astype(str).map(rank)
 
 
 _LEGEND_MAX_WIDTH_FRAC: float = 0.40
@@ -20882,27 +20263,22 @@ def _build_timeseries(
         raise ValidationError(
             "mapping['zero_fill']=True is incompatible with log y-scale."
         )
-    y_axis_kwargs: Dict[str, Any] = {}
     if use_log:
         logger.info(
-            "[_build_timeseries] applying log y-scale (%s)",
-            "explicit" if scale_override == "log" else "auto, max/min > 100",
+            "[_build_timeseries] auto-applying log y-scale (max/min > 100)"
         )
-        # The line-family planner owns the floor, ceiling and ticks so the
-        # smallest series has a labelled tick beneath it and the labels
-        # read as one 1 / 2 / 5 cadence. Published so the annotation
-        # compositor keeps this scale instead of re-encoding a padded
-        # linear one, LastValueLabel and the label canvas measure gaps in
-        # log space, and beautification writes the same ticks.
-        line_log_plan = _line_log_axis_plan(df[y_field])
-        y_scale = alt.Scale(
-            type="log", domain=[line_log_plan.floor, line_log_plan.ceiling],
-            nice=False,
-        )
-        y_axis_kwargs.update(
-            values=line_log_plan.ticks, format=line_log_plan.tick_format,
-        )
-        _publish_line_log_plan(mapping, line_log_plan)
+        # Log scale needs strictly positive bounds; recompute from the data
+        # without the linear padding (a negative or zero domain breaks log).
+        s = pd.to_numeric(df[y_field], errors="coerce").dropna()
+        s_pos = s[s > 0]
+        log_min = float(s_pos.min()) if len(s_pos) else 1.0
+        log_max = float(s_pos.max()) if len(s_pos) else 10.0
+        # Pad the domain by half a decade on each side.
+        y_scale = alt.Scale(type="log", domain=[log_min * 0.7, log_max * 1.3])
+        # Published so the annotation compositor keeps this scale instead
+        # of re-encoding a padded linear one, and so LastValueLabel and
+        # the label canvas measure gaps in log space.
+        mapping["_log_value_domain"] = [log_min * 0.7, log_max * 1.3]
     else:
         y_scale = alt.Scale(domain=[y_min, y_max])
 
@@ -20915,7 +20291,7 @@ def _build_timeseries(
     x_axis = alt.Axis(title=None, titleFontWeight="normal")
     y_title = _format_label(y_field, mapping, "y")
     _validate_y_axis_label(y_title, mapping)
-    y_axis = alt.Axis(title=y_title, titleFontWeight="normal", **y_axis_kwargs)
+    y_axis = alt.Axis(title=y_title, titleFontWeight="normal")
     # zero_fill prepends area layers. Vega-Lite takes the *first*
     # layer's axis for the shared scale. The first fill carries the
     # titled axis; the line omits ``axis`` entirely. ``axis=None``
@@ -22618,7 +21994,6 @@ def _build_scatter(
     # the domain is recomputed multiplicatively (additive padding from
     # _auto_domain can push the floor through zero on a log axis).
     y_scale_extra: Dict[str, Any] = {}
-    y_axis_extra: Dict[str, Any] = {}
     if mapping.get("scale_type") == "log":
         _y_num = pd.to_numeric(df[y_field], errors="coerce").dropna()
         _y_min_val = float(_y_num.min()) if len(_y_num) else 0.0
@@ -22628,13 +22003,8 @@ def _build_scatter(
                 f"{y_field!r} has min {_y_min_val:g}. Filter the non-positive "
                 f"rows or drop the log override."
             )
-        # Same planner as the line family, so a scatter and the line drawn
-        # through the same values share one axis.
-        _y_log_plan = _line_log_axis_plan(df[y_field])
-        y_domain = [_y_log_plan.floor, _y_log_plan.ceiling]
-        y_scale_extra.update(type="log", nice=False)
-        y_axis_extra.update(values=_y_log_plan.ticks, format=_y_log_plan.tick_format)
-        _publish_line_log_plan(mapping, _y_log_plan)
+        y_domain = [_y_min_val * 0.9, float(_y_num.max()) * 1.1]
+        y_scale_extra["type"] = "log"
 
     connect_path = bool(mapping.get("connect"))
     if connect_path and mapping.get("trendline"):
@@ -22772,7 +22142,7 @@ def _build_scatter(
     y_enc = alt.Y(
         y_field,
         type="quantitative",
-        axis=alt.Axis(title=y_title, titleFontWeight="normal", **y_axis_extra),
+        axis=alt.Axis(title=y_title, titleFontWeight="normal"),
         scale=alt.Scale(domain=y_domain, **y_scale_extra),
     )
     tooltips = _build_tooltip(mapping, "scatter", df)
@@ -23268,19 +22638,27 @@ def _build_bar(
         x_type = "quantitative"
     else:
         x_type = "nominal"
+        # Validate category label lengths BEFORE the auto-flip branch:
+        # the cap applies regardless of orientation, so we raise here
+        # rather than letting auto-flip route long labels into the
+        # bar_horizontal handler (which has its own truncation /
+        # collision modes for long category labels).
         raw_labels = [str(v) for v in df[x_field].unique()]
+        _validate_bar_category_labels(raw_labels, x_field, mapping)
         _validate_bar_unit_homogeneity(raw_labels, x_field, mapping)
         # Auto-switch to horizontal-bar when category labels are too long
-        # to render vertically (``_bar_would_auto_flip``). The length cap
-        # is applied by whichever builder draws the chart: a flipped bar is
-        # validated against the horizontal cap inside
-        # ``_build_bar_horizontal``, a vertical one against the vertical
-        # cap here, so the message always names the orientation the caller
-        # will receive.
+        # to render vertically without ellipsis truncation. Heuristic:
+        # average label > 12 chars or any label > 20 chars on a normal-
+        # density bar chart (n_bars * 100 > width). Caller can disable via
+        # mapping['orientation'] = 'vertical'.
         avg_len = sum(len(l) for l in raw_labels) / max(len(raw_labels), 1)
         max_len = max((len(l) for l in raw_labels), default=0)
         n_bars = len(raw_labels)
-        if _bar_would_auto_flip(raw_labels, mapping, width):
+        force_orientation = mapping.get("orientation")
+        too_long = (
+            max_len > 20 or (avg_len > 12 and n_bars * 100 > width)
+        )
+        if too_long and force_orientation != "vertical":
             logger.info(
                 "[_build_bar] long category labels (max=%d, avg=%.1f, "
                 "n_bars=%d, width=%d) -> auto-switching to bar_horizontal "
@@ -23311,7 +22689,6 @@ def _build_bar(
             flipped["y_sort"] = mapping.get("x_sort")
             flipped["x_sort"] = mapping.get("y_sort")
             return _build_bar_horizontal(df, flipped, skin_config, width, height)
-        _validate_bar_category_labels(raw_labels, x_field, mapping, _BAR_SURFACE)
         # Break nominal x labels to the pitch each one actually gets, so the
         # fit ladder below measures the same lines Vega will draw (the axis
         # emits ``_WRAPPED_LABEL_EXPR`` for that). A caller's ``x_sort``
@@ -23367,7 +22744,6 @@ def _build_bar(
     use_log = mapping.get("scale_type") == "log"
     y_pos_field = y_field
     y_axis_kwargs: Dict[str, Any] = dict(titleFontWeight="normal")
-    log_plan: Optional[_BarLogAxisPlan] = None
     if use_log:
         if color_field and stack and df.groupby(x_field).size().max() > 1:
             raise ValidationError(
@@ -23379,9 +22755,6 @@ def _build_bar(
         log_plan = _bar_log_axis_plan(df[y_field])
         df["_bar_y"] = np.where(df[y_field] > 0, df[y_field], log_plan.floor)
         y_pos_field = "_bar_y"
-        # One format cannot label a column that spans decades, so every
-        # row's label is rendered here from its own magnitude.
-        df[_BAR_LOG_LABEL_FIELD] = df[y_field].map(_format_log_value_label)
         y_scale = alt.Scale(
             type="log", domain=[log_plan.floor, log_plan.ceiling], nice=False,
         )
@@ -23411,17 +22784,6 @@ def _build_bar(
 
     # ---- titles ---------------------------------------------------------
     x_title = _format_label(x_field, mapping, "x")
-    if (
-        x_type == "nominal"
-        and not mapping.get("x_title")
-        and df[x_field].nunique() == 1
-    ):
-        # One category, one tick label, and directly under it the derived
-        # axis title -- "Prime" over "Book" reads as a single two-line
-        # label, not as a name and its axis. With one category the title
-        # adds nothing the tick does not already say, so the derived one is
-        # dropped; an explicit ``x_title`` is the caller's and stays.
-        x_title = None
     y_title = _format_label(y_field, mapping, "y")
     _validate_y_axis_label(y_title, mapping)
 
@@ -23486,14 +22848,6 @@ def _build_bar(
                 "label_angle": bar_label_angle,
                 "label_font_size": bar_label_font_size,
             }
-        stack_color_sort = (
-            _resolve_color_sort(df, color_field, mapping.get("color_sort"))
-            if color_field else None
-        )
-        if color_field:
-            _assign_stack_order(
-                df, color_field, stack_color_sort, horizontal=False,
-            )
         chart = (
             alt.Chart(df)
             .mark_bar(
@@ -23544,9 +22898,9 @@ def _build_bar(
         )
 
         if color_field:
-            # The ``order`` channel MUST carry an inline type (``:Q``):
-            # ``_force_data_embedding`` (a few lines below) swaps
-            # ``chart.data`` from a pandas DataFrame to a literal
+            # ``order=alt.Order(color_field, sort=...)`` MUST use ``:N``
+            # shorthand: ``_force_data_embedding`` (a few lines below)
+            # swaps ``chart.data`` from a pandas DataFrame to a literal
             # ``alt.Data(values=...)``. At ``to_dict()`` time (called in
             # ``make_chart`` post-build), Vega-Lite walks every channel;
             # any field reference without an inline type prompts dtype
@@ -23555,24 +22909,26 @@ def _build_bar(
             #   ValueError: <field> encoding field is specified without
             #   a type; the type cannot be automatically inferred ...
             # ``alt.Color`` here doesn't trip the failure because it
-            # already has ``type="nominal"`` explicit. The same precedent
-            # exists for ``strokeDash`` at
+            # already has ``type="nominal"`` explicit; ``alt.Order`` did
+            # not, so the bare ``color_field`` was the failure point.
+            # The same precedent exists for ``strokeDash`` at
             # ``_build_multi_line_single_axis`` (the only other secondary
             # channel encoded after data embedding) -- see the comment
-            # block there.
+            # block there. ``alt.Color`` keeps the kwarg form for
+            # readability; only ``alt.Order`` had the bug.
             chart = _encode_categorical_color_and_opacity(
                 chart,
                 mapping,
                 skin_config,
                 color_field,
                 df,
-                color_sort=stack_color_sort,
+                color_sort=_resolve_color_sort(
+                    df, color_field, mapping.get("color_sort"),
+                ),
                 opacity_encoding=bar_opacity_enc,
             )
-            # Segments stack in legend order (``_assign_stack_order``):
-            # the legend's first entry is the top segment.
             chart = chart.encode(
-                order=alt.Order(f"{_STACK_ORDER_FIELD}:Q", sort="ascending"),
+                order=alt.Order(f"{color_field}:N", sort="ascending"),
             )
 
         # Value labels on bars (single-series, <=15 bars only).
@@ -23611,14 +22967,11 @@ def _build_bar(
             and not color_field
             and (n_bars_for_labels <= 15 or labels_forced)
         ):
-            log_label_field = _BAR_LOG_LABEL_FIELD if log_plan is not None else None
-            value_fmt = None if log_label_field else _smart_number_format(df[y_field])
+            value_fmt = _smart_number_format(df[y_field])
             value_label_fs = _bar_value_label_font(
                 df[y_field], value_fmt, width / max(n_bars_for_labels, 1),
                 along_axis="x",
-                labels=list(df[log_label_field]) if log_label_field else None,
             )
-            value_text_enc = _bar_value_text(y_field, value_fmt, log_label_field)
             if value_label_fs is None:
                 mapping.setdefault("_engine_notes", []).append(
                     f"Value labels omitted: {n_bars_for_labels} bars leave "
@@ -23697,7 +23050,10 @@ def _build_bar(
                             x_field, type=x_type, sort=mapping.get("x_sort"),
                         ),
                         y=alt.Y(y_pos_field, type="quantitative"),
-                        text=value_text_enc,
+                        text=alt.Text(
+                            y_field, type="quantitative",
+                            format=value_fmt,
+                        ),
                     )
                     .properties(width=width, height=height)
                 )
@@ -23719,7 +23075,10 @@ def _build_bar(
                             x_field, type=x_type, sort=mapping.get("x_sort"),
                         ),
                         y=alt.Y(y_field, type="quantitative"),
-                        text=value_text_enc,
+                        text=alt.Text(
+                            y_field, type="quantitative",
+                            format=value_fmt,
+                        ),
                     )
                     .properties(width=width, height=height)
                 )
@@ -23791,21 +23150,6 @@ def _build_bar(
                 logger.info(
                     "[_build_bar] suppressing stacked text labels (negative values present)"
                 )
-            if mapping.get("segment_labels") is True:
-                for layer in _stacked_segment_label_layers(
-                    df,
-                    category_field=x_field,
-                    value_field=y_field,
-                    color_field=color_field,
-                    color_sort=stack_color_sort,
-                    horizontal=False,
-                    value_axis_px=height,
-                    category_type=x_type,
-                    category_sort=mapping.get("x_sort"),
-                    mapping=mapping,
-                    skin_config=skin_config,
-                ):
-                    chart = chart + layer.properties(width=width, height=height)
 
     else:
         # ---- GROUPED path (color + stack=False): column faceting ---------
@@ -23961,7 +23305,6 @@ def _build_bar(
             per_bar_px=per_bar_px,
             horizontal=False,
             mapping=mapping,
-            label_field=_BAR_LOG_LABEL_FIELD if log_plan is not None else None,
         ))
         category_order = list(df_grouped[x_field].unique())
         cell_layers.extend(_grouped_bar_rule_layers(
@@ -24064,18 +23407,19 @@ def _build_bar_horizontal(
     # export down with an undefined-height signal.
     mapping["_y_axis_type"] = "nominal"
 
-    # Validate category label lengths against the HORIZONTAL cap. The y
-    # gutter grows to fit (``_NO_TRUNCATE_LABEL_LIMIT``) and rows never
-    # collide on length, so the width argument behind the vertical cap does
-    # not hold here; what remains is the editorial ceiling in
-    # ``_HBAR_LABEL_MAX_CHARS``. This is the only length gate a horizontal
-    # bar passes through, whether the caller asked for ``bar_horizontal``
-    # or ``_build_bar`` flipped a long-labelled vertical request here.
+    # Validate category label lengths. The same cap as _build_bar applies
+    # because the failure modes are symmetric: 22+ ch labels truncate at
+    # width=700 (B04 / G05 in the audit), 14+ ch labels truncate at
+    # composite width=350 (D04 / E05), and grouped horizontal (color +
+    # stack=False) collapses long labels into illegible y-axis overlap
+    # at any width (F04 / F05 / H01). When _build_bar auto-flipped here,
+    # its validation already passed -- this call is a no-op then. When
+    # the caller invokes bar_horizontal explicitly, this is the only
+    # validation site, so it must live here.
     _validate_bar_category_labels(
         [str(v) for v in df[y_field].unique()],
         category_field=y_field,
         mapping=mapping,
-        surface=_HBAR_SURFACE,
     )
     _validate_bar_unit_homogeneity(
         [str(v) for v in df[y_field].unique()],
@@ -24117,7 +23461,6 @@ def _build_bar_horizontal(
     x_pos_field = x_field
     x_scale: Any = alt.Undefined
     x_axis_kwargs: Dict[str, Any] = dict(titleFontWeight="normal")
-    log_plan: Optional[_BarLogAxisPlan] = None
     if use_log:
         if color_field and stack and df.groupby(y_field).size().max() > 1:
             raise ValidationError(
@@ -24130,7 +23473,6 @@ def _build_bar_horizontal(
         df = df.copy()
         df["_bar_x"] = np.where(df[x_field] > 0, df[x_field], log_plan.floor)
         x_pos_field = "_bar_x"
-        df[_BAR_LOG_LABEL_FIELD] = df[x_field].map(_format_log_value_label)
         x_scale = alt.Scale(
             type="log", domain=[log_plan.floor, log_plan.ceiling], nice=False,
         )
@@ -24165,7 +23507,7 @@ def _build_bar_horizontal(
     # tail to an ellipsis. Vega instead grows the left gutter to seat the
     # widest name, and what bounds the growth is
     # ``_validate_bar_category_labels``: it has already rejected anything
-    # over ``_HBAR_LABEL_MAX_CHARS``, so the gutter is bounded by a
+    # over ``_BAR_CATEGORY_LABEL_MAX_CHARS``, so the gutter is bounded by a
     # check PRISM can see and act on rather than by a silent clip.
     y_label_limit = _NO_TRUNCATE_LABEL_LIMIT
     h_y_label_font_size = _bar_horizontal_y_label_font_size(
@@ -24199,15 +23541,6 @@ def _build_bar_horizontal(
             auto_flipped=bool(mapping.get("_auto_flipped_from_bar")),
         )
 
-        stack_color_sort = (
-            _resolve_color_sort(df, color_field, mapping.get("color_sort"))
-            if color_field else None
-        )
-        if color_field:
-            df = df.copy()
-            _assign_stack_order(
-                df, color_field, stack_color_sort, horizontal=True,
-            )
         chart = (
             alt.Chart(df)
             .mark_bar(
@@ -24254,31 +23587,11 @@ def _build_bar_horizontal(
                 skin_config,
                 color_field,
                 df,
-                color_sort=stack_color_sort,
+                color_sort=_resolve_color_sort(
+                    df, color_field, mapping.get("color_sort"),
+                ),
                 opacity_encoding=bar_opacity_enc,
             )
-            # Segments stack in legend order (``_assign_stack_order``):
-            # the legend's first entry is the segment nearest the axis.
-            # Inline ``:Q`` for the same data-embedding reason as the
-            # vertical builder.
-            chart = chart.encode(
-                order=alt.Order(f"{_STACK_ORDER_FIELD}:Q", sort="ascending"),
-            )
-            if mapping.get("segment_labels") is True and stack and not use_log:
-                for layer in _stacked_segment_label_layers(
-                    df,
-                    category_field=y_field,
-                    value_field=x_field,
-                    color_field=color_field,
-                    color_sort=stack_color_sort,
-                    horizontal=True,
-                    value_axis_px=width,
-                    category_type="nominal",
-                    category_sort=mapping.get("y_sort"),
-                    mapping=mapping,
-                    skin_config=skin_config,
-                ):
-                    chart = chart + layer.properties(width=width, height=height)
 
         # A zero row on a log axis has no bar. Mark it at the floor so the
         # row reads as "present and zero", not "missing" -- the same tick
@@ -24325,9 +23638,7 @@ def _build_bar_horizontal(
         # un-suppressed pair overprints rather than merely crowding.
         labels_forced = bool(mapping.get("_bar_value_labels_forced"))
         if not color_field and (df[y_field].nunique() <= 25 or labels_forced):
-            log_label_field = _BAR_LOG_LABEL_FIELD if log_plan is not None else None
-            value_fmt = None if log_label_field else _smart_number_format(df[x_field])
-            value_text_enc = _bar_value_text(x_field, value_fmt, log_label_field)
+            value_fmt = _smart_number_format(df[x_field])
             value_label_fs = max(8, min(11, h_y_label_font_size + 1))
             df_for_labels = df
             # The suppression set names CATEGORIES (rows, here on y): the
@@ -24369,7 +23680,10 @@ def _build_bar_horizontal(
                             sort=mapping.get("y_sort"),
                         ),
                         x=alt.X(x_pos_field, type="quantitative"),
-                        text=value_text_enc,
+                        text=alt.Text(
+                            x_field, type="quantitative",
+                            format=value_fmt,
+                        ),
                     )
                     .properties(width=width, height=height)
                 )
@@ -24396,7 +23710,10 @@ def _build_bar_horizontal(
                             sort=mapping.get("y_sort"),
                         ),
                         x=alt.X("_anchor_x", type="quantitative"),
-                        text=value_text_enc,
+                        text=alt.Text(
+                            x_field, type="quantitative",
+                            format=value_fmt,
+                        ),
                     )
                     .properties(width=width, height=height)
                 )
@@ -24554,7 +23871,6 @@ def _build_bar_horizontal(
             per_bar_px=per_bar_px,
             horizontal=True,
             mapping=mapping,
-            label_field=_BAR_LOG_LABEL_FIELD if log_plan is not None else None,
         ))
         category_order = list(df[y_field].unique())
         cell_layers.extend(_grouped_bar_rule_layers(
@@ -29459,7 +28775,6 @@ def _make_chart(
     kwarg_findings.extend(_collect_color_kwarg_findings(mapping, chart_type, df))
     kwarg_findings.extend(_collect_opacity_kwarg_findings(mapping, chart_type, df))
     kwarg_findings.extend(_collect_scale_type_findings(mapping, chart_type, df))
-    kwarg_findings.extend(_collect_segment_labels_findings(mapping, chart_type))
     kwarg_findings.extend(_collect_legend_kwarg_findings(mapping))
 
     # ---- Facet (small-multiples) early branch ---------------------------
@@ -33648,7 +32963,6 @@ def _make_composite(
                 cell_mapping, spec.chart_type, spec.df)
             + _collect_scale_type_findings(
                 cell_mapping, spec.chart_type, spec.df)
-            + _collect_segment_labels_findings(cell_mapping, spec.chart_type)
             + _collect_legend_kwarg_findings(cell_mapping)
         ):
             cell_kwarg_findings.append(f"Composite cell {i + 1}: {finding}")
