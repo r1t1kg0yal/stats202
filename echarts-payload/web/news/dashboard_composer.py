@@ -67,6 +67,15 @@ _COMPOSER_BOOT_URL = "/static/js/dashboard_composer.js"
 # identically to the Portal.
 _MARKED_JS_URL = "https://cdn.jsdelivr.net/npm/marked/marked.min.js"
 
+# prism_mermaid.js -- the lazy mermaid renderer composer.js calls after each answer
+# repaint; it fetches the 3.3 MB engine from PRISM_MERMAID_SRC only once a diagram
+# is actually on the page, so a dashboard that never sees one pays nothing.
+# base.html publishes that URL with Django's static tag, which a compiled
+# dashboard cannot use -- without this splice a mermaid fence in a dashboard
+# Composer answer stays a code block.
+_PRISM_MERMAID_JS_URL = "/static/js/prism_mermaid.js"
+_MERMAID_ENGINE_URL = "/static/js/mermaid.min.js"
+
 # PrismMenu -- the shared right-click primitive. base.html loads these same three
 # files for every Portal page; a compiled dashboard does not extend base.html, so
 # without this splice the Composer surfaces (tabs, turns, charts, tool crumbs,
@@ -166,8 +175,11 @@ def inject_dashboard_composer(html, enable_inline_chat=False, dash_title=None):
       4. an inline flag script setting ``PRISM_COMPOSER_INLINE_CHAT`` to the
          SAME ``enable_inline_chat`` value the Portal uses (must land before
          composer.js reads it),
-      5. the shared ``composer.js`` (deferred) -- the SAME file base.html loads,
-      6. the shared PrismMenu right-click primitive (stylesheet, shell, specs).
+      5. ``prism_mermaid.js`` and the ``PRISM_MERMAID_SRC`` URL it lazily pulls
+         the engine from, so a mermaid fence in an answer renders here exactly
+         as it does on the Portal,
+      6. the shared ``composer.js`` (deferred) -- the SAME file base.html loads,
+      7. the shared PrismMenu right-click primitive (stylesheet, shell, specs).
 
     Drag-and-drop, the "Drop materials into Composer to add as context" hint,
     local upload, and inline chat are all ENABLED, exactly as on every other
@@ -211,8 +223,10 @@ def inject_dashboard_composer(html, enable_inline_chat=False, dash_title=None):
         '<script>window.PRISM_COMPOSER_INLINE_CHAT = ' + inline_flag + ';'
         'window.PRISM_COMPOSER_DND_MODE = "dashboard_components";'
         'window.PRISM_COMPOSER_DASHBOARD_TITLE = ' + title_json + ';'
-        'window.PRISM_COMPOSER_IN_DASHBOARD = true;</script>'
+        'window.PRISM_COMPOSER_IN_DASHBOARD = true;'
+        'window.PRISM_MERMAID_SRC = "' + _MERMAID_ENGINE_URL + '";</script>'
         '<script src="' + _MARKED_JS_URL + '" defer></script>'
+        '<script src="' + _PRISM_MERMAID_JS_URL + '" defer></script>'
         '<script src="' + _PRISM_MENU_JS_URL + '" defer></script>'
         '<script src="' + _PRISM_MENU_SPECS_URL + '" defer></script>'
         '<script src="' + _COMPOSER_JS_URL + '" defer></script>'

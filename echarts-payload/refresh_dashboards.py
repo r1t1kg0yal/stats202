@@ -527,11 +527,13 @@ def _walk_open_once(*, walk_id: int = 1) -> int:
     from dashboards import list_open_dashboards
 
     started_perf = time.perf_counter()
-    _banner(f"open-walk #{walk_id} start")
     open_folders = list_open_dashboards(s3_manager=s3_manager)
     if not open_folders:
-        _banner(f"open-walk #{walk_id} done -- no open dashboards")
+        # An idle tick prints nothing: entrypoint.py site runs this daemon on a
+        # short open-interval, so banners for a walk that found no work drown the
+        # terminal the site is sharing.
         return 0
+    _banner(f"open-walk #{walk_id} start")
 
     results = []
     success_kerberos: set = set()
