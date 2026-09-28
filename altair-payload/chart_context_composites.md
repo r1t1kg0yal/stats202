@@ -11,10 +11,11 @@ chart/composite calls.
 |---|---|
 | Compare two series or views | `make_2pack_horizontal` |
 | Level above change/decomposition | `make_2pack_vertical` |
-| One headline plus two supporting views | `make_3pack_triangle` |
+| One headline plus two supporting views | `make_3pack_triangle` (the top panel spans the row) |
+| Three views stacked in one column | `make_3pack_triangle(..., arrangement='stacked')` |
 | Four coordinated regions/sectors/scenarios | `make_4pack_grid` |
 | True six-panel monitoring sheet | `make_6pack_grid` |
-| Seven to 36 same-shape entities | Facet grid, not a pack; see `chart_context_grids.md` |
+| Two to 36 same-shape entities, especially on one scale | Facet grid, not a pack; see *Altair facet grids* |
 
 Two panels are the default for an analytical argument. Four or six should be
 used only when the grid itself is meaningful.
@@ -84,7 +85,7 @@ The chart slots are positional:
 |---|---|
 | `make_2pack_horizontal(c1, c2, ...)` | 2 side-by-side |
 | `make_2pack_vertical(c1, c2, ...)` | 2 stacked |
-| `make_3pack_triangle(top, bottom_left, bottom_right, ...)` | 3 |
+| `make_3pack_triangle(top, bottom_left, bottom_right, ...)` | 3: one over two, the top spanning both; `arrangement='stacked'` puts them in one column, top to bottom in that order |
 | `make_4pack_grid(top_left, top_right, bottom_left, bottom_right, ...)` | 4 |
 | `make_6pack_grid(c1, ..., c6, ...)` | 3×2 in row-major order: top-left, top-right, middle-left, middle-right, bottom-left, bottom-right; `specs=[...]` uses the same order |
 
@@ -116,19 +117,30 @@ fits, overriding a smaller preset you named and reporting the override on
 `result.warnings`. When no preset in the family is large enough, the panel
 raises and the remedy is to give the matrix its own `make_chart` call or to
 cut the number of categories. **Shortening row labels never buys rows or
-columns** — see `chart_context.md` §5.2.
+columns** — see *Altair Charts & Tables* §5.2.
 
-Each cell owns its mapping, colour scale, axes, and annotations. Apply chart
-colour kwargs inside the cell's `mapping`; see `chart_context_colors.md`.
-Composite cells are narrower than standalone charts, so shorten category,
-legend, and end-label names aggressively; the engine raises with the exact
-offenders rather than truncating.
+Each cell owns its mapping, axes, and annotations. Colour is shared: a
+category that appears in more than one cell takes one colour across the pack
+— a `color_map` pin in any cell applies to every cell, and two cells pinning
+one category differently each keep their pin with a note on `warnings` — and
+every cell that would draw a colour legend hands it to a strip under the pack
+(one strip per colour field; a dual-axis cell keeps its own), which spans the
+pack and wraps. Line cells keep their end labels and draw no key; area and
+bar cells coloured by a field draw one. Only cells that
+name the same `color` field share colours: bars left without `color` stay the
+house single colour even when their x holds the same categories, so set
+`color` to that field to match a neighbouring cell. Apply chart colour kwargs
+inside the cell's `mapping`; see *Altair chart colours and opacity*. Composite cells are
+narrower than standalone charts, so shorten category and end-label names
+aggressively; the engine raises with the exact offenders rather than
+truncating.
 
-The 24-character category cap from `chart_context.md` §5.1 is the same in a
-cell as standalone — it is an editorial limit, not a canvas one. What changes
-in a cell is the *pixel* budget stacked on top of it: a legend entry gets
-about 11 characters at 280px against roughly 28 at 700px, so a name that is
-comfortably legal standalone can still be refused here. Write cell labels to
+The 24-character category cap from *Altair Charts & Tables* §5.1 is the same in a
+cell as standalone — it is an editorial limit, not a canvas one. A colour key
+under the pack needs only that cap. What changes in a cell is the *pixel*
+budget on text drawn inside it — axis category labels and end labels, about
+11 characters at 280px against roughly 28 at 700px — so a name that is
+comfortably legal standalone can still be refused there. Write those labels to
 the 8–14 band and neither gate fires.
 
 ## 4. All-or-nothing failure contract

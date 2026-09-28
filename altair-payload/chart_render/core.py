@@ -69,6 +69,7 @@ import re
 import sys
 import threading
 import traceback
+import weakref
 from collections import Counter
 from dataclasses import dataclass, field, fields, replace
 from datetime import date, datetime, timezone
@@ -137,9 +138,9 @@ if not logger.handlers:
 # (altair / numpy / pandas / PIL) + the stdlib, never boto3 / requests / the
 # GS network modules, so it can ship in the minimal secure-execution sandbox
 # image. The features that would couple it to the trusted tier -- presigned
-# download URLs, render-failure alerting, and the GS font root -- are
-# therefore NOT imported here. They are supplied at
-# runtime by the trusted wrapper (``prism_mcp.utils.chart_functions``) via
+# download URLs and the GS font root -- are therefore NOT imported here. They
+# are supplied at runtime by the trusted wrapper
+# (``prism_mcp.utils.chart_functions``) via
 # ``register_trusted_extensions``.
 #
 # Unregistered (the sandbox), these stay as the no-ops below: the core renders
@@ -158,11 +159,6 @@ class _NullDownload:
 def generate_presigned_download_url(path):  # noqa: D401 - injected trusted-side
     """No-op default; the trusted wrapper installs the real S3 presigner."""
     return _NullDownload()
-
-
-def _send_err(*args, **kwargs):  # injected trusted-side
-    """No-op default; the trusted wrapper installs render-failure alerting."""
-    return None
 
 
 _chart_studio = None            # chart_functions_studio module; injected
@@ -190,19 +186,16 @@ def _gs_font_dir() -> Optional[str]:
     return None
 
 
-def register_trusted_extensions(*, presign=None, send_error=None,
-                                font_repo_root=None):
+def register_trusted_extensions(*, presign=None, font_repo_root=None):
     """Install the trusted-side chart extensions on the render core.
 
     Called once by ``prism_mcp.utils.chart_functions`` at import. Every argument
     is optional; an unset one leaves the import-closed no-op default in place, so
     the sandbox (which never calls this) keeps its handle-only behaviour.
     """
-    global generate_presigned_download_url, _send_err, _FONT_REPO_ROOT
+    global generate_presigned_download_url, _FONT_REPO_ROOT
     if presign is not None:
         generate_presigned_download_url = presign
-    if send_error is not None:
-        _send_err = send_error
     if font_repo_root is not None:
         _FONT_REPO_ROOT = font_repo_root
 
@@ -304,6 +297,8 @@ MAX_ROWS_INTERACTIVE = 50_000       # Above this, warn (do not block)
 # instead of shipping an illegible chart. Facet/grid mode is the sanctioned
 # breakup and is exempt.
 MAX_LINE_SERIES = 6                 # Max series on a single line/area panel
+MAX_ORDERED_LINE_SERIES = 12        # ... when the lines are an ordered sequence (one ramp, one key)
+MAX_STACKED_AREA_BANDS = MAX_COLOR_CARDINALITY  # bands read by the key, not by end labels
 
 # Auto-downsample thresholds for time-series rendering.
 MAX_ROWS_BEFORE_DOWNSAMPLE = 5_000  # Trigger downsample above this
@@ -404,15 +399,12 @@ _FACET_VALID_CHART_TYPES: frozenset = frozenset({
     "histogram",
 })
 
-# Minimum panel count for facet mode. Set to 5 because that is where the
-# composite packs stop covering the range: the reachable packs are 2, 3, 4 and
-# 6 cells, so FIVE has no pack at all. A floor of 7 therefore left five-entity
-# requests with no route through the engine in either family, while asserting
-# the opposite -- each side refused and pointed at the other. From 5 up, facet
-# answers; 2-4 stay with composites, which are the right shape for an argument
-# rather than a cross-sectional grid. Six is deliberately served by both: the
-# pack for a tight argument, facet when the six panels need one shared scale.
-_FACET_MIN_PANELS: int = 5
+# Minimum panel count for facet mode. Two to four same-shape panels are as much
+# a grid as twelve are, and only the facet path shares one scale across them;
+# refusing them sent a request for four sector panels on one scale to a pack,
+# which scales every cell independently. Packs stay the shape for panels that
+# make different arguments; facet serves any count of same-shape panels.
+_FACET_MIN_PANELS: int = 2
 
 # Hard cap on grid size. Beyond 6x6, per-panel readability collapses;
 # PRISM should aggregate or switch to a heatmap.
@@ -631,11 +623,11 @@ _PUBLIC_CHART_MAPPING_KEYS: frozenset = frozenset({
     "dual_axis_bind", "dual_axis_legend_suffix",
     "dual_axis_legend_suffix_left", "dual_axis_legend_suffix_right",
     "dual_axis_legend_tags", "dual_axis_series",
-    "extent", "facet", "facet_order", "invert_right_axis",
+    "emphasis", "extent", "facet", "facet_order", "invert_right_axis",
     "label", "legend", "marker_size", "maxbins",
     "net", "net_label",
     "opacity", "opacity_map", "order", "orientation", "scale_type",
-    "segment_labels",
+    "segment_labels", "series",
     "size", "size_title", "stack", "strokeDash", "strokeDashLegend",
     "strokeDashScale", "theta", "trendline", "trendlines",
     "type", "value", "value_sort",
@@ -651,16 +643,21 @@ _ENGINE_ONLY_CHART_MAPPING_KEYS: frozenset = frozenset({
     "_auto_flipped_from_bar",
     "_bar_category_axis_plan",
     "_bar_category_wrap_map",
-    "_bar_value_labels_forced",
     "_grouped_bar_rules",
+    "_group_legend",
+    "_ordered_lines",
+    "_x_extension",
+    "_pack_legend",
     "_log_axis_ticks",
     "_log_value_domain",
     "_chart_height_px",
     "_chart_width_px",
-    "_contribution_axis_plan",
     "_contribution_density_plan",
-    "_contribution_period_axis",
     "_facet_panel",
+    "_period_axis",
+    "_period_axis_plan",
+    "_period_source_labels",
+    "_x_calendar_parsed",
     "_grad_color_bounds",
     "_histogram_bin_extent",
     "_suppress_bar_total_in_y_range",
@@ -1384,10 +1381,11 @@ _AXIS_LABEL_CHAR_WIDTH_RATIO = 0.62
 # is ever introduced, thread its size through instead of this default.
 _SKIN_AXIS_LABEL_FONT_PX = 18
 
-# Cap on y-axis label length, from the house style rather than restated
-# here: the studio composes axis titles against the same limit, and a
-# second copy of the number would let it build a chart whose own
-# regenerated call this validator rejects.
+# Axis-title budgets, from the house style rather than restated here: the
+# studio composes axis titles against the same limit, and a second copy of
+# the number would let it build a chart whose own regenerated call this
+# validator rejects. One line, then a hard cap of two.
+_AXIS_TITLE_LINE_CHARS = _house.AXIS_TITLE_LINE_CHARS
 _Y_AXIS_LABEL_MAX_CHARS = _house.Y_AXIS_TITLE_MAX_CHARS
 
 # Dual-axis charts must never ship a positional placeholder as the semantic
@@ -1679,7 +1677,8 @@ def _validate_y_axis_label(
         raise YAxisLabelTooLongError(
             (
                 f"{axis.upper()}-axis label '{y_title}' is {len(y_title)} "
-                f"characters (max {_Y_AXIS_LABEL_MAX_CHARS}). Use a shorter "
+                f"characters (max {_Y_AXIS_LABEL_MAX_CHARS}: a title over "
+                f"{_AXIS_TITLE_LINE_CHARS} draws on two lines). Use a shorter "
                 f"{axis}_title in mapping. "
                 f"Example: mapping={{'{axis}': "
                 f"'{mapping.get(axis, 'value')}', "
@@ -1942,6 +1941,8 @@ def _bar_would_auto_flip(
     will render in.
     """
     if mapping.get("orientation") == "vertical":
+        return False
+    if mapping.get("_period_axis"):
         return False
     if not raw_labels:
         return False
@@ -2313,7 +2314,7 @@ def _sanitize_column_names(
     for key in (
         "y", "x", "color", "size", "facet", "theta", "value",
         "x_low", "x_high", "y_low", "y_high", "y_ref", "net",
-        "color_by", "label",
+        "color_by", "label", "series",
     ):
         if key in mapping:
             val = mapping[key]
@@ -2523,6 +2524,36 @@ def _period_string_series_to_datetime(series: pd.Series) -> Optional[pd.Series]:
     return pd.to_datetime(series.map(parsed))
 
 
+# A stamp written with a day or a time is a value with no chosen spelling; a
+# year, quarter or month label is the caller's name for a period.
+_FULL_DATE_TEXT_RE = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{2,4}|:")
+
+
+def _stash_period_source_labels(
+    original: pd.Series,
+    converted: pd.Series,
+    mapping: Dict[str, Any],
+) -> None:
+    """Remember how the caller spelled each period a bar x was parsed from.
+
+    ``2024Q1`` and ``Jan-24`` become timestamps so the grain can be read, but
+    they are labels the caller chose, and the band that
+    ``_materialize_bar_periods`` draws for each one should carry that label
+    rather than a house re-spelling. ISO dates are exempt: they name an
+    instant, so the house period label is the better reading.
+    """
+    pairs: Dict[str, str] = {}
+    for text, stamp in zip(original, converted):
+        if text is None or pd.isna(stamp) or (isinstance(text, float) and pd.isna(text)):
+            continue
+        spelled = str(text).strip()
+        if _FULL_DATE_TEXT_RE.search(spelled):
+            return
+        pairs.setdefault(pd.Timestamp(stamp).isoformat(), spelled)
+    if pairs:
+        mapping["_period_source_labels"] = pairs
+
+
 def _normalize_intraday_x_column(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -2681,18 +2712,17 @@ def _normalize_intraday_x_column(
         )
 
     df[x_field] = converted
-    if (
-        bar_date_axis
-        and not _is_grouped_bar(mapping, chart_type)
-        and mapping.get("x_type") == "ordinal"
-        and pd.api.types.is_datetime64_any_dtype(converted)
-    ):
-        mapping.pop("x_type", None)
-        mapping.setdefault("_engine_notes", []).append(
-            "mapping['x_type']='ordinal' ignored on a date bar axis: "
-            "the temporal tick planner thins labels the way ISO date "
-            "strings already do."
-        )
+    if bar_date_axis and not _is_grouped_bar(mapping, chart_type):
+        if series.dtype == object or pd.api.types.is_string_dtype(series):
+            _stash_period_source_labels(series, converted, mapping)
+        if (
+            mapping.get("x_type") == "ordinal"
+            and pd.api.types.is_datetime64_any_dtype(converted)
+        ):
+            # ``_materialize_bar_periods`` builds the band scale the caller
+            # asked for; left in place, the key would send the column through
+            # ``_materialize_ordinal_datetime_x`` and a second label spelling.
+            mapping.pop("x_type", None)
     logger.info(
         "[chart_functions] Normalized x_field=%r to intraday wall clock "
         "(display_tz=%r, chart_type=%s).",
@@ -3328,7 +3358,7 @@ def _coerce_string_x_to_datetime(
       - x column is already datetime or numeric
       - parsing raises (yield-curve tenors, ratings, regions, etc.)
     """
-    if chart_type not in {"multi_line", "timeseries", "band"}:
+    if chart_type not in {"multi_line", "timeseries", "band", "area"}:
         return df
     if mapping.get("x_type") == "ordinal":
         return df
@@ -3338,10 +3368,32 @@ def _coerce_string_x_to_datetime(
         return df
 
     x_series = df[x_field]
-    if (
-        pd.api.types.is_datetime64_any_dtype(x_series)
-        or pd.api.types.is_numeric_dtype(x_series)
-    ):
+    if pd.api.types.is_datetime64_any_dtype(x_series):
+        years = _years_read_as_epoch_nanoseconds(x_series, x_field)
+        if years is None:
+            return df
+        df = df.copy()
+        df[x_field] = years
+        mapping["_x_calendar_parsed"] = True
+        _note(mapping, (
+            f"x {x_field!r} held calendar years that pd.to_datetime() had read "
+            f"as nanoseconds after 1970; drawn as the years "
+            f"{years.min().year}-{years.max().year}. Integer years can be "
+            f"passed straight through."
+        ))
+        return df
+    if pd.api.types.is_numeric_dtype(x_series):
+        # A year column is a timeline, not a cross-section: left numeric it
+        # routes to the tenor-curve builder (smoothed curves, ``1,995``
+        # ticks, an axis padded to a round decade).
+        years = _calendar_year_stamps(x_series, x_field)
+        if years is None:
+            return df
+        df = df.copy()
+        df[x_field] = years
+        mapping["_x_calendar_parsed"] = True
+        return df
+    if chart_type == "area":
         return df
 
     try:
@@ -3350,7 +3402,10 @@ def _coerce_string_x_to_datetime(
             _warnings.simplefilter("ignore")
             converted = pd.to_datetime(x_series, errors="raise")
     except (ValueError, TypeError):
-        return df
+        converted = _period_string_series_to_datetime(x_series)
+        if converted is None:
+            return df
+        mapping["_x_calendar_parsed"] = True
 
     df = df.copy()
     df[x_field] = converted
@@ -3540,45 +3595,16 @@ def _materialize_band_path(
     )
 
 
-def _materialize_contribution_periods(
-    df: pd.DataFrame,
-    mapping: Dict[str, Any],
-    chart_type: str,
-    annotations: Optional[List[Any]] = None,
-) -> Tuple[pd.DataFrame, Optional[str], Optional[List[Any]]]:
-    """Turn a datetime x column into period labels for ``contribution``.
+def _house_period_labels(
+    chronological: Sequence[Any],
+) -> Tuple[str, List[str], Callable[[pd.Timestamp], str]]:
+    """``(grain, labels, formatter)`` for a chronological run of stamps.
 
-    Contribution bars sit on a band scale, so a datetime x would render as
-    a clock or as raw ISO tokens. Attribution data almost always arrives
-    with a real date column, so requiring the caller to pre-format it is
-    friction the engine can absorb: infer the spacing and emit the house
-    spelling (``24Q1`` quarterly, ``Jan 24`` monthly, ``2024`` annual,
-    ``03 Mar`` otherwise), then publish chronological order through
-    ``mapping['x_sort']``.
-
-    Any date-like annotation ``x`` is translated to the same label. A band
-    scale silently ADMITS an unknown category, so a caller who marks the
-    easing turn with the date they have would otherwise get a rule parked
-    off the end of the bars and a raw ISO token printed on the axis --
-    no error, no warning, just a wrong picture.
-
-    Returns ``(df, audit_note, annotations)``; the note is ``None`` when
-    nothing changed.
+    The median spacing picks the grain and its house spelling: ``2024``
+    annual, ``24Q1`` quarterly, ``Jan 24`` monthly, ``03 Mar`` otherwise.
+    When that spelling collides the labels fall back to ``03 Mar 24`` (grain
+    ``dated``), because two periods sharing a label would share one band.
     """
-    if chart_type != "contribution":
-        return df, None, annotations
-
-    x_field = _get_field(mapping, "x")
-    if not x_field or x_field not in df.columns:
-        return df, None, annotations
-    if not pd.api.types.is_datetime64_any_dtype(df[x_field]):
-        return df, None, annotations
-
-    stamps = df[x_field].dropna()
-    if stamps.empty:
-        return df, None, annotations
-
-    chronological = sorted(pd.Series(stamps.unique()))
     ordered = pd.DatetimeIndex(chronological)
     if len(ordered) > 1:
         median_gap_days = float(
@@ -3604,6 +3630,349 @@ def _materialize_contribution_periods(
     if len(set(labels)) != len(labels):
         labels = [pd.Timestamp(ts).strftime("%d %b %y") for ts in chronological]
         grain = "dated"
+    return grain, labels, formatter
+
+
+def _materialize_period_axis(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+    annotations: Optional[List[Any]] = None,
+) -> Tuple[pd.DataFrame, Optional[str], Optional[List[Any]]]:
+    """One labelled band per period, for the chart types that draw periods.
+
+    ``contribution`` always sits on a band scale, and so does an unfaceted
+    ``bar`` whose x is date-shaped. Both publish ``mapping['_period_axis']``,
+    which ``_plan_period_axis`` reads to thin the labels on calendar ticks
+    while every period keeps its band. Returns ``(df, audit_note,
+    annotations)``; the note is ``None`` when nothing changed.
+    """
+    if chart_type == "contribution":
+        return _materialize_contribution_periods(df, mapping, annotations)
+    if chart_type == "bar" and not _is_grouped_bar(mapping, chart_type):
+        return _materialize_bar_periods(df, mapping, annotations)
+    if mapping.pop("_x_calendar_parsed", False) and annotations:
+        annotations = [_annotation_on_timeline(a) for a in annotations]
+    return df, None, annotations
+
+
+def _annotation_on_timeline(annotation: Any) -> Any:
+    """The annotation with year / period-label x coordinates as timestamps.
+
+    ``_coerce_string_x_to_datetime`` turned the chart's own x into
+    timestamps; a ``VLine(x=2008)`` written against the same column would
+    otherwise be read as nanoseconds after the epoch and dropped as out of
+    range. ISO strings and timestamps already mean an instant and are left
+    alone.
+    """
+    changes: Dict[str, Any] = {}
+    for name in ("x", "x1", "x2"):
+        value = getattr(annotation, name, None)
+        if value is None or isinstance(value, (pd.Timestamp, datetime)):
+            continue
+        if isinstance(value, str) and _FULL_DATE_TEXT_RE.search(value):
+            continue
+        stamp = _annotation_stamp(value)
+        if stamp is not None:
+            changes[name] = stamp
+    if not changes:
+        return annotation
+    try:
+        return replace(annotation, **changes)
+    except TypeError:
+        return annotation
+
+
+# Integer columns in this range, stepping by at most a decade, read as calendar
+# years unless the header says they are something else.
+_CALENDAR_YEAR_RANGE = (1800, 2200)
+_CALENDAR_YEAR_MAX_STEP = 10
+_YEAR_HEADER_RE = re.compile(r"(?i)(?:^|[^a-z])(?:years?|yrs?|fy|vintage)(?:$|[^a-z])")
+_NOT_YEAR_HEADER_RE = re.compile(r"(?i)(?:^|[^a-z])(?:strikes?|levels?|prices?|px|k)(?:$|[^a-z])")
+
+
+def _calendar_year_stamps(series: pd.Series, field: str) -> Optional[pd.Series]:
+    """Jan-1 stamps when an integer column holds calendar years, else ``None``.
+
+    Every value must be a whole number inside ``_CALENDAR_YEAR_RANGE``, and
+    either the distinct values step by at most ``_CALENDAR_YEAR_MAX_STEP`` or
+    the header names a year (``year``, ``yr``, ``fy``, ``vintage``). A header
+    naming a strike, level or price vetoes the reading: an index strike
+    ladder near 2,000 steps like a run of years.
+    """
+    if pd.api.types.is_bool_dtype(series) or not pd.api.types.is_numeric_dtype(series):
+        return None
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if values.empty or not (values == values.round()).all():
+        return None
+    lo, hi = _CALENDAR_YEAR_RANGE
+    if values.min() < lo or values.max() > hi:
+        return None
+    if _NOT_YEAR_HEADER_RE.search(str(field)):
+        return None
+    distinct = np.unique(values.astype(int))
+    steps = np.diff(distinct)
+    regular = len(distinct) >= 2 and steps.max() <= _CALENDAR_YEAR_MAX_STEP
+    if not (regular or _YEAR_HEADER_RE.search(str(field))):
+        return None
+    years = pd.to_numeric(series, errors="coerce").round().astype("Int64")
+    return pd.to_datetime(years.astype(str) + "-01-01", errors="coerce")
+
+
+def _years_read_as_epoch_nanoseconds(series: pd.Series, field: str) -> Optional[pd.Series]:
+    """Jan-1 stamps when a datetime column is integer years read as nanoseconds.
+
+    ``pd.to_datetime(2008)`` is 2008 nanoseconds after the epoch, so a year
+    column converted "to dates" lands inside the first microsecond of 1970.
+    The nanosecond counts are the years themselves, and the same rule that
+    reads an integer column as years (``_calendar_year_stamps``) decides
+    whether to read them back.
+    """
+    stamps = series.dropna()
+    if stamps.empty or getattr(stamps.dt, "tz", None) is not None:
+        return None
+    if stamps.max() >= pd.Timestamp("1970-01-02"):
+        return None
+    nanos = pd.Series(series.astype("int64"), index=series.index).where(series.notna())
+    return _calendar_year_stamps(nanos, field)
+
+
+_PERIOD_FREQ_BY_GRAIN = {"annual": "Y", "quarterly": "Q", "monthly": "M"}
+
+
+def _annotation_stamp(value: Any) -> Optional[pd.Timestamp]:
+    """The instant an annotation coordinate names, or ``None``.
+
+    A bare four-digit year (``2020`` / ``"2020"``) is Jan 1 of that year;
+    ``pd.Timestamp(2020)`` would read it as nanoseconds after the epoch.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, np.integer)) or (
+        isinstance(value, str) and value.strip().isdigit()
+    ):
+        year = int(value)
+        lo, hi = _CALENDAR_YEAR_RANGE
+        return pd.Timestamp(year=year, month=1, day=1) if lo <= year <= hi else None
+    if isinstance(value, (float, np.floating)):
+        return None
+    if isinstance(value, str) and not _FULL_DATE_TEXT_RE.search(value):
+        parsed = _parse_bar_period_label(value)
+        if parsed is not None and not pd.isna(parsed):
+            return pd.Timestamp(parsed)
+    try:
+        stamp = pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(stamp) else stamp
+
+
+def _period_index_of(
+    value: Any,
+    chronological: Sequence[Any],
+    labels: Sequence[str],
+    grain: str,
+) -> Tuple[Optional[int], Optional[pd.Timestamp]]:
+    """``(index of the period containing value, the instant it names)``."""
+    if isinstance(value, (str, int, np.integer)) and not isinstance(value, bool):
+        text = str(value).strip()
+        if text in labels:
+            return list(labels).index(text), None
+    stamp = _annotation_stamp(value)
+    if stamp is None:
+        return None, None
+    freq = _PERIOD_FREQ_BY_GRAIN.get(grain)
+    if freq:
+        target = stamp.to_period(freq)
+        for i, ts in enumerate(chronological):
+            if pd.Timestamp(ts).to_period(freq) == target:
+                return i, stamp
+        return None, stamp
+    ordered = pd.DatetimeIndex(chronological)
+    gaps = pd.Series(ordered).diff().dropna()
+    half = gaps.median() / 2 if len(gaps) else pd.Timedelta(days=1)
+    distance = abs(ordered - stamp)
+    nearest = int(distance.argmin())
+    return (nearest if distance[nearest] <= half else None), stamp
+
+
+def _move_annotation_onto_periods(
+    annotation: Any,
+    chronological: Sequence[Any],
+    labels: Sequence[str],
+    grain: str,
+) -> Optional[Any]:
+    """The annotation with its x coordinates renamed to period labels.
+
+    ``None`` means it marks nothing on the plotted window: a point
+    coordinate outside every period, or a span lying wholly before the first
+    or after the last. A span that only overhangs one end is clamped to it.
+    """
+    changes: Dict[str, str] = {}
+    sides: Dict[str, str] = {}
+    first, last = pd.Timestamp(chronological[0]), pd.Timestamp(chronological[-1])
+    for name in ("x", "x1", "x2"):
+        value = getattr(annotation, name, None)
+        if value is None:
+            continue
+        idx, stamp = _period_index_of(value, chronological, labels, grain)
+        if idx is not None:
+            changes[name] = labels[idx]
+            sides[name] = "in"
+            continue
+        if stamp is None:
+            continue
+        if name == "x":
+            return None
+        if stamp < first:
+            changes[name], sides[name] = labels[0], "before"
+        elif stamp > last:
+            changes[name], sides[name] = labels[-1], "after"
+        else:
+            return None
+    if sides and len(set(sides.values())) == 1 and next(iter(sides.values())) != "in":
+        return None
+    if not changes:
+        return annotation
+    try:
+        return replace(annotation, **changes)
+    except TypeError:
+        return annotation
+
+
+def _materialize_bar_periods(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    annotations: Optional[List[Any]] = None,
+) -> Tuple[pd.DataFrame, Optional[str], Optional[List[Any]]]:
+    """Give a date-shaped vertical bar one band per period.
+
+    A bar is a quantity over a period. On a continuous time scale it has no
+    width to take: Vega-Lite draws a 5px hairline centred on an instant, the
+    first and last bars are clipped in half at the plot edges, and a Dec-31
+    stamp sits a day before the NEXT year's tick. Read as periods, the same
+    column gets one band each, named for the period.
+
+    The x reaches here as a datetime column (the caller's, or one
+    ``_normalize_intraday_x_column`` parsed from ``2024Q1`` / ``Jan-24`` /
+    year strings) or as integer calendar years (``_calendar_year_stamps``).
+    The label is the caller's spelling when the column was parsed from period
+    labels, ``2024`` for integer years, and the house spelling otherwise.
+    Intraday stamps keep the temporal axis: the house spellings cannot name
+    sub-daily periods uniquely.
+
+    Annotation x values move onto the period that contains them; one that
+    lands in no plotted period is dropped and reported, because a band scale
+    would otherwise admit it as an extra, empty category at the end.
+    """
+    source_labels = mapping.pop("_period_source_labels", None)
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        return df, None, annotations
+    column = df[x_field]
+    if pd.api.types.is_datetime64_any_dtype(column):
+        if _is_intraday_datetime_series(column.dropna()):
+            return df, None, annotations
+        stamps = column
+        source = "date"
+    else:
+        stamps = _calendar_year_stamps(column, x_field)
+        if stamps is None:
+            return df, None, annotations
+        source = "year"
+    valid = stamps.dropna()
+    if valid.empty:
+        return df, None, annotations
+
+    chronological = sorted(pd.Series(valid.unique()))
+    grain, labels, _ = _house_period_labels(chronological)
+    if source == "year":
+        grain = "annual"
+        labels = [str(pd.Timestamp(ts).year) for ts in chronological]
+    elif source_labels:
+        spelled = [source_labels.get(pd.Timestamp(ts).isoformat()) for ts in chronological]
+        if all(spelled) and len(set(spelled)) == len(spelled):
+            labels = spelled
+
+    label_by_stamp = dict(zip(chronological, labels))
+    df = df.copy()
+    df[x_field] = stamps.map(label_by_stamp)
+
+    explicit_sort = mapping.get("x_sort")
+    if explicit_sort is None:
+        mapping["x_sort"] = list(labels)
+    else:
+        remapped = []
+        for item in explicit_sort:
+            idx, _ = _period_index_of(item, chronological, labels, grain)
+            remapped.append(labels[idx] if idx is not None else item)
+        mapping["x_sort"] = remapped
+
+    if annotations:
+        kept = []
+        for annotation in annotations:
+            moved = _move_annotation_onto_periods(annotation, chronological, labels, grain)
+            if moved is None:
+                where = ", ".join(
+                    f"{name}={getattr(annotation, name)!r}" for name in ("x", "x1", "x2")
+                    if getattr(annotation, name, None) is not None
+                )
+                _note(mapping, (
+                    f"{type(annotation).__name__}({where}) falls outside the "
+                    f"plotted periods ({labels[0]} to {labels[-1]}) and was "
+                    f"dropped; pass an x inside the window."
+                ))
+                continue
+            kept.append(moved)
+        annotations = kept
+
+    mapping["_period_axis"] = {
+        "grain": grain,
+        "labels": list(labels),
+        "stamps": [pd.Timestamp(ts).isoformat() for ts in chronological],
+    }
+    return df, (
+        f"Bar x_field {x_field!r} read as {len(labels)} {grain} periods; one "
+        f"band per period."
+    ), annotations
+
+
+def _materialize_contribution_periods(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    annotations: Optional[List[Any]] = None,
+) -> Tuple[pd.DataFrame, Optional[str], Optional[List[Any]]]:
+    """Turn a datetime x column into period labels for ``contribution``.
+
+    Contribution bars sit on a band scale, so a datetime x would render as
+    a clock or as raw ISO tokens. Attribution data almost always arrives
+    with a real date column, so requiring the caller to pre-format it is
+    friction the engine can absorb: infer the spacing and emit the house
+    spelling (``24Q1`` quarterly, ``Jan 24`` monthly, ``2024`` annual,
+    ``03 Mar`` otherwise), then publish chronological order through
+    ``mapping['x_sort']``.
+
+    Any date-like annotation ``x`` is translated to the same label. A band
+    scale silently ADMITS an unknown category, so a caller who marks the
+    easing turn with the date they have would otherwise get a rule parked
+    off the end of the bars and a raw ISO token printed on the axis --
+    no error, no warning, just a wrong picture.
+
+    Returns ``(df, audit_note, annotations)``; the note is ``None`` when
+    nothing changed.
+    """
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        return df, None, annotations
+    if not pd.api.types.is_datetime64_any_dtype(df[x_field]):
+        return df, None, annotations
+
+    stamps = df[x_field].dropna()
+    if stamps.empty:
+        return df, None, annotations
+
+    chronological = sorted(pd.Series(stamps.unique()))
+    grain, labels, formatter = _house_period_labels(chronological)
 
     label_by_stamp = dict(zip(chronological, labels))
     df = df.copy()
@@ -3623,7 +3992,7 @@ def _materialize_contribution_periods(
             for a in annotations
         ]
 
-    mapping["_contribution_period_axis"] = {
+    mapping["_period_axis"] = {
         "grain": grain,
         "labels": list(labels),
         "stamps": [pd.Timestamp(ts).isoformat() for ts in chronological],
@@ -4078,9 +4447,15 @@ def _collect_plot_ready_findings(
             and not pd.api.types.is_datetime64_any_dtype(df[x_field])
         ):
             tier0.append(ValidationError(
-                f"For timeseries charts, x-axis column '{x_field}' must be datetime. "
-                f"Current type: {df[x_field].dtype}. "
-                f"Convert with: df['{x_field}'] = pd.to_datetime(df['{x_field}'])"
+                f"For timeseries charts, x-axis column '{x_field}' must be date-like: "
+                f"datetimes, ISO date strings, calendar years or period labels "
+                f"(Jan-24, 2024Q1), which the engine reads as written. It holds "
+                f"{df[x_field].dtype} values that are none of those (e.g. "
+                f"{df[x_field].dropna().iloc[0] if df[x_field].notna().any() else 'empty'!r}). "
+                f"For categories or measured values -- tenors, strikes, weeks, "
+                f"buckets -- use chart_type='multi_line', which draws them as a "
+                f"curve. Do not pd.to_datetime() them: numbers become "
+                f"nanoseconds after 1970."
             ))
 
     # ``multi_line`` is included here too: its y is always the (numeric) value
@@ -4134,6 +4509,7 @@ def _collect_plot_ready_findings(
                 pd.api.types.is_numeric_dtype(color_series)
                 and not pd.api.types.is_bool_dtype(color_series)
             )
+            or _ordered_line_colour_field(df, mapping, chart_type) is not None
         )
         if not is_gradient_color:
             cardinality = color_series.nunique()
@@ -4178,7 +4554,30 @@ def _collect_plot_ready_findings(
         line_color_field = _get_field(mapping, "color")
         if line_color_field and line_color_field in df.columns:
             n_series = df[line_color_field].nunique()
-            if n_series > MAX_LINE_SERIES:
+            ordered = _ordered_line_colour_field(df, mapping, chart_type) is not None
+            stacked_area = chart_type == "area" and mapping.get("stack", True) is not False
+            if stacked_area:
+                if n_series > MAX_STACKED_AREA_BANDS:
+                    y_col = _get_field(mapping, "y")
+                    tier1.append(ValidationError(
+                        f"area has {n_series} bands (column '{line_color_field}'), over the "
+                        f"{MAX_STACKED_AREA_BANDS}-band cap for a stacked area -- the palette "
+                        f"has {MAX_STACKED_AREA_BANDS} colours and the key names each band. Keep "
+                        f"the largest {MAX_STACKED_AREA_BANDS - 1} and sum the rest into "
+                        f"'Other', e.g. `top = df.groupby('{line_color_field}')['{y_col}'].sum()"
+                        f".nlargest({MAX_STACKED_AREA_BANDS - 1}).index; "
+                        f"df.loc[~df['{line_color_field}'].isin(top), '{line_color_field}'] = "
+                        f"'Other'` (then re-aggregate), or split the bands across "
+                        f"make_2pack_horizontal panels."
+                    ))
+            elif ordered and n_series > MAX_ORDERED_LINE_SERIES:
+                tier1.append(ValidationError(
+                    f"{chart_type} has {n_series} lines in an ordered sequence (column "
+                    f"'{line_color_field}'), over the {MAX_ORDERED_LINE_SERIES}-line cap for a "
+                    f"light-to-dark ramp. Keep the most recent {MAX_ORDERED_LINE_SERIES}, or split "
+                    f"the sequence across make_2pack_horizontal / make_4pack_grid panels."
+                ))
+            elif not ordered and n_series > MAX_LINE_SERIES:
                 # Suggestion must be reachable: the facet grid has a
                 # _FACET_MIN_PANELS floor, so offering facet below it would
                 # send PRISM into a second rejection. Only offer the
@@ -4204,7 +4603,12 @@ def _collect_plot_ready_findings(
                     f"{facet_bullet}"
                     f"  - Normalize (z-score / rebase-to-100) and keep the most "
                     f"important <= {MAX_LINE_SERIES} series, aggregating the "
-                    f"rest into an 'Other' line or a separate panel."
+                    f"rest into an 'Other' line or a separate panel.\n"
+                    f"  - If the lines are an ordered sequence (vintages, event "
+                    f"dates), colour by a date column, label them one prefix plus "
+                    f"consecutive numbers (E01..E12), or pass a sequential "
+                    f"mapping['color_scheme'] (e.g. 'blues'): up to "
+                    f"{MAX_ORDERED_LINE_SERIES} lines draw light to dark with one key."
                 ))
 
     # ---- soft warnings -----------------------------------------------------
@@ -4831,13 +5235,20 @@ def _validate_line_coverage(
 ) -> None:
     """Reject line-shaped charts whose plotted series are mostly holes.
 
-    A line / area mark interpolates across interior NaNs, so a series that is
-    mostly missing renders as an empty or near-empty plot body -- yet it still
-    clears the >=2-valid-points gate (``_validate_chart_data_integrity``
-    Validation 2) and the 100%-NaN gate (``_validate_encoding_data``). This is
-    the canonical "chart rendered but the plot body is empty" failure reported
-    from PRISM: the axes, title, and end-of-line labels paint but no readable
-    line appears, because almost none of each series's x-grid carries a value.
+    A series that is mostly missing renders as an empty or near-empty plot
+    body -- yet it still clears the >=2-valid-points gate
+    (``_validate_chart_data_integrity`` Validation 2) and the 100%-NaN gate
+    (``_validate_encoding_data``). This is the canonical "chart rendered but
+    the plot body is empty" failure reported from PRISM: the axes, title, and
+    end-of-line labels paint but no readable line appears, because almost
+    none of each series's x-grid carries a value.
+
+    Missing is measured in the series' own grain where the line builder draws
+    in it (``multi_line`` / ``timeseries`` on a timeline): a monthly series
+    outer-joined into a daily frame is 0% missing, because
+    ``_break_line_gaps`` joins its month-ends. A series with no recognisable
+    grain -- the handful of stray points a broken filter leaves -- is still
+    measured against the frame's rows.
 
     Mechanism in the wild: a join / filter / reindex leaves a dense monthly (or
     daily) grid where almost every row is NaN -- e.g. an ``isin()`` filter whose
@@ -4866,6 +5277,22 @@ def _validate_line_coverage(
 
     y_field = _get_field(mapping, "y")
     color_field = _get_field(mapping, "color")
+    x_field = _get_field(mapping, "x")
+    own_grain = chart_type in {"multi_line", "timeseries"} and x_field in df.columns
+
+    def measured(label: str, frame: pd.DataFrame, values: pd.Series) -> Tuple[str, int, int]:
+        """(label, valid, expected): expected is own-grain periods when regular."""
+        valid = values.notna().to_numpy()
+        timeline = _line_timeline(frame[x_field]) if own_grain else None
+        if timeline is not None:
+            stamps = pd.DatetimeIndex(timeline.to_numpy()[valid]).dropna().unique()
+            grain = _line_grain(stamps)
+            if grain is not None and grain.name in _LINE_REGULAR_GRAINS:
+                span = _line_grain_periods(
+                    grain, pd.DatetimeIndex([stamps.min()]), pd.DatetimeIndex([stamps.max()]),
+                )
+                return label, len(stamps), int(span[0]) + 1
+        return label, int(valid.sum()), len(values)
 
     # Build (label, valid_count, total_count) for every plotted series.
     coverage: List[Tuple[str, int, int]] = []
@@ -4874,13 +5301,13 @@ def _validate_line_coverage(
         and y_field and y_field in df.columns
     ):
         for name, g in df.groupby(color_field):
-            coverage.append((str(name), int(g[y_field].notna().sum()), len(g)))
+            coverage.append(measured(str(name), g, g[y_field]))
     elif isinstance(mapping.get("y"), list):
         for col in mapping["y"]:
             if isinstance(col, str) and col in df.columns:
-                coverage.append((col, int(df[col].notna().sum()), len(df)))
+                coverage.append(measured(col, df, df[col]))
     elif y_field and y_field in df.columns:
-        coverage.append((y_field, int(df[y_field].notna().sum()), len(df)))
+        coverage.append(measured(y_field, df, df[y_field]))
 
     if not coverage:
         return
@@ -4911,9 +5338,9 @@ def _validate_line_coverage(
         f"missing, so the line would render as an empty / near-empty plot body "
         f"-- the axes, title, and end-of-line labels paint but no readable line "
         f"appears. Mostly-missing: {detail}.\n"
-        f"A line mark interpolates across gaps, so a series that is almost all "
-        f"holes draws nothing visible even though it clears the >=2-points "
-        f"check. Pick the fix that matches the cause:\n"
+        f"A series this sparse, with no regular spacing between its "
+        f"observations, draws almost nothing visible even though it clears the "
+        f">=2-points check. Pick the fix that matches the cause:\n"
         f"  (a) If the holes come from a join / filter / reindex, fix it "
         f"upstream. The usual culprit is a category filter whose spelling "
         f"doesn't match the source (e.g. "
@@ -5206,6 +5633,17 @@ def _validate_temporal_x_plausibility(
         x_min = x_min.tz_convert(None)
     span_ns = int((pd.Timestamp(x_max) - x_min).value)
 
+    if span_ns == 0 and x_min == pd.Timestamp("1970-01-01"):
+        raise ValidationError(
+            f"COLLAPSED YEAR AXIS: every value in x={x_field!r} is 1970. That "
+            f"is what `pd.DatetimeIndex(col).year` (or `pd.to_datetime(col)"
+            f".dt.year`) returns for a column that already held integer "
+            f"years: each year is read as nanoseconds after 1970-01-01, so "
+            f"every row lands in 1970. The loaded CSV keeps calendar years "
+            f"as integer years -- pass that column straight through as "
+            f"mapping['x'] and the engine draws it as a year timeline."
+        )
+
     raise ValidationError(
         f"EPOCH-CONVERTED X AXIS: every value in x={x_field!r} falls inside "
         f"the first day of the Unix epoch (min={x_min}, max={x_max}, span="
@@ -5262,10 +5700,12 @@ def _validate_y_scale_homogeneity(
         series defines its own scale -- nothing to flatten against).
       - Skipped when the global y span is zero (all values equal --
         flatness has no meaning).
+      - Skipped for an ordered line sequence (``_ordered_lines``): vintages
+        are one quantity at several dates, so a flat one is a finding.
     """
     if chart_type not in {"multi_line", "timeseries"}:
         return
-    if mapping.get("dual_axis_series"):
+    if mapping.get("dual_axis_series") or mapping.get("_ordered_lines"):
         return
 
     color_field = _get_field(mapping, "color")
@@ -9762,7 +10202,6 @@ def _arbitrate_bar_labels(
             f"to hold the text, and light text has nothing else to sit on.",
         )
     if absorbed:
-        mapping["_bar_value_labels_forced"] = True
         _note(
             mapping,
             f"{len(absorbed)} PointLabel / Callout caption(s) restated a "
@@ -9791,6 +10230,25 @@ def _arbitrate_bar_labels(
                 and _caption_is_unstyled(ann)
             ):
                 kept[i] = _caption_in_bar_value_style(ann)
+
+    # The horizontal builder sizes its value axis so text hanging past a bar's
+    # end stays inside the plot; these are the captions it has to seat.
+    if horizontal and categorical_axis and not grouped:
+        end_text: List[Tuple[float, float]] = []
+        for ann in kept:
+            value = getattr(ann, point_val_attr, None)
+            if not (isinstance(ann, (PointLabel, Callout)) and ann.label and ann.align == "left"
+                    and ann.dx > 0 and _is_plain_number(value)):
+                continue
+            if isinstance(ann, Callout):
+                weight = "bold" if ann.font_weight == "bold" else "regular"
+                pad = 2 * ann.box_padding_x if ann.background == "box" else 0
+            else:
+                weight = "bold" if ann._font_weight == "bold" else "regular"
+                pad = 0
+            end_text.append((float(value), _lp_measure(str(ann.label), ann.font_size, weight)[0] + pad + ann.dx))
+        if end_text:
+            mapping["_bar_end_text"] = end_text
 
     if grouped:
         rules: List[Annotation] = []
@@ -10068,6 +10526,207 @@ def _bar_value_label_font(
         if need <= pitch_px:
             return fs
     return None
+
+
+def _vega_nice_max(lo: float, hi: float, count: int = 10) -> float:
+    """The upper end Vega's ``nice`` gives the linear domain [lo, hi].
+
+    d3's ``linear.nice`` at its default ten ticks, which is what a Vega-Lite
+    quantitative scale with ``nice: true`` runs.
+    """
+    if not hi > lo:
+        return hi
+    prestep = None
+    for _ in range(10):
+        step = _nice_tick_step(hi - lo, count)
+        if step == prestep:
+            break
+        lo, hi = math.floor(lo / step) * step, math.ceil(hi / step) * step
+        prestep = step
+    return hi
+
+
+def _hbar_end_text_domain(
+    end_text: Sequence[Tuple[float, float]], lo: float, hi: float, width: int,
+) -> Optional[List[float]]:
+    """A horizontal bar's value domain seating the text past each bar's end.
+
+    ``end_text`` pairs a bar end with the pixels drawn past it (offset plus
+    text). ``None`` when the text already fits inside Vega's nice rounding of
+    [lo, hi], so a chart that fits keeps an unpinned axis.
+    """
+    need = hi
+    for end, px in end_text:
+        if end > 0 and px + 2 < width:
+            need = max(need, end * width / (width - px - 2))
+    return None if need <= _vega_nice_max(lo, hi) else [lo, need]
+
+
+def _hbar_value_extent(
+    df: pd.DataFrame, y_field: str, x_field: str, color_field: Optional[str], stack: Any,
+) -> Tuple[float, float]:
+    """[lo, hi] a horizontal bar's value axis must cover: bars, or stack ends, and zero."""
+    values = pd.to_numeric(df[x_field], errors="coerce").fillna(0.0)
+    if color_field and stack:
+        grouped = pd.DataFrame({"c": df[y_field].to_numpy(), "p": values.clip(lower=0).to_numpy(),
+                                "n": values.clip(upper=0).to_numpy()}).groupby("c", sort=False).sum()
+        return float(min(0.0, grouped["n"].min())), float(max(0.0, grouped["p"].max()))
+    return float(min(0.0, values.min())), float(max(0.0, values.max()))
+
+
+def _hbar_end_text(
+    df: pd.DataFrame, y_field: str, x_field: str, color_field: Optional[str], stack: Any,
+    mapping: Dict[str, Any], row_pitch: float, y_label_font_size: int,
+) -> List[Tuple[float, float]]:
+    """(bar end, pixels past it) for every label a horizontal bar hangs past its end.
+
+    The caller's captions (published by ``_arbitrate_bar_labels``) plus the
+    engine's own value labels or stack totals, measured at the font and
+    offset ``_build_bar_horizontal`` / ``_stack_total_layers`` draw them.
+    """
+    out = list(mapping.get("_bar_end_text") or [])
+    owned = {str(x) for x in (mapping.get("_suppress_bar_value_at_x") or set())}
+    if not color_field or _single_bar_per_category(df, y_field, color_field, stack):
+        fmt = _smart_number_format(df[x_field])
+        font = _bar_value_label_font(df[x_field], fmt, row_pitch, along_axis="y",
+                                     base_font_size=max(8, min(11, y_label_font_size + 1)))
+        if font is not None:
+            for cat, v in zip(df[y_field], pd.to_numeric(df[x_field], errors="coerce")):
+                if pd.notna(v) and v >= 0 and str(cat) not in owned:
+                    out.append((float(v), _lp_measure(format(float(v), fmt or ""), font, "bold")[0] + 4))
+    elif stack:
+        values = pd.to_numeric(df[x_field], errors="coerce").fillna(0.0)
+        totals = pd.DataFrame({"c": df[y_field].to_numpy(), "p": values.clip(lower=0).to_numpy(),
+                               "v": values.to_numpy()}).groupby("c", sort=False).sum().reset_index()
+        totals = totals[~totals["c"].astype(str).isin(owned)]
+        if len(totals):
+            fmt = _smart_number_format(totals["v"])
+            font = _bar_value_label_font(totals["v"], fmt, row_pitch, along_axis="y")
+            if font is not None:
+                for end, net in zip(totals["p"], totals["v"]):
+                    out.append((float(end), _lp_measure(format(float(net), fmt or ""), font, "bold")[0] + 4))
+    return out
+
+
+def _bar_labels_omitted_note(kind: str, n: int, pitch_px: float) -> str:
+    """The warning for value labels that cannot fit their bars at 8px."""
+    return (
+        f"{kind} omitted: {n} bars leave ~{pitch_px:.0f}px each and the widest "
+        f"label does not fit that pitch even at 8px, so the value axis carries "
+        f"the numbers. Aggregate or split the categories if exact values matter."
+    )
+
+
+def _single_bar_per_category(
+    df: pd.DataFrame, category_field: str, color_field: Optional[str], stack: Any,
+) -> bool:
+    """A colour that only tags bars: one stacked segment per category.
+
+    Actual / Projection, or a sign or sector tag, colours bars the reader
+    still compares one by one, so they label like uncoloured bars.
+    """
+    return (
+        bool(color_field) and bool(stack) and len(df) > 0
+        and int(df.groupby(category_field, sort=False).size().max()) == 1
+    )
+
+
+# The position a stack's net-total label is anchored to.
+_STACK_END_FIELD = "_stack_end"
+
+
+def _stack_total_layers(
+    df: pd.DataFrame,
+    *,
+    category_field: str,
+    value_field: str,
+    category_type: str,
+    category_sort: Any,
+    horizontal: bool,
+    pitch_px: float,
+    mapping: Dict[str, Any],
+    width: int,
+    height: int,
+) -> List[alt.Chart]:
+    """Net-total labels for a stacked bar: one per stack, past its outer end.
+
+    The reader compares stacks, so each carries its net -- positives plus
+    negatives. On a vertical bar the label sits above the positive end when
+    the net is positive and below the negative end when it is not. On a
+    horizontal bar it always sits right of the stack's right end, because
+    left of a negative end is the category-label gutter. The font steps down
+    to the bar pitch; when even 8px does not fit, the totals are omitted and
+    reported.
+    """
+    values = pd.to_numeric(df[value_field], errors="coerce").fillna(0.0)
+    totals = (
+        pd.DataFrame({
+            category_field: df[category_field].to_numpy(),
+            "_pos": values.clip(lower=0).to_numpy(),
+            "_neg": values.clip(upper=0).to_numpy(),
+        })
+        .groupby(category_field, sort=False).sum().reset_index()
+    )
+    totals[value_field] = totals["_pos"] + totals["_neg"]
+    if horizontal:
+        totals[_STACK_END_FIELD] = totals["_pos"]
+    else:
+        totals[_STACK_END_FIELD] = np.where(
+            totals[value_field] >= 0, totals["_pos"], totals["_neg"],
+        )
+
+    # A caption that already names a bar owns it (Class 1 absorption), and a
+    # total inside a labelled Band's range would print over the Band's name.
+    owned = mapping.get("_suppress_bar_value_at_x") or set()
+    if owned:
+        totals = totals[~totals[category_field].astype(str).isin({str(x) for x in owned})]
+    band = mapping.get("_suppress_bar_total_in_y_range")
+    if band is not None and not horizontal:
+        lo, hi = band
+        totals = totals[(totals[_STACK_END_FIELD] < lo) | (totals[_STACK_END_FIELD] > hi)]
+    if not len(totals):
+        return []
+
+    value_fmt = _smart_number_format(totals[value_field])
+    font = _bar_value_label_font(
+        totals[value_field], value_fmt, pitch_px,
+        along_axis="y" if horizontal else "x",
+    )
+    if font is None:
+        _note(mapping, _bar_labels_omitted_note("Stack totals", len(totals), pitch_px))
+        return []
+
+    text = alt.Text(value_field, type="quantitative", format=value_fmt)
+    rows = totals[[category_field, value_field, _STACK_END_FIELD]]
+    style = dict(fontSize=font, fontWeight="bold", color="#222222")
+    if horizontal:
+        return [
+            alt.Chart(rows)
+            .mark_text(align="left", baseline="middle", dx=4, **style)
+            .encode(
+                y=alt.Y(category_field, type="nominal", sort=category_sort),
+                x=alt.X(_STACK_END_FIELD, type="quantitative"),
+                text=text,
+            )
+            .properties(width=width, height=height)
+        ]
+    layers: List[alt.Chart] = []
+    for part, baseline, dy in (
+        (rows[rows[value_field] >= 0], "bottom", -4),
+        (rows[rows[value_field] < 0], "top", 4),
+    ):
+        if len(part):
+            layers.append(
+                alt.Chart(part)
+                .mark_text(align="center", baseline=baseline, dy=dy, **style)
+                .encode(
+                    x=alt.X(category_field, type=category_type, sort=category_sort),
+                    y=alt.Y(_STACK_END_FIELD, type="quantitative"),
+                    text=text,
+                )
+                .properties(width=width, height=height)
+            )
+    return layers
 
 
 def _grouped_bar_value_layers(
@@ -10438,6 +11097,69 @@ def _dedup_vlines_by_x(
     return new_annotations
 
 
+# A forward-dated event (the next FOMC, an earnings date) past the last
+# observation is drawn when it sits within this share of the window beyond it.
+_FORWARD_EXTENSION_FRAC = 0.25
+_FORWARD_EXTENSION_PAD_FRAC = 0.03
+
+
+def _plan_forward_extension(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    chart_type: str,
+    annotations: Optional[List["Annotation"]],
+) -> None:
+    """Publish how far a line chart's date axis runs past its data.
+
+    ``mapping['_x_extension'] = {'limit': ts, 'to': ts or None}``: ``limit``
+    is the furthest a ``VLine`` or ``Band`` edge may sit past the last
+    observation (``_FORWARD_EXTENSION_FRAC`` of the window); ``to`` is the
+    axis end that seats the furthest one within it, or None when none needs
+    it. Every consumer -- the drop rules, the builder's x scale, the date
+    tick plan, the label canvas, a facet's shared domain -- reads this one
+    decision.
+    """
+    if chart_type not in {"multi_line", "timeseries"} or mapping.get("x_type") == "ordinal":
+        return
+    if mapping.get("dual_axis_series") or mapping.get("dual_axis_bind"):
+        return
+    x_col = _get_field(mapping, "x")
+    if not isinstance(x_col, str) or x_col not in df.columns:
+        return
+    if not pd.api.types.is_datetime64_any_dtype(df[x_col]):
+        return
+    xs = df[x_col].dropna()
+    if xs.empty:
+        return
+    x_min, x_max = xs.min(), xs.max()
+    span = x_max - x_min
+    if span <= pd.Timedelta(0):
+        return
+    limit = x_max + span * _FORWARD_EXTENSION_FRAC
+    forward: List[pd.Timestamp] = []
+    for ann in annotations or []:
+        if isinstance(ann, VLine):
+            edges = [ann.x]
+        elif isinstance(ann, Band) and ann.x1 is not None and ann.x2 is not None:
+            edges = [ann.x1, ann.x2]
+        else:
+            continue
+        for edge in edges:
+            try:
+                ts = pd.Timestamp(edge)
+                if x_max < ts <= limit:
+                    forward.append(ts)
+            except (TypeError, ValueError):
+                continue
+    to = max(forward) + span * _FORWARD_EXTENSION_PAD_FRAC if forward else None
+    mapping["_x_extension"] = {"limit": limit, "to": to}
+
+
+def _forward_extension_end(mapping: Dict[str, Any]) -> Optional[pd.Timestamp]:
+    """The date axis end past the data, when a forward event needs one."""
+    return (mapping.get("_x_extension") or {}).get("to")
+
+
 def _drop_right_edge_vlines(
     annotations: List[Annotation],
     df: pd.DataFrame,
@@ -10497,6 +11219,7 @@ def _drop_right_edge_vlines(
     except Exception:  # noqa: BLE001
         return annotations
 
+    extension = mapping.get("_x_extension") or {}
     kept: List[Annotation] = []
     for ann in annotations:
         if not isinstance(ann, VLine):
@@ -10507,7 +11230,25 @@ def _drop_right_edge_vlines(
         except (TypeError, ValueError):
             kept.append(ann)
             continue
-        if vline_val >= threshold:
+        if vline_val > x_max and extension.get("to") is not None and vline_val <= extension["limit"]:
+            kept.append(ann)
+            continue
+        if vline_val > x_max and extension:
+            reason = (
+                f"VLine(x={ann.x}) is more than a quarter of the window past "
+                f"the last data point ({x_max}); the date axis reaches forward "
+                f"events up to {pd.Timestamp(extension['limit']):%Y-%m-%d}. "
+                f"Extend the data toward it, or call the date out in the "
+                f"title / subtitle."
+            )
+        elif vline_val > x_max:
+            reason = (
+                f"VLine(x={ann.x}) is after the last data point ({x_max}), so "
+                f"it marks nothing on the plotted window. Extend the data to "
+                f"reach it, or call the date / value out in the title / "
+                f"subtitle."
+            )
+        elif vline_val >= threshold:
             reason = (
                 f"VLine(x={ann.x}) is in the right-most "
                 f"{int(_VLINE_RIGHT_EDGE_REJECT_FRAC * 100)}% of the data "
@@ -10517,6 +11258,9 @@ def _drop_right_edge_vlines(
                 f"earlier or call the date / value out in the title / "
                 f"subtitle."
             )
+        else:
+            reason = ""
+        if reason:
             logger.warning("Suppressed %s", reason)
             # Every other annotation drop reaches the caller on
             # ``result.warnings``; this one used to log only, so a
@@ -11230,16 +11974,128 @@ def _should_auto_inject_lvl(
       internal QC fallback for post-render label-collision cases
       (NOT part of the PRISM-facing surface; omitted from
       ``chart_context.md``).
+    * The chart is not one line whose end label would only restate its
+      y-axis title -- the axis already names that line.
     """
     if chart_type not in {"multi_line", "timeseries"}:
         return False
-    if mapping.get("dual_axis_series"):
+    if mapping.get("dual_axis_series") or mapping.get("_ordered_lines"):
         return False
     if mapping.get("legend") is True:
         return False
     if annotations and any(isinstance(a, LastValueLabel) for a in annotations):
         return False
+    if _single_line_label_repeats_y_title(mapping):
+        return False
     return True
+
+
+def _same_words(a: Any, b: Any) -> bool:
+    """Equal once case, spacing and punctuation are ignored."""
+    def squash(text: Any) -> str:
+        return re.sub(r"[^0-9a-z]+", "", str(text).casefold())
+    return bool(squash(a)) and squash(a) == squash(b)
+
+
+def _single_line_label_repeats_y_title(mapping: Dict[str, Any]) -> bool:
+    """True when a one-line chart's end label would say what its y axis says.
+
+    A single line's end label is its ``y_title`` (or the humanised column
+    name), which is the y-axis title itself unless that title adds a unit.
+    """
+    y_field = mapping.get("y")
+    if not isinstance(y_field, str) or _get_field(mapping, "color"):
+        return False
+    y_title = mapping.get("y_title")
+    end_label = (
+        y_title if isinstance(y_title, str) and y_title
+        else y_field.replace("_", " ").strip().title()
+    )
+    return _same_words(end_label, _format_label(y_field, mapping, "y"))
+
+
+# A key into a caption list: "3", "12", "B", or merged keys "2,3". Letter keys
+# stop at one character so a ticker ("ARM") is a name, not a key.
+_MARKER_KEY = re.compile(r"^(?:\d{1,3}|[A-Za-z])(?:,(?:\d{1,3}|[A-Za-z]))*$")
+
+
+def _is_marker_key(label: Any) -> bool:
+    return isinstance(label, str) and bool(_MARKER_KEY.match(label.strip()))
+
+
+def _label_restates_value(label: Any, value: Any) -> bool:
+    """True when a label is the number it sits on (a '5' on a line ending at 5.0)."""
+    try:
+        number, target = float(str(label).replace(",", "")), float(value)
+    except (TypeError, ValueError):
+        return False
+    return abs(number - target) <= max(0.5, 0.005 * abs(target))
+
+
+# ``rainbow`` is cyclic: its two ends are one colour, so it cannot order lines.
+_ORDERED_LINE_SCHEMES = frozenset(
+    name for name in _house.gradients_of_kind("sequential") if name != "rainbow"
+)
+
+
+def _ordered_line_scheme(mapping: Dict[str, Any], chart_type: str) -> bool:
+    """True when ``color_scheme`` declares a line chart's lines an ordered sequence."""
+    return bool(
+        chart_type in {"multi_line", "timeseries"}
+        and mapping.get("color_scheme") in _ORDERED_LINE_SCHEMES
+        and not mapping.get("dual_axis_series")
+        and not mapping.get("dual_axis_bind")
+        and not mapping.get("series")
+    )
+
+
+def _ordered_line_colour_field(
+    df: pd.DataFrame, mapping: Dict[str, Any], chart_type: str,
+) -> Optional[str]:
+    """The colour column when the lines draw as one light-to-dark ramp.
+
+    Vintages and event paths are read as one progression, not line by line.
+    A sequential ``color_scheme`` says so outright; a date column says so only
+    past ``MAX_LINE_SERIES`` lines, where end labels no longer fit. Either way
+    the lines draw light to dark with one key, up to
+    ``MAX_ORDERED_LINE_SERIES``.
+    """
+    if chart_type not in {"multi_line", "timeseries"}:
+        return None
+    if mapping.get("dual_axis_series") or mapping.get("dual_axis_bind") or mapping.get("series"):
+        return None
+    field = _get_field(mapping, "color")
+    if not isinstance(field, str) or field not in df.columns:
+        return None
+    if mapping.get("color_scheme") is not None:
+        return field if _ordered_line_scheme(mapping, chart_type) else None
+    if df[field].nunique() <= MAX_LINE_SERIES:
+        return None
+    if pd.api.types.is_datetime64_any_dtype(df[field]):
+        return field
+    if _numbered_sequence(df[field].dropna().unique()) is not None:
+        return field
+    return None
+
+
+_NUMBERED_LABEL = re.compile(r"^(.*?)(\d+)$")
+
+
+def _numbered_sequence(values: Sequence[Any]) -> Optional[List[str]]:
+    """Labels in number order when they are one prefix plus consecutive integers.
+
+    ``E01 .. E12``, ``Wave 1 .. Wave 8``, ``2019 .. 2026``: a numbered run
+    reads as a progression the way a date column does.
+    """
+    labels = [str(v) for v in values]
+    parts = [_NUMBERED_LABEL.match(label) for label in labels]
+    if not labels or not all(parts) or len({p.group(1) for p in parts}) != 1:
+        return None
+    ordered = sorted(zip((int(p.group(2)) for p in parts), labels))
+    first = ordered[0][0]
+    if [n for n, _ in ordered] != list(range(first, first + len(ordered))):
+        return None
+    return [label for _, label in ordered]
 
 
 def _strip_dual_axis_lvl_annotations(
@@ -11336,6 +12192,11 @@ def _strip_endpoint_annotations_redundant_to_lvl(
     * The annotation's ``(x, y)`` coordinate matches the latest data
       point of one of the chart's series (per-series in long format,
       per-y-column in wide auto-melt, single point otherwise).
+
+    A marker key (``'5'``, ``'2,3'``) is an index into the caller's
+    caption, not a restatement of the line, so it stays -- with any
+    ``PointHighlight`` on the same point -- unless it is the endpoint's
+    own value or a series' name.
     """
     if chart_type not in {"multi_line", "timeseries"}:
         return annotations
@@ -11383,8 +12244,32 @@ def _strip_endpoint_annotations_redundant_to_lvl(
     if not endpoint_coords:
         return annotations
 
+    def _at(ann: Any, x: Any, y: Any) -> bool:
+        return (
+            _values_match_for_endpoint(getattr(ann, "x", None), x)
+            and _values_match_for_endpoint(getattr(ann, "y", None), y)
+        )
+
+    series_names = (
+        {str(v) for v in df[color_col].dropna().unique()}
+        if color_col and color_col in df.columns
+        else set(y_field if isinstance(y_field, list) else [y_field])
+    )
+    kept_keys = [
+        ann for ann in annotations
+        if isinstance(ann, (Callout, PointLabel)) and _is_marker_key(ann.label)
+        and not _label_restates_value(ann.label, ann.y)
+        and not any(_same_words(ann.label, name) for name in series_names)
+    ]
+
     surviving: List[Annotation] = []
     for ann in annotations:
+        if any(ann is key for key in kept_keys) or (
+            isinstance(ann, PointHighlight)
+            and any(_at(key, ann.x, ann.y) for key in kept_keys)
+        ):
+            surviving.append(ann)
+            continue
         if isinstance(ann, (Callout, PointLabel, PointHighlight)):
             ann_x = getattr(ann, "x", None)
             ann_y = getattr(ann, "y", None)
@@ -11403,6 +12288,32 @@ def _strip_endpoint_annotations_redundant_to_lvl(
                     continue
         surviving.append(ann)
     return surviving
+
+
+def _merge_coincident_markers(annotations: List["Annotation"]) -> List["Annotation"]:
+    """One marker per point: two notes on one day read ``'2,3'``, not two numerals on one spot.
+
+    Only marker keys merge (see ``_is_marker_key``); the first key at a
+    point keeps its styling and the later keys join its text in order.
+    """
+    out: List[Annotation] = []
+    for ann in annotations:
+        if isinstance(ann, PointLabel) and _is_marker_key(ann.label):
+            host = next(
+                (i for i, prev in enumerate(out)
+                 if isinstance(prev, PointLabel) and _is_marker_key(prev.label)
+                 and prev.axis == ann.axis
+                 and _values_match_for_endpoint(prev.x, ann.x)
+                 and _values_match_for_endpoint(prev.y, ann.y)),
+                None,
+            )
+            if host is not None:
+                keys = out[host].label.strip().split(",")
+                extra = [k for k in ann.label.strip().split(",") if k not in keys]
+                out[host] = replace(out[host], label=",".join(keys + extra))
+                continue
+        out.append(ann)
+    return out
 
 
 def _stagger_lvl_text_y(
@@ -11704,6 +12615,10 @@ _LP_MIN_GAP_PX = 2.0      # breathing room required between two label boxes
 _LP_EDGE_PAD_PX = 2.0     # label must clear the plot edge by this much
 _LP_LINE_HEIGHT = 1.25    # multiple of font_size per rendered text line
 _LP_MIN_FONT_SIZE = 8     # never shrink a label below this to make it fit
+_LP_LEADER_COLOR = "#8C8C8C"
+_LP_LEADER_WIDTH = 0.75
+_LP_LEADER_REACH_X = 0.25  # share of the panel width a leadered label may sit off its point
+_LP_LEADER_GAP_PX = 18.0   # a label box further than this from its point draws a leader
 
 
 @functools.lru_cache(maxsize=8192)
@@ -11772,7 +12687,7 @@ class _LabelCanvas:
             if pd.api.types.is_datetime64_any_dtype(col):
                 self._x_kind = "time"
                 self._x_lo = float(col.min().timestamp())
-                self._x_hi = float(col.max().timestamp())
+                self._x_hi = float(max(col.max(), _forward_extension_end(mapping) or col.max()).timestamp())
             elif pd.api.types.is_numeric_dtype(col):
                 self._x_lo = float(col.min())
                 self._x_hi = float(col.max())
@@ -12181,6 +13096,52 @@ def _lp_sweep(
     return out
 
 
+def _lp_ladder_leader(
+    box: _LabelBox, canvas: _LabelCanvas,
+) -> List[Tuple[float, float, str]]:
+    """Far positions, nearest first, for a label its neighbourhood cannot hold.
+
+    Rows run the whole panel height; columns reach ``_LP_LEADER_REACH_X``
+    of its width. A label placed far off draws a leader (``_lp_leader``).
+    """
+    step_y = box.height + _LP_MIN_GAP_PX
+    step_x = box.width + _LP_MIN_GAP_PX
+    rows = int(canvas.height // step_y)
+    cols = int(canvas.width * _LP_LEADER_REACH_X // step_x)
+    out: List[Tuple[float, float, str]] = []
+    for row in range(1, rows + 1):
+        for sign in (-1.0, 1.0):
+            for col in range(0, cols + 1):
+                for side in ((0.0,) if col == 0 else (1.0, -1.0)):
+                    out.append((side * col * step_x, sign * row * step_y, "center"))
+    out.sort(key=lambda c: math.hypot(c[0], c[1]))
+    return out
+
+
+def _lp_leader(ann: Annotation, box: _LabelBox, canvas: _LabelCanvas) -> Optional["Segment"]:
+    """A leader from a label's point to its box, when the box sits far enough off to need one.
+
+    Only a point label or callout free to move in x gets one, and only off
+    a category axis, where a ranged rule does not render.
+    """
+    if box.kind not in ("pointlabel", "callout") or box.sweep_x <= 0 or canvas._x_kind == "cat":
+        return None
+    x0, y0, x1, y1 = box.rect()
+    end_px = min(max(box.anchor_x, x0), x1)
+    end_py = min(max(box.anchor_y, y0), y1)
+    if math.hypot(end_px - box.anchor_x, end_py - box.anchor_y) <= _LP_LEADER_GAP_PX:
+        return None
+    x_end = ann.x if abs(end_px - box.anchor_x) < 0.5 else canvas.x_value(end_px)
+    y_end = canvas.y_value(end_py, box.axis)
+    if x_end is None or y_end is None:
+        return None
+    return Segment(
+        x1=ann.x, y1=float(ann.y), x2=x_end, y2=float(y_end),
+        color=_LP_LEADER_COLOR, stroke_width=_LP_LEADER_WIDTH, stroke_dash=[],
+        axis=box.axis,
+    )
+
+
 def _lp_collect(
     annotations: List[Annotation],
     canvas: _LabelCanvas,
@@ -12504,7 +13465,9 @@ def _lp_solve(
       3. preferred position, crossing a rule
       4. any swept position, crossing a rule
       5. one font size step smaller, re-walking 1-4
-      6. drop -- reported, never silent
+      6. a free position anywhere nearby, drawn with a leader line back to
+         its point (point labels and callouts off a category axis)
+      7. drop -- reported, never silent
     """
     placed: List[Tuple[_LabelBox, Tuple[float, float, float, float]]] = []
     soft = soft_obstacles or []
@@ -12540,6 +13503,7 @@ def _lp_solve(
         def _try(
             candidates: List[Tuple[float, float, str]],
             avoid_rules: bool = True,
+            keep_order: bool = True,
         ) -> bool:
             for cdx, cdy, cal in candidates:
                 rect = box.rect(cdx, cdy, cal)
@@ -12547,7 +13511,7 @@ def _lp_solve(
                     continue
                 if any(_lp_overlaps(rect, orect) for _, orect in placed):
                     continue
-                if _crosses(rect):
+                if keep_order and _crosses(rect):
                     continue
                 if avoid_rules and any(
                     _lp_overlaps(rect, s, gap=0.0) for s in soft
@@ -12586,6 +13550,15 @@ def _lp_solve(
             if _walk():
                 continue
 
+        # A leader ties the label to its point, so reading order within a
+        # column no longer has to carry that attribution.
+        if (
+            box.kind in ("pointlabel", "callout") and box.sweep_x > 0
+            and canvas._x_kind != "cat"
+            and _try(_lp_ladder_leader(box, canvas), avoid_rules=False, keep_order=False)
+        ):
+            continue
+
         box.dropped = True
         drops.append((
             box,
@@ -12612,6 +13585,7 @@ def _lp_apply(
     """
     out: List[Optional[Annotation]] = list(annotations)
     extra: List[Annotation] = []
+    leaders: List[Annotation] = []
     strip_label: set = set()
 
     for box in boxes:
@@ -12628,6 +13602,9 @@ def _lp_apply(
                 ann, dx=int(round(box.dx)), dy=int(round(box.dy)),
                 align=box.align, font_size=box.font_size,
             )
+            leader = _lp_leader(ann, box, canvas)
+            if leader is not None:
+                leaders.append(leader)
         elif box.kind == "hline":
             out[box.idx] = replace(
                 ann,
@@ -12663,7 +13640,8 @@ def _lp_apply(
         if current is not None:
             out[idx] = replace(current, label=None)
 
-    return [a for a in out if a is not None] + extra
+    # Leaders go first so they draw under the markers and text they join.
+    return leaders + [a for a in out if a is not None] + extra
 
 
 def _place_labels(
@@ -13133,6 +14111,7 @@ def render_annotations(
     # ----  labeled VLine in the right-edge zone doesn't have its label
     # ----  extracted into a surviving PointLabel) -----------------------
     annotations = _drop_right_edge_vlines(annotations, df, mapping, dropped_log)
+    annotations = _merge_coincident_markers(annotations)
 
     # ---- auto-stagger ---------------------------------------------------
     # ``chart_width`` is the per-panel plot width passed by the caller
@@ -13141,14 +14120,19 @@ def render_annotations(
     # threaded one through.
     panel_width_px = int(chart_width) if chart_width else 700
     panel_height_px = int(chart_height) if chart_height else 350
+    # A histogram's y is a count Vega computes, so without its real range the
+    # stagger ladders fall back to a 0-100 frame and drag the axis to 100.
+    stagger_domain = clamped_domain
+    if stagger_domain is None and chart_type == "histogram":
+        stagger_domain = _histogram_count_domain(df, mapping)
     annotations = _auto_stagger_band_labels(
-        annotations, df, mapping, clamped_domain, chart_width_px=panel_width_px
+        annotations, df, mapping, stagger_domain, chart_width_px=panel_width_px
     )
     annotations = _auto_stagger_vline_labels(
-        annotations, df, mapping, clamped_domain, chart_width_px=panel_width_px
+        annotations, df, mapping, stagger_domain, chart_width_px=panel_width_px
     )
     annotations = _auto_stagger_hline_labels(
-        annotations, df, mapping, clamped_domain, chart_height_px=panel_height_px
+        annotations, df, mapping, stagger_domain, chart_height_px=panel_height_px
     )
     annotations = _auto_stagger_pointlabels(
         annotations, df, mapping, chart_width_px=panel_width_px
@@ -13389,9 +14373,13 @@ def render_annotations(
                             if x_range_td.total_seconds() > 0
                             else pd.Timedelta(days=1)
                         )
+                        x_hi_val = max(
+                            x_max_val + x_pad_td,
+                            _forward_extension_end(mapping) or x_max_val,
+                        )
                         if (
                             vline_val < (x_min_val - x_pad_td)
-                            or vline_val > (x_max_val + x_pad_td)
+                            or vline_val > x_hi_val
                         ):
                             _note_drop(
                                 f"VLine(x={annotation.x!r}) is outside the "
@@ -13483,7 +14471,10 @@ def render_annotations(
                             x1_val = pd.Timestamp(annotation.x1)
                             x2_val = pd.Timestamp(annotation.x2)
                             x_min_val = df[x_col].min()
-                            x_max_val = df[x_col].max()
+                            x_max_val = max(
+                                df[x_col].max(),
+                                _forward_extension_end(mapping) or df[x_col].max(),
+                            )
                             band_lo_x = min(x1_val, x2_val)
                             band_hi_x = max(x1_val, x2_val)
                             if (
@@ -13551,7 +14542,7 @@ def render_annotations(
                         if pd.api.types.is_datetime64_any_dtype(df[x_col]):
                             cx = pd.Timestamp(annotation.x)
                             x_min_val = df[x_col].min()
-                            x_max_val = df[x_col].max()
+                            x_max_val = max(df[x_col].max(), _forward_extension_end(mapping) or df[x_col].max())
                             x_range_td = x_max_val - x_min_val
                             x_pad_td = (
                                 x_range_td * 0.10
@@ -13660,7 +14651,7 @@ def render_annotations(
                         if pd.api.types.is_datetime64_any_dtype(df[x_col]):
                             px = pd.Timestamp(annotation.x)
                             x_min_val = df[x_col].min()
-                            x_max_val = df[x_col].max()
+                            x_max_val = max(df[x_col].max(), _forward_extension_end(mapping) or df[x_col].max())
                             x_range_td = x_max_val - x_min_val
                             x_pad_td = (
                                 x_range_td * 0.10
@@ -13731,7 +14722,7 @@ def render_annotations(
                         if pd.api.types.is_datetime64_any_dtype(df[x_col]):
                             pxv = pd.Timestamp(annotation.x)
                             x_min_val = df[x_col].min()
-                            x_max_val = df[x_col].max()
+                            x_max_val = max(df[x_col].max(), _forward_extension_end(mapping) or df[x_col].max())
                             x_range_td = x_max_val - x_min_val
                             x_pad_td = (
                                 x_range_td * 0.10
@@ -14498,13 +15489,17 @@ def _resolve_profile_x_order(
     df: pd.DataFrame,
     x_field: str,
     mapping: Dict[str, Any],
+    fallback: str = "ascending",
 ) -> List[Any]:
-    """Return the profile x categories in display order (actual values).
+    """Return the ordinal x categories in display order (actual values).
 
-    Mirrors ``_build_profile_line``'s sort resolution (explicit
-    ``mapping['x_sort']`` -> tenor ladder -> relative-time -> ascending)
-    but keeps the ORIGINAL data values so an ``axis.values`` subset built
-    from this order matches the rendered ordinal domain exactly.
+    Explicit ``mapping['x_sort']`` -> tenor ladder -> relative-time ->
+    ``fallback``, keeping the ORIGINAL data values so an ``axis.values``
+    subset built from this order matches the rendered ordinal domain. The
+    caller must encode the same order it thins from: the scatter / area
+    band scales encode the ascending fallback, the profile line encodes
+    ``fallback='data'`` (first appearance), and a subset taken from one
+    order and drawn in the other lands at irregular positions.
     """
     uniques = [v for v in df[x_field].unique()]
     explicit = mapping.get("x_sort")
@@ -14515,6 +15510,8 @@ def _resolve_profile_x_order(
         return sorted(uniques, key=lambda v: _tenor_sort_key(str(v).strip().upper()))
     if _infer_relative_time_sort(uniques) is not None:
         return sorted(uniques, key=lambda v: _relative_time_sort_key(v))
+    if fallback == "data":
+        return uniques
     return sorted(uniques, key=lambda v: str(v))
 
 
@@ -15597,6 +16594,55 @@ def determine_date_format(
     return _ensure_min_temporal_ticks(cfg, date_series, chart_width)
 
 
+# Observation-tick strides: every Nth period is labelled. Quarterly stops at
+# every other quarter; past that the series is long enough that calendar
+# ticks on year boundaries read correctly.
+_ANNUAL_OBSERVATION_STRIDES = (1, 2, 5, 10, 20, 25, 50)
+_QUARTERLY_OBSERVATION_STRIDES = (1, 2)
+
+
+def _period_observation_ticks(
+    date_series: pd.Series,
+    chart_width: int,
+) -> Optional[Tuple[List[pd.Timestamp], str]]:
+    """``(ticks, format)`` placing ticks ON a quarterly / annual series' data.
+
+    Calendar ticks land on period STARTS (1 Jan, 1 Apr, ...). A series
+    stamped at period ends -- Dec-31 annual prints, Sep-30 quarter ends --
+    then sits a day to a quarter right of the tick that names it, so the
+    2020 print reads as 2021 and a Sep / Dec / Mar run carries Nov / Jan /
+    Mar labels. Ticking the observations themselves names each one as what
+    it is. ``None`` when the series already sits on calendar boundaries,
+    is not quarterly or annual, or is too long for a readable stride.
+    """
+    stamps = sorted(pd.Series(date_series.dropna().unique()))
+    if len(stamps) < 2:
+        return None
+    ordered = pd.DatetimeIndex(stamps)
+    if all(ts.day == 1 for ts in ordered) and (ordered.hour == 0).all():
+        return None
+    median_gap = float(pd.Series(ordered).diff().dropna().dt.days.median())
+    if median_gap >= 300:
+        fmt, sample, strides, annual = "%Y", "2024", _ANNUAL_OBSERVATION_STRIDES, True
+    elif median_gap >= 75:
+        fmt, sample, strides, annual = "%b %y", "Mar 24", _QUARTERLY_OBSERVATION_STRIDES, False
+    else:
+        return None
+    capacity = _max_ticks_for_width(chart_width, sample, 0)
+    stride = next((k for k in strides if math.ceil(len(stamps) / k) <= capacity), None)
+    if stride is None:
+        return None
+    if stride == 1:
+        chosen = list(ordered)
+    elif annual:
+        chosen = [ts for ts in ordered if ts.year % stride == 0]
+    else:
+        chosen = list(ordered[::-1][::stride][::-1])
+    if len(chosen) < 2:
+        chosen = list(ordered[::-1][::stride][::-1])
+    return chosen, fmt
+
+
 def _temporal_house_strftime(
     date_series: pd.Series,
     chart_width: int = 600,
@@ -16305,6 +17351,22 @@ _SCHEME_ANCHORS: Dict[str, List[str]] = {
         "#000004", "#1c1044", "#4f127b", "#812581",
         "#b5367a", "#e55063", "#fb8761", "#fec287", "#fcfdbf",
     ],
+    "inferno": [
+        "#000004", "#1b0c41", "#4a0c6b", "#781c6d", "#a52c60",
+        "#cf4446", "#ed6925", "#fb9b06", "#f7d13d", "#fcffa4",
+    ],
+    "cividis": [
+        "#002051", "#0d346b", "#33486e", "#575c6e", "#737172",
+        "#8b8677", "#a49d78", "#c3b56d", "#e6cf59", "#fdea45",
+    ],
+    "turbo": [
+        "#23171b", "#4a58dd", "#2f9df5", "#27d7c4", "#4df884", "#95fb51",
+        "#dedd32", "#ffa423", "#f65f18", "#ba2208", "#900c00",
+    ],
+    "rainbow": [
+        "#6e40aa", "#bf3caf", "#fe4b83", "#ff7847", "#e2b72f", "#aff05b",
+        "#52f667", "#1ddfa3", "#23abd8", "#4c6edb", "#6e40aa",
+    ],
     "redblue": [
         "#67001f", "#b2182b", "#d6604d", "#f4a582",
         "#fddbc7", "#f7f7f7", "#d1e5f0", "#92c5de",
@@ -16328,6 +17390,10 @@ _SCHEME_ANCHORS: Dict[str, List[str]] = {
     "browngreen": [
         "#8c510a", "#bf812d", "#dfc27d", "#f6e8c3",
         "#f5f5f5", "#c7eae5", "#80cdc1", "#35978f", "#01665e",
+    ],
+    "blueorange": [
+        "#134b85", "#2f78b3", "#5da2cb", "#9dcae1", "#d2e5ef", "#f2f0eb",
+        "#fce0ba", "#fbbf74", "#e8932f", "#c5690d", "#994a07",
     ],
 }
 
@@ -17107,8 +18173,9 @@ def _quantitative_axis_extent(
     stack = mapping.get("stack", True)
     other = "y" if axis == "x" else "x"
     other_field = mapping.get(other) if isinstance(mapping.get(other), str) else None
+    stacked_area = chart_type == "area" and axis == "y" and stack is not False
     if (
-        chart_type in {"bar", "bar_horizontal"}
+        (chart_type in {"bar", "bar_horizontal"} or stacked_area)
         and color_field
         and stack
         and isinstance(color_field, str)
@@ -17122,6 +18189,9 @@ def _quantitative_axis_extent(
             .sum()
         )
         lo, hi = float(totals.min()), float(totals.max())
+        if stacked_area:
+            # _build_area scales a stack from zero to its largest total.
+            lo = min(lo, 0.0)
     else:
         lo, hi = float(series.min()), float(series.max())
     if chart_type in _QUANT_ZERO_CHART_TYPES:
@@ -17204,18 +18274,37 @@ def get_axis_beautification(
             and mapping.get("x_type") != "ordinal"
             and not _x_renders_on_band_scale(mapping, chart_type)
         ):
-            date_config = determine_date_format(x_data, chart_width)
-            is_intraday = _is_intraday_datetime_series(x_data)
-            configs["x"] = AxisConfig(
-                label_angle=date_config.label_angle or 0,
-                tick_count=date_config.tick_count,
-                tick_step=date_config.tick_step,
-                format=date_config.format,
-                label_expr=date_config.label_expr,
-                # ``greedy`` thins the leftmost date anchor on single-session
-                # charts; ``parity`` keeps first + last labels visible.
-                label_overlap="parity" if is_intraday else None,
+            extension_end = _forward_extension_end(mapping)
+            date_config = determine_date_format(
+                x_data if extension_end is None
+                else pd.concat([x_data, pd.Series([extension_end])], ignore_index=True),
+                chart_width,
             )
+            is_intraday = _is_intraday_datetime_series(x_data)
+            observation_ticks = (
+                None if is_intraday else _period_observation_ticks(x_data, chart_width)
+            )
+            if observation_ticks is not None:
+                ticks, tick_format = observation_ticks
+                configs["x"] = AxisConfig(
+                    label_angle=0,
+                    format=tick_format,
+                    tick_values=[
+                        {"year": ts.year, "month": ts.month, "date": ts.day}
+                        for ts in ticks
+                    ],
+                )
+            else:
+                configs["x"] = AxisConfig(
+                    label_angle=date_config.label_angle or 0,
+                    tick_count=date_config.tick_count,
+                    tick_step=date_config.tick_step,
+                    format=date_config.format,
+                    label_expr=date_config.label_expr,
+                    # ``greedy`` thins the leftmost date anchor on single-session
+                    # charts; ``parity`` keeps first + last labels visible.
+                    label_overlap="parity" if is_intraday else None,
+                )
         elif pd.api.types.is_numeric_dtype(x_data):
             x_cfg = AxisConfig(label_angle=0)
             if (
@@ -17259,7 +18348,7 @@ def get_axis_beautification(
             # rule: tick labels are NEVER vertical -- horizontal or -45
             # only -- and the label frequency is reduced when they would
             # collide. Bars / waterfalls keep their own angle logic below.
-            ordered_vals = _resolve_profile_x_order(df, x_field, mapping)
+            ordered_vals = _resolve_profile_x_order(df, x_field, mapping, fallback="data")
             label_angle, tick_values = _profile_ordinal_axis_plan(
                 ordered_vals, chart_width,
             )
@@ -17286,12 +18375,12 @@ def get_axis_beautification(
                 tick_values=tick_values,
                 label_overlap="greedy",
             )
-        elif isinstance(mapping.get("_contribution_axis_plan"), dict):
-            # ``_build_contribution`` already decided which period names
-            # stay on the axis. Date-originated windows thin to year
-            # (or coarser) ticks and keep every bar; a leftover rotate
+        elif isinstance(mapping.get("_period_axis_plan"), dict):
+            # ``_build_contribution`` / ``_build_bar`` already decided which
+            # period names stay on the axis. Date-originated windows thin to
+            # year (or coarser) ticks and keep every bar; a leftover rotate
             # here is what turned 262 quarter labels into a smear.
-            plan = mapping["_contribution_axis_plan"]
+            plan = mapping["_period_axis_plan"]
             plan_angle = int(plan.get("label_angle", 0))
             # As with the profile path, the builder chose the angle and the
             # tick subset but never a font, so the labels it kept were left
@@ -17314,7 +18403,10 @@ def get_axis_beautification(
                     pitch_px=chart_width / max(len(labels_for_fit), 1),
                     base_font_size=_DEFAULT_AXIS_LABEL_FONT_SIZE,
                     extent_px=chart_width,
-                    surface=_CONTRIBUTION_SURFACE,
+                    surface=(
+                        _CONTRIBUTION_SURFACE if chart_type == "contribution"
+                        else _BAR_SURFACE
+                    ),
                     skip_horizontal=(plan_angle != 0),
                 )
             configs["x"] = AxisConfig(
@@ -17392,9 +18484,16 @@ def get_axis_beautification(
     # (the axis must clear the signed stack total and the net line, neither
     # of which is a raw row value). ``band`` owns its domain because the
     # ribbon extends past ``y`` on both sides.
+    # A stacked area owns its domain for the stacked-bar reason: the axis must
+    # reach the per-x total. Ticks planned from raw rows labelled one band.
     skip_y_domain = chart_type in {
         "bar", "bar_horizontal", "waterfall", "contribution", "band",
-    }
+    } or (
+        chart_type == "area"
+        and isinstance(mapping.get("color"), str)
+        and mapping.get("color") in df.columns
+        and mapping.get("stack", True) is not False
+    )
 
     if y_field and y_field in df.columns:
         y_data = df[y_field]
@@ -17741,6 +18840,40 @@ def apply_beautification_to_spec(
         update_encoding(obj, allow_title_fallback=allow_title_fallback)
 
     walk(spec, allow_title_fallback=True)
+    return spec
+
+
+def _two_line_axis_title(title: str) -> List[str]:
+    """``title`` as two lines, split at the word boundary that balances them.
+
+    A list, not a ``"\\n"`` string: Vega draws an axis title's lines only
+    from an array; a newline in a string title renders as one line.
+    """
+    words = title.split()
+    best: Optional[Tuple[Tuple[bool, int], List[str]]] = None
+    for i in range(1, len(words)):
+        lines = [" ".join(words[:i]), " ".join(words[i:])]
+        widest = max(len(line) for line in lines)
+        key = (widest > _AXIS_TITLE_LINE_CHARS, widest)
+        if best is None or key < best[0]:
+            best = (key, lines)
+    return best[1] if best else [title]
+
+
+def _wrap_long_axis_titles(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Draw every x / y axis title over one line's budget on two lines."""
+    for node in _iter_spec_dicts(spec):
+        enc = node.get("encoding")
+        if not isinstance(enc, dict):
+            continue
+        for channel in ("x", "y"):
+            field = enc.get(channel)
+            if not isinstance(field, dict):
+                continue
+            holder = field.get("axis") if isinstance(field.get("axis"), dict) and "title" in field["axis"] else field
+            title = holder.get("title")
+            if isinstance(title, str) and len(" ".join(title.split())) > _AXIS_TITLE_LINE_CHARS:
+                holder["title"] = _two_line_axis_title(" ".join(title.split()))
     return spec
 
 
@@ -18375,6 +19508,7 @@ def _collect_color_kwarg_findings(
         _validate_color_range_kwarg,
         _validate_color_scheme_kwarg,
         _validate_color_map_kwarg,
+        _validate_emphasis_kwarg,
     ):
         try:
             family(mapping, chart_type, df)
@@ -18987,13 +20121,66 @@ def _validate_color_scheme_kwarg(
                 and _scatter_color_is_gradient(df, color_field)
             ):
                 pass
+            elif _ordered_line_scheme(mapping, chart_type):
+                pass
             else:
+                ordered_hint = (
+                    f" To shade the lines as one ordered sequence (vintages, "
+                    f"event dates), pass a sequential ramp: "
+                    f"{sorted(_ORDERED_LINE_SCHEMES)}; not with dual axes or "
+                    f"mapping['series']."
+                    if chart_type in {"multi_line", "timeseries"} else ""
+                )
                 raise ValidationError(
                     f"mapping['color_scheme']={color_scheme!r} is a heatmap / "
                     f"gradient ramp but chart_type='{chart_type}' needs a "
                     f"categorical palette. Pick from {cat_names}, or pass "
                     f"mapping['color_map'] with explicit hex values."
+                    f"{ordered_hint}"
                 )
+
+
+def _validate_emphasis_kwarg(
+    mapping: Dict[str, Any], chart_type: str,
+    df: Optional[pd.DataFrame] = None,
+) -> None:
+    """``mapping['emphasis']``: line series drawn on top and thicker."""
+    emphasis = mapping.get("emphasis")
+    if emphasis is None:
+        return
+    if isinstance(emphasis, str):
+        emphasis = mapping["emphasis"] = [emphasis]
+    if not isinstance(emphasis, (list, tuple)) or not all(isinstance(e, str) for e in emphasis):
+        raise ValidationError(
+            "mapping['emphasis'] must be a list of series names, e.g. "
+            "{'emphasis': ['US']}."
+        )
+    if chart_type not in {"multi_line", "timeseries"}:
+        raise ValidationError(
+            f"mapping['emphasis'] applies to multi_line / timeseries lines; on "
+            f"chart_type={chart_type!r} highlight with color_map + opacity_map."
+        )
+    if df is None:
+        return
+    color_field, y_field = mapping.get("color"), mapping.get("y")
+    if isinstance(color_field, str) and color_field in df.columns:
+        names = [str(v) for v in df[color_field].dropna().unique()]
+    elif isinstance(y_field, (list, tuple)):
+        names = [str(v) for v in y_field]
+    else:
+        names = []
+    if not names:
+        raise ValidationError(
+            "mapping['emphasis'] needs several lines to stand out from: a "
+            "mapping['color'] column or a y list."
+        )
+    spellings = {_series_spelling(n) for n in names}
+    missing = [e for e in emphasis if e not in names and _series_spelling(e) not in spellings]
+    if missing:
+        raise ValidationError(
+            f"mapping['emphasis'] names {missing}, which are not among the "
+            f"series drawn: {names[:12]}{' ...' if len(names) > 12 else ''}."
+        )
 
 
 def _validate_color_map_kwarg(
@@ -19371,7 +20558,13 @@ def _validate_opacity_map_kwarg(
         "bar", "bar_horizontal", "area", "boxplot", "donut",
         "histogram", "contribution",
     }
-    if chart_type in _categorical_opacity_types and not color_field:
+    # A wide y-list is melted into a colour column the engine names itself
+    # (``_auto_melt_for_multiline``), so it already has series to target.
+    melts_wide_y = (
+        chart_type in {"multi_line", "area"}
+        and isinstance(mapping.get("y"), (list, tuple)) and len(mapping["y"]) > 1
+    )
+    if chart_type in _categorical_opacity_types and not color_field and not melts_wide_y:
         raise ValidationError(
             "mapping['opacity_map'] needs mapping['color'] (or "
             "'category' on donut) to target per-series transparency. "
@@ -19564,6 +20757,55 @@ def _encode_categorical_color_and_opacity(
     if opacity_encoding is not None:
         chart = chart.encode(opacity=opacity_encoding)
     return chart
+
+
+_EMPHASIS_STROKE_WIDTH = 3.0
+
+
+def _line_draw_order(
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    color_field: str,
+    opacity_encoding: Optional[alt.Opacity],
+) -> pd.DataFrame:
+    """Rows reordered so faded series draw first and emphasised ones last.
+
+    Vega draws line groups in the order their rows arrive, whatever the
+    legend order, so a series listed first is painted over by every later
+    one. The legend order is pinned on ``color_sort`` before the rows move,
+    so the key and the colours stay where they were.
+    """
+    emphasis = set(mapping.get("emphasis") or [])
+    alpha: Dict[str, float] = {}
+    if opacity_encoding is not None:
+        scale = opacity_encoding.to_dict().get("scale") or {}
+        alpha = {str(k): float(v) for k, v in zip(scale.get("domain") or [], scale.get("range") or [])}
+    if not emphasis and len(set(alpha.values())) <= 1:
+        return df
+    if mapping.get("color_sort") is None:
+        mapping["color_sort"] = _resolve_color_sort(df, color_field, None)
+    names = df[color_field].astype(str)
+    rank = [(name in emphasis, alpha.get(name, 1.0)) for name in names]
+    return df.iloc[sorted(range(len(df)), key=rank.__getitem__)]
+
+
+def _encode_line_emphasis(
+    chart: alt.Chart,
+    mapping: Dict[str, Any],
+    color_field: str,
+    base_width: float,
+) -> alt.Chart:
+    """Draw ``mapping['emphasis']`` series at ``_EMPHASIS_STROKE_WIDTH``."""
+    emphasis = set(mapping.get("emphasis") or [])
+    series = list(mapping.get("color_sort") or [])
+    if not emphasis or not series:
+        return chart
+    return chart.encode(strokeWidth=alt.StrokeWidth(
+        color_field, type="nominal", legend=None,
+        scale=alt.Scale(domain=series, range=[
+            _EMPHASIS_STROKE_WIDTH if name in emphasis else base_width for name in series
+        ]),
+    ))
 
 
 def _scatter_multi_color_opacity(n: int) -> float:
@@ -19862,7 +21104,13 @@ def _color_legend_will_render(
     if chart_type in {"multi_line", "timeseries", "area"}:
         if mapping.get("dual_axis_series"):
             return True
+        if mapping.get("_ordered_lines"):
+            return False
         if suppress_lvl:
+            return True
+        # Colour names the group and series the line: the lines are
+        # end-labelled, and the group still needs its key.
+        if mapping.get("series") and mapping.get("series") != color_field:
             return True
         if mapping.get("legend") is True:
             return True
@@ -19945,6 +21193,11 @@ def _validate_legend_labels(
             chart_width=chart_width,
         )
 
+    # A pack cell whose key moves to the pack's shared strip draws no legend
+    # of its own; the strip spans the whole pack and wraps.
+    if mapping.get("_pack_legend"):
+        return
+
     offenders = sorted(
         (label for label, px in widths.items() if px > budget_px),
         key=lambda s: -widths[s],
@@ -20008,14 +21261,14 @@ def _validate_legend_title(
     if not isinstance(field, str) or not field:
         return
     title = _format_label(field, mapping, channel)
-    if not title or len(str(title)) <= _Y_AXIS_LABEL_MAX_CHARS:
+    if not title or len(str(title)) <= _AXIS_TITLE_LINE_CHARS:
         return
     title = str(title)
-    hint = _suggest_label_abbreviations(title, _Y_AXIS_LABEL_MAX_CHARS)
+    hint = _suggest_label_abbreviations(title, _AXIS_TITLE_LINE_CHARS)
     raise LegendTitleTooLongError(
         (
             f"{channel.upper()}-legend title '{title}' is {len(title)} "
-            f"characters (max {_Y_AXIS_LABEL_MAX_CHARS}). The legend title "
+            f"characters (max {_AXIS_TITLE_LINE_CHARS}). The legend title "
             f"is the '{channel}' field name; rename the column or pass a "
             f"shorter {channel}_title in mapping."
             + (f" Try {hint}." if hint else "")
@@ -20689,6 +21942,235 @@ def _apply_heatmap_config(spec: Dict[str, Any]) -> Dict[str, Any]:
 # MODULE: CHART BUILDERS
 # ===========================================================================
 
+# A line joins across at most this many missing periods of its own grain. At
+# daily grain that is a long weekend plus a holiday; any longer and the join
+# would draw a move the data never made.
+_LINE_GAP_MAX_BRIDGED = 3
+
+# Calendar grains counted in months: (name, plural, months per period, the
+# median observation spacing in days that identifies the grain).
+_LINE_MONTH_GRAINS = (
+    ("month", "months", 1, 26.0, 35.0),
+    ("quarter", "quarters", 3, 80.0, 100.0),
+    ("half-year", "half-years", 6, 170.0, 200.0),
+    ("year", "years", 12, 350.0, 380.0),
+)
+_LINE_REGULAR_GRAINS = frozenset(
+    {"business day", "day", "week"} | {g[0] for g in _LINE_MONTH_GRAINS}
+)
+
+
+class _LineGrain(NamedTuple):
+    """The spacing one series' observations are taken at."""
+
+    name: str
+    plural: str
+    months: int = 0
+    step_ns: float = 0.0
+
+
+def _line_grain(stamps: pd.DatetimeIndex) -> Optional[_LineGrain]:
+    """Grain of one series from the median spacing of its own observations.
+
+    Measured per series, never on the frame: a monthly series outer-joined
+    into a daily frame is still monthly. Daily data with no weekend
+    observation is counted in business days, so a weekend is never missing.
+    """
+    stamps = stamps.unique().sort_values()
+    if len(stamps) < 2:
+        return None
+    day_ns = 86_400e9
+    median_ns = float(np.median(np.diff(stamps.asi8)))
+    if median_ns < 0.75 * day_ns:
+        return _LineGrain("interval", "intervals", step_ns=median_ns)
+    if median_ns <= 4 * day_ns:
+        if bool((stamps.dayofweek >= 5).any()):
+            return _LineGrain("day", "days")
+        return _LineGrain("business day", "business days")
+    days = median_ns / day_ns
+    if 5.0 <= days <= 10.0:
+        return _LineGrain("week", "weeks", step_ns=7 * day_ns)
+    for name, plural, months, lo, hi in _LINE_MONTH_GRAINS:
+        if lo <= days <= hi:
+            return _LineGrain(name, plural, months=months)
+    return _LineGrain("period", "periods", step_ns=median_ns)
+
+
+def _line_grain_periods(
+    grain: _LineGrain, a: pd.DatetimeIndex, b: pd.DatetimeIndex,
+) -> np.ndarray:
+    """Whole periods of ``grain`` from each ``a`` to the matching ``b``."""
+    if grain.name == "business day":
+        return np.busday_count(
+            a.values.astype("datetime64[D]"), b.values.astype("datetime64[D]"),
+        )
+    if grain.name == "day":
+        return np.rint((b.normalize() - a.normalize()) / pd.Timedelta(days=1)).astype(int)
+    if grain.months:
+        months = (b.year - a.year) * 12 + (b.month - a.month)
+        return np.rint(np.asarray(months) / grain.months).astype(int)
+    return np.rint((b.asi8 - a.asi8) / grain.step_ns).astype(int)
+
+
+def _line_timeline(x: pd.Series) -> Optional[pd.Series]:
+    """``x`` as naive wall-clock datetimes, or None when it is not a timeline."""
+    if not pd.api.types.is_datetime64_any_dtype(x):
+        return None
+    return x.dt.tz_localize(None) if x.dt.tz is not None else x
+
+
+def _line_gap_breaks(
+    grain: Optional[_LineGrain], missing: np.ndarray, explicit: np.ndarray,
+) -> np.ndarray:
+    """Which joins between consecutive observations the line must break.
+
+    Daily and irregular data break past ``_LINE_GAP_MAX_BRIDGED`` missing
+    periods whether the rows are NaN or absent, which keeps holidays whole.
+    Weekly-and-coarser data also break at a single explicit NaN period --
+    the caller wrote the hole in. Intraday data break only at explicit NaN
+    runs, because the overnight session is absent by design.
+    """
+    if grain is None:
+        return np.zeros(len(missing), dtype=bool)
+    long_hole = missing > _LINE_GAP_MAX_BRIDGED
+    if grain.name == "interval":
+        return explicit & long_hole
+    if grain.name in {"business day", "day", "period"}:
+        return long_hole
+    return long_hole | (explicit & (missing >= 1))
+
+
+def _line_gap_note(
+    series: Optional[str], windows: List[Tuple[str, str, int]],
+    grain: Optional[_LineGrain], lone: List[str],
+) -> str:
+    """One reportable sentence for a series whose line breaks or vanishes."""
+    unit = (lambda n: grain.name if n == 1 else grain.plural) if grain else (
+        lambda n: "row" if n == 1 else "rows"
+    )
+    who = f"{series!r}" if series is not None else "The line"
+    parts: List[str] = []
+    if windows:
+        shown = "; ".join(f"{a} and {b} ({n} missing {unit(n)})" for a, b, n in windows[:3])
+        more = f"; and {len(windows) - 3} more" if len(windows) > 3 else ""
+        where = "there" if len(windows) == 1 else "at each"
+        parts.append(
+            f"Line gap: {who} has no data between {shown}{more}; the line "
+            f"breaks {where} instead of joining across."
+        )
+    if lone:
+        parts.append(
+            f"{who} has {len(lone)} lone observation{'s' if len(lone) > 1 else ''} "
+            f"with no neighbour to join (first {lone[0]}), which draw"
+            f"{'s' if len(lone) == 1 else ''} no line; add a PointHighlight if "
+            f"{'it matters' if len(lone) == 1 else 'they matter'}."
+        )
+    return " ".join(parts)
+
+
+def _break_line_gaps(
+    df: pd.DataFrame,
+    x_field: str,
+    y_field: str,
+    group_field: Optional[str],
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Give each line the gaps its data has, and no others.
+
+    Vega-Lite breaks a line at a null y and joins everything else, so the
+    frame drawn is the decision: one null row stays at every gap that should
+    show (one is inserted where the observations are simply absent), and
+    every other NaN row goes -- leading and trailing NaN, short holidays, and
+    the off-grain rows a monthly series carries in a daily frame. Nothing is
+    filled: a line starts at its first observation and stops at its last.
+
+    Gaps are judged per series in its own grain (``_line_grain``). A
+    non-temporal x has no grain, so every NaN run between two observations
+    breaks and absent rows cannot be seen. Returns the frame and one note per
+    series that breaks or leaves an observation unjoined.
+    """
+    if x_field not in df.columns or y_field not in df.columns:
+        return df, []
+    y_null = pd.to_numeric(df[y_field], errors="coerce").isna().to_numpy()
+    timeline = _line_timeline(df[x_field])
+    if timeline is None and not y_null.any():
+        return df, []
+    x_tz = df[x_field].dt.tz if timeline is not None else None
+    t_values = timeline.to_numpy() if timeline is not None else None
+
+    grouped = bool(group_field and group_field in df.columns)
+    keys = df[group_field].to_numpy() if grouped else np.zeros(len(df))
+    positions = pd.Series(np.arange(len(df)), index=df.index)
+    keep = np.ones(len(df), dtype=bool)
+    inserts: List[Tuple[float, int, Any]] = []
+    notes: List[str] = []
+
+    def stamp(value: Any, grain: Optional[_LineGrain]) -> str:
+        if timeline is None:
+            return str(value)
+        fmt = "%Y-%m-%d %H:%M" if grain is not None and grain.name == "interval" else "%Y-%m-%d"
+        return pd.Timestamp(value).strftime(fmt)
+
+    for name, group_pos in positions.groupby(keys, sort=False):
+        pos = group_pos.to_numpy()
+        if t_values is not None:
+            pos = pos[~np.isnat(t_values[pos])]
+            pos = pos[np.argsort(t_values[pos], kind="stable")]
+        valid = ~y_null[pos]
+        if not valid.any():
+            continue
+        keep[pos[~valid]] = False
+        v_idx = np.flatnonzero(valid)
+        v_pos = pos[v_idx]
+        nan_between = np.diff(v_idx) - 1
+        if t_values is not None:
+            v_x = pd.DatetimeIndex(t_values[v_pos])
+            grain = _line_grain(v_x)
+            missing = (
+                _line_grain_periods(grain, v_x[:-1], v_x[1:]) - 1
+                if grain is not None else np.zeros(len(v_pos) - 1, dtype=int)
+            )
+            breaks = _line_gap_breaks(grain, missing, nan_between > 0)
+            x_values = v_x
+        else:
+            grain = None
+            missing = nan_between
+            breaks = nan_between > 0
+            x_values = df[x_field].to_numpy()[v_pos]
+
+        windows: List[Tuple[str, str, int]] = []
+        for i in np.flatnonzero(breaks):
+            if nan_between[i] > 0:
+                keep[pos[v_idx[i] + 1]] = True
+            else:
+                a, b = x_values[i], x_values[i + 1]
+                middle = a + (b - a) / 2
+                inserts.append((
+                    float(v_pos[i]) + 0.5, int(v_pos[i]),
+                    middle.tz_localize(x_tz) if x_tz is not None else middle,
+                ))
+            windows.append((stamp(x_values[i], grain), stamp(x_values[i + 1], grain), int(missing[i])))
+
+        cuts = np.flatnonzero(breaks) + 1
+        lone = [
+            stamp(x_values[seg[0]], grain)
+            for seg in np.split(np.arange(len(v_pos)), cuts) if len(seg) == 1
+        ]
+        if windows or lone:
+            notes.append(_line_gap_note(str(name) if grouped else None, windows, grain, lone))
+
+    if keep.all() and not inserts:
+        return df, notes
+    order = np.flatnonzero(keep).astype(float)
+    out = df.iloc[np.flatnonzero(keep)]
+    if inserts:
+        added = df.iloc[[src for _, src, _ in inserts]].copy()
+        added[x_field] = [x for _, _, x in inserts]
+        added[y_field] = np.nan
+        out = pd.concat([out, added])
+        order = np.concatenate([order, [key for key, _, _ in inserts]])
+    return out.iloc[np.argsort(order, kind="stable")].reset_index(drop=True), notes
+
+
 def _build_timeseries(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -20705,12 +22187,11 @@ def _build_timeseries(
     Pipeline:
       1. Log entry: shape, mapping, columns, non-null counts, dtypes,
          first/last row samples (silent_failures.md spec).
-      2. NaN interpolation for line continuity:
-         - Interior NaNs interpolated linearly.
-         - Leading NaNs back-filled so the line starts at first valid pt.
-         - Trailing NaNs truncated (NOT forward-filled) -- forward-fill
-           would draw a misleading flat line into the future.
-      3. Datetime coercion of the x column.
+      2. Datetime coercion of the x column.
+      3. Gaps (``_break_line_gaps``): nothing is filled. Each series starts
+         at its first observation and stops at its last, and breaks where
+         its own grain says data is missing; each break is reported on
+         ``_engine_notes``. The zero_fill shading breaks with the line.
       4. Field existence + non-null guards.
       5. Y-axis domain via ``calculate_y_axis_domain``
          (prevent_zero_start=True so flat lines stay visible).
@@ -20796,31 +22277,6 @@ def _build_timeseries(
 
     df = df.copy()
 
-    # NaN interpolation for visual continuity. Lines should always be
-    # connected; gaps in y create discontinuities. We interpolate
-    # interior NaNs, back-fill leading NaNs, and TRUNCATE trailing
-    # NaNs (forward-fill would create misleading flat lines).
-    def _interp_truncate(s: pd.Series) -> pd.Series:
-        if s.isna().all():
-            return s
-        last_valid_idx = s.last_valid_index()
-        s = s.interpolate(method="linear", limit_direction="backward")
-        if last_valid_idx is not None:
-            s.loc[s.index > last_valid_idx] = np.nan
-        return s
-
-    if color_field and color_field in df.columns:
-        df[y_field] = df.groupby(color_field)[y_field].transform(_interp_truncate)
-        logger.debug(
-            "[_build_timeseries] NaN interp/truncate applied per-group "
-            "(color=%s)", color_field,
-        )
-    else:
-        df[y_field] = _interp_truncate(df[y_field])
-        logger.debug(
-            "[_build_timeseries] NaN interp/truncate applied (single series)"
-        )
-
     # FIX RC1: datetime coercion uses the actual mapping field, not 'date'.
     # Allows x columns named 'datetime', 'timestamp', etc.
     # Skip when caller declared ordinal x -- strings like ``05/27 03:00``
@@ -20831,6 +22287,13 @@ def _build_timeseries(
         and mapping.get("x_type") != "ordinal"
     ):
         df[x_field] = pd.to_datetime(df[x_field])
+
+    df, gap_notes = _break_line_gaps(
+        df, x_field, y_field,
+        color_field if color_field and color_field in df.columns else None,
+    )
+    if gap_notes:
+        mapping.setdefault("_engine_notes", []).extend(gap_notes)
 
     # ---- non-null sanity check (final gate before encoding) -------------
     x_non_null = int(df[x_field].notna().sum())
@@ -20932,6 +22395,11 @@ def _build_timeseries(
         df,
         mark_config.get("opacity", 1.0),
     )
+    ordered = bool(mapping.get("_ordered_lines") and color_field in df.columns)
+    if ordered:
+        df["_grad_norm"] = _ordered_line_position(df, mapping, color_field)
+    elif color_field in df.columns:
+        df = _line_draw_order(df, mapping, color_field, opacity_encoding)
 
     chart = (
         alt.Chart(df)
@@ -20943,7 +22411,16 @@ def _build_timeseries(
             opacity=line_opacity,
         )
         .encode(
-            x=alt.X(x_field, type="temporal", axis=x_axis),
+            x=alt.X(
+                x_field, type="temporal", axis=x_axis,
+                scale=(
+                    alt.Scale(domain=[
+                        pd.Timestamp(df[x_field].min()).isoformat(),
+                        pd.Timestamp(_forward_extension_end(mapping)).isoformat(),
+                    ])
+                    if _forward_extension_end(mapping) is not None else alt.Undefined
+                ),
+            ),
             y=alt.Y(
                 y_field,
                 type="quantitative",
@@ -20955,7 +22432,9 @@ def _build_timeseries(
         .properties(width=width, height=height)
     )
 
-    if color_field and color_field in df.columns:
+    if ordered:
+        chart = _encode_ordered_line_ramp(chart, df, mapping, color_field, opacity_encoding)
+    elif color_field and color_field in df.columns:
         legend_title = _format_label(color_field, mapping, "color")
         base_legend_config = skin_config.get("config", {}).get("legend", {})
         dynamic_legend_cfg = _calculate_legend_config(
@@ -20979,6 +22458,7 @@ def _build_timeseries(
                 "clipHeight": dynamic_legend_cfg.get("clipHeight"),
             },
         )
+        chart = _encode_line_emphasis(chart, mapping, color_field, mark_config.get("strokeWidth", 2))
         logger.debug(
             "[_build_timeseries] color encoding: %s (title=%r) sort=%s",
             color_field, legend_title, color_sort,
@@ -21568,6 +23048,11 @@ def _build_multi_line_dual_axis(
             f"DataFrame values."
         )
 
+    if x_axis_type == "temporal":
+        df, gap_notes = _break_line_gaps(df, x_field, y_field, color_field)
+        if gap_notes:
+            mapping.setdefault("_engine_notes", []).extend(gap_notes)
+
     df, encode_color_field, legend_tagged = _apply_dual_axis_legend_tags(
         df, color_field, dual_axis_series, mapping, chart_width=width,
     )
@@ -21827,6 +23312,11 @@ def _build_profile_line(
         df,
         mark_config.get("opacity", 1.0),
     )
+    ordered = bool(mapping.get("_ordered_lines") and color_field in df.columns)
+    if ordered:
+        df = df.assign(_grad_norm=_ordered_line_position(df, mapping, color_field))
+    elif color_field in df.columns:
+        df = _line_draw_order(df, mapping, color_field, opacity_encoding)
 
     # High-cardinality numeric x: use quantitative encoding so Vega-Lite
     # auto-thins ticks. Otherwise (categorical / low-cardinality) use
@@ -21852,9 +23342,8 @@ def _build_profile_line(
             "[_build_profile_line] high-cardinality numeric x -> quantitative",
         )
     else:
-        x_label_angle, x_tick_values = _profile_ordinal_axis_plan(
-            _resolve_profile_x_order(df, x_field, mapping), width,
-        )
+        profile_order = _resolve_profile_x_order(df, x_field, mapping, fallback="data")
+        x_label_angle, x_tick_values = _profile_ordinal_axis_plan(profile_order, width)
         x_axis_kwargs: Dict[str, Any] = dict(
             title=x_title,
             titleFontWeight="normal",
@@ -21867,7 +23356,7 @@ def _build_profile_line(
         x_encoding = alt.X(
             x_field,
             type="ordinal",
-            sort=x_sort,
+            sort=x_sort if x_sort is not None else profile_order,
             axis=alt.Axis(**x_axis_kwargs),
         )
         logger.debug(
@@ -21890,7 +23379,10 @@ def _build_profile_line(
             strokeWidth=mark_config.get("strokeWidth", 2),
             interpolate="monotone",  # Smooth curves for profile charts.
             clip=True,
-            point=True,  # Show knot points on each tenor.
+            # Knot points on each tenor. Not on a ramp: knots add a fill
+            # scale beside the stroke scale, and Vega keys two scales as
+            # symbols instead of the gradient.
+            point=not ordered,
             opacity=line_opacity,
         )
         .encode(
@@ -21901,7 +23393,9 @@ def _build_profile_line(
         .properties(width=width, height=height)
     )
 
-    if color_field and color_field in df.columns:
+    if ordered:
+        chart = _encode_ordered_line_ramp(chart, df, mapping, color_field, opacity_encoding)
+    elif color_field and color_field in df.columns:
         legend_cfg = _calculate_legend_config(
             df, color_field, skin_config.get("config", {}).get("legend", {}),
             chart_width=width,
@@ -21924,6 +23418,7 @@ def _build_profile_line(
                 "clipHeight": legend_cfg.get("clipHeight"),
             },
         )
+        chart = _encode_line_emphasis(chart, mapping, color_field, mark_config.get("strokeWidth", 2))
         logger.debug(
             "[_build_profile_line] color encoding: %s (n=%d) sort=%s",
             color_field, df[color_field].nunique(), color_sort,
@@ -22355,6 +23850,113 @@ def _scatter_gradient_scale_uses_norm(scale_spec: Optional[Dict[str, Any]]) -> b
     return isinstance(scale_spec, dict) and "range" in scale_spec
 
 
+# The pale end of a ramp vanishes as a 2px line on white, so the oldest line
+# of an ordered sequence starts where the ramp first reaches this CIE L*.
+_ORDERED_LINE_MAX_LIGHTNESS = 75.0
+
+
+def _ordered_line_ramp(mapping: Dict[str, Any]) -> Callable[[float], str]:
+    """Colour at ``t`` in [0, 1] along an ordered line sequence, oldest first.
+
+    The named scheme (or the house ramp) is read in whichever direction runs
+    light to dark, and starts where it is first dark enough to see.
+    """
+    scheme = mapping.get("color_scheme")
+    if isinstance(scheme, str):
+        def base(t: float) -> str:
+            return _scheme_color_at(scheme, t)
+    else:
+        def base(t: float) -> str:
+            return _ramp_color(_house.GS_RAMP_SEQUENTIAL, t)
+    forward = base
+    if _srgb_to_lab(forward(1.0))[0] - _srgb_to_lab(forward(0.0))[0] > 25.0:
+        def base(t: float) -> str:
+            return forward(1.0 - t)
+    floor = next(
+        (step / 100.0 for step in range(101)
+         if _srgb_to_lab(base(step / 100.0))[0] <= _ORDERED_LINE_MAX_LIGHTNESS),
+        0.0,
+    )
+    return lambda t: base(floor + (1.0 - floor) * t)
+
+
+def _ordered_line_scale_spec(mapping: Dict[str, Any]) -> Dict[str, Any]:
+    """Colour scale on ``_grad_norm`` for an ordered line sequence."""
+    ramp = _ordered_line_ramp(mapping)
+    n = _SCATTER_GRADIENT_N_STOPS
+    return {"domain": [0, 1], "range": [ramp(i / (n - 1)) for i in range(n)]}
+
+
+def _ordered_line_order(
+    df: pd.DataFrame, mapping: Dict[str, Any], color_field: str,
+) -> List[str]:
+    """Category order of an ordered sequence, oldest first."""
+    order = _resolve_color_sort(df, color_field, mapping.get("color_sort")) or []
+    if mapping.get("color_sort") is None:
+        numbered = _numbered_sequence(order)
+        if numbered is not None:
+            return numbered
+        if _infer_relative_time_sort(order) is not None:
+            order = order[::-1]
+    return order
+
+
+def _ordered_line_position(
+    df: pd.DataFrame, mapping: Dict[str, Any], color_field: str,
+) -> pd.Series:
+    """Each row's place in the sequence, 0 for the oldest line and 1 for the newest."""
+    series = df[color_field]
+    bounds = mapping.get("_grad_color_bounds")
+    if pd.api.types.is_datetime64_any_dtype(series):
+        if bounds is None and series.nunique() <= 1:
+            return pd.Series(1.0, index=series.index)
+        return _scatter_gradient_norm_series(series, bounds)
+    order = _ordered_line_order(df, mapping, color_field)
+    if len(order) <= 1:
+        return pd.Series(1.0, index=series.index)
+    rank = {name: i / (len(order) - 1) for i, name in enumerate(order)}
+    return series.astype(str).map(rank).astype(float)
+
+
+def _ordered_line_legend(
+    df: pd.DataFrame, mapping: Dict[str, Any], color_field: str,
+) -> alt.Legend:
+    """One gradient key: round dates for a date column, else the first and last line."""
+    if pd.api.types.is_datetime64_any_dtype(df[color_field]):
+        return _scatter_gradient_legend(
+            df, color_field, "temporal", mapping.get("_grad_color_bounds"), mapping,
+        )
+    order = _ordered_line_order(df, mapping, color_field)
+    ends = [(0.0, order[0]), (1.0, order[-1])] if len(order) > 1 else [(1.0, order[0])]
+    return alt.Legend(
+        title=_format_label(color_field, mapping, "color") or None,
+        values=[position for position, _ in ends],
+        labelExpr=_gradient_label_expr(ends),
+        **_GRADIENT_LEGEND_FRAME,
+    )
+
+
+def _encode_ordered_line_ramp(
+    chart: alt.Chart,
+    df: pd.DataFrame,
+    mapping: Dict[str, Any],
+    color_field: str,
+    opacity_encoding: Optional[alt.Opacity] = None,
+) -> alt.Chart:
+    """Colour each line by its place in the sequence; ``df`` carries ``_grad_norm``."""
+    chart = chart.encode(
+        color=alt.Color(
+            "_grad_norm", type="quantitative",
+            scale=alt.Scale(**_ordered_line_scale_spec(mapping)),
+            legend=_ordered_line_legend(df, mapping, color_field),
+        ),
+        detail=alt.Detail(color_field, type="nominal"),
+    )
+    if opacity_encoding is not None:
+        chart = chart.encode(opacity=opacity_encoding)
+    return chart
+
+
 def _build_baseline_fill_layers(
     df: pd.DataFrame,
     x_field: str,
@@ -22374,6 +23976,10 @@ def _build_baseline_fill_layers(
     fill_df["_baseline"] = baseline
     fill_df["_fill_top"] = np.where(y_vals >= baseline, y_vals, baseline)
     fill_df["_fill_bot"] = np.where(y_vals <= baseline, y_vals, baseline)
+    # Vega breaks an area only on its primary y channel, which is the fill
+    # edge for one layer and the baseline for the other: a gap row nulls all
+    # three so the shading breaks with the line.
+    fill_df.loc[y_vals.isna(), ["_baseline", "_fill_top", "_fill_bot"]] = np.nan
 
     shared_x = alt.X(x_field, type="temporal", axis=x_axis)
     # Layer order is ``area_neg, area_pos, line``. Vega-Lite paints the
@@ -22418,27 +24024,36 @@ def _expand_scatter_path_segments(
     value. Temporal/numeric phase-space paths have a unique color per
     row, which renders as disconnected dots. ``mark_rule`` segments
     sidestep that by giving each edge its own mark.
+
+    When every colour value holds at least two points -- twelve event
+    paths of seven days, coloured by event date -- each value is its own
+    path; joining across them drew one sawtooth through every point. A
+    colour unique to each point keeps a single path. The colour position
+    is normalised over the whole frame either way.
     """
-    sorted_df = df.sort_values(order_field).reset_index(drop=True)
-    grad_norm: Optional[pd.Series] = None
-    if color_field and color_field in sorted_df.columns:
-        grad_norm = _scatter_gradient_norm_series(
-            sorted_df[color_field], bounds,
-        )
+    work = df.reset_index(drop=True).copy()
+    has_colour = bool(color_field) and color_field in work.columns
+    groups = [work]
+    if has_colour:
+        work["_seg_norm"] = _scatter_gradient_norm_series(work[color_field], bounds).to_numpy()
+        sizes = work.groupby(color_field, dropna=False).size()
+        if len(sizes) > 1 and int(sizes.min()) >= 2:
+            groups = [g for _, g in work.groupby(color_field, sort=True, dropna=False)]
     rows: List[Dict[str, Any]] = []
-    for i in range(len(sorted_df) - 1):
-        start = sorted_df.iloc[i]
-        end = sorted_df.iloc[i + 1]
-        row: Dict[str, Any] = {
-            x_field: start[x_field],
-            y_field: start[y_field],
-            "_seg_x2": end[x_field],
-            "_seg_y2": end[y_field],
-            "_seg_idx": i,
-        }
-        if grad_norm is not None:
-            row["_grad_norm"] = grad_norm.iloc[i + 1]
-        rows.append(row)
+    for group in groups:
+        path = group.sort_values(order_field).reset_index(drop=True)
+        for i in range(len(path) - 1):
+            start, end = path.iloc[i], path.iloc[i + 1]
+            row: Dict[str, Any] = {
+                x_field: start[x_field],
+                y_field: start[y_field],
+                "_seg_x2": end[x_field],
+                "_seg_y2": end[y_field],
+                "_seg_idx": len(rows),
+            }
+            if has_colour:
+                row["_grad_norm"] = end["_seg_norm"]
+            rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -23051,13 +24666,13 @@ def _build_scatter_multi(
     height: int,
     layers: Optional[List[Dict[str, Any]]] = None,
 ) -> alt.Chart:
-    """Scatter with multiple groups (per-color clusters) and optional
-    per-group trendlines (``mapping['trendlines'] = True``).
+    """Scatter with multiple groups (per-color clusters) and optional fits.
 
-    Builds the base scatter via ``_build_scatter`` (no global trendline)
-    then layers a ``transform_regression`` per group when ``trendlines``
-    is set. Groups with <2 valid points are silently skipped (a 1-point
-    regression is meaningless and would crash Altair).
+    ``mapping['trendline'] = True`` draws one fit across every point, as it
+    does on ``scatter``; ``mapping['trendlines'] = True`` layers a
+    ``transform_regression`` per group. Both may be set. Groups with <2
+    valid points are silently skipped (a 1-point regression is meaningless
+    and would crash Altair).
     """
     logger.debug("[_build_scatter_multi] START: df.shape=%s", df.shape)
     logger.debug("[_build_scatter_multi] mapping: %s", mapping)
@@ -23077,7 +24692,7 @@ def _build_scatter_multi(
 
     base = _build_scatter(
         df,
-        {**mapping, "trendline": False},
+        mapping,
         skin_config,
         width,
         height,
@@ -23168,7 +24783,8 @@ def _build_bar(
          - Stacked color bars: independent positive/negative stack
            sums for the y-domain.
       6. Single-series uses skin primary color.
-      7. Bar value labels (no color, <=15 bars).
+      7. Bar value labels: every uncoloured or colour-tagged bar, and the
+         net total of every stack, at a font fitted to the bar pitch.
       8. Stacked vs grouped:
          - Stacked (default for color): ``stack='zero'`` on y.
          - Grouped (``stack=False``): column-facet by x with one
@@ -23323,8 +24939,10 @@ def _build_bar(
             )
         )
         wrap_pitch = width / max(int(df[x_field].nunique()), 1)
-        wrap_map = _wrap_category_labels_to_pitch(
-            list(df[x_field]), wrap_pitch, wrap_font,
+        # Period labels thin instead of wrapping: a break inside "Jan 24"
+        # would also stop the band names matching the planned tick values.
+        wrap_map = {} if isinstance(mapping.get("_period_axis"), dict) else (
+            _wrap_category_labels_to_pitch(list(df[x_field]), wrap_pitch, wrap_font)
         )
         df[x_field] = df[x_field].apply(lambda v: wrap_map.get(str(v), str(v)))
         if isinstance(mapping.get("x_sort"), (list, tuple)):
@@ -23355,8 +24973,10 @@ def _build_bar(
     # reads ~10x a 0.8 bar when it is really ~3x; the canonical
     # beta-by-regime QC reject). Always include zero; pad only the
     # away-from-zero end(s) so outside value labels clear the frame and
-    # the category-axis tick labels. Stacked-color bars defer to Vega's
-    # summed-stack domain (an explicit row-level domain would clip it).
+    # the category-axis tick labels. An all-positive colour stack defers to
+    # Vega's summed-stack domain; one with a negative segment is padded from
+    # its summed stack ends (a row-level domain would clip the stack), so the
+    # net total printed below a negative end clears the category axis.
     #
     # A log value axis has no zero, so the builder plans it instead
     # (``_bar_log_axis_plan``): bars are positioned off ``_bar_y`` -- the
@@ -23391,11 +25011,18 @@ def _build_bar(
         mapping["_log_value_domain"] = [log_plan.floor, log_plan.ceiling]
         _bar_log_zero_note(mapping, df, y_field, x_field, log_plan)
     elif pd.api.types.is_numeric_dtype(df[y_field]):
+        y_min = float(df[y_field].min())
+        y_max = float(df[y_field].max())
         if color_field and stack:
+            stack_ends = pd.DataFrame({
+                "x": df[x_field].to_numpy(),
+                "pos": df[y_field].clip(lower=0).to_numpy(),
+                "neg": df[y_field].clip(upper=0).to_numpy(),
+            }).groupby("x", sort=False).sum()
+            y_min, y_max = float(stack_ends["neg"].min()), float(stack_ends["pos"].max())
+        if color_field and stack and y_min >= 0:
             y_scale = alt.Scale(zero=True)
         else:
-            y_min = float(df[y_field].min())
-            y_max = float(df[y_field].max())
             lo = min(0.0, y_min)
             hi = max(0.0, y_max)
             span = (hi - lo) or 1.0
@@ -23438,7 +25065,20 @@ def _build_bar(
         )
     )
     grouped_path = bool(color_field) and not stack
-    if x_type == "nominal" and not grouped_path:
+    period_plan: Optional[Dict[str, Any]] = None
+    if (
+        x_type == "nominal"
+        and not grouped_path
+        and isinstance(mapping.get("_period_axis"), dict)
+    ):
+        period_plan = _plan_period_axis(
+            [str(v) for v in (mapping.get("x_sort") or df[x_field].unique())],
+            mapping, width,
+        )
+        mapping["_period_axis_plan"] = period_plan
+        bar_label_angle = int(period_plan.get("label_angle") or 0)
+        bar_label_font_size = base_label_font_size
+    elif x_type == "nominal" and not grouped_path:
         bar_labels = [str(v) for v in df[x_field].unique()]
         bar_label_angle, bar_label_font_size = _bar_category_axis_plan(
             bar_labels,
@@ -23476,7 +25116,7 @@ def _build_bar(
 
     # ---- STACKED or single-series path ----------------------------------
     if not color_field or stack:
-        if x_type == "nominal":
+        if x_type == "nominal" and period_plan is None:
             # Publishing the resolved plan is what stops
             # ``get_axis_beautification`` recomputing the angle from a
             # different model and overwriting this one -- its nominal
@@ -23486,6 +25126,16 @@ def _build_bar(
                 "label_angle": bar_label_angle,
                 "label_font_size": bar_label_font_size,
             }
+        # Draws the wrap the category plan above was measured on; a period
+        # axis draws its thinned ticks instead.
+        bar_label_expr: Any = (
+            _WRAPPED_LABEL_EXPR if x_type == "nominal" else alt.Undefined
+        )
+        bar_tick_values: Any = alt.Undefined
+        if period_plan is not None:
+            bar_label_expr = period_plan.get("label_expr") or alt.Undefined
+            if period_plan.get("tick_values") is not None:
+                bar_tick_values = list(period_plan["tick_values"])
         stack_color_sort = (
             _resolve_color_sort(df, color_field, mapping.get("color_sort"))
             if color_field else None
@@ -23517,11 +25167,8 @@ def _build_bar(
                             bar_label_font_size if x_type == "nominal"
                             else alt.Undefined
                         ),
-                        # Draws the wrap the plan above was measured on.
-                        labelExpr=(
-                            _WRAPPED_LABEL_EXPR if x_type == "nominal"
-                            else alt.Undefined
-                        ),
+                        labelExpr=bar_label_expr,
+                        values=bar_tick_values,
                     ),
                 ),
                 y=alt.Y(
@@ -23575,7 +25222,7 @@ def _build_bar(
                 order=alt.Order(f"{_STACK_ORDER_FIELD}:Q", sort="ascending"),
             )
 
-        # Value labels on bars (single-series, <=15 bars only).
+        # Value labels on bars the reader compares one by one.
         # The label layer leaves x/y axis unspecified so Vega-Lite's
         # shared-axis resolution inherits the base bar's axis (title,
         # ticks, format) instead of overriding it with ``title=null``.
@@ -23599,39 +25246,29 @@ def _build_bar(
         # PointLabel / Arrow annotation. The annotation's text takes
         # priority; the redundant numeric label would just collide.
         suppress_x_set = mapping.get("_suppress_bar_value_at_x") or set()
-        # A caller who labelled every bar by hand has asked for value
-        # labels; the arbitration absorbed those captions into this layer
-        # and lifts the automatic bar-count ceiling. The font then steps
-        # down to the pitch instead of the labels overprinting.
-        labels_forced = bool(mapping.get("_bar_value_labels_forced"))
+        # Every bar the reader compares one by one carries its number: an
+        # uncoloured bar, or a bar whose colour only tags it. Density is
+        # decided by the pitch, not a bar count -- the font steps down to
+        # 8px and the labels are omitted, and reported, only past that.
+        single_bars = _single_bar_per_category(df, x_field, color_field, stack)
+        per_bar_labels = single_bars or (
+            not color_field and not mapping.get("_facet_panel")
+        )
         n_bars_for_labels = int(df[x_field].nunique())
-        value_label_fs: Optional[int] = 11
-        if (
-            not mapping.get("_facet_panel")
-            and not color_field
-            and (n_bars_for_labels <= 15 or labels_forced)
-        ):
+        value_label_fs: Optional[int] = None
+        if per_bar_labels:
+            pitch = width / max(n_bars_for_labels, 1)
             log_label_field = _BAR_LOG_LABEL_FIELD if log_plan is not None else None
             value_fmt = None if log_label_field else _smart_number_format(df[y_field])
             value_label_fs = _bar_value_label_font(
-                df[y_field], value_fmt, width / max(n_bars_for_labels, 1),
+                df[y_field], value_fmt, pitch,
                 along_axis="x",
                 labels=list(df[log_label_field]) if log_label_field else None,
             )
             value_text_enc = _bar_value_text(y_field, value_fmt, log_label_field)
             if value_label_fs is None:
-                mapping.setdefault("_engine_notes", []).append(
-                    f"Value labels omitted: {n_bars_for_labels} bars leave "
-                    f"~{width / max(n_bars_for_labels, 1):.0f}px per bar and "
-                    f"the widest label does not fit that pitch even at 8px. "
-                    f"Use a wider dimension or fewer categories."
-                )
-        if (
-            not mapping.get("_facet_panel")
-            and not color_field
-            and (n_bars_for_labels <= 15 or labels_forced)
-            and value_label_fs is not None
-        ):
+                _note(mapping, _bar_labels_omitted_note("Value labels", n_bars_for_labels, pitch))
+        if per_bar_labels and value_label_fs is not None:
             df_for_labels = df
             if suppress_x_set:
                 # Coerce the comparison values to a set of strings so we
@@ -23724,73 +25361,22 @@ def _build_bar(
                     .properties(width=width, height=height)
                 )
                 chart = chart + neg_text
-        elif not color_field and value_label_fs is not None:
-            logger.info(
-                "[_build_bar] suppressing text labels: %d bars > threshold of 15",
-                df[x_field].nunique(),
-            )
 
-        # For stacked bars: suppress value labels on mixed-sign data
-        # (baseline='bottom' assumes upward growth; mixed-sign creates
-        # overlapping/mispositioned labels).
-        if color_field and stack:
-            has_negative = (df[y_field] < 0).any()
-            if not has_negative and pd.api.types.is_numeric_dtype(df[y_field]):
-                # Stacked text labels at the top of each stacked total.
-                stack_totals = df.groupby(x_field)[y_field].sum().reset_index()
-
-                # Class 1 absorption (annotation-anchored x suppression).
-                if suppress_x_set:
-                    str_suppress = {str(x) for x in suppress_x_set}
-                    stack_totals = stack_totals[
-                        ~stack_totals[x_field].astype(str).isin(str_suppress)
-                    ]
-
-                # Class 4 absorption (collision sweep 2026-05-10):
-                # suppress the stacked-total value label when the total
-                # falls inside a labelled Band's y-range. Both labels
-                # would render in the same pixel band; the Band's label
-                # (the named regime) wins.
-                y_range_suppress = mapping.get("_suppress_bar_total_in_y_range")
-                if y_range_suppress is not None and len(stack_totals) > 0:
-                    y_lo, y_hi = y_range_suppress
-                    n_pre = len(stack_totals)
-                    stack_totals = stack_totals[
-                        (stack_totals[y_field] < y_lo)
-                        | (stack_totals[y_field] > y_hi)
-                    ]
-                    n_dropped = n_pre - len(stack_totals)
-                    if n_dropped > 0:
-                        logger.info(
-                            "[_build_bar] Suppressed %d stacked-bar TOTAL "
-                            "value label(s) inside Band y-range "
-                            "[%.3f, %.3f].",
-                            n_dropped, y_lo, y_hi,
-                        )
-
-                stack_text = (
-                    alt.Chart(stack_totals)
-                    .mark_text(
-                        align="center", baseline="bottom",
-                        dy=-4, color="#222222",
-                        fontSize=11, fontWeight="bold",
-                    )
-                    .encode(
-                        x=alt.X(
-                            x_field, type=x_type, sort=mapping.get("x_sort"),
-                        ),
-                        y=alt.Y(y_field, type="quantitative"),
-                        text=alt.Text(
-                            y_field, type="quantitative",
-                            format=_smart_number_format(stack_totals[y_field]),
-                        ),
-                    )
-                )
-                chart = chart + stack_text
-            elif has_negative:
-                logger.info(
-                    "[_build_bar] suppressing stacked text labels (negative values present)"
-                )
+        if color_field and stack and not single_bars:
+            if pd.api.types.is_numeric_dtype(df[y_field]):
+                for layer in _stack_total_layers(
+                    df,
+                    category_field=x_field,
+                    value_field=y_field,
+                    category_type=x_type,
+                    category_sort=mapping.get("x_sort"),
+                    horizontal=False,
+                    pitch_px=width / max(n_bars_for_labels, 1),
+                    mapping=mapping,
+                    width=width,
+                    height=height,
+                ):
+                    chart = chart + layer
             if mapping.get("segment_labels") is True:
                 for layer in _stacked_segment_label_layers(
                     df,
@@ -24208,6 +25794,15 @@ def _build_bar_horizontal(
             _assign_stack_order(
                 df, color_field, stack_color_sort, horizontal=True,
             )
+        if not use_log:
+            fit = _hbar_end_text_domain(
+                _hbar_end_text(df, y_field, x_field, color_field, stack, mapping,
+                               height / max(n_unique_y, 1), h_y_label_font_size),
+                *_hbar_value_extent(df, y_field, x_field, color_field, stack),
+                width,
+            )
+            if fit is not None:
+                x_scale = alt.Scale(domain=fit)
         chart = (
             alt.Chart(df)
             .mark_bar(
@@ -24306,29 +25901,40 @@ def _build_bar_horizontal(
             chart = chart + zero_tick
 
         # Horizontal bar value labels (F5 fix from Phase 2 stress probe).
-        # The single-series path (no color) gets a value label per bar,
-        # mirroring the vertical-bar behaviour. Anchor split:
+        # Every bar the reader compares one by one -- uncoloured, or a
+        # colour that only tags it -- gets a value label, mirroring the
+        # vertical-bar behaviour. Anchor split:
         #   - Positive x values -> label OUTSIDE the bar to the RIGHT
         #     (align='left', dx=+4 on x=value anchor). Dark text on
         #     white plot background.
         #   - Negative x values -> label INSIDE the bar near the OPEN
-        #     end (x=0 side, align='right', dx=-4 on x=value anchor=0).
-        #     White text on dark bar fill. Outside-left would land in
-        #     the y-axis category-label gutter and visibly collide with
-        #     the long y-axis tick text -- inside-at-x=0 sidesteps that
-        #     while keeping the value adjacent to the bar boundary the
-        #     user reads first.
+        #     end (x=0 side, align='right', dx=-4 on x=value anchor=0),
+        #     in white on a dark fill and dark on a light one. Outside-left
+        #     would land in the y-axis category-label gutter and visibly
+        #     collide with the long y-axis tick text -- inside-at-x=0
+        #     sidesteps that while keeping the value adjacent to the bar
+        #     boundary the user reads first.
+        # Stacks carry their net totals instead (``_stack_total_layers``).
         #
         # Class-1 absorption, same as the vertical builder: a bar already
         # named by a Callout / PointLabel / Arrow does not also get the
         # engine's numeric label. Both sit on the row's midline, so an
         # un-suppressed pair overprints rather than merely crowding.
-        labels_forced = bool(mapping.get("_bar_value_labels_forced"))
-        if not color_field and (df[y_field].nunique() <= 25 or labels_forced):
+        single_bars = _single_bar_per_category(df, y_field, color_field, stack)
+        row_pitch = height / max(n_unique_y, 1)
+        value_label_fs: Optional[int] = None
+        if not color_field or single_bars:
             log_label_field = _BAR_LOG_LABEL_FIELD if log_plan is not None else None
             value_fmt = None if log_label_field else _smart_number_format(df[x_field])
             value_text_enc = _bar_value_text(x_field, value_fmt, log_label_field)
-            value_label_fs = max(8, min(11, h_y_label_font_size + 1))
+            value_label_fs = _bar_value_label_font(
+                df[x_field], value_fmt, row_pitch, along_axis="y",
+                base_font_size=max(8, min(11, h_y_label_font_size + 1)),
+                labels=list(df[log_label_field]) if log_label_field else None,
+            )
+            if value_label_fs is None:
+                _note(mapping, _bar_labels_omitted_note("Value labels", n_unique_y, row_pitch))
+        if (not color_field or single_bars) and value_label_fs is not None:
             df_for_labels = df
             # The suppression set names CATEGORIES (rows, here on y): the
             # bars a caller's caption already owns.
@@ -24377,9 +25983,22 @@ def _build_bar_horizontal(
 
             if len(df_neg) > 0:
                 # Anchor at x=0 (the open end) and let the original
-                # x_field column drive the displayed text. White text
-                # on dark fill sidesteps the y-axis gutter collision.
+                # x_field column drive the displayed text. Text inside
+                # the fill sidesteps the y-axis gutter collision.
                 df_neg["_anchor_x"] = 0.0
+                ink: Dict[str, Any] = {"color": "white"}
+                if color_field:
+                    fills = _stacked_segment_fill_by_category(
+                        df, color_field, mapping, skin_config, stack_color_sort,
+                    )
+
+                    def _ink_on(category: Any) -> str:
+                        lum = _relative_luminance(fills.get(str(category)))
+                        dark = lum is not None and lum < _SEGMENT_LABEL_LIGHT_FILL_LUMINANCE
+                        return "white" if dark else "#222222"
+
+                    df_neg["_label_ink"] = df_neg[color_field].map(_ink_on)
+                    ink = {}
                 neg_text = (
                     alt.Chart(df_neg)
                     .mark_text(
@@ -24388,7 +26007,7 @@ def _build_bar_horizontal(
                         dx=-4,
                         fontSize=value_label_fs,
                         fontWeight="bold",
-                        color="white",
+                        **ink,
                     )
                     .encode(
                         y=alt.Y(
@@ -24400,7 +26019,24 @@ def _build_bar_horizontal(
                     )
                     .properties(width=width, height=height)
                 )
+                if color_field:
+                    neg_text = neg_text.encode(color=alt.Color("_label_ink:N", scale=None))
                 chart = chart + neg_text
+
+        if color_field and stack and not single_bars and not use_log:
+            for layer in _stack_total_layers(
+                df,
+                category_field=y_field,
+                value_field=x_field,
+                category_type="nominal",
+                category_sort=mapping.get("y_sort"),
+                horizontal=True,
+                pitch_px=row_pitch,
+                mapping=mapping,
+                width=width,
+                height=height,
+            ):
+                chart = chart + layer
     else:
         # GROUPED via row faceting (horizontal equivalent of column-facet
         # for vertical bars). Each y-category becomes a row facet; the
@@ -24672,6 +26308,12 @@ def _build_area(
     # that is wrong rather than absent, and therefore harder to catch.
     has_color = bool(color_field) and color_field in df.columns
     stacked = has_color and mapping.get("stack", True) is not False
+    if stacked:
+        # The key's first entry is the top band, as on a vertical stacked bar.
+        _assign_stack_order(
+            df, color_field, _resolve_color_sort(df, color_field, mapping.get("color_sort")),
+            horizontal=False,
+        )
 
     # For stacked areas, set an explicit scale.domain that covers the
     # per-x stacked sum so the y-axis frame includes the full stack
@@ -24726,6 +26368,8 @@ def _build_area(
             ),
             opacity_encoding=area_opacity_enc,
         )
+        if stacked:
+            chart = chart.encode(order=alt.Order(f"{_STACK_ORDER_FIELD}:Q", sort="ascending"))
 
     chart = _force_data_embedding(chart, df)
     logger.debug("[_build_area] DONE")
@@ -25910,6 +27554,98 @@ def _build_heatmap(
     return chart
 
 
+def _histogram_bin_extent(
+    series: pd.Series,
+    mapping: Dict[str, Any],
+) -> Tuple[Optional[List[float]], int]:
+    """``(bin extent or None, rows outside it)`` for a histogram's x values.
+
+    A facet-shared or caller extent wins; otherwise a distribution whose
+    1st-99th percentile body spans under 30% of the full range is binned over
+    that body plus a 10% margin, so one or two extreme values cannot flatten
+    every bar into the first bin.
+    """
+    if mapping.get("_histogram_bin_extent") is not None:
+        be = mapping["_histogram_bin_extent"]
+        return [float(be[0]), float(be[1])], 0
+    if mapping.get("bin_extent") is not None:
+        be = mapping["bin_extent"]
+        return [float(be[0]), float(be[1])], 0
+    if len(series) >= 20:
+        x_min = float(series.min())
+        x_max = float(series.max())
+        full_range = x_max - x_min
+        if full_range > 0:
+            p01 = float(series.quantile(0.01))
+            p99 = float(series.quantile(0.99))
+            body_range = p99 - p01
+            if body_range > 0 and body_range / full_range < 0.30:
+                margin = body_range * 0.10
+                extent = [p01 - margin, p99 + margin]
+                n_clipped = int(((series < extent[0]) | (series > extent[1])).sum())
+                logger.info(
+                    "[_build_histogram] heavy-tail detected: clipping x to "
+                    "[%.4g, %.4g] (%d outliers excluded)",
+                    extent[0], extent[1], n_clipped,
+                )
+                return extent, n_clipped
+    return None, 0
+
+
+def _vega_bin(lo: float, hi: float, maxbins: int) -> Tuple[float, float, float]:
+    """``(start, stop, step)`` exactly as Vega's ``bin`` transform picks them.
+
+    Port of vega-statistics ``bin()`` with ``nice`` on, base 10 and divisors
+    [5, 2] -- the defaults Vega-Lite leaves in place for ``bin: {maxbins}``.
+    """
+    base, divide = 10.0, (5.0, 2.0)
+    span = (hi - lo) or abs(lo) or 1.0
+    level = math.ceil(math.log(maxbins) / math.log(base))
+    step = max(0.0, base ** (math.floor(math.log(span) / math.log(base) + 0.5) - level))
+    while math.ceil(span / step) > maxbins:
+        step *= base
+    for d in divide:
+        candidate = step / d
+        if span / candidate <= maxbins:
+            step = candidate
+    v = math.log(step)
+    precision = 0 if v >= 0 else int(-v / math.log(base)) + 1
+    eps = base ** (-precision - 1)
+    start = math.floor(lo / step + eps) * step
+    start = start - step if lo < start else start
+    stop = math.ceil(hi / step) * step
+    return start, (stop if stop != start else start + step), step
+
+
+def _histogram_count_domain(df: pd.DataFrame, mapping: Dict[str, Any]) -> Optional[List[float]]:
+    """``[0, tallest bin]`` for a histogram, binned the way Vega will bin it.
+
+    A histogram has no y column -- Vega counts rows per bin -- so any pass
+    that places things in data coordinates needs this to know where the
+    count axis ends. Stacked colour groups share a bin, so the tallest bin
+    is the tallest total.
+    """
+    x_field = _get_field(mapping, "x")
+    if not x_field or x_field not in df.columns:
+        return None
+    series = pd.to_numeric(df[x_field], errors="coerce").dropna()
+    if series.empty:
+        return None
+    extent, _ = _histogram_bin_extent(series, mapping)
+    if extent is not None:
+        series = series[(series >= extent[0]) & (series <= extent[1])]
+        lo, hi = extent
+    else:
+        lo, hi = float(series.min()), float(series.max())
+    if series.empty:
+        return None
+    maxbins = int(mapping.get("bins", mapping.get("maxbins", 30)))
+    start, stop, step = _vega_bin(float(lo), float(hi), maxbins)
+    n_bins = max(1, int(round((stop - start) / step)))
+    idx = np.clip(np.floor((series.to_numpy() - start) / step).astype(int), 0, n_bins - 1)
+    return [0.0, float(np.bincount(idx, minlength=n_bins).max())]
+
+
 def _build_histogram(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -25951,6 +27687,8 @@ def _build_histogram(
     primary_color = _resolve_single_series_color(mapping, skin_config)
 
     x_title = _format_label(x_field, mapping, "x") or "Value"
+    y_title = mapping.get("y_title") or "Count"
+    _validate_y_axis_label(y_title, mapping)
 
     tooltips: List[alt.Tooltip] = [
         alt.Tooltip(x_field, type="quantitative", bin=True, title="Bin Range"),
@@ -25966,31 +27704,7 @@ def _build_histogram(
     # subtitle note that the tail is truncated. The user can override
     # via mapping['bin_extent'] = [lo, hi].
     series = pd.to_numeric(df[x_field], errors="coerce").dropna()
-    auto_bin_extent: Optional[List[float]] = None
-    n_clipped = 0
-    if mapping.get("_histogram_bin_extent") is not None:
-        be = mapping["_histogram_bin_extent"]
-        auto_bin_extent = [float(be[0]), float(be[1])]
-    elif mapping.get("bin_extent") is not None:
-        be = mapping["bin_extent"]
-        auto_bin_extent = [float(be[0]), float(be[1])]
-    elif len(series) >= 20:
-        x_min = float(series.min())
-        x_max = float(series.max())
-        full_range = x_max - x_min
-        if full_range > 0:
-            p01 = float(series.quantile(0.01))
-            p99 = float(series.quantile(0.99))
-            body_range = p99 - p01
-            if body_range > 0 and body_range / full_range < 0.30:
-                margin = body_range * 0.10
-                auto_bin_extent = [p01 - margin, p99 + margin]
-                n_clipped = int(((series < auto_bin_extent[0]) | (series > auto_bin_extent[1])).sum())
-                logger.info(
-                    "[_build_histogram] heavy-tail detected: clipping x to "
-                    "[%.4g, %.4g] (%d outliers excluded)",
-                    auto_bin_extent[0], auto_bin_extent[1], n_clipped,
-                )
+    auto_bin_extent, n_clipped = _histogram_bin_extent(series, mapping)
 
     if auto_bin_extent is not None:
         bin_kwargs = alt.Bin(maxbins=bins, extent=auto_bin_extent)
@@ -26057,8 +27771,9 @@ def _build_histogram(
             y=alt.Y(
                 "count()",
                 type="quantitative",
-                title="Count",
-                axis=alt.Axis(titleFontWeight="normal"),
+                title=y_title,
+                # A count has no halves; small counts otherwise tick at 0.5.
+                axis=alt.Axis(titleFontWeight="normal", tickMinStep=1),
             ),
             tooltip=tooltips,
         )
@@ -27244,23 +28959,24 @@ def _contribution_period_label_for_tick(
     return str(labels[-1])
 
 
-def _plan_contribution_axis(
+def _plan_period_axis(
     x_order: Sequence[str],
     mapping: Dict[str, Any],
     width: int,
 ) -> Dict[str, Any]:
-    """Pick contribution x-axis ticks. Labels thin; the period grain stays.
+    """Pick period-axis ticks for a band scale. Labels thin; every band stays.
 
-    Date-originated windows reuse ``determine_date_format`` so a 65-year
-    quarterly stack gets the same year stride a timeseries would (1970,
-    1980, ...). Named categories that were never dates keep every name,
-    or raise through the bar pitch gate when they cannot fit. When the
-    bars themselves would zipper, ``_contribution_density_plan`` swaps
-    them for a signed area and thins the knots to the endpoint -- that
-    is a mark change, not a tick change.
+    Serves ``contribution`` and the date-shaped ``bar``. Date-originated
+    windows reuse ``determine_date_format`` so a 65-year quarterly stack
+    gets the same year stride a timeseries would (1970, 1980, ...). Named
+    categories that were never dates keep every name, or raise through the
+    bar pitch gate when they cannot fit. When contribution bars would
+    zipper, ``_contribution_density_plan`` swaps them for a signed area and
+    thins the knots to the endpoint -- that is a mark change, not a tick
+    change.
     """
     labels = [str(v) for v in x_order]
-    meta = mapping.get("_contribution_period_axis")
+    meta = mapping.get("_period_axis")
     if (
         isinstance(meta, dict)
         and meta.get("stamps")
@@ -27278,8 +28994,15 @@ def _plan_contribution_axis(
                 }
             stamp_series = pd.Series(stamps)
             cfg = determine_date_format(stamp_series, width)
+            # The range opens where the first PERIOD opens: a period-end stamp
+            # (Dec-31, Mar-31) sits after the calendar tick that names its own
+            # period, which would otherwise leave the first bar unlabelled.
+            first = stamp_series.min()
+            freq = _PERIOD_FREQ_BY_GRAIN.get(str(meta.get("grain")))
+            if freq:
+                first = first.to_period(freq).start_time
             ticks = _calendar_ticks_in_range(
-                stamp_series.min(), stamp_series.max(), cfg.tick_step,
+                first, stamp_series.max(), cfg.tick_step,
             )
             fmt = cfg.format or "%Y"
             label_map: Dict[str, str] = {}
@@ -27434,8 +29157,8 @@ def _build_contribution(
     y_title = _format_label(y_field, mapping, "y")
     _validate_y_axis_label(y_title, mapping)
 
-    axis_plan = _plan_contribution_axis(x_order, mapping, width)
-    mapping["_contribution_axis_plan"] = axis_plan
+    axis_plan = _plan_period_axis(x_order, mapping, width)
+    mapping["_period_axis_plan"] = axis_plan
     density = _contribution_density_plan(len(x_order), width)
     mapping["_contribution_density_plan"] = density
     if density["as_area"]:
@@ -27898,6 +29621,226 @@ def _promote_index_to_x_column(
     return promoted
 
 
+# Mapping entries keyed by series name, which must follow the series through
+# any rename (``color_sort`` is a list of the same names).
+_SERIES_KEYED_MAPS = ("color_map", "opacity_map")
+
+
+def _series_spelling(value: Any) -> str:
+    """Series identity up to case, spacing and underscores."""
+    return " ".join(str(value).replace("_", " ").split()).casefold()
+
+
+def _rekey_series_maps(mapping: Dict[str, Any], rename: Dict[str, str]) -> None:
+    """Carry the series-keyed entries of ``mapping`` across a series rename.
+
+    Keys already in the new spelling, integer slot keys, and names the
+    rename does not know pass through unchanged. Assigns fresh containers,
+    so a caller's shared dicts are never edited.
+    """
+    for key in _SERIES_KEYED_MAPS:
+        entries = mapping.get(key)
+        if isinstance(entries, dict):
+            mapping[key] = {
+                (rename.get(k, k) if isinstance(k, str) else k): v
+                for k, v in entries.items()
+            }
+    order = mapping.get("color_sort")
+    if isinstance(order, (list, tuple)):
+        mapping["color_sort"] = [rename.get(s, s) if isinstance(s, str) else s for s in order]
+
+
+def _align_series_keys(df: pd.DataFrame, mapping: Dict[str, Any]) -> List[str]:
+    """Point series-keyed mapping entries at the series the data spells.
+
+    An exact name wins. A key that matches exactly one series up to case,
+    spacing and underscores is moved onto it and reported, the same way an
+    annotation coordinate snaps to a category. A key that matches nothing
+    is left alone and stays silent: a house colour map naming series this
+    chart does not draw is normal, not a mistake. Returns the notes.
+    """
+    color_field = mapping.get("color")
+    if not isinstance(color_field, str) or color_field not in df.columns:
+        return []
+    names = [str(v) for v in df[color_field].dropna().unique()]
+    exact = set(names)
+    by_spelling: Dict[str, List[str]] = {}
+    for name in names:
+        by_spelling.setdefault(_series_spelling(name), []).append(name)
+    snapped: List[str] = []
+
+    def target(kind: str, key: Any) -> Any:
+        if not isinstance(key, str) or key in exact:
+            return key
+        hits = by_spelling.get(_series_spelling(key), [])
+        if len(hits) != 1:
+            return key
+        snapped.append(f"{kind} {key!r} -> {hits[0]!r}")
+        return hits[0]
+
+    for kind in _SERIES_KEYED_MAPS:
+        entries = mapping.get(kind)
+        if not isinstance(entries, dict):
+            continue
+        aligned = {k: v for k, v in entries.items() if not isinstance(k, str) or k in exact}
+        for k, v in entries.items():
+            if isinstance(k, str) and k not in exact:
+                aligned.setdefault(target(kind, k), v)
+        mapping[kind] = aligned
+    order = mapping.get("color_sort")
+    if isinstance(order, (list, tuple)):
+        mapping["color_sort"] = [target("color_sort", s) for s in order]
+    emphasis = mapping.get("emphasis")
+    if isinstance(emphasis, (list, tuple)):
+        mapping["emphasis"] = [target("emphasis", s) for s in emphasis]
+    if not snapped:
+        return []
+    return [
+        f"{len(snapped)} series key(s) matched a series up to case / spacing "
+        f"and were applied to it: {'; '.join(snapped[:6])}"
+        f"{'; ...' if len(snapped) > 6 else ''}."
+    ]
+
+
+def _series_group_colours(
+    df: pd.DataFrame, mapping: Dict[str, Any], skin_config: Dict[str, Any],
+) -> Tuple[List[str], Dict[str, str]]:
+    """The colour field's groups in legend order, and the colour each takes.
+
+    A ``color_map`` dict pins groups (by name, or by 1-indexed slot); a list
+    ``color_map`` or a ``color_scheme`` supplies the palette the rest take
+    by slot.
+    """
+    group_field = mapping["color"]
+    present = [str(v) for v in df[group_field].dropna().unique()]
+    order = [g for g in (_resolve_color_sort(df, group_field, mapping.get("color_sort")) or [])
+             if g in present]
+    order += [g for g in present if g not in order]
+    cmap = mapping.get("color_map")
+    scheme = mapping.get("color_scheme")
+    palette = (
+        list(cmap) if isinstance(cmap, (list, tuple)) and cmap
+        else list(_CATEGORICAL_PALETTES[scheme]) if isinstance(scheme, str) and scheme in _CATEGORICAL_PALETTES
+        else list(skin_config.get("color_scheme") or GS_PRIMARY["colors"])
+    )
+    pins: Dict[str, str] = {}
+    if isinstance(cmap, dict):
+        for key, hex_val in cmap.items():
+            if isinstance(key, int) and not isinstance(key, bool) and 1 <= key <= len(order):
+                pins[order[key - 1]] = hex_val
+        for key, hex_val in cmap.items():
+            if isinstance(key, str) and key in order:
+                pins[key] = hex_val
+    return order, {g: pins.get(g, palette[i % len(palette)]) for i, g in enumerate(order)}
+
+
+def _desugar_series(
+    df: pd.DataFrame, mapping: Dict[str, Any], chart_type: str, skin_config: Dict[str, Any],
+) -> None:
+    """Turn ``color`` = group + ``series`` = line into one line per series.
+
+    The line identity becomes ``series`` and every series is pinned to its
+    group's colour, so line counting, gaps, end labels (named by series, in
+    the group colour) and colour pins all run on the series unchanged. The
+    group's key is left on ``_group_legend`` for ``_attach_group_legend``.
+    A group-keyed ``opacity_map`` fans out to the group's series. ``series``
+    alone, or equal to ``color``, is simply the colour field. Mutates
+    ``mapping``.
+    """
+    series_field = mapping.get("series")
+    if series_field is None:
+        return
+    if chart_type not in {"multi_line", "timeseries"}:
+        raise ValidationError(
+            f"mapping['series'] draws one line per series and applies to "
+            f"chart_type='multi_line' or 'timeseries'; got {chart_type!r}. "
+            f"Drop it, and colour by the field alone."
+        )
+    if not isinstance(series_field, str) or series_field not in df.columns:
+        raise ValidationError(
+            f"mapping['series']={series_field!r} is not a column of the "
+            f"DataFrame (available: {list(df.columns)})."
+        )
+    group_field = mapping.get("color")
+    if not group_field or group_field == series_field:
+        mapping["color"] = series_field
+        mapping.pop("series")
+        return
+    if group_field not in df.columns:
+        return
+    if mapping.get("dual_axis_series") or mapping.get("dual_axis_bind"):
+        raise ValidationError(
+            "mapping['series'] cannot be combined with a dual axis: the right "
+            "axis is chosen per colour value, and here colour names a group of "
+            "lines. Colour by the series and bind them with dual_axis_series, "
+            "or split the chart into a 2-pack."
+        )
+    pairs = df[[series_field, group_field]].dropna().astype(str).drop_duplicates()
+    spans = pairs.groupby(series_field)[group_field].nunique()
+    split = sorted(spans[spans > 1].index)
+    if split:
+        shown = ", ".join(repr(s) for s in split[:6]) + (", ..." if len(split) > 6 else "")
+        raise ValidationError(
+            f"mapping['series']: each series is one line in one colour, but "
+            f"{shown} appear under more than one {group_field!r} value. Give "
+            f"each series a single {group_field!r}, or colour by {series_field!r}."
+        )
+    order, group_hex = _series_group_colours(df, mapping, skin_config)
+    group_of = dict(zip(pairs[series_field], pairs[group_field]))
+    first_seen = {s: i for i, s in enumerate(dict.fromkeys(df[series_field].dropna().astype(str)))}
+    series_order = sorted(group_of, key=lambda s: (order.index(group_of[s]), first_seen.get(s, 0)))
+    opacity = mapping.get("opacity_map")
+    if isinstance(opacity, dict):
+        mapping["opacity_map"] = {
+            **{s: opacity[group_of[s]] for s in series_order if group_of[s] in opacity},
+            **{k: v for k, v in opacity.items() if k in group_of or not isinstance(k, str)},
+        }
+    mapping["_group_legend"] = {"field": group_field, "order": order, "hex": group_hex}
+    mapping["color"] = series_field
+    mapping["color_map"] = {s: group_hex[group_of[s]] for s in series_order}
+    mapping["color_sort"] = series_order
+    mapping.pop("series")
+
+
+def _attach_group_legend(spec: Dict[str, Any], group_legend: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Key a series chart's groups with one legend under the plot.
+
+    An invisible layer carries the group field on its own colour scale
+    (resolved independently of the series lines), so the legend lists the
+    groups in their colours while the lines keep their end labels. It sits
+    below the plot, not beside it, because the right margin belongs to those
+    end labels; entries run in as many columns as fit the chart's width.
+    """
+    if not group_legend:
+        return spec
+    order = group_legend["order"]
+    field_name = group_legend["field"]
+    font = int(((spec.get("config") or {}).get("legend") or {}).get("labelFontSize", 14))
+    widest = max(_lp_measure(str(g), font, "regular")[0] for g in order)
+    width = spec.get("width") if isinstance(spec.get("width"), (int, float)) else 600
+    columns = max(1, min(len(order), int(width // (widest + 3.5 * font))))
+    legend_layer = {
+        "data": {"values": [{field_name: g} for g in order]},
+        "mark": {"type": "point", "opacity": 0, "size": 0},
+        "encoding": {"color": {
+            "field": field_name, "type": "nominal", "sort": order,
+            "scale": {"domain": order, "range": [group_legend["hex"][g] for g in order]},
+            "legend": {"title": None, "symbolType": "stroke", "symbolOpacity": 1,
+                       "symbolStrokeWidth": 3, "labelLimit": 0, "orient": "bottom",
+                       "direction": "horizontal", "columns": columns},
+        }},
+    }
+    if not isinstance(spec.get("layer"), list):
+        unit_keys = ("mark", "encoding", "data", "transform", "params", "selection", "projection")
+        unit = {k: spec.pop(k) for k in unit_keys if k in spec}
+        spec["layer"] = [unit]
+    spec["layer"].append(legend_layer)
+    resolve = spec.setdefault("resolve", {})
+    resolve.setdefault("scale", {})["color"] = "independent"
+    resolve.setdefault("legend", {})["color"] = "independent"
+    return spec
+
+
 def _auto_melt_for_multiline(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
@@ -28000,6 +29943,9 @@ def _auto_melt_for_multiline(
             new_mapping["color"] = "series"
             if "y_title" in mapping:
                 new_mapping["y_title"] = mapping["y_title"]
+            # Maps and a legend order keyed by the caller's own column names
+            # follow the rename; display-name keys already match.
+            _rekey_series_maps(new_mapping, friendly_map)
             # Preserve user's input order in the legend (instead of
             # whatever ``df.melt`` chose).
             new_mapping.setdefault(
@@ -28907,10 +30853,16 @@ def _generate_filename(
 ) -> str:
     """Produce a slug-style base filename (no extension) for the chart.
 
-    Pattern: ``YYYYMMDD_HHMMSS_<prefix>_<title>_<suffix>_<chart_type>``
+    Pattern: ``YYYYMMDD_HHMMSS_<prefix>_<title>_<chart_type>``, or
+    ``<prefix>_<title>_<suffix>_<chart_type>`` when a suffix is given.
     Empty parts are dropped. Title is slugified (alphanumerics + hyphens).
+
+    A suffix is the caller's own identity for the artifact -- ``render_charts``
+    passes its invocation token plus the call's index -- so a wall-clock stamp
+    beside it only makes a retry that lands in a later second write a new file
+    instead of overwriting its own earlier attempt.
     """
-    parts: List[str] = [datetime.now().strftime("%Y%m%d_%H%M%S")]
+    parts: List[str] = [] if filename_suffix else [datetime.now().strftime("%Y%m%d_%H%M%S")]
     if filename_prefix:
         parts.append(re.sub(r"[^A-Za-z0-9_-]+", "_", filename_prefix).strip("_"))
     if title:
@@ -29230,7 +31182,7 @@ def _make_chart(
     facet_cols: Optional[int] = None,
     share_x: bool = False,
     share_y: bool = False,
-    share_color: bool = False,
+    share_color: Optional[bool] = None,
     same_scale: bool = False,
     edge_only_ticks: bool = False,
     edge_only_axis_titles: bool = False,
@@ -29291,9 +31243,11 @@ def _make_chart(
         share_x / share_y: When ``mapping['facet']`` is set, opt INTO
             shared x / y axis ranges across panels (default
             independent, matching ``make_*pack_*``).
-        share_color: When ``mapping['facet']`` is set, opt INTO a
-            single shared color domain + a single composite-level
-            legend (default per-panel legends).
+        share_color: When ``mapping['facet']`` is set, one shared colour
+            domain and one composite-level legend. ``None`` (default) turns
+            it on for a categorical colour -- panels never carry their own
+            legends, so without it the series have no key -- and leaves a
+            continuous colour ramp unlocked; ``True`` / ``False`` force it.
         same_scale: Smart "force same scale" toggle. When True, the
             engine routes to the right share_* combination per
             chart_type: time-series and bar charts share y;
@@ -29554,7 +31508,7 @@ def _make_chart(
         df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
     df = _materialize_ordinal_datetime_x(df, mapping, chart_type)
-    df, period_note, annotations = _materialize_contribution_periods(
+    df, period_note, annotations = _materialize_period_axis(
         df, mapping, chart_type, annotations,
     )
     if period_note:
@@ -29594,6 +31548,17 @@ def _make_chart(
 
     # ---- Sanitize column names (Vega-Lite safety) -----------------------
     df, mapping = _sanitize_column_names(df, mapping)
+    warnings.extend(_align_series_keys(df, mapping))
+    try:
+        _desugar_series(df, mapping, chart_type, get_skin(skin, intent))
+    except ValidationError as exc:
+        return ChartResult(
+            chart_type=chart_type, skin=skin, success=False,
+            error_message=_aggregate_finding_messages([*map(str, kwarg_findings), str(exc)]),
+            warnings=warnings, audit_trail=audit_trail,
+        )
+    if _ordered_line_colour_field(df, mapping, chart_type):
+        mapping["_ordered_lines"] = True
 
     # ---- Resolve dual-axis binding BEFORE the y-scale gates -------------
     # ``dual_axis_bind`` (and ``dual_axis_series``) must populate
@@ -29999,6 +31964,7 @@ def _make_chart(
     # content gates). The annotation-absorption steps above never touch
     # legend visibility, so the pre-pass verdict still holds here.
     try:
+        _plan_forward_extension(df, mapping, chart_type, annotations)
         chart = _dispatch_builder(
             chart_type, df, mapping, skin_config, width, height, layers,
             composite_cell=False,
@@ -30239,7 +32205,8 @@ def _make_chart(
                 spec = apply_beautification_to_spec(spec, axis_configs)
         except Exception as exc:  # noqa: BLE001
             warnings.append(f"Axis beautification skipped (non-fatal): {exc}")
-    spec = _blank_duplicate_axis_titles(spec)
+    spec = _wrap_long_axis_titles(_blank_duplicate_axis_titles(spec))
+    spec = _attach_group_legend(spec, mapping.get("_group_legend"))
 
     # ---- Typography overrides (per dimension preset) -------------------
     # When dimensions is one of {compact, teams, thumbnail}, the skin's
@@ -30322,18 +32289,6 @@ def _make_chart(
         png_error_message = str(exc)
         png_path = None
         warnings.append(f"PNG export failed: {png_error_message}")
-        _send_err(
-            error_message=f"Vega chart render failed: {png_error_message}",
-            traceback_info=traceback.format_exc(),
-            tool_name="make_chart",
-            metadata={
-                "chart_type": chart_type,
-                "title": title,
-                "df_shape": list(df.shape),
-                "stage": "png_render",
-            },
-            context=f"session_path={session_path}, save_as={save_as}",
-        )
 
     # ---- Presigned download URL ----------------------------------------
     if png_path and not png_save_failed:
@@ -30841,11 +32796,17 @@ def _build_single_chart(
     if chart_type in {"multi_line", "area"}:
         df, mapping = _auto_melt_for_multiline(df, mapping)
     df, mapping = _sanitize_column_names(df, mapping)
+    key_notes = _align_series_keys(df, mapping)
+    if key_notes:
+        mapping.setdefault("_engine_notes", []).extend(key_notes)
+    _desugar_series(df, mapping, chart_type, skin_config)
+    if _ordered_line_colour_field(df, mapping, chart_type):
+        mapping["_ordered_lines"] = True
     df = _normalize_intraday_x_column(df, mapping, chart_type)
     df = _coerce_string_x_to_datetime(df, mapping, chart_type)
     df = _materialize_ordinal_datetime_x(df, mapping, chart_type)
     df, _ = _materialize_band_path(df, mapping, chart_type)
-    df, _, spec_annotations = _materialize_contribution_periods(
+    df, _, spec_annotations = _materialize_period_axis(
         df, mapping, chart_type, spec.annotations,
     )
 
@@ -30911,6 +32872,7 @@ def _build_single_chart(
     # Build. The blank-chart gate runs per panel: a composite cell reaches
     # no other spec validation, and the pack reports success for however
     # many of its panels drew nothing.
+    _plan_forward_extension(df, mapping, chart_type, spec.annotations)
     chart = _dispatch_builder(
         chart_type, df, mapping, skin_config, width, height, spec.layers,
         composite_cell=True,
@@ -31039,12 +33001,15 @@ def _build_single_chart(
 
     # Annotations.
     if cell_annotations:
+        annotation_drops: List[str] = []
         try:
             chart = render_annotations(
                 chart, cell_annotations, df, mapping, skin_config,
                 chart_type=spec.chart_type,
                 chart_width=width, chart_height=height,
+                dropped_log=annotation_drops,
             )
+            mapping.setdefault("_engine_notes", []).extend(annotation_drops)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "[_build_single_chart] Annotation failed for %r: %s",
@@ -31121,7 +33086,8 @@ def _build_single_chart(
             spec.title,
             exc,
         )
-    chart_spec_dict = _blank_duplicate_axis_titles(chart_spec_dict)
+    chart_spec_dict = _wrap_long_axis_titles(_blank_duplicate_axis_titles(chart_spec_dict))
+    chart_spec_dict = _attach_group_legend(chart_spec_dict, mapping.get("_group_legend"))
 
     # Strip ``config`` and ``$schema`` -- they will be applied at the
     # composite level. Leaving them on each sub-chart causes Altair 4.x
@@ -32282,27 +34248,44 @@ def _compute_shared_color_domain(
 
 def _inject_scale_domain_into_spec(
     spec: Dict[str, Any], encoding_key: str, domain: List[Any],
+    field: Optional[str] = None,
 ) -> None:
     """Patch ``encoding[<encoding_key>].scale.domain = domain`` in-place.
 
     Walks every layer / hconcat / vconcat / concat child so the domain
     propagates uniformly. ``domain`` is set verbatim; the caller is
-    responsible for sensible bounds.
+    responsible for sensible bounds. ``field`` limits the patch to channels
+    encoding that field -- a series panel colours its lines by series and
+    keys its groups on a second colour channel, and only the group channel
+    takes a group domain.
     """
     if not isinstance(spec, dict):
         return
     enc = spec.get("encoding")
     if isinstance(enc, dict) and encoding_key in enc:
         ek = enc[encoding_key]
-        if isinstance(ek, dict):
+        if isinstance(ek, dict) and (field is None or ek.get("field") == field):
             scale = ek.setdefault("scale", {})
             if isinstance(scale, dict):
+                old_domain, old_range = scale.get("domain"), scale.get("range")
+                if (
+                    encoding_key == "color"
+                    and isinstance(old_domain, list) and isinstance(old_range, list)
+                    and len(old_domain) == len(old_range)
+                ):
+                    # An explicit colour pairing (``color_map``) is by value;
+                    # reordering the domain alone would re-pair the colours.
+                    by_value = {str(k): c for k, c in zip(old_domain, old_range)}
+                    spare = [c for c in old_range if c not in by_value.values()] or list(old_range)
+                    scale["range"] = [
+                        by_value.get(str(v), spare[i % len(spare)]) for i, v in enumerate(domain)
+                    ]
                 scale["domain"] = domain
     for child_key in ("layer", "hconcat", "vconcat", "concat"):
         children = spec.get(child_key)
         if isinstance(children, list):
             for child in children:
-                _inject_scale_domain_into_spec(child, encoding_key, domain)
+                _inject_scale_domain_into_spec(child, encoding_key, domain, field)
 
 
 def _strip_axis_labels_from_spec(
@@ -32386,6 +34369,7 @@ def _build_facet_gradient_legend_panel(
     width: int,
     scale_spec: Optional[Dict[str, Any]] = None,
     title: Optional[str] = None,
+    ticks: Optional[Tuple[List[float], str]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Horizontal gradient color bar for facet+gradient mode.
 
@@ -32395,7 +34379,8 @@ def _build_facet_gradient_legend_panel(
     Renders as a 200-step rect grid stretched across the composite
     width with axis labels at evenly-spaced ticks. Height is fixed at
     52px so the legend bar reads as a "scale strip" rather than a
-    full chart.
+    full chart. ``ticks`` -- ``(positions, labelExpr)`` -- labels a
+    normalised strip at chosen positions instead.
     """
     if color_min is None or color_max is None:
         return None
@@ -32456,7 +34441,10 @@ def _build_facet_gradient_legend_panel(
                     "titleFontSize": 22,
                     "labelFontWeight": "normal",
                     "titleFontWeight": "normal",
-                    "tickCount": 5,
+                    **(
+                        {"values": list(ticks[0]), "labelExpr": ticks[1]}
+                        if ticks is not None else {"tickCount": 5}
+                    ),
                     "grid": False,
                 },
             },
@@ -32473,54 +34461,87 @@ def _build_facet_gradient_legend_panel(
     return spec
 
 
+def _first_color_range(spec: Any, color_field: str) -> Optional[List[str]]:
+    """The colour range a built panel actually paints ``color_field`` with."""
+    if isinstance(spec, list):
+        for item in spec:
+            found = _first_color_range(item, color_field)
+            if found:
+                return found
+        return None
+    if not isinstance(spec, dict):
+        return None
+    enc = spec.get("encoding")
+    if isinstance(enc, dict) and isinstance(enc.get("color"), dict):
+        colour = enc["color"]
+        scale = colour.get("scale") if isinstance(colour.get("scale"), dict) else {}
+        if colour.get("field") == color_field and isinstance(scale.get("range"), list):
+            return list(scale["range"])
+    for key in ("layer", "hconcat", "vconcat", "concat", "spec"):
+        found = _first_color_range(spec.get(key), color_field)
+        if found:
+            return found
+    return None
+
+
 def _build_facet_legend_panel(
     color_domain: List[Any],
     skin_config: Dict[str, Any],
     width: int,
+    color_range: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Build a stand-alone tiny chart whose only render is a color legend.
+    """A legend strip for the shared colour of a facet grid or pack.
 
-    Returns a Vega-Lite spec dict suitable for vconcat-ing under the
-    facet grid as the single shared legend. Width-sized to match the
-    composite grid width.
+    Panels carry no legends, so this strip is the only key. It must paint
+    each category with the colour the panels paint it with -- ``color_range``
+    is the panels' own range, aligned to ``color_domain`` -- and reads left to
+    right as symbol + horizontal label pairs rather than spreading two names
+    across the full grid width. Labels are measured with the real font and
+    wrap onto further rows before they would overprint. Type is the skin's
+    legend label size, the size every other chart's legend reads at beside
+    its axis labels.
     """
     if not color_domain:
         return None
-    # Build a one-row dataset with one entry per color domain value so
-    # Altair renders a categorical legend.
+    font = float(skin_config["config"]["legend"]["labelFontSize"])
+    symbol_dx = round(font * 0.875)
+    gap = 2 * font
+    labels = [str(v) for v in color_domain]
+    offsets: List[float] = []
+    rows: List[int] = []
+    cursor, row = 0.0, 0
+    for label in labels:
+        entry = symbol_dx + _lp_measure(label, int(font), "regular")[0]
+        if cursor > 0 and cursor + entry > width:
+            cursor, row = 0.0, row + 1
+        offsets.append(cursor)
+        rows.append(row)
+        cursor += entry + gap
+    n_rows = row + 1
     legend_df = pd.DataFrame({
-        "_legend_label": [str(v) for v in color_domain],
-        "_legend_y": [0] * len(color_domain),
+        "_legend_label": labels,
+        "_legend_x": offsets,
+        "_legend_y": rows,
     })
-    legend = (
-        alt.Chart(legend_df)
-        .mark_point(size=80, filled=True)
-        .encode(
-            x=alt.X(
-                "_legend_label:N",
-                axis=alt.Axis(
-                    title=None,
-                    labelFontSize=10,
-                    labelPadding=4,
-                    domain=False,
-                    ticks=False,
-                ),
-                sort=list(legend_df["_legend_label"]),
-            ),
-            y=alt.Y(
-                "_legend_y:Q",
-                axis=None,
-                scale=alt.Scale(domain=[-0.5, 0.5]),
-            ),
-            color=alt.Color(
-                "_legend_label:N",
-                legend=None,
-                sort=list(legend_df["_legend_label"]),
-            ),
-        )
-        .properties(width=width, height=28)
+    colours = list(color_range or [])[:len(labels)]
+    scale = (
+        alt.Scale(domain=labels, range=colours) if len(colours) == len(labels)
+        else _get_color_scale(skin_config)
     )
-    return legend.to_dict()
+    base = alt.Chart(legend_df).encode(
+        x=alt.X("_legend_x:Q", axis=None,
+                scale=alt.Scale(domain=[0, float(width)], nice=False)),
+        y=alt.Y("_legend_y:Q", axis=None,
+                scale=alt.Scale(domain=[n_rows - 0.5, -0.5], nice=False, zero=False)),
+    )
+    points = base.mark_point(size=round((font * 0.8) ** 2), filled=True, opacity=1).encode(
+        color=alt.Color("_legend_label:N", scale=scale, legend=None, sort=labels),
+    )
+    text = base.mark_text(
+        align="left", baseline="middle", dx=symbol_dx, fontSize=font,
+        color=skin_config["config"]["legend"]["labelColor"],
+    ).encode(text="_legend_label:N")
+    return alt.layer(points, text).properties(width=width, height=round(font * 1.9 * n_rows)).to_dict()
 
 
 def _compose_facet_grid(
@@ -32675,7 +34696,7 @@ def _render_facet_grid(
     facet_cols: Optional[int],
     share_x: bool,
     share_y: bool,
-    share_color: bool,
+    share_color: Optional[bool],
     edge_only_ticks: bool,
     edge_only_axis_titles: bool,
 ) -> ChartResult:
@@ -32850,26 +34871,68 @@ def _render_facet_grid(
             )
 
     # Sanitize column names once on the parent df so panel splits inherit
-    # the safe names.
+    # the safe names, and align series keys against every panel's series at
+    # once so no panel reports the same match again.
     df, panel_mapping = _sanitize_column_names(df, panel_mapping)
+    warnings_list.extend(_align_series_keys(df, panel_mapping))
     # Re-resolve fields against the sanitised mapping.
     x_field = panel_mapping.get("x")
     y_field = panel_mapping.get("y")
     color_field = panel_mapping.get("color")
     facet_col = panel_mapping.get("facet", facet_col)
+    series_panels = bool(
+        panel_mapping.get("series") and isinstance(color_field, str)
+        and color_field in df.columns and color_field != panel_mapping.get("series")
+    )
+    series_group_hex: Dict[str, str] = {}
+    if series_panels:
+        # Each panel colours its series by group; the groups are coloured once
+        # across the whole grid so a group is one colour in every panel. The
+        # panel headers name the facet, not the series, so series panels keep
+        # their end labels.
+        _, series_group_hex = _series_group_colours(df, panel_mapping, get_skin(skin, intent))
+        panel_mapping["color_map"] = dict(series_group_hex)
 
     shared_y_domain: Optional[List[float]] = None
     shared_x_domain_temporal: Optional[List[str]] = None
     shared_x_domain_numeric: Optional[List[float]] = None
     shared_color_domain: Optional[List[Any]] = None
 
+    # An ordered sequence is one ramp with one key under the grid: every panel
+    # places its lines against the whole grid's sequence, so the same date or
+    # vintage is the same shade in every panel.
+    ordered_lines = bool(
+        isinstance(color_field, str) and color_field in df.columns
+        and any(
+            _ordered_line_colour_field(panel_df, panel_mapping, chart_type)
+            for _, panel_df in df.groupby(facet_col, sort=False)
+        )
+    )
+    if ordered_lines:
+        panel_mapping["_ordered_lines"] = True
+        if pd.api.types.is_datetime64_any_dtype(df[color_field]):
+            panel_mapping["_grad_color_bounds"] = _scatter_gradient_bounds(df[color_field])
+        else:
+            panel_mapping["color_sort"] = _ordered_line_order(df, panel_mapping, color_field)
+        share_color = False
+
     if share_y and isinstance(y_field, str):
         shared_y_domain = _compute_shared_numeric_domain(df, y_field)
     if share_x and isinstance(x_field, str):
         if pd.api.types.is_datetime64_any_dtype(df.get(x_field, pd.Series([]))):
             shared_x_domain_temporal = _compute_shared_temporal_domain(df, x_field)
+            grid_extension: Dict[str, Any] = dict(panel_mapping)
+            _plan_forward_extension(df, grid_extension, chart_type, annotations)
+            grid_end = _forward_extension_end(grid_extension)
+            if shared_x_domain_temporal and grid_end is not None:
+                shared_x_domain_temporal = [shared_x_domain_temporal[0], pd.Timestamp(grid_end).isoformat()]
         else:
             shared_x_domain_numeric = _compute_shared_numeric_domain(df, x_field)
+    if share_color is None:
+        share_color = (
+            isinstance(color_field, str) and color_field in df.columns
+            and not _is_gradient_color_column(df[color_field])
+        )
     if share_color and isinstance(color_field, str) and color_field in df.columns:
         if _is_gradient_color_column(df[color_field]):
             # Gradient colour carries its meaning in the [0, 1] normalisation
@@ -32905,6 +34968,10 @@ def _render_facet_grid(
     # ---- Build each panel (uses _build_single_chart for parity) ---------
     panel_specs: List[Dict[str, Any]] = []
     panel_errors: List[Dict[str, Any]] = []
+    # What each panel's builder degraded (a dropped annotation, a thinned
+    # axis). One note repeated by every panel is reported once.
+    panels_by_note: Dict[str, List[str]] = {}
+    n_panels_built = 0
 
     for idx, panel_id in enumerate(panel_order):
         sub_df = df[df[facet_col] == panel_id].copy()
@@ -32940,11 +35007,13 @@ def _render_facet_grid(
             # boundary validates caller-authored mapping keys.
             sub_spec.mapping["_facet_panel"] = True
 
+        cell_notes: List[str] = []
         try:
             chart = _build_single_chart(
                 sub_spec, skin_config, panel_w, panel_h,
                 title_fontsize_override=26,
-                suppress_lvl=True,
+                suppress_lvl=not series_panels,
+                notes=cell_notes,
             )
         except Exception as exc:  # noqa: BLE001
             panel_errors.append({
@@ -32953,6 +35022,9 @@ def _render_facet_grid(
                 "error_message": str(exc),
             })
             continue
+        for note in cell_notes:
+            panels_by_note.setdefault(note, []).append(str(panel_id))
+        n_panels_built += 1
 
         spec_dict = chart.to_dict()
         _strip_schema_and_config(spec_dict)
@@ -32998,6 +35070,7 @@ def _render_facet_grid(
         if shared_color_domain is not None:
             _inject_scale_domain_into_spec(
                 spec_dict, "color", shared_color_domain,
+                field=color_field if series_panels else None,
             )
 
         # ---- Apply edge-only chrome reductions --------------------------
@@ -33032,6 +35105,12 @@ def _render_facet_grid(
         spec_dict["height"] = panel_h
 
         panel_specs.append(spec_dict)
+
+    for note, panel_ids in panels_by_note.items():
+        warnings_list.append(
+            note if len(panel_ids) == n_panels_built
+            else f"{note} (panels: {', '.join(panel_ids)})"
+        )
 
     if panel_errors:
         return ChartResult(
@@ -33071,7 +35150,22 @@ def _render_facet_grid(
         )
         color_is_gradient = color_is_temporal or color_is_numeric
 
-    if color_is_gradient and color_field:
+    if ordered_lines:
+        key = _ordered_line_legend(df, panel_mapping, color_field).to_dict()
+        gradient_spec = _build_facet_gradient_legend_panel(
+            color_field=color_field,
+            color_min=0.0, color_max=1.0,
+            color_type="quantitative",
+            scheme="",
+            width=composite_outer_w,
+            scale_spec=_ordered_line_scale_spec(panel_mapping),
+            title=key.get("title"),
+            ticks=(key["values"], key["labelExpr"]),
+        )
+        if gradient_spec:
+            _strip_schema_and_config(gradient_spec)
+            composite_spec["vconcat"].append(gradient_spec)
+    elif color_is_gradient and color_field:
         c_series = df[color_field]
         gradient_scheme = panel_mapping.get("color_scheme", "viridis")
         if color_is_temporal:
@@ -33102,9 +35196,16 @@ def _render_facet_grid(
         legend_spec = _build_facet_legend_panel(
             shared_color_domain, skin_config,
             width=composite_outer_w,
+            color_range=(
+                [series_group_hex[str(g)] for g in shared_color_domain] if series_group_hex
+                else _first_color_range(panel_specs, color_field) if panel_specs else None
+            ),
         )
         if legend_spec:
             _strip_schema_and_config(legend_spec)
+            # Vega-Lite resolves ``datasets`` only at the top level; left
+            # nested inside this vconcat panel, the strip drew nothing.
+            _inline_named_datasets_in_spec(legend_spec)
             composite_spec["vconcat"].append(legend_spec)
 
     # ---- Top-level title / config / schema ------------------------------
@@ -33499,6 +35600,279 @@ def _resolve_composite_source_attribution(
     return resolved_charts, None, audit
 
 
+# Cell chart types whose colour is a categorical scale ``color_map`` can pin.
+_PACK_COLOUR_CHART_TYPES = frozenset({
+    "multi_line", "timeseries", "scatter", "scatter_multi", "bar",
+    "bar_horizontal", "area", "boxplot", "contribution",
+})
+
+# Top-level spec keys that stay outside the vconcat a pack legend strip adds.
+_PACK_SPEC_TOP_LEVEL_KEYS = (
+    "$schema", "config", "title", "datasets", "usermeta", "background",
+    "padding", "autosize",
+)
+
+
+def _cell_colour_categories(
+    spec: ChartSpec,
+) -> Optional[Tuple[List[str], Dict[str, Any], pd.DataFrame]]:
+    """A cell's categorical colours in legend order, its mapping and frame as built.
+
+    Read after the wide-y melt and series-key alignment the cell build will
+    apply, so the categories and ``color_map`` keys are the spellings the
+    rendered scale uses. ``None`` for a cell with no categorical colour.
+    """
+    if spec.chart_type not in _PACK_COLOUR_CHART_TYPES or not isinstance(spec.df, pd.DataFrame):
+        return None
+    df, mapping = spec.df, dict(spec.mapping or {})
+    if spec.chart_type in {"multi_line", "area"} and isinstance(mapping.get("y"), (list, tuple)):
+        try:
+            df, mapping = _auto_melt_for_multiline(df, mapping)
+        except ValidationError:
+            return None
+    field_name = mapping.get("color")
+    if not isinstance(field_name, str) or field_name not in df.columns:
+        return None
+    column = df[field_name]
+    if pd.api.types.is_datetime64_any_dtype(column) or (
+        pd.api.types.is_numeric_dtype(column) and not pd.api.types.is_bool_dtype(column)
+    ):
+        return None
+    _align_series_keys(df, mapping)
+    present = [str(v) for v in column.dropna().unique()]
+    if not present:
+        return None
+    ordered = [c for c in (_resolve_color_sort(df, field_name, mapping.get("color_sort")) or [])
+               if c in present]
+    return ordered + [c for c in present if c not in ordered], mapping, df
+
+
+def _plan_pack_colours(
+    charts: List[ChartSpec], skin_config: Dict[str, Any],
+) -> Tuple[List[ChartSpec], List[Dict[str, Any]], List[str]]:
+    """Group the pack cells that must agree on colour, before they are built.
+
+    Cells whose categories overlap form a group. For each group this
+    decides, without rendering anything: the categories in legend order
+    across its cells; the ``color_map`` pins (named, or an integer slot of
+    that cell's own legend), which apply to their category in every cell;
+    the colour each category takes when the cells have to be told
+    (``shared``: the pin, else the palette colour at its slot); and which
+    cells would draw a colour legend. Those legend cells are marked
+    ``_pack_legend`` -- their key moves to the pack's strip, so their legend
+    labels are held to the strip's width rather than the cell's. A cell that
+    shares nothing is its own group only when it would draw a legend, so a
+    lone key moves under the pack too (one strip per group). A category two
+    cells pin differently keeps each pin and is reported.
+
+    Returns the cells, one record per group, and the notes.
+    """
+    info = [_cell_colour_categories(spec) for spec in charts]
+    groups: List[List[int]] = []
+    for i, cell in enumerate(info):
+        if cell is None:
+            continue
+        mine = set(cell[0])
+        joined = [g for g in groups if any(mine & set(info[j][0]) for j in g)]
+        groups = [g for g in groups if g not in joined] + [sorted([i, *[j for g in joined for j in g]])]
+
+    out = list(charts)
+    records: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    for group in groups:
+        legend_cells = [
+            j for j in group
+            if not (info[j][1].get("dual_axis_series") or info[j][1].get("dual_axis_bind"))
+            and _color_legend_will_render(
+                charts[j].chart_type, info[j][1], charts[j].annotations, df=info[j][2],
+            )
+        ]
+        if len(group) == 1 and not legend_cells:
+            continue
+        order: List[str] = []
+        for j in group:
+            order.extend(c for c in info[j][0] if c not in order)
+        pins: Dict[str, Dict[int, str]] = {}
+        schemes = set()
+        for j in group:
+            cell_order, cell_mapping, _ = info[j]
+            schemes.add(cell_mapping.get("color_scheme"))
+            cmap = cell_mapping.get("color_map")
+            if not isinstance(cmap, dict):
+                continue
+            for key, hex_val in cmap.items():
+                if isinstance(key, int) and not isinstance(key, bool) and 1 <= key <= len(cell_order):
+                    pins.setdefault(cell_order[key - 1], {})[j] = hex_val
+            for key, hex_val in cmap.items():
+                if isinstance(key, str) and key in order:
+                    pins.setdefault(key, {})[j] = hex_val
+        scheme = next(iter(schemes)) if len(schemes) == 1 else None
+        palette = (
+            list(_CATEGORICAL_PALETTES[scheme]) if isinstance(scheme, str) and scheme in _CATEGORICAL_PALETTES
+            else list(skin_config.get("color_scheme") or GS_PRIMARY["colors"])
+        )
+        shared = {
+            cat: next(iter(pins[cat].values())) if cat in pins else palette[slot % len(palette)]
+            for slot, cat in enumerate(order)
+        }
+        for cat, by_cell in pins.items():
+            if len(set(by_cell.values())) > 1:
+                cells = ", ".join(f"cell {j + 1} {hex_val}" for j, hex_val in sorted(by_cell.items()))
+                notes.append(
+                    f"{cat!r} is pinned to different colours ({cells}); each cell "
+                    f"keeps its own pin, so {cat!r} changes colour across the pack."
+                )
+        for j in legend_cells:
+            cell = copy.copy(charts[j])
+            cell.mapping = {**charts[j].mapping, "_pack_legend": True}
+            out[j] = cell
+        records.append({
+            "cells": group, "order": order, "shared": shared, "pins": pins,
+            "categories": {j: info[j][0] for j in group}, "strip": bool(legend_cells),
+            "fields": {info[j][1].get("color") for j in group},
+        })
+    return out, records, notes
+
+
+def _effective_colour_map(spec: Dict[str, Any], categories: List[str]) -> Dict[str, str]:
+    """The colour each of ``categories`` renders in, read off a built cell.
+
+    An explicit domain pairs directly; a range-only scale assigns in the
+    encoding's ``sort`` order, else in Vega-Lite's default ascending order.
+    """
+    wanted = set(categories)
+    for node in _iter_spec_dicts(spec):
+        enc = node.get("encoding")
+        colour = enc.get("color") if isinstance(enc, dict) else None
+        if not isinstance(colour, dict) or colour.get("type") != "nominal":
+            continue
+        if colour.get("field") in (None, "_label_color", "_legend_label"):
+            continue
+        scale = colour.get("scale") if isinstance(colour.get("scale"), dict) else {}
+        colours = scale.get("range")
+        if not isinstance(colours, list) or not colours:
+            continue
+        domain = scale.get("domain")
+        if not isinstance(domain, list):
+            sort = colour.get("sort")
+            domain = sort if isinstance(sort, list) else sorted(categories)
+        paired = {str(d): colours[i % len(colours)] for i, d in enumerate(domain)}
+        if wanted & set(paired):
+            return {c: paired[c] for c in categories if c in paired}
+    return {}
+
+
+def _unify_pack_colours(
+    charts: List[ChartSpec],
+    built: List[Any],
+    groups: List[Dict[str, Any]],
+    build_cell: Callable[..., Any],
+) -> None:
+    """Rebuild a group's cells on one colour assignment when they disagree.
+
+    Reads what each built cell actually paints. A group whose cells already
+    agree on every shared category, with every pin already honoured
+    everywhere, keeps its cells untouched. Otherwise each cell is rebuilt
+    with the group's ``shared`` colours as a complete ``color_map`` (its own
+    pins win), so lines, end labels, bars and legends all read one
+    assignment. Records the colours the group finally paints as ``hex``.
+    Mutates ``charts``, ``built`` and ``groups`` in place.
+    """
+    for group in groups:
+        cells, cats = group["cells"], group["categories"]
+        effective = {j: _effective_colour_map(built[j].to_dict(), cats[j]) for j in cells}
+        complete = all(set(effective[j]) == set(cats[j]) for j in cells)
+        agreed: Dict[str, str] = {}
+        consistent = complete
+        for j in cells:
+            for cat, hex_val in effective[j].items():
+                if agreed.setdefault(cat, hex_val) != hex_val:
+                    consistent = False
+        pins_honoured = all(
+            effective[j].get(cat) in (by_cell.get(j), next(iter(by_cell.values())))
+            for cat, by_cell in group["pins"].items() for j in cells if cat in cats[j]
+        )
+        if consistent and pins_honoured:
+            group["hex"] = {cat: agreed[cat] for cat in group["order"]}
+            continue
+        for j in cells:
+            cell = copy.copy(charts[j])
+            cell.mapping = {**charts[j].mapping, "color_map": {
+                cat: group["pins"].get(cat, {}).get(j, group["shared"][cat]) for cat in cats[j]
+            }}
+            charts[j] = cell
+            built[j] = build_cell(cell, None, j)
+        group["hex"] = dict(group["shared"])
+
+
+def _pack_legend_strip(
+    spec: Dict[str, Any],
+    groups: List[Dict[str, Any]],
+    skin_config: Dict[str, Any],
+    width: int,
+) -> Dict[str, Any]:
+    """One legend strip under the pack for colours its cells share.
+
+    A group with any cell that draws a colour legend loses those legends and
+    gains one strip listing every category of the group, painted with the
+    shared colours. End-labelled cells draw no legend, so a pack of them is
+    left alone.
+    """
+    strips: List[Dict[str, Any]] = []
+    for group in groups:
+        if not group["strip"]:
+            continue
+        categories = set(group["order"])
+        legends = []
+        for node in _iter_spec_dicts(spec):
+            enc = node.get("encoding")
+            colour = enc.get("color") if isinstance(enc, dict) else None
+            if not isinstance(colour, dict) or colour.get("type") != "nominal":
+                continue
+            if colour.get("field") in (None, "_label_color", "_legend_label"):
+                continue
+            if "legend" in colour and colour["legend"] is None:
+                continue
+            scale = colour.get("scale") if isinstance(colour.get("scale"), dict) else {}
+            listed = scale.get("domain") if isinstance(scale.get("domain"), list) else colour.get("sort")
+            ours = (
+                {str(d) for d in listed} <= categories if isinstance(listed, list) and listed
+                else colour.get("field") in group["fields"]
+            )
+            if ours:
+                legends.append(colour)
+        if not legends:
+            continue
+        for colour in legends:
+            colour["legend"] = None
+        strip = _build_facet_legend_panel(
+            group["order"], skin_config, width,
+            color_range=[group["hex"][c] for c in group["order"]],
+        )
+        if strip:
+            _strip_schema_and_config(strip)
+            _inline_named_datasets_in_spec(strip)
+            strips.append(strip)
+    if not strips:
+        return spec
+    inner = {k: v for k, v in spec.items() if k not in _PACK_SPEC_TOP_LEVEL_KEYS}
+    outer = {k: spec[k] for k in _PACK_SPEC_TOP_LEVEL_KEYS if k in spec}
+    outer["vconcat"] = [inner, *strips]
+    outer["resolve"] = {"scale": {"color": "independent"}}
+    return outer
+
+
+def _iter_spec_dicts(obj: Any) -> Iterator[Dict[str, Any]]:
+    """Every dict in a spec, depth first."""
+    if isinstance(obj, dict):
+        yield obj
+        for value in obj.values():
+            yield from _iter_spec_dicts(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_spec_dicts(item)
+
+
 def _make_composite(
     charts: List[ChartSpec],
     layout: LayoutType,
@@ -33667,6 +36041,8 @@ def _make_composite(
     )
 
     skin_config = get_skin(skin, "explore")
+    charts, pack_colour_groups, pack_colour_notes = _plan_pack_colours(charts, skin_config)
+    warnings_list.extend(pack_colour_notes)
     if s3_manager is None:
         raise ValueError(
             "make_composite() requires an s3_manager. PRISM injects one via "
@@ -33749,6 +36125,21 @@ def _make_composite(
     reserve_left_w_arg: Optional[int] = reserve_left_w or None
     reserve_right_w_arg: Optional[int] = reserve_right_w or None
 
+    # A 3-pack's lone panel spans the two-cell row beside it.
+    spanning_cell = {"3_triangle": 0, "3_inverted": 2}.get(layout)
+
+    def build_cell(spec: ChartSpec, notes: Optional[List[str]] = None, index: int = -1) -> alt.Chart:
+        width = 2 * chart_width + spacing if index == spanning_cell else chart_width
+        return _build_single_chart(
+            spec, skin_config, width, chart_height,
+            force_x_label_angle=consensus_x_angle,
+            reserve_caption_h=reserve_cap_h_arg,
+            reserve_side_left_w=reserve_left_w_arg,
+            reserve_side_right_w=reserve_right_w_arg,
+            suppress_lvl=False,
+            notes=notes,
+        )
+
     # Build each sub-chart, collecting errors.
     built: List[alt.Chart] = []
     chart_errors: List[Dict[str, Any]] = []
@@ -33756,17 +36147,7 @@ def _make_composite(
         chart_index = i + 1
         cell_notes: List[str] = []
         try:
-            built.append(
-                _build_single_chart(
-                    spec, skin_config, chart_width, chart_height,
-                    force_x_label_angle=consensus_x_angle,
-                    reserve_caption_h=reserve_cap_h_arg,
-                    reserve_side_left_w=reserve_left_w_arg,
-                    reserve_side_right_w=reserve_right_w_arg,
-                    suppress_lvl=False,
-                    notes=cell_notes,
-                )
-            )
+            built.append(build_cell(spec, cell_notes, i))
             warnings_list.extend(
                 f"cell {chart_index} ({spec.chart_type}): {note}"
                 for note in cell_notes
@@ -33808,6 +36189,8 @@ def _make_composite(
             warnings=warnings_list, audit_trail=attribution_audit,
             skin=skin, chart_errors=chart_errors,
         )
+
+    _unify_pack_colours(charts, built, pack_colour_groups, build_cell)
 
     composite_layout: Optional[str] = layout
     has_dual_axis = any(
@@ -33881,6 +36264,12 @@ def _make_composite(
         )
 
     spec_dict = composite.to_dict()
+    if pack_colour_groups:
+        strip_cols, _ = _layout_grid_shape(layout, n_charts)
+        spec_dict = _pack_legend_strip(
+            spec_dict, pack_colour_groups, skin_config,
+            width=strip_cols * chart_width + max(0, strip_cols - 1) * spacing,
+        )
 
     # Composite-level text panels (caption / side_left / side_right).
     # Estimate the rendered composite's pixel footprint so the side
@@ -33921,17 +36310,6 @@ def _make_composite(
         png_error_message = str(exc)
         png_path = None
         warnings_list.append(f"Composite PNG export failed: {png_error_message}")
-        _send_err(
-            error_message=f"Vega composite render failed: {png_error_message}",
-            traceback_info=traceback.format_exc(),
-            tool_name="make_composite",
-            metadata={
-                "layout": layout,
-                "n_charts": n_charts,
-                "stage": "png_render",
-            },
-            context=f"session_path={session_path}, save_as={save_as}",
-        )
 
     if png_path and not png_save_failed:
         try:
@@ -34098,11 +36476,23 @@ def make_3pack_triangle(
     source: Optional[str] = None,
     side_left: Union[str, Sequence[str], Dict[str, Any], None] = None,
     side_right: Union[str, Sequence[str], Dict[str, Any], None] = None,
+    arrangement: str = "triangle",
 ) -> CompositeResult:
-    """Three charts: one on top, two on bottom."""
+    """Three charts: one on top spanning the row, two on bottom.
+
+    ``arrangement='stacked'`` puts the three in one column instead, top to
+    bottom in argument order.
+    """
+    layouts = {"triangle": "3_triangle", "stacked": "3_vertical"}
+    if arrangement not in layouts:
+        raise ValidationError(
+            f"make_3pack_triangle(arrangement={arrangement!r}) is not an "
+            f"arrangement; use 'triangle' (one panel over two, the default) or "
+            f"'stacked' (three panels in one column)."
+        )
     return _make_composite(
         [chart_top, chart_bottom_left, chart_bottom_right],
-        "3_triangle",
+        layouts[arrangement],
         title=title, subtitle=subtitle, skin=skin,
         dimensions=dimensions, dimension_preset=dimension_preset,
         default_dimension_preset="compact",
@@ -34798,7 +37188,57 @@ _TBL_FORMAT_HINT_ALIASES: FrozenSet[str] = frozenset(
 )
 
 
-def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
+@dataclass(frozen=True)
+class _TblNumberPlan:
+    """How a numeric column prints when it carries no format hint.
+
+    Decided once per column so neighbouring cells agree: ``years`` prints
+    every whole value bare (``2015``, not ``2,015``), and ``decimals`` is the
+    precision of every value under 1,000 -- 2 when any of them reaches 1, 3
+    when all are fractions. ``chart_functions_studio_tables.autoPlan`` is the
+    browser port and must reach the same answer from the same values.
+    """
+
+    years: bool
+    decimals: int
+
+
+def _tbl_number_plan(series: pd.Series, name: str) -> Optional[_TblNumberPlan]:
+    """The column's number plan, or ``None`` for a non-numeric column."""
+    if pd.api.types.is_bool_dtype(series) or not pd.api.types.is_numeric_dtype(series):
+        return None
+    values = pd.to_numeric(series, errors="coerce")
+    values = values[np.isfinite(values)]
+    years = _calendar_year_stamps(values, str(name)) is not None
+    small = values.abs()
+    small = small[small < 1e3]
+    return _TblNumberPlan(years=years, decimals=2 if (small >= 1).any() else 3)
+
+
+# id(df) -> (weak ref to df, row count when planned, {column position: plan}). Every
+# cell of a table asks for its column's plan several times over (sizing,
+# wrapping, painting, the studio model), and a plan is a pass over the column.
+_TBL_PLAN_CACHE: Dict[int, Tuple[Any, int, Dict[Any, Optional[_TblNumberPlan]]]] = {}
+
+
+def _tbl_column_plan(df: pd.DataFrame, ci: int) -> Optional[_TblNumberPlan]:
+    key = id(df)
+    entry = _TBL_PLAN_CACHE.get(key)
+    if entry is None or entry[0]() is not df or entry[1] != len(df):
+        ref = weakref.ref(df, lambda _dead, k=key: _TBL_PLAN_CACHE.pop(k, None))
+        entry = (ref, len(df), {})
+        _TBL_PLAN_CACHE[key] = entry
+    plans = entry[2]
+    if ci not in plans:
+        plans[ci] = _tbl_number_plan(df.iloc[:, ci], str(df.columns[ci]))
+    return plans[ci]
+
+
+def _tbl_smart_format(
+    value: Any,
+    hint: Optional[str] = None,
+    plan: Optional[_TblNumberPlan] = None,
+) -> str:
     if value is None or (isinstance(value, float) and math.isnan(value)):
         return ""
     if isinstance(value, str):
@@ -34819,10 +37259,12 @@ def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
     if not isinstance(value, (int, float, np.integer, np.floating)):
         return str(value)
     v = float(value)
-    # A bare year renders ungrouped; any other integer-dtype scalar renders
+    # A year column renders ungrouped; any other integer-dtype scalar renders
     # grouped with no decimals. Dtype is the gate, never value == int(value),
-    # so a 4.00 yield out of a float column keeps its decimals.
-    if hint is None and v == int(v) and 1900 <= int(v) <= 2200:
+    # so a 4.00 yield out of a float column keeps its decimals. Without a
+    # column plan each value decides alone, the rule the plan replaced.
+    is_year = (plan.years if plan is not None else 1900 <= v <= 2200)
+    if hint is None and is_year and v == int(v):
         return str(int(v))
     if hint is None and isinstance(value, (int, np.integer)) and not isinstance(value, bool):
         return f"{int(value):,}"
@@ -34859,11 +37301,10 @@ def _tbl_smart_format(value: Any, hint: Optional[str] = None) -> str:
         return f"{v/1e6:.2f}M"
     if a >= 1e3:
         return f"{v:,.1f}"
-    if a >= 10 or a >= 1:
-        return f"{v:.2f}"
+    decimals = plan.decimals if plan is not None else (2 if a >= 1 else 3)
     if a == 0:
-        return "0.00"
-    return f"{v:.3f}"
+        return "0." + "0" * decimals
+    return f"{v:.{decimals}f}"
 
 
 def _tbl_cell_text(
@@ -34887,7 +37328,8 @@ def _tbl_cell_text(
             override = value_overrides.get((r_idx, ci))
         if override is not None:
             return str(override)
-    return _tbl_smart_format(df.iat[r_idx, ci], column_formats.get(col))
+    return _tbl_smart_format(df.iat[r_idx, ci], column_formats.get(col),
+                             _tbl_column_plan(df, ci))
 
 
 def _tbl_wrap_text(text: str, font, max_width_px: int) -> List[str]:
@@ -34936,36 +37378,62 @@ def _tbl_wrap_text(text: str, font, max_width_px: int) -> List[str]:
     return out
 
 
-def _tbl_continuation_hyphen(piece: str) -> str:
-    """Append a continuation hyphen to a mid-word break, when one is needed.
+_TBL_BREAK_AFTER = frozenset("/\\_.:-,;|=&?+")
+_TBL_DIGITS = frozenset("0123456789")
 
-    A piece that already ends on a separator reads as broken without help,
-    so ``Cross-currency-`` is left alone rather than becoming
-    ``Cross-currency--``.
+
+def _tbl_token_segments(token: str) -> List[str]:
+    """``token`` cut at its own break points.
+
+    A break follows a separator (``/ _ . : - ,`` and kin) and precedes a
+    capital that follows a lowercase letter, so paths, identifiers and code
+    loci break where their author already broke them. A separator that opens
+    the token (``-75bp``, ``/var``) or sits between two digits (``9,254.75``,
+    ``12:30``, the line range ``151-157``, ``2026-09-16``) is not a break
+    point. ``chart_functions_studio_tables`` carries the browser port as
+    ``tokenSegments``.
     """
-    return piece if piece.endswith(("-", "_")) else f"{piece}-"
+    segments: List[str] = []
+    current = ""
+    for i, ch in enumerate(token):
+        if current and ch.isupper() and current[-1].islower():
+            segments.append(current)
+            current = ""
+        current += ch
+        nxt = token[i + 1] if i + 1 < len(token) else ""
+        if (ch in _TBL_BREAK_AFTER and nxt and len(current) > 1
+                and not (ch in ".,:-" and current[-2] in _TBL_DIGITS and nxt in _TBL_DIGITS)):
+            segments.append(current)
+            current = ""
+    if current:
+        segments.append(current)
+    return segments
 
 
 def _tbl_hard_break(text: str, font, max_width_px: int) -> List[str]:
-    """Split one unbreakable token into pieces that each fit ``max_width_px``.
+    """Split one token wider than ``max_width_px`` into pieces that each fit.
 
-    Every piece but the last carries a continuation hyphen, and that hyphen
-    is measured as part of the piece rather than appended after the fit
-    test, so hyphenating can never push a line back over the budget.
+    Segments from ``_tbl_token_segments`` pack greedily onto each piece; only
+    a segment wider than the whole budget is split between characters. No
+    character is ever added: a hyphen appended inside ``data_tools.py:2928``
+    printed ``29-`` / ``28``, a line range that was not in the data.
     """
     pieces: List[str] = []
     current = ""
-    last_idx = len(text) - 1
-    for idx, ch in enumerate(text):
-        candidate = current + ch
-        # A piece that runs to the end of the token needs no hyphen, so only
-        # reserve room for one while there is more token to come.
-        probe = candidate if idx == last_idx else _tbl_continuation_hyphen(candidate)
-        if font.getlength(probe) > max_width_px and current:
-            pieces.append(_tbl_continuation_hyphen(current))
-            current = ch
-        else:
-            current = candidate
+    for segment in _tbl_token_segments(text):
+        if font.getlength(current + segment) <= max_width_px:
+            current += segment
+            continue
+        if current:
+            pieces.append(current)
+            current = ""
+        units = list(segment) if font.getlength(segment) > max_width_px else [segment]
+        for unit in units:
+            if current and font.getlength(current + unit) > max_width_px:
+                pieces.append(current)
+                current = unit
+            else:
+                current += unit
     if current:
         pieces.append(current)
     return pieces or [text]
@@ -35130,6 +37598,8 @@ class _TableLayoutGeom:
     caption_h: int
     row_default_h: int
     group_band_h: int
+    # column -> (caller's pin, width drawn, the word that needed it)
+    widened_pins: Dict[str, Tuple[int, int, str]] = field(default_factory=dict)
 
 
 def _tbl_measure_title(
@@ -35239,6 +37709,57 @@ def _tbl_header_min_width(label: str, header_font, pad: int) -> int:
     return int(math.ceil(max(header_font.getlength(w) for w in words))) + pad
 
 
+def _tbl_widest_piece(texts: Sequence[Any], font) -> Tuple[str, int]:
+    """The widest run a wrapped line cannot break -- a word, or one segment of a path / identifier."""
+    best, best_w = "", 0
+    for text in texts:
+        for word in str(text).split():
+            for piece in _tbl_token_segments(word):
+                w = int(math.ceil(font.getlength(piece)))
+                if w > best_w:
+                    best, best_w = piece, w
+    return best, best_w
+
+
+# A minibar cell: an inset, the bar, a gap, then the value right-aligned in a
+# slot as wide as the column's widest value. The studio lays it out the same.
+_TBL_MINIBAR_INSET = 8
+_TBL_MINIBAR_BAR_W = 90
+_TBL_MINIBAR_MIN_BAR_W = 40
+_TBL_MINIBAR_GAP = 8
+
+
+def _tbl_minibar_texts(
+    df: pd.DataFrame, src: Any, column_formats: Dict[str, str],
+    value_overrides: Optional[Dict[Any, str]] = None,
+) -> List[str]:
+    """The number each minibar cell prints: its source value, formatted as the source column."""
+    if src not in df.columns:
+        return [""] * len(df)
+    si = list(df.columns).index(src)
+    return [_tbl_cell_text(df, r_idx, si, column_formats, value_overrides) for r_idx in range(len(df))]
+
+
+def _tbl_minibar_slot_w(texts: List[str], theme: Dict[str, Any]) -> int:
+    """Width of a minibar column's number slot, measured bold so a total fits."""
+    font = _tbl_load_font("bold", theme["body_font_size"])
+    return int(math.ceil(max((font.getlength(t) for t in texts), default=0)))
+
+
+def _tbl_minibar_scale(df: pd.DataFrame, src: Any, summary_rows: List[int]) -> float:
+    """The magnitude a full bar stands for: the largest value outside total / subtotal rows.
+
+    A TOTAL row is the sum of the bars above it; scaling to it made every
+    other bar a sliver.
+    """
+    if src not in df.columns:
+        return 0.0
+    values = pd.to_numeric(df[src], errors="coerce").abs()
+    body = values[~values.index.isin(summary_rows)]
+    peak = body.max() if body.notna().any() else values.max()
+    return float(peak) if pd.notna(peak) else 0.0
+
+
 def _tbl_natural_widths(
     df: pd.DataFrame,
     column_formats: Dict[str, str],
@@ -35246,10 +37767,10 @@ def _tbl_natural_widths(
     theme: Dict[str, Any],
     value_overrides: Optional[Dict[Any, str]] = None,
     no_wrap_cols: Optional[Set[Any]] = None,
-) -> Tuple[List[int], List[bool], List[int], List[int]]:
-    """Compute the per-column natural width, wrap flag, and two floors.
+) -> Tuple[List[int], List[bool], List[int], List[int], List[List[int]]]:
+    """Compute the per-column natural width, wrap flag, and the floors.
 
-    Returns (widths, wraps, floors, hard_floors).
+    Returns (widths, wraps, floors, hard_floors, text_stages).
       ``widths[i]``  - natural rendered width in px (already clamped to
                        ``_TBL_TEXT_COL_MAX`` for wrapping text columns).
       ``wraps[i]``   - True when the column is a text column that has
@@ -35268,6 +37789,16 @@ def _tbl_natural_widths(
                        out to a cosmetic minimum is holding pixels that a
                        refusal makes the author pay for, and a slightly
                        tighter column beats no table at all.
+      ``text_stages``  - two more floor lists, spent in order and only when
+                       the table would otherwise be refused (a text column
+                       under the ``_TBL_TEXT_COL_MAX`` cap does not wrap by
+                       default). A text column's floor is the widest piece
+                       its cells wrap to without a mid-run break (a word, or
+                       a segment of a path / identifier), never below its
+                       widest header word. The first list lowers only columns
+                       whose cells hold several words, since prose breaks
+                       between words for free; the second lowers every text
+                       column. Other columns keep ``hard_floors[i]``.
 
     ``no_wrap_cols`` names columns that must not wrap regardless of how
     wide their content is: they skip the ``_TBL_TEXT_COL_MAX`` cap and
@@ -35283,6 +37814,8 @@ def _tbl_natural_widths(
     wraps: List[bool] = []
     floors: List[int] = []
     hard_floors: List[int] = []
+    prose_floors: List[int] = []
+    text_floors: List[int] = []
     for ci, col in enumerate(df.columns):
         header_w = (
             int(math.ceil(header_font.getlength(str(col)))) + 2 * cell_pad_x
@@ -35300,24 +37833,30 @@ def _tbl_natural_widths(
             wraps.append(False)
             floors.append(w)
             hard_floors.append(max(120 + 2 * cell_pad_x, header_min_w))
+            prose_floors.append(hard_floors[-1])
+            text_floors.append(hard_floors[-1])
             continue
         if col in minibar_columns:
-            w = max(110 + 2 * cell_pad_x, header_w)
+            slot_w = _tbl_minibar_slot_w(
+                _tbl_minibar_texts(df, minibar_columns[col], column_formats, value_overrides), theme)
+            fixed_w = _TBL_MINIBAR_INSET + _TBL_MINIBAR_GAP + slot_w + cell_pad_x
+            w = max(fixed_w + _TBL_MINIBAR_BAR_W, header_w)
             widths.append(w)
             wraps.append(False)
             floors.append(w)
-            hard_floors.append(max(110 + 2 * cell_pad_x, header_min_w))
+            hard_floors.append(max(fixed_w + _TBL_MINIBAR_MIN_BAR_W, header_min_w))
+            prose_floors.append(hard_floors[-1])
+            text_floors.append(hard_floors[-1])
             continue
-        body_max_w = 0
-        for r_idx in range(len(df)):
-            text = _tbl_cell_text(df, r_idx, ci, column_formats, value_overrides)
-            tw = int(body_font.getlength(text)) + 2 * cell_pad_x
-            if tw > body_max_w:
-                body_max_w = tw
-        natural = max(header_w, body_max_w, _TBL_MIN_COL_W)
         is_text = _tbl_is_text_col(df, col, sparkline_columns, minibar_columns)
         if no_wrap_cols and col in no_wrap_cols:
             is_text = False
+        texts = [_tbl_cell_text(df, r_idx, ci, column_formats, value_overrides)
+                 for r_idx in range(len(df))]
+        body_max_w = max((int(body_font.getlength(t)) + 2 * cell_pad_x for t in texts), default=0)
+        is_prose = is_text and any(len(t.split()) > 1 for t in texts)
+        piece_max_w = _tbl_widest_piece(texts, body_font)[1] if is_text else 0
+        natural = max(header_w, body_max_w, _TBL_MIN_COL_W)
         if is_text and natural > _TBL_TEXT_COL_MAX:
             widths.append(max(header_w, _TBL_TEXT_COL_MAX))
             wraps.append(True)
@@ -35330,13 +37869,19 @@ def _tbl_natural_widths(
             # The body cannot wrap here (numeric / datetime / pinned), but the
             # HEADER can, so the last-resort floor is the widest header word.
             hard_floors.append(max(body_max_w, header_min_w))
-    return widths, wraps, floors, hard_floors
+        text_floors.append(
+            min(hard_floors[-1], max(header_min_w, piece_max_w + 2 * cell_pad_x))
+            if is_text else hard_floors[-1]
+        )
+        prose_floors.append(text_floors[-1] if is_prose else hard_floors[-1])
+    return widths, wraps, floors, hard_floors, [prose_floors, text_floors]
 
 
 def _tbl_compress_to_fit(
     widths: List[int], wraps: List[bool], floors: List[int],
     side_pad: int, body_font_size: int,
     hard_floors: Optional[List[int]] = None,
+    text_stages: Optional[List[List[int]]] = None,
 ) -> List[int]:
     """Compress columns toward their floors so the canvas honours BOTH the
     soft ceiling and the paper-legibility width the ``make_table`` gate
@@ -35353,6 +37898,10 @@ def _tbl_compress_to_fit(
     information. A matrix of two-decimal correlations spends ~10px per column
     on that minimum, which is the whole difference between a table that ships
     and one whose refusal names a remedy the author then has to invent.
+
+    ``text_stages`` appends the last stages, passed only when the table would
+    otherwise be refused: text columns, including ones under the wrap cap,
+    wrap down to their widest unbreakable piece -- prose columns first.
     """
     legible_w = int(
         body_font_size * _TBL_LEGIBILITY_USABLE_IN * 72 / _TBL_MIN_LEGIBLE_PT
@@ -35365,6 +37914,8 @@ def _tbl_compress_to_fit(
     stages: List[List[int]] = [list(floors)]
     if hard_floors is not None:
         stages.append(list(hard_floors))
+    for stage in text_stages or []:
+        stages.append(list(stage))
 
     for stage_floors in stages:
         overflow = sum(out) - inner_target
@@ -35449,6 +38000,7 @@ def _tbl_normalize_theme_for_display(
     column_widths: Optional[Dict[str, int]] = None,
     value_overrides: Optional[Dict[Any, str]] = None,
     row_height_scale: float = 1.0,
+    wrap_short_text: bool = False,
 ) -> Tuple[Dict[str, Any], _TableLayoutGeom, List[str], List[str]]:
     """Adapt ``theme`` font sizes so the rendered canvas hits the target
     display-width text size and stays within bounded aspect ratio.
@@ -35479,6 +38031,7 @@ def _tbl_normalize_theme_for_display(
             header_levels, column_formats,
             sparkline_columns, minibar_columns, row_groups,
             column_widths, value_overrides, row_height_scale,
+            wrap_short_text=wrap_short_text,
         )
         last_geom, last_caption_lines = geom, caption_lines
 
@@ -35606,6 +38159,7 @@ def _tbl_layout(
     column_widths: Optional[Dict[str, int]] = None,
     value_overrides: Optional[Dict[Any, str]] = None,
     row_height_scale: float = 1.0,
+    wrap_short_text: bool = False,
 ) -> Tuple[_TableLayoutGeom, List[str]]:
     """Compute a content-driven layout. Returns the geometry plus the
     pre-wrapped caption lines (so the draw step doesn't have to re-wrap).
@@ -35625,14 +38179,21 @@ def _tbl_layout(
     the engine's no-truncation guarantee intact. The value ``"auto"``
     pins instead to whatever width the content actually needs, so the
     column never wraps.
+
+    ``wrap_short_text`` adds the last compression stages (``text_stages``).
+    ``make_table`` sets it only for a table the width gate would otherwise
+    refuse, so every table that fits without it lays out as before.
     """
     side_pad = _TBL_SIDE_PAD
     auto_cols = {col for col, w in (column_widths or {}).items()
                  if isinstance(w, str)}
-    natural_w, wraps, floors, hard_floors = _tbl_natural_widths(
+    natural_w, wraps, floors, hard_floors, text_stages = _tbl_natural_widths(
         df, column_formats, sparkline_columns, minibar_columns, theme,
         value_overrides, no_wrap_cols=auto_cols,
     )
+    # A pin narrower than a column's widest word would split it mid-run: the
+    # column takes that width instead, and make_table reports it.
+    widened_pins: Dict[str, Tuple[int, int, str]] = {}
     if column_widths:
         for ci, col in enumerate(df.columns):
             pinned = column_widths.get(col)
@@ -35644,19 +38205,39 @@ def _tbl_layout(
                 # back and reintroducing the wrap the caller ruled out.
                 floors[ci] = natural_w[ci]
                 hard_floors[ci] = natural_w[ci]
+                for stage in text_stages:
+                    stage[ci] = natural_w[ci]
                 continue
             pinned = max(40, int(pinned))
+            if col not in sparkline_columns and col not in minibar_columns:
+                piece, piece_w = _tbl_widest_piece(
+                    [_tbl_cell_text(df, r_idx, ci, column_formats, value_overrides)
+                     for r_idx in range(len(df))],
+                    _tbl_load_font("regular", theme["body_font_size"]))
+                head, head_w = _tbl_widest_piece(
+                    [str(col)], _tbl_load_font("bold", theme["header_font_size"]))
+                need = max(piece_w, head_w) + 2 * _TBL_CELL_PAD_X
+                if pinned < need:
+                    widened_pins[col] = (int(column_widths[col]), need,
+                                         piece if piece_w >= head_w else head)
+                    pinned = need
             if pinned < natural_w[ci]:
                 wraps[ci] = True
             natural_w[ci] = pinned
             floors[ci] = pinned
             # An explicit pin is a caller decision, not a cosmetic default,
-            # so the second-stage pass must not reclaim it.
+            # so neither later pass may reclaim it.
             hard_floors[ci] = pinned
+            for stage in text_stages:
+                stage[ci] = pinned
     col_widths = _tbl_compress_to_fit(
         natural_w, wraps, floors, side_pad, theme["body_font_size"],
         hard_floors=hard_floors,
+        text_stages=text_stages if wrap_short_text else None,
     )
+    for ci, width in enumerate(col_widths):
+        if width < hard_floors[ci]:
+            wraps[ci] = True
 
     canvas_w = 2 * side_pad + sum(col_widths)
     inner_w = canvas_w - 2 * side_pad
@@ -35719,6 +38300,7 @@ def _tbl_layout(
         row_heights=row_heights,
         caption_y=body_top_y + body_h, caption_h=caption_h,
         row_default_h=row_default_h, group_band_h=group_band_h,
+        widened_pins=widened_pins,
     )
     return geom, _caption_lines
 
@@ -35991,6 +38573,12 @@ def _tbl_draw_body(
             cursor += count
     col_index = {c: i for i, c in enumerate(df.columns)}
     n_cols = len(df.columns)
+    summary_rows = list(total_rows) + list(subtotal_rows)
+    minibar_plan: Dict[Any, Tuple[List[str], int, float]] = {}
+    for col, src in minibar_columns.items():
+        texts = _tbl_minibar_texts(df, src, column_formats, value_overrides)
+        minibar_plan[col] = (texts, _tbl_minibar_slot_w(texts, theme),
+                             _tbl_minibar_scale(df, src, summary_rows))
     row_heights = geom.row_heights
     y = geom.body_top_y
     for r_idx, (_, row) in enumerate(df.iterrows()):
@@ -36068,9 +38656,18 @@ def _tbl_draw_body(
                 _tbl_draw_sparkline(draw, x0 + 8, y + 6, x1 - x0 - 16, rh - 12, series, theme)
                 continue
             if col in minibar_columns:
-                src = minibar_columns[col]
-                col_max = pd.to_numeric(df[src], errors="coerce").abs().max()
-                _tbl_draw_minibar(draw, x0 + 8, y + 4, x1 - x0 - 16, rh - 8, row.get(src), col_max, theme)
+                texts, slot_w, scale = minibar_plan[col]
+                if not (is_total or is_subtotal):
+                    bar_w = x1 - x0 - _TBL_MINIBAR_INSET - _TBL_MINIBAR_GAP - slot_w - cell_pad_x
+                    _tbl_draw_minibar(draw, x0 + _TBL_MINIBAR_INSET, y + 4, bar_w, rh - 8,
+                                      row.get(minibar_columns[col]), scale, theme)
+                bg = cell_bg.get(ci)
+                text_color = cell_text_colors.get((r_idx, ci)) or (
+                    "#FFFFFF" if is_total
+                    else _tbl_readable_text_color(bg) if bg is not None else theme["body_text"])
+                tw = font.getlength(texts[r_idx])
+                draw.text((x1 - cell_pad_x - tw, y + rh // 2 - theme["body_font_size"] / 2 - 1),
+                          texts[r_idx], fill=text_color, font=font)
                 continue
             indent_px = 0
             if ci == 0 and row_indent and r_idx < len(row_indent):
@@ -36297,6 +38894,9 @@ def _tbl_build_cell_model(
             group_starts[cursor] = label
             cursor += count
 
+    summary_rows = list(total_rows) + list(subtotal_rows)
+    minibar_texts = {col: _tbl_minibar_texts(df, src, column_formats, value_overrides)
+                     for col, src in (minibar_columns or {}).items()}
     columns: List[Dict[str, Any]] = []
     for ci, col in enumerate(df.columns):
         if col in sparkline_columns:
@@ -36323,13 +38923,12 @@ def _tbl_build_cell_model(
             # float column as an int one.
             "int_dtype": bool(pd.api.types.is_integer_dtype(df[col])),
             "minibar_src": minibar_columns.get(col),
+            "minibar_slot_w": (_tbl_minibar_slot_w(minibar_texts[col], theme)
+                               if col in minibar_texts else None),
         })
 
-    minibar_max: Dict[str, float] = {}
-    for col, src in (minibar_columns or {}).items():
-        if src in df.columns:
-            m = pd.to_numeric(df[src], errors="coerce").abs().max()
-            minibar_max[col] = float(m) if pd.notna(m) else 0.0
+    minibar_max = {col: _tbl_minibar_scale(df, src, summary_rows)
+                   for col, src in (minibar_columns or {}).items()}
 
     rows: List[Dict[str, Any]] = []
     for r_idx in range(len(df)):
@@ -36392,10 +38991,15 @@ def _tbl_build_cell_model(
                     vf = float(v) if pd.notna(v) else 0.0
                 except (TypeError, ValueError):
                     vf = 0.0
+                text = minibar_texts[col][r_idx]
+                fg = cell_text_colors.get((r_idx, ci)) or (
+                    "#FFFFFF" if is_total
+                    else _tbl_readable_text_color(bg) if bg is not None else theme["body_text"])
                 cells.append({
-                    "c": ci, "kind": "minibar", "raw": raw, "text": "",
-                    "lines": [], "bg": bg, "fg": None, "indent": 0,
-                    "bar": {"v": vf, "max": minibar_max.get(col, 0.0)},
+                    "c": ci, "kind": "minibar", "raw": raw, "text": text,
+                    "lines": [text], "bg": bg, "fg": fg, "indent": 0,
+                    "bar": (None if (is_total or is_subtotal)
+                            else {"v": vf, "max": minibar_max.get(col, 0.0)}),
                 })
                 continue
 
@@ -36543,7 +39147,7 @@ def make_table(
     column_widths: Optional[Dict[str, int]] = None,
     value_overrides: Optional[Dict[Tuple[int, str], str]] = None,
     row_height_scale: float = 1.0,
-    show_index: bool = False,
+    show_index: Optional[bool] = None,
     save_as: Optional[str] = None,
     filename_suffix: Optional[str] = None,
     session_path: Optional[str] = None,
@@ -36578,9 +39182,14 @@ def make_table(
 
     ``column_widths={"Economy": 220}`` pins a column to an exact pixel
     width; a pinned column narrower than its content wraps rather than
-    overflowing. ``value_overrides={(3, "GDP"): "n/a"}`` replaces one
+    overflowing, and one narrower than its widest word or number widens to
+    it, with a warning. ``value_overrides={(3, "GDP"): "n/a"}`` replaces one
     cell's text outright, bypassing formatting. Both exist mainly so the
     table studio's edits round-trip back into a runnable call.
+
+    A named index -- ``render_charts`` binds each CSV's first column as one
+    -- shows as the first column (one per named level of a MultiIndex);
+    ``show_index=False`` hides it and an unnamed index never shows.
 
     ``interactive=True`` additionally emits a self-contained HTML editor
     beside the PNG and registers the reopen artifacts under
@@ -36669,6 +39278,33 @@ def make_table(
     df = df.copy()
     if show_index:
         df.insert(0, df.index.name or "index", df.index.values)
+    elif show_index is None:
+        # A named index is data -- render_charts binds every CSV's first
+        # column as one -- so it shows, one column per named level. Keys the
+        # caller wrote by column position count the frame's own columns.
+        levels = [name for name in df.index.names if name is not None]
+        if levels and not any(name in df.columns for name in levels):
+            for pos, name in enumerate(levels):
+                df.insert(pos, name, df.index.get_level_values(name))
+            shift = len(levels)
+
+            def shifted(keyed):
+                if not keyed:
+                    return keyed
+                return {(k[0], k[1] + shift) if isinstance(k, tuple) and len(k) == 2
+                        and isinstance(k[1], (int, np.integer)) else k: v
+                        for k, v in keyed.items()}
+
+            cell_colors = shifted(cell_colors)
+            cell_text_colors = shifted(cell_text_colors)
+            value_overrides = shifted(value_overrides)
+            if header_levels:
+                header_levels = [
+                    [("", shift)] + list(level)
+                    if sum(int(span) for _label, span in level) == len(df.columns) - shift
+                    else level
+                    for level in header_levels
+                ]
     df = df.reset_index(drop=True)
 
     column_formats = dict(column_formats or {})
@@ -37007,19 +39643,33 @@ def make_table(
     # display-width text size AND stays within bounded aspect ratio.
     # Falls through to a single _tbl_layout() call when the natural
     # canvas is already well-proportioned (the common case). See the
-    # constants block above for the bounds.
-    theme, geom, _caption_lines, normalize_warnings = (
-        _tbl_normalize_theme_for_display(
-            df, title, subtitle, caption, theme,
-            header_levels, column_formats,
-            sparkline_columns, minibar_columns, row_groups,
-            target_html_width=target_html_width,
-            column_widths=column_widths,
-            value_overrides=value_overrides,
-            row_height_scale=row_height_scale,
+    # constants block above for the bounds. A table the width gate below
+    # would refuse is laid out once more with short text columns allowed to
+    # wrap: wrapping a description costs a line, a refusal costs the table.
+    base_theme = theme
+    for wrap_short_text in (False, True):
+        theme, geom, _caption_lines, normalize_warnings = (
+            _tbl_normalize_theme_for_display(
+                df, title, subtitle, caption, base_theme,
+                header_levels, column_formats,
+                sparkline_columns, minibar_columns, row_groups,
+                target_html_width=target_html_width,
+                column_widths=column_widths,
+                value_overrides=value_overrides,
+                row_height_scale=row_height_scale,
+                wrap_short_text=wrap_short_text,
+            )
         )
-    )
+        if (geom.canvas_w and theme["body_font_size"] * _TBL_LEGIBILITY_USABLE_IN * 72
+                / geom.canvas_w >= _TBL_MIN_LEGIBLE_PT):
+            break
     warnings.extend(normalize_warnings)
+    for col, (pin, drawn, piece) in geom.widened_pins.items():
+        warnings.append(
+            f"column_widths[{col!r}]={pin} is narrower than {piece!r}, the widest word in that "
+            f"column; drawn at {drawn}px so no word or number splits. Pin at least {drawn}px, or "
+            f"use 'auto'."
+        )
     canvas = (geom.canvas_w, geom.canvas_h)
 
     # ---- Paper-legibility gate (width) --------------------------------
@@ -37199,12 +39849,11 @@ def make_table(
                 value_overrides=value_overrides,
             )
             # The editor is a pixel-editing surface and regenerates Python
-            # from its own numbers, so "auto" is resolved to the width it
-            # actually produced before the snapshot ever sees it.
+            # from its own numbers, so every pin -- "auto", or one widened to
+            # the column's widest word -- is recorded at the width drawn.
             _col_pos = {c: i for i, c in enumerate(df.columns)}
             studio_widths = {
-                c: (geom.col_widths[_col_pos[c]]
-                    if isinstance(w, str) and c in _col_pos else w)
+                c: (geom.col_widths[_col_pos[c]] if c in _col_pos else w)
                 for c, w in column_widths.items()
             }
             studio_kwargs = _tbl_studio_kwargs(
@@ -37222,7 +39871,9 @@ def make_table(
                 total_rows=total_rows, subtotal_rows=subtotal_rows,
                 column_widths=studio_widths, value_overrides=value_overrides,
                 row_height_scale=row_height_scale,
-                show_index=show_index, save_as=written_path,
+                # The index is already a column of ``df`` by now; a regenerated
+                # show_index=True would insert it a second time.
+                show_index=False, save_as=written_path,
                 target_html_width=target_html_width,
             )
             studio = _table_studio.wrap_table_interactive_prism(

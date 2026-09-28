@@ -74,8 +74,17 @@ heavy load — a dozen-plus labels on one panel is expected, not abusive.
 There is therefore no reason to pass a pixel offset, alignment, or label
 font size, and no reason to hand-space annotations to avoid a clash you
 cannot see. If space genuinely runs out the engine repositions, then
-shrinks, then omits the least informative label and reports the omission
-in `result.warnings`.
+shrinks, then moves a `PointLabel` or `Callout` to the nearest free spot,
+and only then omits the least informative label and reports the omission
+in `result.warnings`. A point label or callout that ends up more than a
+short hop from its point is drawn with a thin grey leader line back to it.
+
+Numbered markers keyed to a caption list — `PointHighlight` plus a
+`PointLabel` whose label is a short key (`"3"`, `"B"`) — are the pattern
+for "mark these dates and explain them below". Pass one marker per note,
+even when two notes share a day: the engine merges keys on one point into
+one label (`"2,3"`), keeps a key on a series' last point, and never drops
+one for crowding. Put the note text in `caption=[...]`.
 
 `PlotText.text` has a 10-word hard cap; aim for eight or fewer. It occupies an
 outside panel, not the plot. Explicit `side_right`, `caption`, or `side_left`
@@ -87,8 +96,8 @@ There are four distinct trend surfaces; choose one and do not combine them:
 
 | Need | Surface |
 |---|---|
-| One default fit on `scatter` | `mapping['trendline']=True` |
-| One fit per colour group on `scatter_multi` | `mapping['trendlines']=True` |
+| One fit across every point on `scatter` or `scatter_multi` | `mapping['trendline']=True` |
+| One fit per colour group on `scatter_multi` (may be combined with the above) | `mapping['trendlines']=True` |
 | One explicitly styled fit annotation | `annotations=[Trendline(...)]` on `scatter` |
 | Lower-level regression overlay | `layers=[{'type': 'regression', 'x': ..., 'y': ...}]` |
 
@@ -98,22 +107,29 @@ There are four distinct trend surfaces; choose one and do not combine them:
 |---|---|
 | Scatter | `Trendline`, point classes, rules, bands, segments, arrows |
 | Single-series bar | `HLine`, `VLine`, `Band`, `Arrow`, `PointLabel` |
+| Histogram | `VLine` / `Band` at values of the binned `x`; their captions stay inside the count range, however close together |
 | Stacked bar | `HLine` is clamped against stacked totals |
 | Horizontal bar | `HLine` becomes a vertical value threshold. Point classes, callouts, arrows, and segments take a category NAME as `y`. `Band(y1=name, y2=name)` shades the whole inclusive row range |
 | Heatmap | Same as horizontal bar: `y` is a row name. `Band(y1=..., y2=...)` shades whole rows; `HLine` renders its label at the named row without a rule |
-| Grouped bar (`stack=False`) | Annotations do not render; use title/subtitle or stack/split |
-| `multi_line` / `timeseries` | Rules, bands, segments, arrows, point classes, and callouts are supported; engine auto-injects `LastValueLabel` on a single axis |
-| Dual axis | See `chart_context_dual_axis.md`; y-bearing annotations need the correct `axis` |
+| Grouped bar (`stack=False`) | Value-axis thresholds render inside every group (`HLine` on a vertical, `VLine` on a horizontal); every other annotation is dropped with a reason on `warnings` — use title/subtitle, or stack/split |
+| `multi_line` / `timeseries` | Rules, bands, segments, arrows, point classes, and callouts are supported; engine auto-injects `LastValueLabel` on a single axis, except on one line whose end label would repeat the y-axis title |
+| Dual axis | See *Altair dual-axis and lead-lag charts*; y-bearing annotations need the correct `axis` |
 | `band` | Rules, bands, segments, arrows, and callouts read against the ribbon, not just the subject line; the forecast divider is already drawn, so skip a `VLine` at the handoff |
-| `contribution` | `HLine` reads against stacked totals and zero is always in domain; a rule at zero is already drawn. Pass `VLine.x` as the date you have — the engine maps it to the rendered period label |
+| `contribution` | `HLine` reads against stacked totals and zero is always in domain; a rule at zero is already drawn |
+| Date, period or year `x` (`contribution`, `bar`, lines) | Pass `VLine.x` as the date, year or period label you have (`"2020-06-30"`, `2020`, `"2024Q3"`); the engine moves it onto the period it falls in, and drops one outside the plotted window with a warning |
+| Forward-dated event on a date-axis `multi_line` / `timeseries` (next FOMC, next earnings) | Pass the `VLine` or `Band` at its real date: the date axis runs past the last observation to reach it, up to a quarter of the window. Farther than that it is dropped with a warning naming the reach — say the date in the subtitle instead |
 | Facet grid | `LastValueLabel` is removed; panel headers identify facets |
 | Donut / bullet | Do not use plot annotations; rule-style classes are suppressed with a warning |
 
 `LastValueLabel` is automatic on ordinary single-axis line charts. Pass an
 explicit instance only to customise it. It is removed on dual-axis and facet
-charts. When LVL already identifies the latest endpoint, the engine may
-silently deduplicate a redundant endpoint `Callout`, `PointLabel`, or
-`PointHighlight`.
+charts, and a one-line chart gets none when its end label would only repeat
+the y-axis title — the axis already names the line. Only where an end label
+is drawn does the engine silently absorb an endpoint `Callout`,
+`PointLabel`, or `PointHighlight` that restates it (a "latest value" label
+on a multi-line chart); a marker key on that point stays. On a one-line
+chart a `Callout(label='Latest: $71.2')` at the last point renders as
+written.
 
 `Trendline` is scatter-only and is removed from dual-axis line charts with a
 warning. For per-group fits, prefer `chart_type='scatter_multi'` with

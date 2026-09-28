@@ -732,6 +732,7 @@ function extractData(model) {
       int_dtype: !!c.int_dtype,
       wrap: !!c.wrap,
       minibar_src: c.minibar_src || null,
+      slot0: c.minibar_slot_w == null ? null : c.minibar_slot_w,
       w0: model.geom.col_widths[ci],
       fmt0: c.fmt == null ? null : c.fmt,
       align0: c.align,
@@ -983,20 +984,76 @@ function fmtDate(iso, hint) {
 // DOM, and a cell whose text differs between them would make the studio's
 // preview a lie. Python's "{:+.1f}" prints "+0.0", not "0.0", hence sg() on
 // >= 0 rather than > 0; "{:,.1f}" groups thousands, hence the grouped forms.
-function grp(n, d) {
-  return n.toLocaleString("en-US",
-    { minimumFractionDigits: d, maximumFractionDigits: d });
+// Python formats the exact binary value and breaks exact ties to the even
+// digit; toFixed and toLocaleString break them away from zero, so 1264.25
+// printed "1,264.3" here and "1,264.2" in the PNG. Round on the exact decimal
+// expansion instead. Python keeps the minus on a negative that rounds to zero.
+function pyFixed(n, d) {
+  const sign = (n < 0 || Object.is(n, -0)) ? "-" : "";
+  const parts = Math.abs(n).toFixed(Math.min(100, d + 25)).split(".");
+  const frac = parts[1] || "";
+  let digits = parts[0] + frac.slice(0, d);
+  const rest = frac.slice(d);
+  let up = false;
+  if (rest.length) {
+    const first = rest.charCodeAt(0) - 48;
+    up = first > 5 || (first === 5 && (/[1-9]/.test(rest.slice(1))
+         || (digits.charCodeAt(digits.length - 1) - 48) % 2 === 1));
+  }
+  if (up) {
+    const arr = digits.split("");
+    let i = arr.length - 1;
+    while (i >= 0 && arr[i] === "9") { arr[i] = "0"; i--; }
+    if (i >= 0) arr[i] = String.fromCharCode(arr[i].charCodeAt(0) + 1);
+    else arr.unshift("1");
+    digits = arr.join("");
+  }
+  const intPart = d > 0 ? digits.slice(0, digits.length - d) : digits;
+  const out = (intPart.replace(/^0+(?=\d)/, "") || "0") + (d > 0 ? "." + digits.slice(-d) : "");
+  return sign + out;
 }
-function fmtNumber(v, hint, intDtype) {
+function grp(n, d) {
+  const s = pyFixed(n, d);
+  const neg = s[0] === "-" ? "-" : "";
+  const [ip, fp] = s.replace("-", "").split(".");
+  return neg + ip.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (fp !== undefined ? "." + fp : "");
+}
+// Port of chart_functions._tbl_number_plan (and the _calendar_year_stamps
+// rule inside it): one decision per column, from the column's current values,
+// so a retyped cell can change how its neighbours print exactly as a re-render
+// would. A column holding anything but numbers has no plan, as a non-numeric
+// dtype has none in the engine.
+const YEAR_HEADER = /(?:^|[^a-z])(?:years?|yrs?|fy|vintage)(?:$|[^a-z])/i;
+const NOT_YEAR_HEADER = /(?:^|[^a-z])(?:strikes?|levels?|prices?|px|k)(?:$|[^a-z])/i;
+function autoPlan(raws, name) {
+  const vals = [];
+  for (const v of raws) {
+    if (v == null) continue;
+    if (typeof v !== "number") return null;
+    if (isFinite(v)) vals.push(v);
+  }
+  let years = false;
+  if (vals.length && vals.every(Number.isInteger)
+      && Math.min(...vals) >= 1800 && Math.max(...vals) <= 2200
+      && !NOT_YEAR_HEADER.test(String(name))) {
+    const distinct = [...new Set(vals)].sort((x, y) => x - y);
+    let step = 0;
+    for (let i = 1; i < distinct.length; i++) step = Math.max(step, distinct[i] - distinct[i - 1]);
+    years = (distinct.length >= 2 && step <= 10) || YEAR_HEADER.test(String(name));
+  }
+  const decimals = vals.some((v) => Math.abs(v) < 1e3 && Math.abs(v) >= 1) ? 2 : 3;
+  return { years: years, decimals: decimals };
+}
+function fmtNumber(v, hint, intDtype, plan) {
   const n = Number(v);
   if (!isFinite(n)) return String(v);
   // Python's format spec keeps the sign of -0.0 ("-0.0") where JS toFixed
   // drops it, and applies "+" to the ROUNDED integer for the bp forms, so
   // -0.45bp_signed is "+0bp" rather than "-0bp".
   const neg0 = Object.is(n, -0) ? "-" : "";
-  const fx = (d) => neg0 + n.toFixed(d);
+  const fx = (d) => pyFixed(n, d);
   const sg = (x) => (x >= 0 ? "+" : "");
-  const rounded = () => { const r = Math.round(n); return r === 0 ? 0 : r; };
+  const rounded = () => { const r = Number(pyFixed(n, 0)); return r === 0 ? 0 : r; };
   switch (hint) {
     case "pct": case "percent": return fx(1) + "%";
     case "pct_signed":   return (neg0 ? "" : sg(n)) + fx(1) + "%";
@@ -1018,21 +1075,22 @@ function fmtNumber(v, hint, intDtype) {
   // all, matching the engine's `hint is None` gate -- an explicit empty
   // string means "the default number path", not "guess at years".
   const a = Math.abs(n);
-  if (hint == null && Number.isInteger(n) && a >= 1900 && a <= 2200) return String(n);
+  const isYear = plan ? plan.years : (n >= 1900 && n <= 2200);
+  if (hint == null && isYear && Number.isInteger(n)) return String(n);
   // typeof is the hintless test the engine spells `hint is None`: an explicit
   // "" is a string and keeps the decimal path on both sides.
   if (intDtype && typeof hint !== "string") return grp(n, 0);
   if (a >= 1e9) return (n / 1e9).toFixed(2) + "B";
   if (a >= 1e6) return (n / 1e6).toFixed(2) + "M";
   if (a >= 1e3) return grp(n, 1);
-  if (a >= 1) return fx(2);
-  if (a === 0) return "0.00";   // engine returns the literal, sign and all
-  return fx(3);
+  const d = plan ? plan.decimals : (a >= 1 ? 2 : 3);
+  if (a === 0) return "0." + "0".repeat(d);   // engine returns the literal, sign and all
+  return fx(d);
 }
-function formatRaw(raw, hint, intDtype) {
+function formatRaw(raw, hint, intDtype, plan) {
   if (raw == null) return "";
   if (typeof raw === "object" && raw.__date__) return fmtDate(raw.__date__, hint);
-  if (typeof raw === "number") return fmtNumber(raw, hint, intDtype);
+  if (typeof raw === "number") return fmtNumber(raw, hint, intDtype, plan);
   return String(raw);
 }
 
@@ -1060,24 +1118,42 @@ function measure(text, size, bold) {
   _mctx.font = fontStr(size, bold);
   return _mctx.measureText(String(text == null ? "" : text)).width;
 }
-// Mirror of _tbl_continuation_hyphen. A piece already ending on a separator
-// reads as broken without help, so it is left alone.
-function continuationHyphen(piece) {
-  return /[-_]$/.test(piece) ? piece : piece + "-";
+// Mirror of _tbl_token_segments. A token breaks after one of its own
+// separators -- never one that opens it or sits between two digits -- and
+// before a capital that follows a lowercase letter.
+const BREAK_AFTER = "/\\_.:-,;|=&?+";
+function isDigit(ch) { return ch >= "0" && ch <= "9"; }
+function tokenSegments(token) {
+  const chars = Array.from(token);
+  const segs = [];
+  let cur = [];
+  chars.forEach((ch, i) => {
+    if (cur.length && /\p{Lu}/u.test(ch) && /\p{Ll}/u.test(cur[cur.length - 1])) {
+      segs.push(cur.join("")); cur = [];
+    }
+    cur.push(ch);
+    const nxt = i + 1 < chars.length ? chars[i + 1] : "";
+    if (BREAK_AFTER.includes(ch) && nxt && cur.length > 1
+        && !(".,:-".includes(ch) && isDigit(cur[cur.length - 2]) && isDigit(nxt))) {
+      segs.push(cur.join("")); cur = [];
+    }
+  });
+  if (cur.length) segs.push(cur.join(""));
+  return segs;
 }
-// Mirror of _tbl_hard_break. The continuation hyphen is measured as part of
-// the piece, so hyphenating never pushes a line back over the budget.
+// Mirror of _tbl_hard_break. Segments pack greedily; only a segment wider
+// than the whole budget splits between characters, and nothing is added.
 function hardBreak(word, maxW, size, bold) {
-  const chars = Array.from(word);
   const pieces = [];
   let cur = "";
-  chars.forEach((ch, idx) => {
-    const cand = cur + ch;
-    const probe = idx === chars.length - 1 ? cand : continuationHyphen(cand);
-    if (measure(probe, size, bold) > maxW && cur) {
-      pieces.push(continuationHyphen(cur));
-      cur = ch;
-    } else cur = cand;
+  tokenSegments(word).forEach((seg) => {
+    if (measure(cur + seg, size, bold) <= maxW) { cur += seg; return; }
+    if (cur) { pieces.push(cur); cur = ""; }
+    const units = measure(seg, size, bold) > maxW ? Array.from(seg) : [seg];
+    units.forEach((u) => {
+      if (cur && measure(cur + u, size, bold) > maxW) { pieces.push(cur); cur = u; }
+      else cur += u;
+    });
   });
   if (cur) pieces.push(cur);
   return pieces.length ? pieces : [word];
@@ -1205,6 +1281,7 @@ function rebuild() {
     int_dtype: dc.int_dtype,
     wrap: dc.wrap,
     minibar_src: dc.minibar_src,
+    slot0: dc.slot0 == null ? null : dc.slot0,
     numeric: dc.kind === "num",
     fmt0: dc.fmt0,
     align0: dc.align0,
@@ -1232,17 +1309,22 @@ function rebuild() {
   // The bar and the extent it is drawn against are data, not styling, so
   // both are derived here rather than baked at build time -- deleting the
   // largest row has to rescale every remaining bar, the same way re-running
-  // make_table on the smaller frame would.
+  // make_table on the smaller frame would. Mirror of _tbl_minibar_scale: a
+  // total or subtotal row is the sum of the bars, not one of them, so it
+  // neither sets the scale nor draws a bar.
+  const summary = _fixedRows();
   const barMax = {};
   D.columns.forEach((dc) => {
     if (dc.kind !== "minibar") return;
     const si = D.columns.findIndex((c) => c.name === dc.minibar_src);
-    let m = 0;
-    if (si >= 0) D.rows.forEach((row) => {
+    let m = 0, mAll = 0, bodySeen = false;
+    if (si >= 0) D.rows.forEach((row, r) => {
       const v = row.cells[si] ? row.cells[si].raw : null;
-      if (typeof v === "number" && isFinite(v)) m = Math.max(m, Math.abs(v));
+      if (typeof v !== "number" || !isFinite(v)) return;
+      mAll = Math.max(mAll, Math.abs(v));
+      if (!summary.has(r)) { m = Math.max(m, Math.abs(v)); bodySeen = true; }
     });
-    barMax[dc.name] = m;
+    barMax[dc.name] = bodySeen ? m : mAll;
   });
 
   // --- rows, from D ---
@@ -1267,7 +1349,9 @@ function rebuild() {
       if (kind === "minibar") {
         const si = D.columns.findIndex((c) => c.name === dc.minibar_src);
         const v = (si >= 0 && dr.cells[si]) ? dr.cells[si].raw : null;
-        cell.bar = {
+        cell.src = si;
+        cell.srcRaw = v;
+        cell.bar = summary.has(r) ? null : {
           v: (typeof v === "number" && isFinite(v)) ? v : 0.0,
           max: barMax[dc.name] || 0.0,
         };
@@ -1275,6 +1359,10 @@ function rebuild() {
       return cell;
     }),
   }));
+  M.columns.forEach((col, ci) => {
+    col.plan = autoPlan(M.rows.map((row) => (row.cells[ci] ? row.cells[ci].raw : null)),
+                        col.name);
+  });
 
   const highlight = K.highlight_columns || [];
   const signed    = K.signed_columns || [];
@@ -1327,12 +1415,24 @@ function rebuild() {
       if (cellCols[ck(r, ci)]) bg = cellCols[ck(r, ci)];
       cell.bg = bg;
 
-      if (cell.kind === "spark" || cell.kind === "minibar") return;
+      if (cell.kind === "spark") return;
+      if (cell.kind === "minibar") {
+        // Mirror of _tbl_minibar_texts: the source value in the source
+        // column's format, overrides included.
+        const srcCol = cell.src >= 0 ? M.columns[cell.src] : null;
+        const ov = (K.value_overrides || {})[ck(r, cell.src)];
+        cell.text = !srcCol ? "" : ov !== undefined ? String(ov)
+          : formatRaw(cell.srcRaw, srcCol.fmt, srcCol.int_dtype, srcCol.plan);
+        cell.lines = [cell.text];
+        cell.fg = cellTexts[ck(r, ci)]
+          || (row.kind === "total" ? "#FFFFFF" : bg ? readableOn(bg) : th.body_text);
+        return;
+      }
 
       // ---- text ----
       const ov = (K.value_overrides || {})[ck(r, ci)];
       cell.text = ov !== undefined
-        ? String(ov) : formatRaw(cell.raw, col.fmt, col.int_dtype);
+        ? String(ov) : formatRaw(cell.raw, col.fmt, col.int_dtype, col.plan);
 
       // ---- foreground ----
       let fg = cellTexts[ck(r, ci)] || null;
@@ -1376,6 +1476,14 @@ function rebuild() {
         h = Math.max(maxLines * lineH + 8, trunc(h * scale));
       row.h = h;
     }
+  });
+
+  // Mirror of _tbl_minibar_slot_w, measured bold. The engine's own width is
+  // kept while the font is untouched, so the first render matches the PNG.
+  M.columns.forEach((col, ci) => {
+    if (col.kind !== "minibar") return;
+    col.slot = (fontPristine && col.slot0 != null) ? col.slot0
+      : Math.ceil(M.rows.reduce((m, row) => Math.max(m, measure(row.cells[ci].text, bodyFs, true)), 0));
   });
 
   // --- header height + canvas ---
@@ -1437,6 +1545,11 @@ function sparkGeom(series, w, h) {
   ]);
   return {pts: pts, last: pts[pts.length - 1]};
 }
+// The minibar cell in _tbl_draw_body: an 8px inset, the bar, an 8px gap,
+// then the number right-aligned in the column's slot, 10px from the edge.
+function minibarBarW(col) {
+  return col.width - 8 - 8 - (col.slot || 0) - 10;
+}
 function barGeom(bar, w, h) {
   if (!bar || bar.v == null || bar.max == null || !bar.max) return null;
   const barH = Math.max(8, h - 6);
@@ -1496,6 +1609,20 @@ function barSVG(bar, w, h, th) {
   r.setAttribute("fill", g.neg ? th.negative_text : th.primary_color);
   svg.appendChild(r);
   return svg;
+}
+function minibarCell(cell, col, row, th) {
+  const wrap = document.createElement("div");
+  wrap.style.display = "flex"; wrap.style.alignItems = "center"; wrap.style.height = "100%";
+  wrap.appendChild(barSVG(cell.bar, minibarBarW(col), row.h - 8, th));
+  const num = document.createElement("div");
+  num.className = "cw";
+  num.style.flex = "1"; num.style.padding = "0 10px 0 0";
+  num.style.textAlign = "right"; num.style.color = cell.fg;
+  const ln = document.createElement("div");
+  ln.className = "ln"; ln.textContent = cell.text;
+  num.appendChild(ln);
+  wrap.appendChild(num);
+  return wrap;
 }
 
 function renderTable() {
@@ -1607,7 +1734,7 @@ function renderTable() {
       if (cell.kind === "spark") {
         td.appendChild(sparkSVG(cell.spark, col.width - 16, row.h - 12, th));
       } else if (cell.kind === "minibar") {
-        td.appendChild(barSVG(cell.bar, col.width - 16, row.h - 8, th));
+        td.appendChild(minibarCell(cell, col, row, th));
       } else {
         const w = document.createElement("div");
         w.className = "cw";
@@ -3476,8 +3603,9 @@ function addComputedColumn(at, name, src) {
   // The values have to exist before the column can be measured, and it is a
   // column the engine has never laid out, so its width is pinned.
   materialiseDerived();
-  const w = measuredColumnWidth(nm, D.rows.map(
-    (row) => formatRaw(row.cells[at].raw, null)));
+  const raws = D.rows.map((row) => row.cells[at].raw);
+  const plan = autoPlan(raws, nm);
+  const w = measuredColumnWidth(nm, raws.map((raw) => formatRaw(raw, null, false, plan)));
   D.columns[at].w0 = w;
   pinColumnWidth(nm, w);
   selection = [];
@@ -3820,7 +3948,7 @@ function headerMenu(x, y, ci, shift) {
   const sampleRaw = firstCell ? firstCell.raw : null;
   const preview = (hint) => {
     if (sampleRaw == null) return null;
-    try { return formatRaw(sampleRaw, hint); } catch (e) { return null; }
+    try { return formatRaw(sampleRaw, hint, col.int_dtype, col.plan); } catch (e) { return null; }
   };
 
   openMenu(x, y, (m) => {
@@ -4370,7 +4498,7 @@ function buildCanvas(scale) {
       }
       if (cell.kind === "minibar") {
         const bx = cx0 + 8, by0 = y + 4;
-        const bw = (cx1 - cx0) - 16, bh = row.h - 8;
+        const bw = minibarBarW(col), bh = row.h - 8;
         const g = barGeom(cell.bar, bw, bh);
         if (g) {
           ctx.fillStyle = "#FAFAFA";
@@ -4380,6 +4508,9 @@ function buildCanvas(scale) {
           ctx.fillStyle = g.neg ? th.negative_text : th.primary_color;
           ctx.fillRect(bx + g.x, by0 + g.by, g.w, g.h);
         }
+        setFont(th.body_font_size, row.kind !== "normal");
+        ctx.fillStyle = cell.fg; ctx.textAlign = "right";
+        ctx.fillText(cell.text, cx1 - 10, y + (row.h - trunc(th.body_font_size * 1.45)) / 2);
         return;
       }
       const bold = row.kind !== "normal";

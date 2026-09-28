@@ -115,9 +115,9 @@ TRANSPORT_CLOSE = "===CHART_IMAGE_TRANSPORT_END==="
 # beside the regex is the SSOT this pair should collapse into.
 _IMAGE_MARKER = "[[image: {key}]]"
 
-# A report turn drives 15-25 exhibits through this one tool, so it would spend the
-# whole per-turn image budget (gs_llm2.IMAGE_PROMOTION_MAX_IMAGES) on exhibits nobody
-# asked to look at, and reach the cap before the writer wants any one of them.
+# A report turn drives 15-25 exhibits through this one tool, so every render would
+# ride onto the writer's input unasked -- pixels it never chose to look at, each one
+# paid for and then carried for the rest of the turn.
 _TRAILER_SUPPRESSED_SPECIALIZATIONS = frozenset({
     "report_planner", "report_worker", "report_writer", "report_proofreader",
 })

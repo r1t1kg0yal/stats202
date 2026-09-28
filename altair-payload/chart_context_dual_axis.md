@@ -14,7 +14,7 @@ different units or materially different scales. Otherwise prefer:
 |---|---|
 | Compare each series' own path | Two-panel composite |
 | Compare co-movement across many series | Normalize to z-score, percent change, or rebased 100 |
-| Compare 7–36 same-shape entities independently | Facet grid |
+| Compare 2–36 same-shape entities independently | Facet grid |
 
 Different units require explicit dual-axis intent even when their numerical
 ranges happen to overlap. The engine can detect magnitude mismatch; it cannot

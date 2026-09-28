@@ -22,22 +22,15 @@ import pandas as pd
 
 from core.agent_base import Invocation, current_invocation
 from core.s3_bucket_manager import s3_manager
-from core.swallowed_exceptions import log_swallowed_exception
 from prism_mcp.tools.artifact_report import ReportShape, format_report as _format_report
+from prism_mcp.tools.sandbox_rollout import SandboxUnavailable
 from prism_mcp.utils.baggage import (
     resolve_kerberos_info_from_baggage as _resolve_kerberos_info_from_baggage,
     resolve_medium_from_baggage as _resolve_medium_from_baggage,
 )
 from prism_mcp.utils.chart_call_log import record_render_call
 from prism_mcp.utils.code_preprocess_utils import (
-    check_for_entitled_imports,
-    check_for_forbidden_imports,
-    check_for_network_access,
-    check_for_s3_full_listing,
-    check_for_sandbox_escape,
-    check_for_sys_exit,
-    check_for_sys_modules_mutation,
-    check_for_sys_path_mutation,
+    GENERATED_CODE_PREEXEC_CHECKS,
     preprocess_script_code,
 )
 from prism_mcp.utils.download_links import generate_download_links_for_sandbox
@@ -339,10 +332,14 @@ class _ChartPathRecorder:
     ``s3_client`` and ``bucket_name`` are not among them. Adding a verb should
     cost someone a line of thought.
 
-    This narrows the reach; it does not contain it. ``self._manager`` is an ordinary
-    attribute, so generated code can still walk to the raw client through it. Only the
-    execution substrate can close that -- the point here is that reaching it now takes
-    a line that reads like what it is.
+    The verbs are CLOSURES built in ``__init__``, so the manager lives in a cell
+    rather than on the instance. Anything that hands it back by name -- an
+    attribute, or a module function taking the surface -- is the same single
+    generated line ``self._manager`` was, under a name
+    ``code_preprocess_utils._ESCAPE_ATTRS`` does not carry, so nothing logs the
+    walk either. A closure leaves ``__closure__`` as the only route, and that
+    tuple does carry it. This narrows the reach; it does not contain it. Only the
+    execution substrate can close that.
 
     ``chart_paths`` is ground truth for what reached S3. ``artifacts`` is the
     richer story ``_wrap_chart_func`` hands over on the way past: the title, the
@@ -351,47 +348,67 @@ class _ChartPathRecorder:
     """
 
     def __init__(self, manager):
-        self._manager = manager
         self.chart_paths: List[str] = []
         self.artifacts: List[Dict[str, Any]] = []
 
-    def put(self, data, path, *args, **kwargs):
-        result = self._manager.put(data, path, *args, **kwargs)
+        def put(data, path, *args, **kwargs):
+            result = manager.put(data, path, *args, **kwargs)
+            self.adopt(path)
+            return result
+
+        def get(path):
+            return manager.get(path)
+
+        def exists(path):
+            return manager.exists(path)
+
+        def show_all(prefix=""):
+            return manager.show_all(prefix)
+
+        def list_(prefix=""):
+            return manager.list(prefix)
+
+        def delete(path):
+            return manager.delete(path)
+
+        def move(src, tgt):
+            return manager.move(src, tgt)
+
+        self.put = put
+        self.get = get
+        self.exists = exists
+        self.show_all = show_all
+        self.list = list_
+        self.delete = delete
+        self.move = move
+
+    def adopt(self, path: str) -> None:
+        """Record a chart key the run wrote, whichever side of the boundary wrote it.
+
+        An ordinary method while the verbs above are closures, because the two
+        hide different things. The closures exist to keep ``manager`` off the
+        instance; this touches only ``chart_paths``, so exposing it by name gives
+        generated code nothing. It has to be reachable by name -- the sandbox seam
+        takes it as a callback (``adopt=recorder.adopt``), which is how a render
+        that ran off-box still lands in ``chart_paths``.
+        """
         if path.endswith('.png') and path not in self.chart_paths:
             self.chart_paths.append(path)
-        return result
 
     def record(self, func, kwargs, result) -> None:
         """Capture one chart call's intent and outcome, keyed by the path it wrote."""
         self.artifacts.append(_new_artifact(func, kwargs, result))
 
-    def get(self, path):
-        return self._manager.get(path)
-
-    def exists(self, path) -> bool:
-        return self._manager.exists(path)
-
-    def show_all(self, prefix: str = ""):
-        return self._manager.show_all(prefix)
-
-    def list(self, prefix: str = ""):
-        return self._manager.list(prefix)
-
-    def delete(self, path):
-        return self._manager.delete(path)
-
-    def move(self, src, tgt):
-        return self._manager.move(src, tgt)
-
 
 def _chart_namespace(session_base_path: str, user_id: Optional[str],
                      recorder: _ChartPathRecorder) -> Dict[str, Any]:
     """Build the exec namespace: the chart engine's public API plus pandas/numpy."""
+    from prism_mcp.sandbox.chart_names import WRAPPED_CHART_FUNCS
+    from prism_mcp.utils import chart_functions
     from prism_mcp.utils.chart_functions import (
-        make_chart, make_table, build_charts, TableResult, ChartResult, ChartSpec,
-        profile_df, make_2pack_horizontal, make_2pack_vertical, make_3pack_triangle,
-        make_4pack_grid, make_6pack_grid, VLine, HLine, Band, Arrow, PointLabel,
-        PointHighlight, Callout, PlotText, Segment, LastValueLabel, Trendline,
+        build_charts, TableResult, ChartResult, ChartSpec, profile_df,
+        VLine, HLine, Band, Arrow, PointLabel, PointHighlight, Callout,
+        PlotText, Segment, LastValueLabel, Trendline,
     )
     from prism_mcp.utils.param_validator import validate_params
     # Deferred: script_exec_tools imports format_chart_delivery_hint from this
@@ -407,13 +424,7 @@ def _chart_namespace(session_base_path: str, user_id: Optional[str],
         's3_manager': recorder,
         'SESSION_PATH': session_base_path,
         **CANONICAL_STDLIB_NAMESPACE,
-        'make_chart': wrap(make_chart),
-        'make_table': wrap(make_table),
-        'make_2pack_horizontal': wrap(make_2pack_horizontal),
-        'make_2pack_vertical': wrap(make_2pack_vertical),
-        'make_3pack_triangle': wrap(make_3pack_triangle),
-        'make_4pack_grid': wrap(make_4pack_grid),
-        'make_6pack_grid': wrap(make_6pack_grid),
+        **{name: wrap(getattr(chart_functions, name)) for name in WRAPPED_CHART_FUNCS},
         # Bare: each thunk closes over its own wired make_chart call.
         'build_charts': validate_params(build_charts),
         'profile_df': profile_df,
@@ -434,25 +445,65 @@ def _chart_namespace(session_base_path: str, user_id: Optional[str],
     }
 
 
+# A value that names a day: ISO (2026-09-01, optionally with a time) or slashed.
+_FULL_DATE_RE = re.compile(r"^\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2}/\d{2,4})")
+
+
+def _date_index_or_as_written(index: pd.Index) -> pd.Index:
+    """The index as a DatetimeIndex when every value names a day, else as read.
+
+    ``parse_dates=True`` also rewrote calendar years into Jan-1 stamps and
+    ``2024Q1`` / ``24Q1`` into quarter starts, so the chart code saw months
+    where the caller wrote quarters. Those stay as written; the engine reads
+    their grain itself.
+    """
+    if index.dtype != object:
+        return index
+    values = [v for v in index if isinstance(v, str)]
+    if not values or len(values) != index.notna().sum():
+        return index
+    if not all(_FULL_DATE_RE.match(v) for v in values):
+        return index
+    try:
+        parsed = pd.to_datetime(index)
+    except (TypeError, ValueError):
+        return index
+    parsed.name = index.name
+    return parsed
+
+
+def _read_data_file(csv_bytes: bytes) -> pd.DataFrame:
+    """One CSV, first column as the index, text as the file wrote it.
+
+    ``read_csv``'s default missing-value list turns ``n/a``, ``None``, ``NA``
+    and ``null`` into NaN in every column, so a text cell that said n/a
+    printed blank, and Namibia's ``NA`` vanished. Only a column that parses
+    as numbers keeps that reading -- a chart needs it numeric, gaps and all;
+    text columns, the index, and a column holding nothing but such words
+    keep every cell as written, with only empty cells missing.
+    """
+    parsed = pd.read_csv(io.BytesIO(csv_bytes), index_col=0)
+    frame = pd.read_csv(io.BytesIO(csv_bytes), index_col=0,
+                        keep_default_na=False, na_values=[''])
+    # Positional: the two reads label a row differently when its index says NA.
+    for col in frame.columns:
+        if pd.api.types.is_numeric_dtype(parsed[col]) and parsed[col].notna().any():
+            frame[col] = parsed[col].to_numpy()
+    if pd.api.types.is_numeric_dtype(parsed.index) and parsed.index.notna().any():
+        frame.index = parsed.index
+    frame.index = _date_index_or_as_written(frame.index)
+    return frame
+
+
 def _load_data_files(namespace: Dict[str, Any], data_files: Optional[List[str]]) -> None:
     """Bind each S3 CSV in ``data_files`` as ``df1``, ``df2``, ... in index order."""
     for i, file_path in enumerate(data_files or [], 1):
-        csv_bytes = s3_manager.get(file_path)
-        namespace[f'df{i}'] = pd.read_csv(io.BytesIO(csv_bytes), index_col=0, parse_dates=True)
+        namespace[f'df{i}'] = _read_data_file(s3_manager.get(file_path))
 
 
-# check_for_local_file_writes is deliberately excluded: custom figures write a
-# local buffer on the way to S3, and that path is the one the engine owns.
-_CHART_PREEXEC_CHECKS = (
-    check_for_forbidden_imports,
-    check_for_entitled_imports,
-    check_for_sys_path_mutation,
-    check_for_sys_modules_mutation,
-    check_for_sys_exit,
-    check_for_s3_full_listing,
-    check_for_network_access,
-    check_for_sandbox_escape,
-)
+# The shared tuple, not a copy of it: the dashboard sink applies the same gates
+# and a second list is how the two come to disagree.
+_CHART_PREEXEC_CHECKS = GENERATED_CODE_PREEXEC_CHECKS
 
 
 def _refuse_unsafe_chart_code(code: str) -> str:
@@ -462,6 +513,72 @@ def _refuse_unsafe_chart_code(code: str) -> str:
         if refusal:
             return refusal
     return ''
+
+
+def _suffixable_builders() -> Tuple[str, ...]:
+    """The sandbox-bound chart functions that take ``filename_suffix``.
+
+    Read off the signatures rather than listed, the way ``_wrap_chart_func`` reads
+    the one it wraps: a builder that loses the parameter would otherwise have the
+    prelude below call it with an argument it no longer accepts.
+    """
+    from prism_mcp import chart_render
+    from prism_mcp.sandbox.chart_names import WRAPPED_CHART_FUNCS
+
+    names = []
+    for name in WRAPPED_CHART_FUNCS:
+        func = getattr(chart_render, name, None)
+        if func is None:
+            continue
+        try:
+            accepts = 'filename_suffix' in inspect.signature(func).parameters
+        except (TypeError, ValueError):
+            accepts = False
+        if accepts:
+            names.append(name)
+    return tuple(names)
+
+
+def _nonce_prelude(base: str) -> str:
+    """Source that gives a diverted run the nonce it cannot mint for itself.
+
+    ``_wrap_chart_func`` injects the nonce on the in-process path, but a diverted run
+    executes in a namespace this process never builds and under no invocation it can
+    read. Without it the engine names from title and clock alone, so a retry
+    accumulates near-duplicates instead of overwriting and two same-titled charts in
+    one script become one file.
+
+    Sent as source because no argument on the tool can carry it. Scoped to
+    ``filename_suffix`` and skipped when the caller passed ``save_as``, mirroring
+    ``_wrap_chart_func``'s own ``elif``: tagging an explicit ``save_as`` needs
+    ``_disambiguate``, whose idempotent stripping is keyed on the invocation token,
+    and a second copy of that in generated code is worse than the gap it closes.
+
+    ``base`` is this invocation's token, so the per-call counter restarting at each
+    attempt is what makes attempt N's Nth artifact overwrite attempt N-1's.
+    """
+    if not base.isalnum():
+        raise ValueError(
+            f'invocation token {base!r} is not alphanumeric; it is embedded in '
+            f'generated source and a token that is not would change its meaning'
+        )
+    rebinds = ''.join(
+        f"{name} = _prism_suffixed({name})\n" for name in _suffixable_builders())
+    return (
+        f"_prism_nonce_base = '{base}'\n"
+        f"_prism_nonce_n = 0\n"
+        f"def _prism_nonce():\n"
+        f"    global _prism_nonce_n\n"
+        f"    _prism_nonce_n += 1\n"
+        f"    return _prism_nonce_base + str(_prism_nonce_n)\n"
+        f"def _prism_suffixed(fn):\n"
+        f"    def _call(*a, **k):\n"
+        f"        if not k.get('save_as') and not k.get('filename_suffix'):\n"
+        f"            k['filename_suffix'] = _prism_nonce()\n"
+        f"        return fn(*a, **k)\n"
+        f"    return _call\n"
+        f"{rebinds}"
+    )
 
 
 def _ladder_step() -> Tuple[ChartInvocation, int, int]:
@@ -492,6 +609,11 @@ def _classify_failure(exc: BaseException, error_text: str,
         return 'FATAL', (
             f'execution exceeded CHART_EXECUTION_TIMEOUT_SECONDS '
             f'({CHART_EXECUTION_TIMEOUT_SECONDS}s); the same code will time out again'
+        ), 0
+    if isinstance(exc, SandboxUnavailable):
+        return 'FATAL', (
+            'the sandbox substrate could not run this render; no chart code can '
+            'fix it'
         ), 0
     if isinstance(exc, (MemoryError, RecursionError)):
         return 'FATAL', f'{type(exc).__name__}: the render exhausted the worker', 0
@@ -547,8 +669,9 @@ async def render_charts(session_path: str, chart_code: str,
         chart_code: Python that calls the chart functions. `print()` goes to the
             diagnostics block, which the caller never sees, so print freely.
         data_files: S3 paths of CSVs to load, bound in order as `df1`, `df2`, ...
-            Each is read with the first column as a parsed datetime index. You
-            have not seen these frames; `profile_df(df1)` before you bind a
+            Each is read with the first column as the index, named by its
+            header: a DatetimeIndex when it holds dates, as written otherwise
+            (years, quarter and month labels, names). You have not seen these frames; `profile_df(df1)` before you bind a
             column name you are not certain of.
 
     Returns:
@@ -607,8 +730,21 @@ async def render_charts(session_path: str, chart_code: str,
     # monotonic counter would quietly take away.
     invocation.sequence = 0
 
+    from prism_mcp.tools import sandbox_rollout as _sandbox_rollout
+    _sandbox = _sandbox_rollout.decide()
+    logger.info(f"[sandbox-rollout] chart_exec divert={_sandbox.divert} "
+                f"({_sandbox.reason})")
+    divert = _sandbox.divert
+    # Asked where the decision is read, so a refused call never gets as far as a
+    # namespace: a deployment declaring an off-process engine has no in-process
+    # fallback for a call the gate could not attribute.
+    unisolated = None if divert else _sandbox_rollout.refuse_unisolated_exec(
+        'chart_exec', _sandbox.reason)
+
     recorder = _ChartPathRecorder(s3_manager)
-    namespace = _chart_namespace(resolved_path, kerberos or None, recorder)
+    namespace: Dict[str, Any] = {}
+    if not divert and not unisolated:
+        namespace = _chart_namespace(resolved_path, kerberos or None, recorder)
 
     stdout = ""
     error = ""
@@ -620,26 +756,34 @@ async def render_charts(session_path: str, chart_code: str,
     # would skip the whole two-block protocol the sub-agent is trained on.
     stage = 'load'
     try:
-        _load_data_files(namespace, data_files)
+        if not divert and not unisolated:
+            _load_data_files(namespace, data_files)
         stage = 'exec'
         code, _preprocess_notes = preprocess_script_code(chart_code)
-        refusal = _refuse_unsafe_chart_code(code)
+        # The substrate refusal wins: no rewrite of the script changes which
+        # engine this deployment runs, so there is nothing for the ladder to try.
+        refusal = unisolated or _refuse_unsafe_chart_code(code)
         if refusal:
             # FATAL, non-retryable: a sub-agent that keeps probing for phrasing
             # that slips the gate would otherwise spend the rest of its budget
             # searching rather than stopping.
             status, status_detail = 'FATAL', refusal
         else:
-            result = await asyncio.wait_for(
-                asyncio.to_thread(_execute_sync, code, namespace),
-                timeout=CHART_EXECUTION_TIMEOUT_SECONDS,
-            )
+            if divert:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(_sandbox_rollout.run_in_sandbox,
+                                      _nonce_prelude(invocation.token) + code,
+                                      resolved_path, data_files,
+                                      adopt=recorder.adopt, s3_manager=s3_manager),
+                    timeout=CHART_EXECUTION_TIMEOUT_SECONDS,
+                )
+            else:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(_execute_sync, code, namespace),
+                    timeout=CHART_EXECUTION_TIMEOUT_SECONDS,
+                )
             stdout = result['stdout']
     except Exception as exc:
-        # why: a failing chart script is a result the sub-agent retries against,
-        # not an abort of the parent's turn -- the traceback has to reach the
-        # model as text. The namespace is dropped either way below.
-        log_swallowed_exception(exc, where="chart_exec.render_charts")
         stdout = getattr(exc, '_partial_stdout', '') or ''
         error = traceback.format_exc()
         status, status_detail, n_findings = _classify_failure(exc, error, stage)
@@ -648,6 +792,11 @@ async def render_charts(session_path: str, chart_code: str,
     # in place drops its grip on every DataFrame and closure it holds.
     artifacts = list(recorder.artifacts)
     namespace.clear()
+
+    if status == 'RETRYABLE' and recorder.chart_paths:
+        status_detail = (f'{status_detail}; {len(recorder.chart_paths)} chart(s) already '
+                         f'rendered and listed in the delivery block -- re-issue ONLY the '
+                         f'failed chart, not the batch')
 
     # Clean exit that drew nothing is its own failure: today it reports as success
     # with an empty chart list, which reads like a delivered answer.

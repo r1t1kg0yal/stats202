@@ -100,7 +100,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
 from prism_mcp.chart_render import house_style as _house
-from prism_mcp.utils.vega_node_check import _try_node_render_check
 
 
 __version__ = "0.4.0"
@@ -4805,8 +4804,11 @@ function yTitleOf(root, yField) {
   let title = null;
   walkEncoding(root, "y", enc => {
     if (title !== null || !enc || enc.field !== yField) return;
-    if (enc.axis && typeof enc.axis.title === "string") title = enc.axis.title;
-    else if (typeof enc.title === "string") title = enc.title;
+    const at = enc.axis ? enc.axis.title : undefined;
+    const t = (typeof at === "string" || Array.isArray(at)) ? at : enc.title;
+    // The engine draws a title over one line as a two-element array.
+    if (Array.isArray(t)) title = t.join(" ");
+    else if (typeof t === "string") title = t;
   });
   return title;
 }
@@ -10917,6 +10919,10 @@ def validate_spec_renders(spec: Any, include_warnings: bool = True,
 
     # --- Node runtime check (gold standard, if node + vega + vega-lite exist) ---
     if use_node:
+        # Lazy: the sandbox image carries neither prism_mcp.utils nor node.
+        from prism_mcp.utils.vega_node_check import (  # noqa: PLC0415
+            _try_node_render_check,
+        )
         node_result = _try_node_render_check(spec_dict)
         if node_result is not None:
             node_ran = True
@@ -11750,10 +11756,8 @@ def _prism_chart_type_to_mark(prism_chart_type: str) -> str:
 #
 #     from chart_functions_studio import wrap_table_interactive_prism
 #
-# ``core.register_studio()`` imports the table studio directly, via
-# ``prism_mcp.chart_render.chart_functions_studio_tables``. This bridge is for
-# everyone else. Deleting chart_functions_studio_tables.py disables the
-# feature; this import is the only place the chart studio references it.
+# Deleting chart_functions_studio_tables.py disables the feature; this import
+# is the only place the chart studio references it.
 # =============================================================================
 
 from prism_mcp.chart_render.chart_functions_studio_tables import (  # noqa: E402, F401

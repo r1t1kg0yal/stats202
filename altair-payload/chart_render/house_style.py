@@ -56,7 +56,7 @@ __all__ = [
     "is_gradient", "gradient_names", "gradients_of_kind",
     "get_dimensions", "dimension_names", "prism_dimension_names",
     "get_house_style", "house_style_names",
-    "chart_axis_font_px", "table_font_px", "Y_AXIS_TITLE_MAX_CHARS",
+    "chart_axis_font_px", "table_font_px", "Y_AXIS_TITLE_MAX_CHARS", "AXIS_TITLE_LINE_CHARS",
     "table_theme", "TABLE_RAMPS", "RAG_COLORS", "RAMP_GREEN", "RAMP_GREY",
 ]
 
@@ -97,13 +97,16 @@ TYPE_SCALE: Dict[str, Dict[str, int]] = {
 }
 
 
-# Hard cap on a y-axis title. The style guide puts the visual sweet spot
-# near 16 characters; past this the label is a sentence rather than a
-# label, and the engine refuses it. It lives here rather than in the
-# renderer because the studio COMPOSES axis titles -- "Yield (%), 12-period
-# annualised vol, %" -- and a copy of the limit that drifted would let it
-# build a chart whose own regenerated call the engine rejects.
-Y_AXIS_TITLE_MAX_CHARS: int = 28
+# An axis title draws on one line up to AXIS_TITLE_LINE_CHARS and wraps onto
+# a second past it; Y_AXIS_TITLE_MAX_CHARS (two lines) is the hard cap, past
+# which the label is a sentence and the engine refuses it. Refusing at one
+# line made the agent rewrite titles users had written verbatim. Legend
+# titles do not wrap and keep the one-line budget. It lives here rather than
+# in the renderer because the studio COMPOSES axis titles -- "Yield (%),
+# 12-period annualised vol, %" -- and a copy of the limit that drifted would
+# let it build a chart whose own regenerated call the engine rejects.
+AXIS_TITLE_LINE_CHARS: int = 28
+Y_AXIS_TITLE_MAX_CHARS: int = 2 * AXIS_TITLE_LINE_CHARS
 
 
 def chart_axis_font_px() -> int:
@@ -135,16 +138,19 @@ GS_PRIMARY: Dict[str, Any] = {
     "label": "GS Primary",
     "kind": "categorical",
     "aliases": (),
-    # Slot order: 0 navy (primary), 1 light blue (secondary), 2 mid blue,
-    # 3 grey, 4 red (accent), 5 cobalt, 6 olive, 7 purple, 8 orange, 9 teal.
-    "colors": ["#003359", "#94C7DD", "#5C92CB", "#A6A6A6", "#C00000",
-               "#4F81BD", "#9BBB59", "#8064A2", "#F79646", "#4BACC6"],
-    # Per-slot hex for LastValueLabel text. Identical to ``colors`` for the
-    # slots that survive as 15pt type on white (navy, red, cobalt, purple,
-    # orange, teal); darkened (HSL L * 0.55, hue and saturation preserved)
-    # for the four that do not (light blue, mid blue, grey, olive).
-    "label_colors": ["#003359", "#307A9A", "#274F7B", "#5B5B5B", "#C00000",
-                     "#4F81BD", "#566B2C", "#8064A2", "#F79646", "#4BACC6"],
+    # Slot order: 0 navy (primary), 1 light blue (secondary), 2 red (accent),
+    # 3 olive, 4 orange, 5 purple, 6 grey, 7 teal, 8 mid blue, 9 cobalt.
+    # Series take slots in order, so after the navy / light-blue pair every
+    # slot changes hue family: three series are never three blues, and the
+    # two blues closest to each other (mid blue, cobalt) only meet at ten.
+    "colors": ["#003359", "#94C7DD", "#C00000", "#9BBB59", "#F79646",
+               "#8064A2", "#A6A6A6", "#4BACC6", "#5C92CB", "#4F81BD"],
+    # Per-slot hex for LastValueLabel text. Identical to ``colors`` where the
+    # slot reads at 4:1 or better as 15pt type on white (navy, red, purple,
+    # cobalt); darkened (HSL L * 0.55, hue and saturation preserved) for the
+    # six that fall short (light blue, olive, orange, grey, teal, mid blue).
+    "label_colors": ["#003359", "#307A9A", "#C00000", "#566B2C", "#A74F07",
+                     "#8064A2", "#5B5B5B", "#246272", "#274F7B", "#4F81BD"],
 }
 
 COLORBLIND: Dict[str, Any] = {
@@ -638,22 +644,27 @@ def table_theme(name: Optional[str] = None, *, include_label: bool = False) -> D
 # document's identity. A mono table still shows a red loss.
 #
 # ``max_i`` caps fill intensity so the darkest cell stays readable with body
-# text on top.
+# text on top. The ramp ends are fixed hues, not palette slots: reordering
+# gs_primary for series contrast must not recolour a table.
+RAMP_NAVY: str = "#003359"
+RAMP_BLUE: str = "#5C92CB"
+RAMP_RED: str = "#C00000"
+RAMP_ORANGE: str = "#F79646"
 RAMP_GREEN: str = "#3C9A4E"
 RAMP_GREY: str = "#5B5B5B"
 
 TABLE_RAMPS: Dict[str, Dict[str, Any]] = {
-    "bw":      {"kind": "sequential", "end": GS_PRIMARY["colors"][2], "max_i": 0.70},
-    "wb":      {"kind": "sequential", "end": GS_PRIMARY["colors"][2], "max_i": 0.70},
-    "wb_full": {"kind": "sequential", "end": GS_PRIMARY["colors"][0], "max_i": 0.65},
-    "wg":      {"kind": "sequential", "end": RAMP_GREEN,              "max_i": 0.65},
-    "wr":      {"kind": "sequential", "end": GS_PRIMARY["colors"][4], "max_i": 0.55},
-    "wo":      {"kind": "sequential", "end": GS_PRIMARY["colors"][8], "max_i": 0.65},
-    "wgrey":   {"kind": "sequential", "end": RAMP_GREY,               "max_i": 0.55},
-    "rwg":     {"kind": "diverging", "neg": GS_PRIMARY["colors"][4], "pos": RAMP_GREEN,              "max_i": 0.65},
-    "rwb":     {"kind": "diverging", "neg": GS_PRIMARY["colors"][4], "pos": GS_PRIMARY["colors"][0], "max_i": 0.65},
-    "bwr":     {"kind": "diverging", "neg": GS_PRIMARY["colors"][0], "pos": GS_PRIMARY["colors"][4], "max_i": 0.65},
-    "owb":     {"kind": "diverging", "neg": GS_PRIMARY["colors"][8], "pos": GS_PRIMARY["colors"][0], "max_i": 0.65},
+    "bw":      {"kind": "sequential", "end": RAMP_BLUE,   "max_i": 0.70},
+    "wb":      {"kind": "sequential", "end": RAMP_BLUE,   "max_i": 0.70},
+    "wb_full": {"kind": "sequential", "end": RAMP_NAVY,   "max_i": 0.65},
+    "wg":      {"kind": "sequential", "end": RAMP_GREEN,  "max_i": 0.65},
+    "wr":      {"kind": "sequential", "end": RAMP_RED,    "max_i": 0.55},
+    "wo":      {"kind": "sequential", "end": RAMP_ORANGE, "max_i": 0.65},
+    "wgrey":   {"kind": "sequential", "end": RAMP_GREY,   "max_i": 0.55},
+    "rwg":     {"kind": "diverging", "neg": RAMP_RED,    "pos": RAMP_GREEN, "max_i": 0.65},
+    "rwb":     {"kind": "diverging", "neg": RAMP_RED,    "pos": RAMP_NAVY,  "max_i": 0.65},
+    "bwr":     {"kind": "diverging", "neg": RAMP_NAVY,   "pos": RAMP_RED,   "max_i": 0.65},
+    "owb":     {"kind": "diverging", "neg": RAMP_ORANGE, "pos": RAMP_NAVY,  "max_i": 0.65},
 }
 
 # Discrete red / amber / green buckets. Pale enough to sit under body text.

@@ -6,7 +6,7 @@ fade, transparency, `color_scheme`, `color_map`, `color_range`, `opacity`, or
 the default `gs_primary` palette is production-ready.
 
 This document is for `make_chart`. Table backgrounds and heatmap-style table
-cells belong to `chart_context_tables.md`.
+cells belong to *Altair static tables*.
 
 ## 1. Five mapping kwargs
 
@@ -35,11 +35,13 @@ unknown names raise with the accepted alternatives.
 | Pin named series | `color_map={'US': '#DC143C', 'EU': '#1F77B4'}` |
 | Change second legend slot | `color_map={2: '#DC143C'}` |
 | One colour for a single series | `color_map=['#DC143C']` |
-| Highlight one series and fade peers | named `color_map` plus `opacity_map` for every highlighted/faded category |
+| Highlight one series and fade peers | named `color_map` plus `opacity_map` for every highlighted/faded category; faded lines draw underneath the full-opacity ones |
+| Make one line stand out without fading the rest | `emphasis=['US']` on `multi_line` / `timeseries`: drawn on top and thicker |
 | Uniform 50% alpha | `opacity=0.5` |
 | Fade the second category | `opacity_map={2: 0.25}` |
 | Diverging heatmap | `color_scheme='redblue'` |
 | Sequential heatmap | `color_scheme='viridis'` or `'blues'` |
+| Shade lines as a sequence (vintages, event paths) | `color_scheme='blues'` on `multi_line` / `timeseries` — see §6.1 |
 
 ```python
 mapping = {
@@ -71,7 +73,9 @@ plotting; do not rely on palette cycling.
 
 Dictionary keys may be:
 
-- exact category strings; or
+- category strings, as the data spells them — for a wide `y=[...]` list the
+  column names work as well as the legend's display names, and a key that
+  differs only in case or spacing is applied and noted on `warnings`; or
 - positive integers representing **1-indexed rendered legend slots**.
 
 Named keys win when a named and positional key address the same slot. Slot
@@ -94,8 +98,8 @@ A list is a complete positional range; use a dictionary for partial overrides.
 
 `opacity_map` uses the same key shapes. Unpinned categories retain the scalar
 `opacity` when supplied, otherwise the engine's density/mark default.
-Per-category opacity needs a categorical `color` field. `bar_horizontal` is
-supported. Continuous gradient scatters use scalar `opacity`, not
+Per-category opacity needs a categorical `color` field or a wide `y=[...]`
+list. `bar_horizontal` is supported. Continuous gradient scatters use scalar `opacity`, not
 `opacity_map`.
 
 For single-series charts, `color_map=['#hex']` sets the mark colour. For
@@ -157,12 +161,35 @@ Author either `color_range` or `color_scheme`, not both; `color_map` does not
 apply to a continuous encoding.
 
 The colour bar labels itself: pass `color_title` for the authored English
-title (same placement and 28-character budget as `x_title` / `size_title`).
+title (same placement and 28-character, one-line budget as `size_title`).
 The bar is ticked at round values in the data's own unit — `-10 / 0 / 10
 / 20` for percentage points, `0.02` steps for a decimal spread, calendar
 years or months for dates. Zero is always labelled on a ramp that
 crosses it. Nothing about the ticks is caller-settable, and nothing
 needs to be.
+
+### 6.1 Line sequences
+
+Forecast vintages, curves by quarter-end, or one path per event date read
+as one progression, not line by line. On `multi_line` / `timeseries` they
+draw as a ramp — oldest light, newest dark, one gradient key, no end
+labels — up to 12 lines:
+
+- a sequential `color_scheme` (`blues`, `greens`, `reds`, `oranges`,
+  `purples`, `greys`, `viridis`, `plasma`, `magma`, `inferno`, `cividis`,
+  `turbo`) declares the lines a sequence at any count, ordered by
+  `color_sort` or data order (`Today / 3M ago / 1Y ago` labels run oldest
+  first on their own). The key is a gradient bar labelled with the first
+  and last names only — the lines between are placed by shade, not named;
+- a date `color` column does so on its own past six lines, keyed by
+  calendar ticks; six or fewer dated lines stay ordinary end-labelled lines;
+- so do labels that are one prefix plus consecutive numbers (`E01 .. E12`,
+  `Wave 1 .. Wave 8`, `2019 .. 2026`) past six lines, ordered by the number.
+
+The engine starts the ramp where it is dark enough to see as a line and
+reads dark-to-light schemes backwards. A facet grid shares one ramp across
+its panels with one key strip under the grid. Not with dual axes or
+`series`; `rainbow` is cyclic and cannot order lines.
 
 ## 7. Chart-specific restrictions
 
@@ -174,8 +201,10 @@ needs to be.
   dictionary form works there.
 - Sign colours on `waterfall` and the net line on `contribution` are
   house-owned and not settable.
-- `rainbow` is a quantitative ramp, not a categorical palette; use `bold` for
-  vivid categories.
+- Gradient schemes on `bar`, `area` and other categorical charts are refused;
+  on lines only the sequential ramps of §6.1 apply. `rainbow` is a
+  quantitative ramp, not a categorical palette; use `bold` for vivid
+  categories.
 - Do not hand-author ticker colour registries when the user did not request
   colours. Omit all colour kwargs and preserve the default palette.
 - Avoid encoding one category with both colour and line style unless the user

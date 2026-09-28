@@ -17,6 +17,10 @@ Pass exactly one source:
 | Curated rows | `rows=[{...}, ...]` |
 | Curated tuples/lists | `rows=[(...), ...], columns=[...]` |
 
+CSV text cells arrive as written: a cell reading `n/a`, `None` or `NA` stays
+that word and only an empty cell is missing, while numeric columns read those
+words as gaps. Do not `fillna` or `astype(str)` to protect them.
+
 ```python
 # DataFrame
 result = make_table(
@@ -78,10 +82,10 @@ and raise if passed.
 | `minibar_columns` | `{display_column: numeric_source_column}` |
 | `signed_columns` | Positive/negative text colour |
 | `total_rows`, `subtotal_rows` | Style rows already present in the data |
-| `column_widths` | `{column: pixels}` pin, or `{column: 'auto'}` to fit the content and never wrap |
+| `column_widths` | `{column: pixels}` pin, or `{column: 'auto'}` to fit the content and never wrap. A pin narrower than the column's widest word widens to it and says so on `warnings` |
 | `value_overrides` | `{(row, column): text}` replaces one cell's text, bypassing formatting |
 | `row_height_scale` | Row air; 0.5–3.0, default 1.0 |
-| `show_index` | Include DataFrame index; default `False` |
+| `show_index` | A named index shows as the first column by default; `False` hides it |
 | `target_html_width` | Intended display width for font normalization; default 720, use 600 for narrower email |
 | `save_as` | Stable PNG path |
 
@@ -90,19 +94,22 @@ A figure-label instruction does not change this surface. `side_left` /
 from that refusal by writing `title="R16a | Twenty Widest Bonds..."` or
 `title="R15a ;"` — keep `title` as the finding and put the id in `subtitle`.
 
-If a DataFrame index carries a semantic identifier such as country or ticker,
-either `reset_index()` so it becomes a named column (preferred) or set
-`show_index=True`; the default intentionally omits the index.
+A named index is data and shows as the table's first column (one per named
+level) — a CSV's first column arrives as one — so there is no need to
+`reset_index()` first. Pass `show_index=False` to hide it; an unnamed index
+never shows.
 
 Canvas dimensions are content-driven. Text columns wrap, every row is kept,
-and the table is never truncated. To reach the width that keeps body text at
-6pt on a portrait page the engine spends four levers in order — wrap text
-columns to their floors, reflow multi-word headers onto a second line, give
-back the cosmetic per-column padding, then grow the body font (a wider canvas
-at a bigger font prints larger, because padding does not scale) — and raises
-only when all four are exhausted. The budget is about 140 characters across
-one row: the widest cell of each column, summed, less roughly 2.5 per column
-for padding.
+and the table is never truncated. Long identifiers, paths and code loci need
+no shortening: they break at their own separators (`/ _ . : -`), never inside
+a number. To reach the width that keeps body text at 6pt on a portrait page
+the engine spends five levers in order — wrap long text columns to their
+floors, reflow multi-word headers onto a second line, give back the cosmetic
+per-column padding, grow the body font (a wider canvas at a bigger font prints
+larger, because padding does not scale), then wrap the short text columns too,
+prose before identifiers — and raises only when all five are exhausted. The
+budget is about 140 characters across one row: the widest cell of each column,
+summed, less roughly 2.5 per column for padding.
 
 A refusal therefore means the content itself is too wide, and it names which
 columns are paying and whether each one's floor comes from its header or its
@@ -285,8 +292,11 @@ minibar_columns={"Market cap": "Market Cap ($B)"}
 Each sparkline row may have a different length and scales independently.
 The sparkline key must name an existing display column; its cell values are
 ignored. Series lists align to final row order. Use `[]` for a blank sparkline;
-a shorter outer list leaves trailing rows blank. Mini-bars scale against the
-source column across rows; the display column may also be the source column.
+a shorter outer list leaves trailing rows blank. Each mini-bar cell prints its
+source value, in the source column's format, beside the bar; a negative value
+draws leftward in red. Bars scale to the
+largest value outside `total_rows` / `subtotal_rows`, which print their number
+with no bar. The display column may also be the source column.
 
 ## 7. Number formats
 

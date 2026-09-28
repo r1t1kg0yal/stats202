@@ -13,17 +13,18 @@ functions below.
 ## 1. Where things are
 
 Everything you need is already here. This document continues past the `---`
-separators below into six further documents, all of them present in full. There
-is nothing to retrieve and no tool to retrieve it with.
+separators below into six further documents, all of them present in full; each
+begins with the heading named here, and the rest of this corpus refers to them
+by that heading. There is nothing to retrieve and no tool to retrieve it with.
 
-| Topic | Trigger | Document |
+| Topic | Trigger | Document (its heading below) |
 |---|---|---|
-| Annotations | Threshold, event line, regime band, callout, highlight, trendline, narrative text, or any `annotations=[...]` / `layers=[...]` | `chart_context_annotations.md` |
-| Dual axis | Two metrics or units on one timeline; `dual_axis_*`, `y_title_right`, inverted RHS, lead-lag time shift, or a y-scale mismatch error | `chart_context_dual_axis.md` |
-| Composites and batch | Two or more chart calls, any `ChartSpec` / `make_*pack_*`, or several independent charts in one script | `chart_context_composites.md` |
-| Tables | Any structured rows × columns output or any `make_table()` call | `chart_context_tables.md` |
-| Grids | `mapping['facet']` or 7–36 same-shape entities | `chart_context_grids.md` |
-| Colours | Any chart palette, per-series colour, hex, fade, highlight, opacity, `color_scheme`, `color_map`, or `opacity_map` request | `chart_context_colors.md` |
+| Annotations | Threshold, event line, regime band, callout, highlight, trendline, narrative text, or any `annotations=[...]` / `layers=[...]` | *Altair annotations and layers* |
+| Dual axis | Two metrics or units on one timeline; `dual_axis_*`, `y_title_right`, inverted RHS, lead-lag time shift, or a y-scale mismatch error | *Altair dual-axis and lead-lag charts* |
+| Composites and batch | Two or more chart calls, any `ChartSpec` / `make_*pack_*`, or several independent charts in one script | *Altair composites and batch building* |
+| Tables | Any structured rows × columns output or any `make_table()` call | *Altair static tables* |
+| Grids | `mapping['facet']` or 2–36 same-shape entities | *Altair facet grids* |
+| Colours | Any chart palette, per-series colour, hex, fade, highlight, opacity, `color_scheme`, `color_map`, or `opacity_map` request | *Altair chart colours and opacity* |
 
 A basic single chart using default colours and no annotations needs none of
 them. Table colouring is in **tables**, not colours.
@@ -32,7 +33,7 @@ them. Table colouring is in **tables**, not colours.
 
 **Structured rows × columns always render through `make_table()`.** Do not emit
 Markdown pipe tables, `print(df)`, `df.to_string()`, or aligned text blocks.
-See `chart_context_tables.md`.
+See *Altair static tables*.
 
 | Analytical shape | Reach for |
 |---|---|
@@ -49,9 +50,9 @@ See `chart_context_tables.md`.
 | Part-to-whole | `donut` |
 | Current value inside a range | `bullet` |
 | Additive bridge between two points in time | `waterfall` |
-| Two to six related stories | composite helper; see `chart_context_composites.md` |
-| Seven to 36 same-shape entities | facet grid; see `chart_context_grids.md` |
-| Structured watchlist, tape, calendar, snapshot, or trade list | `make_table`; see `chart_context_tables.md` |
+| Two to six related stories | composite helper; see *Altair composites and batch building* |
+| Two to 36 same-shape entities | facet grid; see *Altair facet grids* |
+| Structured watchlist, tape, calendar, snapshot, or trade list | `make_table`; see *Altair static tables* |
 
 For freeform analysis, prefer a relationship-bearing shape over a descriptive
 single line: scatter with trendline, lead-lag, phase orbit, normalized
@@ -91,8 +92,10 @@ The engine handles structural mechanics, not economic meaning:
    denser series and manufacture a step pattern.
 
 The engine already promotes an unambiguous named/date index to `mapping['x']`,
-parses date-like and timezone-aware x values for line charts, sanitizes
-Vega-unsafe column names, auto-melts wide line data, reshapes unambiguous
+parses date-like and timezone-aware x values for line charts, breaks each line
+where its own observations stop (reported on `warnings`; a monthly column in a
+daily frame is joined month to month, so an outer-joined frame needs no
+`dropna`), sanitizes Vega-unsafe column names, auto-melts wide line data, reshapes unambiguous
 wide/matrix heatmaps, sorts tenors, and downsamples very large time series.
 Still name the intended x field in `mapping`; if that column is absent and an
 unambiguous index supplies it, the engine promotes the index. Do not
@@ -164,9 +167,9 @@ surfaces:
 | `make_chart(...)` | `df`, `chart_type`, `mapping`; title/source/caption; `annotations`, `layers`; facet layout controls; save path | Colour, opacity, axis-title, dual-axis, and chart-encoding keys do **not** belong at top level |
 | `mapping={...}` | Data fields, axis titles, and chart-specific encoding/configuration listed in §6 or a topic document | `title`, `source`, `annotations`, `layers`, `facet_cols`, `same_scale`, and save kwargs do **not** belong in `mapping` |
 | `VLine(...)`, `Band(...)`, etc. | Only that annotation constructor's coordinates and style parameters | Annotation coordinates/style do not belong in `mapping` or at `make_chart` top level |
-| `layers=[{...}]` | Only the strict layer dictionaries in `chart_context_annotations.md` | Do not pass annotation objects or arbitrary Vega-Lite dictionaries |
+| `layers=[{...}]` | Only the strict layer dictionaries in *Altair annotations and layers* | Do not pass annotation objects or arbitrary Vega-Lite dictionaries |
 | `ChartSpec(...)` | Per-panel `df`, `chart_type`, `mapping`, text, annotations, and layers | `dimension_preset`, spacing, filename, and save path belong on `make_*pack_*` |
-| `make_table(...)` | Table kwargs from `chart_context_tables.md`; there is no `mapping` and no side panel | Chart colour, chart mapping, `side_left` / `side_right`, `annotations`, and `layers` do not apply |
+| `make_table(...)` | Table kwargs from *Altair static tables*; there is no `mapping` and no side panel | Chart colour, chart mapping, `side_left` / `side_right`, `annotations`, and `layers` do not apply |
 
 Unknown `mapping` keys, unexpected top-level `make_chart` kwargs, malformed
 layer dictionaries, and engine-only keys raise `ValidationError` with a
@@ -204,7 +207,7 @@ while you are building the frame, not after a refusal.
 
 ```
  ANY category label ....... 24    end-label series name .... 32
- y_title / x_title ........ 28    legend title ............. 28
+ y_title / x_title ........ 56    legend title ............. 28
  legend series name ....... 24 + ≤40% of canvas, only where a legend renders
  PlotText.text ............ 10 words (aim 8)
  caption / side_left / side_right ... no cap; `\n` or a list of lines forces a break
@@ -298,23 +301,23 @@ number of categories — not to pick a bigger preset, and not to rename things.
 
 | Gate | Current hard limit | Authoring action |
 |---|---:|---|
-| Lines per `multi_line` / `timeseries` / `area` panel | 6 | Aim for ≤4; split, facet, or aggregate |
-| Axis title (`y_title`, `y_title_right`, `x_title`) | 28 characters, on either axis | Aim for concise metric + unit |
-| Legend title (`color_title`, `size_title`) | 28 characters — same budget as an axis title, because it is the same kind of string | Pass a shorter `color_title` / `size_title` |
+| Lines per `multi_line` / `timeseries` / overlaid `area` panel (each `series` line counts); bands of a stacked `area` | 6; 12 when the lines are an ordered sequence; 10 stacked-area bands | Aim for ≤4; split, facet, or aggregate. Vintages or event paths draw oldest-light to newest-dark with one gradient key instead of end labels, up to 12 lines on `multi_line` / `timeseries`, when given a sequential `color_scheme` (`blues`, `purples`, `viridis`, ...) at any count, or coloured by a date column or by numbered labels (`E01 .. E12`) past six lines (six or fewer stay end-labelled) |
+| Axis title (`y_title`, `y_title_right`, `x_title`) | 56 characters, on either axis; over 28 draws on two lines | Aim for concise metric + unit; a title the user wrote fits as written |
+| Legend title (`color_title`, `size_title`) | 28 characters — one line, because a legend title does not wrap | Pass a shorter `color_title` / `size_title` |
 | Auto end-label series name | 32 characters — the cap when a line / area chart paints series names at the right edge instead of a colour legend | Rename categories before charting |
 | Any category label — `bar`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile ordinals, `donut` slices, heatmap rows and columns, facet panel labels | 24 characters on the longest line, and at most 2 lines. One number for every nominal label, standalone or in a composite cell | Abbreviate in the DataFrame. The error quotes each offender with its length and suggests abbreviations where the name has an acronym or word boundary to exploit |
 | Horizontal bar category label — `bar_horizontal`, and a `bar` the engine flips horizontal | 40 characters on the longest line, at most 2 lines; the error says `HORIZONTAL BAR` | Abbreviate in the DataFrame, or if the label was refused at 24 as `VERTICAL BAR` under a pinned `orientation='vertical'`, unpin it or request `bar_horizontal` |
 | Heatmap row or column label | The same 24, and less on a narrow canvas — the gutter budget applies on top and the usable number is reported in the error | Abbreviate in the DataFrame. Only applies when the error names a specific string; a row-COUNT failure is §5.2 fit, not length |
 | Heatmap rows vs canvas height | Each row needs one label line, so a fixed cell fits `height / 15` rows | Drop the `dimensions` kwarg and let the engine size the canvas; inside a fixed cell, aggregate or take the top-N. Renaming rows buys nothing |
-| Named categories vs canvas (every nominal axis: `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile-line ordinals, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, never clips one, and raises when it cannot. Date columns thin instead, including a `contribution` period axis that came from datetime, and including `bar` x values that are house period labels (`Jan-21`, `Jan 21`, `16Q1`, `2016Q1`) or a datetime column the caller marked `x_type='ordinal'`. Profile ordinals never rotate past -45 and thin which ticks are drawn instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap (no help on a symmetric matrix — the engine says so), or switch to `bar_horizontal` for long lists |
+| Named categories vs canvas (every nominal axis: `bar`, `bar_horizontal`, `boxplot`, `waterfall`, `contribution`, `bullet`, profile-line ordinals, `heatmap` columns) | Every name must be labelled; the engine rotates and shrinks to fit, never hides one, never clips one, and raises when it cannot. Period axes thin their labels instead and keep every bar: `contribution` and `bar` x values that are dates, period labels (`Jan-21`, `Jan 21`, `16Q1`, `2016Q1`) or years. Profile ordinals never rotate past -45 and thin which ticks are drawn instead | Aggregate or take the top-N, render standalone instead of in a composite cell, transpose a wide heatmap (no help on a symmetric matrix — the engine says so), or switch to `bar_horizontal` for long lists |
 | Colour-legend series name | 24 characters, AND measured width ≤ 40% of canvas width (about 28 characters of mixed case at 700px, ~11 in a 280px composite cell), only where a colour legend actually renders. Standalone line / area charts with end labels take the 32-character LVL cap instead. Either legend gate can bind; the error says which and reports measured pixel widths | Rename the `color` column values in the DataFrame. This is the same repair as any other length gate — the engine will not ellipsize a series name, because two series whose names differ past the cut become indistinguishable |
 | Scatter relationship | At least 8 distinct visible `(x, y)` coordinates | Widen window or use line/bar/table |
 | Series horizontal extent (`multi_line` / `timeseries` / `area` / `band`) | Every series needs ≥2 distinct `x` values and ≥10% of the x domain | Bind `x` to the axis the data varies along |
 | Series vertical share (`color`-split `multi_line` / `timeseries`) | Every series needs ≥10% of the y span, and adjacent series means stay within 3× the widest single span | Pass `y_title_right` naming the secondary metric and unit: inert when one axis suffices, and when it does not the engine routes the magnitude clusters to a dual axis in one pass. Standalone charts only — inside a composite cell declare `dual_axis_series` as well. Otherwise 2-pack, rebase to 100, or facet |
-| Categorical colour / donut slices | 10 categories | Filter or aggregate to `Other` |
+| Categorical colour / donut slices | 10 categories; an ordered line sequence is a ramp, not categories | Filter or aggregate to `Other` |
 | Composite super-title / super-subtitle | `3 x int(row_px / (font_px x 0.55))` characters, where `row_px = cols x chart_width + (cols - 1) x 20` for the chosen layout and `dimension_preset`, and `font_px` is 32 (title) / 22 (subtitle). Across the presets that runs 63 to 159 characters for the title, 93 to 231 for the subtitle | Write to the 63 / 93 floor and any preset takes it; name a wider preset and spend its full budget |
 | `make_table` printed width | Body text prints at `body_font_size x 468 / canvas_px` and must clear 6pt, so the canvas stays under `78 x body_font_size` px, i.e. about 140 characters across one row (the widest cell of each column, summed), less ~2.5 per column for padding | Transpose, split by column group, drop or aggregate columns, shorten headers. The engine first wraps text columns to their floors, reflows multi-word headers onto a second line, reclaims per-column padding, and grows the body font — so a refusal here means the content itself is too wide, and the error names which columns and whether their header or their values set the floor. A square label-by-label matrix belongs in a heatmap, and the error says so |
-| Composite / facet count | Packs 2–6; facets 7–36 | See the composites or grids document |
+| Composite / facet count | Packs of 2, 3, 4 or 6; facets 2–36 | See the composites or grids document |
 | `PlotText.text` | 10 words (aim ≤8) | Use caption/side text for longer prose |
 
 Long labels are named in the error with an actionable repair. Never pre-truncate
@@ -332,16 +335,16 @@ become nanoseconds after 1970 and the axis renders as a clock.
 
 | `chart_type` | Required mapping | Core rule |
 |---|---|---|
-| `timeseries` | datetime `x`, `y`; optional `color` | `x` must be a datetime column; any other dtype raises. Convert with `pd.to_datetime()` first |
-| `multi_line` | `x`, `y`; optional `color` | Datetime path, or an ordinal curve when `x` is categorical (tenors, strikes, buckets) |
+| `timeseries` | date-like `x`, `y`; optional `color` | Dates, ISO date strings, years and period labels (`Jan-24`, `2024Q1`) are read as written — do not `pd.to_datetime()` them. Any other `x` raises; categories and measured values belong on `multi_line` |
+| `multi_line` | `x`, `y`; optional `color` | Datetime path (dates, years, period labels such as `Jan-24`), a numeric `x` (trading days from an event, tenor in years), or an ordinal curve when `x` is categorical (tenors, strikes, buckets). A sequence of curves or paths — forecast vintages, one path per event date — is one ramp: colour by the date column (past six lines) or pass a sequential `color_scheme` |
 | `scatter` | `x`, `y` | At least 8 distinct visible coordinates |
 | `scatter_multi` | `x`, `y`, `color` | Grouped scatter; `trendlines=True` fits per group |
-| `bar` | categorical `x`, numeric `y` | Categorical only, never raw datetime |
+| `bar` | categorical or period `x`, numeric `y` | A date, period label (`2024Q1`, `Jan-24`) or year `x` draws one bar per period, named for the period |
 | `bar_horizontal` | numeric `x`, categorical `y` | Prefer for longer category labels |
 | `heatmap` | `x`, `y`, `value` | Cell magnitude is `value`, not `color` |
-| `histogram` | `x` | Distribution of one numeric field |
+| `histogram` | `x` | Distribution of one numeric field; `y_title` names the count axis (default `Count`), which ticks in whole numbers |
 | `boxplot` | categorical `x`, numeric `y` | Compare distributions |
-| `area` | `x`, `y`; optional `color` | Stacked series require common x coverage and non-negative values |
+| `area` | `x`, `y`; optional `color` | Stacked series require common x coverage and non-negative values; up to ten bands, read by the key (its first entry is the top band). Overlaid (`stack=False`) areas take at most six |
 | `contribution` | `x`, numeric `y`, `color` | Signed stack per period plus an automatic net-total line; `color` is the component |
 | `band` | `x`, `y`, `y_low`, `y_high` | One subject line plus its interval; `x` may be a date, a numeric offset, or an ordered category |
 | `donut` | `theta`, `color` | Part-to-whole; at most 10 slices |
@@ -397,18 +400,20 @@ become nanoseconds after 1970 and the axis renders as a clock.
 |---|---|
 | `x`, `y`, `color` | Primary fields; `y` may be a list for line/area auto-melt, or for `band` to join actuals and forecast into one path |
 | `x_title`, `y_title`, `y_title_right` | Semantic axis title, including unit |
-| `color_title`, `size_title` | Authored legend title for the colour / size channel, including unit. Same 28-character budget as an axis title. A size legend prints the column name unless `size_title` is set |
+| `color_title`, `size_title` | Authored legend title for the colour / size channel, including unit. 28 characters on one line. A size legend prints the column name unless `size_title` is set |
 | `x_sort`, `y_sort`, `color_sort`, `value_sort` | Explicit display order; use `color_sort` as the canonical legend/category order |
-| `x_type` | Force ordinal for genuine categories such as tenors; on a datetime column the engine materialises house-style date labels on evenly spaced bands. Ordinal puts every date on the axis as a named category, so a long series can exceed the category-label budget and be refused — leave a date axis temporal unless the even band spacing is the point |
+| `x_type` | Force ordinal for genuine categories such as tenors; on a datetime column the engine materialises house-style date labels on evenly spaced bands. Ordinal puts every date on the axis as a named category, so a long series can exceed the category-label budget and be refused — leave a date axis temporal unless the even band spacing is the point. A date `bar` is already one band per period, so the key changes nothing there |
 | `x_timezone` | Intraday display clock; default `America/New_York` |
 | `legend` | Explicit legend override; normally leave automatic |
-| `trendline`, `trendlines` | Overall scatter fit / per-group fits; needs a numeric or temporal `x`, refused on a category axis |
+| `trendline`, `trendlines` | One fit across every point (`scatter` and `scatter_multi`) / one fit per colour group (`scatter_multi`); both may be set. Needs a numeric or temporal `x`, refused on a category axis |
 | `size` | `scatter`: column name bound to the dot-size channel for a bubble scatter. Always pair it with `size_title` |
-| `connect`, `order` | Ordered scatter path; incompatible with trendline. `order` is required on a numeric or temporal `x` and inferred from the category order on an ordinal one |
+| `connect`, `order` | Ordered scatter path; incompatible with trendline. `order` is required on a numeric or temporal `x` and inferred from the category order on an ordinal one. A `color` value that repeats (one event per path) draws its own path; a colour unique to each point keeps one path |
 | `zero_fill`, `zero_fill_baseline` | Single-line above/below-baseline fill |
 | `stack` | `bar`/`area` with colour: stacked by default; `False` groups/layers. A stacked bar stacks in legend order — the first legend entry is the top segment on a vertical bar and the leftmost on a horizontal one — so `color_sort` orders both at once |
-| `segment_labels` | `bar` / `bar_horizontal` stacked by colour: `True` paints each segment's own value at its midpoint, in white or dark ink by the segment's fill; the vertical bar keeps its stack total above the bar as well. A segment too short to hold its number is left unlabelled and named on `warnings` (`Segment labels: N of M segment(s) are too short ...`) rather than overprinted — widen the chart or aggregate the smallest segments to label them all. Bool only; refused on a bar with no colour, a grouped (`stack=False`) bar, or any other chart type; ignored with a warning when the stacked column has negative values. A `PointLabel` restating a segment's value is absorbed the same way one restating a bar total is |
+| `segment_labels` | `bar` / `bar_horizontal` stacked by colour: `True` paints each segment's own value at its midpoint, in white or dark ink by the segment's fill; the stack keeps its net total past its end as well. A segment too short to hold its number is left unlabelled and named on `warnings` (`Segment labels: N of M segment(s) are too short ...`) rather than overprinted — widen the chart or aggregate the smallest segments to label them all. Bool only; refused on a bar with no colour, a grouped (`stack=False`) bar, or any other chart type; ignored with a warning when the stacked column has negative values. A `PointLabel` restating a segment's value is absorbed the same way one restating a bar total is |
+| `series` | `multi_line` / `timeseries`: one line per value of `series` while `color` names the group it belongs to — `{'color': 'sector', 'series': 'ticker'}`. Each line is end-labelled by its series in its group's colour, and the groups get one key under the plot (under the pack in a composite; one colour per group across every panel). `color_map` / `opacity_map` keyed by group reach all its series. The six-line cap counts series, not groups. A series under two groups raises |
 | `strokeDash`, `strokeDashScale`, `strokeDashLegend` | Single-axis line-style encoding |
+| `emphasis` | `multi_line` / `timeseries`: series names drawn on top of the others and thicker, e.g. `['TopWeight_chained']`; names match by either spelling, as `color_map` keys do. Pair with `opacity_map` to also fade the rest |
 | `value`, `theta`, `type` | Heatmap value, donut magnitude, waterfall type |
 | `y_low`, `y_high` | `band` interval bounds; equal-length lists give nested levels, paired by position (`y_low[0]` with `y_high[0]`) |
 | `y_ref` | `band`: optional dashed reference path inside the interval |
@@ -419,28 +424,32 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `scale_type` | `linear` / `log` on `multi_line`, `timeseries`, `area`, `scatter`, `bar`, `bar_horizontal`. Both values are honoured and override the default and auto-detection, so `linear` is how you turn an auto-log axis off. Pass the raw column — never `np.log10` it yourself; the engine draws the axis in real units (`1 / 10 / 100 / 1,000`), labels each bar with its true value at its own precision (`432,000` beside `0.07` on one axis) and spaces end-of-line labels on the log axis. Lines and scatter need every y value > 0 and are refused otherwise; their axis runs from a labelled tick at or under the smallest value to one at or over the largest, on a complete `1 / 2 / 5` ladder (`2, 5, 10, 20, 50 ...`, powers of ten only past three decades), so no series sits below the lowest label. Bars accept zero: a zero row draws as a mark at the axis floor with its value labelled and is named on `warnings`; negatives are refused, and so are stacked colour bars (one bar per category with a colour is fine; `stack=False` groups). A log bar axis also needs the positive values to span at least one decade (a factor of 10 between the smallest positive and the largest) — under that a linear axis reads better and the request is refused toward it, which also means a single-bar chart cannot take `log`. `area` with a colour column is refused on `log` — a stacked total on a log axis is not a chart of any series; use `multi_line` with the same mapping. Any other chart type refuses the kwarg rather than ignoring it |
 | `orientation` | `bar`: force `vertical` instead of automatic horizontal routing |
 | `x_low`, `x_high`, `color_by`, `label`, `marker_size` | Bullet range, marker colour metric, optional label, marker area (default 200) |
-| `dual_axis_series`, `dual_axis_bind`, `invert_right_axis` | See `chart_context_dual_axis.md`; `dual_axis_config` is engine-managed |
-| `facet`, `facet_order`; `facet_cols`, `same_scale`, `share_color` top-level | See `chart_context_grids.md` |
-| `color_scheme`, `color_range`, `color_map`, `opacity`, `opacity_map` | See `chart_context_colors.md` |
+| `dual_axis_series`, `dual_axis_bind`, `invert_right_axis` | See *Altair dual-axis and lead-lag charts*; `dual_axis_config` is engine-managed |
+| `facet`, `facet_order`; `facet_cols`, `same_scale`, `share_color` top-level | See *Altair facet grids* |
+| `color_scheme`, `color_range`, `color_map`, `opacity`, `opacity_map` | See *Altair chart colours and opacity* |
 
 ### 6.3 Type-specific decisions
 
 - `multi_line` / `timeseries` auto-add end-of-line labels on a single axis.
   Dual-axis and facet charts use legends/headers instead.
-  Alternating-series oscillation, extreme missing coverage, and incompatible
+  Alternating-series oscillation, a series reduced to a few stray points with
+  no regular spacing (usually a broken filter or join), and incompatible
   y-scales raise with the required reshape.
 - Intraday line x values should stay datetime-like. Do not pre-format clock
   strings or force ordinal; set `x_timezone` only when ET is wrong.
 - `scatter` + `connect=True` creates an ordered phase path and needs `order`
   or temporal/numeric `color`. The engine picks the gradient from the column's
-  own sign and range; read `chart_context_colors.md` §6 before overriding it.
+  own sign and range; read *Altair chart colours and opacity* §6 before overriding it.
 - `scatter` with `size` is a bubble chart. Pass `size_title` (and
   `color_title` when `color` is quantitative) the same way you pass
   `x_title` / `y_title`. The size legend prints the column name if
   `size_title` is omitted.
 - `bar` / `bar_horizontal` are categorical comparisons. Mixed value units on
-  one bar axis raise. Every bar carries the engine's value label, grouped
-  bars (`stack=False`) included; grouped bars also take value-axis
+  one bar axis raise. Every bar carries the engine's value label, negatives
+  and grouped bars (`stack=False`) included, and so do bars whose colour only tags them
+  (one row per category, such as Actual / Projection — leave `stack` alone); a stack carries
+  its net total; the font fits the bar pitch, and bars too dense for 8px
+  drop their labels with a note on `warnings`. Grouped bars also take value-axis
   reference lines (`HLine` on a vertical, `VLine` on a horizontal) and drop
   every other annotation with a reason on `warnings`. On any bar, a
   `PointLabel` / `Callout` that restates the bar's own number is absorbed
@@ -494,8 +503,9 @@ become nanoseconds after 1970 and the axis renders as a clock.
   series, use one panel each via a composite.
 - Annotations work normally on both types and read against the axis the
   builder drew, so a threshold inside the ribbon or a rule at zero survives.
-  On `contribution` an annotation's `x` may be the date you have; the engine
-  translates it to the rendered period label.
+  On `contribution`, a date `bar` and a year axis, an annotation's `x` may be
+  the date or year you have; the engine moves it onto the period it falls in
+  and drops one outside every plotted period with a warning.
 - `bullet.color_by` interprets 0–100-like values as percentile distance from
   50 and other numeric values as z-score magnitude. Omit `color_by` for one
   marker colour.
@@ -519,7 +529,7 @@ Expand the window to support the claim: “since 2008” must include 2008;
 percentiles need the full calculation window; compared charts use the same
 window.
 
-For two or more chart calls, see `chart_context_composites.md` and use
+For two or more chart calls, see *Altair composites and batch building* and use
 `build_charts()` rather than a bare loop. A failed batch or composite surfaces
 all named defects; fix all of them and rebuild the complete set. Never silently
 substitute a different layout—if the requested shape is analytically invalid,
