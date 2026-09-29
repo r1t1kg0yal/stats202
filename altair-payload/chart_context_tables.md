@@ -315,8 +315,9 @@ numeric unit before `make_table`.
 
 Omitted hints use magnitude-aware defaults.
 
-Datetime columns are formatted automatically; name a hint only to override the
-choice. A raw strftime string is also accepted.
+Datetime columns print the full date (`29 Aug 2022`, plus `14:30` when a stamp
+carries a time); name a hint only to shorten it. A raw strftime string is also
+accepted.
 
 | Hint | Output |
 |---|---|

@@ -33,6 +33,7 @@ unknown names raise with the accepted alternatives.
 | Bold palette | `color_scheme='bold'` |
 | Monochrome | `color_scheme='mono_navy'` or `'mono_grey'` |
 | Pin named series | `color_map={'US': '#DC143C', 'EU': '#1F77B4'}` |
+| Highlight one bar | `color` = the bar's own category column, `color_map={'USD': '#C0392B'}`; no legend, the other bars stay the plain bar colour |
 | Change second legend slot | `color_map={2: '#DC143C'}` |
 | One colour for a single series | `color_map=['#DC143C']` |
 | Highlight one series and fade peers | named `color_map` plus `opacity_map` for every highlighted/faded category; faded lines draw underneath the full-opacity ones |
@@ -120,6 +121,11 @@ Use `color_scheme`:
 Use a diverging scheme only when zero or a meaningful centre divides the
 metric. Unsigned 0–100 data should use a sequential ramp. Uniform cell alpha
 may use `opacity`.
+
+A diverging scheme, named or left to the engine, puts its neutral on zero with
+limits symmetric about it, so a cell's colour always carries its sign. Pick the
+scheme by which end the request wants positive: `redblue` and `redyellowgreen`
+run red below zero; `blueorange` runs orange above it.
 
 ## 6. Continuous scatter and phase gradients
 

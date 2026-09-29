@@ -91,15 +91,16 @@ The engine handles structural mechanics, not economic meaning:
 8. Keep sparse projections at native dates; do not forward-fill them onto a
    denser series and manufacture a step pattern.
 
-The engine already promotes an unambiguous named/date index to `mapping['x']`,
+The engine already promotes a named index to whichever mapping field names it
+(and a date index to `mapping['x']`),
 parses date-like and timezone-aware x values for line charts, breaks each line
 where its own observations stop (reported on `warnings`; a monthly column in a
 daily frame is joined month to month, so an outer-joined frame needs no
 `dropna`), sanitizes Vega-unsafe column names, auto-melts wide line data, reshapes unambiguous
 wide/matrix heatmaps, sorts tenors, and downsamples very large time series.
-Still name the intended x field in `mapping`; if that column is absent and an
-unambiguous index supplies it, the engine promotes the index. Do not
-`reset_index()` solely for the renderer.
+Still name the intended field in `mapping`; if that column is absent and the
+index supplies it, the engine promotes the index. Do not `reset_index()` solely
+for the renderer.
 
 Use `profile_df(df)` when schema or coverage is uncertain. Its `DataProfile`
 exposes `.shape`, `.dtypes`, `.cardinality`, `.missing_pct`, and `.date_range`.
@@ -239,7 +240,8 @@ family — `VERTICAL BAR` at 24, `HORIZONTAL BAR` at 40 — so read the cap
 from it rather than shortening by reflex.
 
 Colour-legend entries take that same 24, but only where a legend actually
-renders (dual-axis, facets, `legend=True`, donut, bar-with-color). Standalone
+renders (dual-axis, facets, `legend=True`, donut, a bar coloured by a field
+other than its category). Standalone
 `multi_line` / `timeseries` / `area` default to end labels and take the
 32-character LVL cap instead — a 27-character series name is legal there.
 The legend carries two gates when it does render, and either can bind. The
@@ -453,9 +455,14 @@ become nanoseconds after 1970 and the axis renders as a clock.
   reference lines (`HLine` on a vertical, `VLine` on a horizontal) and drop
   every other annotation with a reason on `warnings`. On any bar, a
   `PointLabel` / `Callout` that restates the bar's own number is absorbed
-  into the engine label, and one that adds information (`vs 71 LY`,
-  `record`) is kept and drawn in the engine's value-label style unless you
-  set a colour or size on it. Values spanning orders of magnitude (1 day
+  into the engine label, and one at the bar's end that adds information
+  (`vs 71 LY`, `+127,926 duplicated`) is drawn just past the bar's own
+  value — above it on a vertical bar, after it on a horizontal one — in the
+  value-label style unless you set a colour or size on it. To colour
+  individual bars (highlight one; navy / red / navy), set `color` to the
+  bar's own category column and pin a `color_map` dict: no legend is drawn,
+  since the axis names every bar, and bars you leave unpinned keep the plain
+  bar colour. Values spanning orders of magnitude (1 day
   beside 1,500; 14 beside 87,910) take `scale_type='log'` on the raw
   column: real-unit ticks, each label at its own precision, zero rows
   marked at the axis floor and reported. Values inside one decade stay
@@ -464,7 +471,10 @@ become nanoseconds after 1970 and the axis renders as a clock.
   and read as one two-line label; pass `x_title` if you want it.
 - `heatmap` accepts tidy long data, an unambiguous wide frame, or a meaningful
   indexed matrix. Numeric values use a quantitative scale; categorical bins
-  may have at most 10 ordered labels via `value_sort`.
+  may have at most 10 ordered labels via `value_sort`. A cell with no value —
+  NaN, or no row for that pair, such as a matrix diagonal — draws blank in grey
+  and is counted on `warnings`; leave it missing rather than filling or
+  dropping it.
 - `area` stacks by default when `color` is present, and only holds for
   same-sign components. Misaligned calendars or negative stacked values
   raise; align the series, use `stack=False`, switch to `multi_line`, or move

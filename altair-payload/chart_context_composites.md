@@ -123,9 +123,9 @@ Each cell owns its mapping, axes, and annotations. Colour is shared: a
 category that appears in more than one cell takes one colour across the pack
 — a `color_map` pin in any cell applies to every cell, and two cells pinning
 one category differently each keep their pin with a note on `warnings` — and
-every cell that would draw a colour legend hands it to a strip under the pack
-(one strip per colour field; a dual-axis cell keeps its own), which spans the
-pack and wraps. Line cells keep their end labels and draw no key; area and
+every cell that would draw a colour legend hands it to the one key under the
+pack, which spans the pack and wraps. Cells coloured by different fields share
+that key, each field's entries kept together; a dual-axis cell keeps its own. Line cells keep their end labels and draw no key; area and
 bar cells coloured by a field draw one. Only cells that
 name the same `color` field share colours: bars left without `color` stay the
 house single colour even when their x holds the same categories, so set

@@ -641,6 +641,10 @@ _PUBLIC_CHART_MAPPING_KEYS: frozenset = frozenset({
 _ENGINE_ONLY_CHART_MAPPING_KEYS: frozenset = frozenset({
     "_anno_label_anchor_right_x",
     "_auto_flipped_from_bar",
+    "_bar_end_marker_px",
+    "_bar_top_text",
+    "_bar_value_domain",
+    "_colour_repeats_axis",
     "_bar_category_axis_plan",
     "_bar_category_wrap_map",
     "_grouped_bar_rules",
@@ -9932,6 +9936,8 @@ def _caption_to_default_colour(ann: "Annotation") -> "Annotation":
 # label style.
 _BAR_VALUE_LABEL_COLOR = "#222222"
 _BAR_VALUE_LABEL_FONT_SIZE = 11
+# How far a value label sits off its bar's end; the builders' dy / dx.
+_BAR_VALUE_LABEL_GAP_PX = 4
 
 
 def _caption_is_unstyled(ann: "Annotation") -> bool:
@@ -9993,10 +9999,16 @@ def _arbitrate_bar_labels(
        engine label paints -- one style, one position, no double strike.
        Where the engine would have held its labels back (more bars than
        the automatic threshold) the request lifts the threshold.
-    3. **Anything else anchored to a bar wins that bar.** The engine's
+    3. **A caption that adds information stacks over the value.** A
+       PointLabel / Callout at the end of a bar the engine labels keeps
+       that bar's value label and is set clear past it -- above it on a
+       vertical bar, after it on a horizontal one -- so '+127,926
+       duplicated' reads beside 322,978 instead of replacing it. A
+       PointHighlight at a bar's end lifts both by the marker's radius.
+    4. **Anything else anchored to a bar wins that bar.** The engine's
        value label is suppressed there (class 1), and a labelled Band
        suppresses stacked totals inside its y-range (class 4).
-    4. **Grouped bars** (colour + ``stack=False``) render as one facet per
+    5. **Grouped bars** (colour + ``stack=False``) render as one facet per
        category and Vega-Lite cannot layer onto a facet. They carry the
        engine's value labels and value-axis thresholds (``HLine`` on a
        vertical grouped bar, ``VLine`` / numeric ``HLine`` on a horizontal
@@ -10083,10 +10095,34 @@ def _arbitrate_bar_labels(
                 return True
         return False
 
+    def _at_bar_end(ann: Any, cat_value: Any) -> Optional[float]:
+        """The bar's end when ``ann`` sits on it, else None."""
+        end = bar_end_by_cat.get(_bar_category_key(cat_value))
+        value = getattr(ann, point_val_attr, None)
+        if end is None or not _is_plain_number(value):
+            return None
+        return end if abs(float(value) - end) <= max(abs(end) * 0.02, 1e-9) else None
+
+    # Markers sitting on a labelled bar's end: the value label and any stacked
+    # caption on that bar clear them by the marker's radius.
+    end_markers: Dict[str, float] = {}
+    if categorical_axis and not grouped:
+        for ann in anns:
+            if isinstance(ann, PointHighlight) and getattr(ann, point_cat_attr, None) is not None:
+                key = _bar_category_key(getattr(ann, point_cat_attr))
+                cat_value = canonical.get(key)
+                end = _at_bar_end(ann, cat_value) if cat_value is not None else None
+                if end is not None and end >= 0 and values_by_cat.get(key):
+                    radius = math.sqrt(max(ann.size, 0) / math.pi) + ann.stroke_width / 2.0
+                    end_markers[key] = max(end_markers.get(key, 0.0), radius)
+    value_fmt = _smart_number_format(df[val_field]) if pd.api.types.is_numeric_dtype(df[val_field]) else ""
+
     kept: List[Annotation] = []
     absorbed: List[str] = []
     snapped: List[str] = []
     relocated: List[str] = []
+    stacked_keys: set = set()
+    top_text: List[Tuple[float, float]] = []
     for ann in anns:
         if isinstance(ann, (PointLabel, Callout, PointHighlight)):
             cat_attr = point_cat_attr
@@ -10163,22 +10199,39 @@ def _arbitrate_bar_labels(
                     v_in = min(max(v, lo), hi)
                     if v_in != v:
                         ann = replace(ann, **{point_val_attr: v_in})
+            key = _bar_category_key(cat_value)
+            at_end = _at_bar_end(ann, cat_value) is not None
+            # The engine labels this bar too: the caption goes past that
+            # label rather than taking its place.
+            stack_over = (
+                at_end and not light_text and end is not None and end >= 0
+                and bool(values_by_cat.get(key))
+            )
+            lift = end_markers.get(key, 0.0) if stack_over else 0.0
+            if stack_over:
+                stacked_keys.add(key)
             if horizontal:
                 # Past the bar's end when the caption sits at the end
                 # (single value or stacked total); centred where it sits
                 # when placed inside the bar, e.g. a segment label.
-                at_end = (
-                    end is not None
-                    and _is_plain_number(getattr(ann, point_val_attr, None))
-                    and abs(float(getattr(ann, point_val_attr)) - end)
-                    <= max(abs(end) * 0.02, 1e-9)
-                )
                 if at_end and light_text:
                     ann = replace(ann, align="right", dx=-4, dy=0)
+                elif stack_over:
+                    value_w = _lp_measure(format(end, value_fmt), _BAR_VALUE_LABEL_FONT_SIZE, "bold")[0]
+                    ann = replace(ann, align="left", dy=0,
+                                  dx=int(math.ceil(_BAR_VALUE_LABEL_GAP_PX + lift + value_w + 8)))
                 elif at_end:
                     ann = replace(ann, align="left", dx=4, dy=0)
                 else:
                     ann = replace(ann, align="center", dx=0, dy=0)
+            elif stack_over:
+                ann = replace(
+                    ann, align="center", dx=0, _x_is_semantic=True,
+                    dy=-int(math.ceil(_BAR_VALUE_LABEL_GAP_PX + lift
+                                      + _BAR_VALUE_LABEL_FONT_SIZE * 1.2 + 3)),
+                )
+                caption_h = _lp_measure(str(ann.label), _BAR_VALUE_LABEL_FONT_SIZE, "bold")[1]
+                top_text.append((end, abs(ann.dy) + caption_h + 2))
             else:
                 ann = replace(
                     ann, align="center", dx=0,
@@ -10282,8 +10335,24 @@ def _arbitrate_bar_labels(
             )
         return []
 
+    def _keeps_bar_value(ann: Any) -> bool:
+        """A stacked caption or an end marker: the bar's value label stays."""
+        cat_value = getattr(ann, point_cat_attr, None)
+        if cat_value is None:
+            return False
+        key = _bar_category_key(cat_value)
+        if isinstance(ann, (PointLabel, Callout)):
+            return key in stacked_keys and _at_bar_end(ann, cat_value) is not None
+        if isinstance(ann, PointHighlight):
+            return key in end_markers and _at_bar_end(ann, cat_value) is not None
+        return False
+
+    if end_markers:
+        mapping["_bar_end_marker_px"] = {str(canonical[k]): r for k, r in end_markers.items()}
+    if top_text:
+        mapping["_bar_top_text"] = top_text
     suppress_cats, y_range_suppress = _compute_bar_value_suppression(
-        df, mapping, kept, horizontal=horizontal,
+        df, mapping, [a for a in kept if not _keeps_bar_value(a)], horizontal=horizontal,
     )
     if suppress_cats:
         mapping["_suppress_bar_value_at_x"] = suppress_cats
@@ -10306,6 +10375,17 @@ def _arbitrate_bar_labels(
 # value pre-rendered by ``_format_log_value_label``. Vega-Lite applies one
 # ``format`` per text layer, so per-datum precision has to arrive as text.
 _BAR_LOG_LABEL_FIELD = "_bar_label"
+
+
+def _bar_label_lifts(
+    frame: pd.DataFrame, category_field: str, mapping: Dict[str, Any],
+) -> List[Tuple[pd.DataFrame, float]]:
+    """``frame`` split by how far each bar's end marker pushes its value label out."""
+    markers = mapping.get("_bar_end_marker_px") or {}
+    if not markers:
+        return [(frame, 0.0)]
+    lift = frame[category_field].astype(str).map(markers).fillna(0.0)
+    return [(frame[lift == v], float(v)) for v in sorted(lift.unique())]
 
 
 def _bar_value_text(
@@ -10528,14 +10608,14 @@ def _bar_value_label_font(
     return None
 
 
-def _vega_nice_max(lo: float, hi: float, count: int = 10) -> float:
-    """The upper end Vega's ``nice`` gives the linear domain [lo, hi].
+def _vega_nice_domain(lo: float, hi: float, count: int = 10) -> Tuple[float, float]:
+    """The domain Vega's ``nice`` gives the linear domain [lo, hi].
 
     d3's ``linear.nice`` at its default ten ticks, which is what a Vega-Lite
     quantitative scale with ``nice: true`` runs.
     """
     if not hi > lo:
-        return hi
+        return lo, hi
     prestep = None
     for _ in range(10):
         step = _nice_tick_step(hi - lo, count)
@@ -10543,7 +10623,63 @@ def _vega_nice_max(lo: float, hi: float, count: int = 10) -> float:
             break
         lo, hi = math.floor(lo / step) * step, math.ceil(hi / step) * step
         prestep = step
-    return hi
+    return lo, hi
+
+
+def _vega_nice_max(lo: float, hi: float, count: int = 10) -> float:
+    """The upper end Vega's ``nice`` gives the linear domain [lo, hi]."""
+    return _vega_nice_domain(lo, hi, count)[1]
+
+
+_HBAR_LABEL_INSET_PX = 8.0
+_HBAR_NEG_OUTSIDE_FIELD = "_neg_label_outside"
+
+
+def _hbar_negative_label_plan(
+    values: pd.Series, value_fmt: Optional[str], font: int, width: int,
+    lo: float, hi: float, fit: Optional[List[float]],
+) -> Tuple[Optional[List[float]], List[bool]]:
+    """Where each negative horizontal-bar label goes, and the domain that seats it.
+
+    A negative label sits inside its bar at zero, in the bar's contrast ink,
+    only when the bar is long enough to hold it; otherwise the part past the
+    bar's end paints white on white and a reader sees a fragment -- '-0.060'
+    read '0.060'. Those labels move past the bar's negative end in dark ink,
+    and the domain's low end extends until each clears the category gutter.
+    Returns ``(domain or None when unchanged, outside flag per value)``.
+    """
+    numeric = pd.to_numeric(values, errors="coerce")
+    labels = []
+    for v in numeric:
+        if pd.notna(v) and v < 0:
+            try:
+                text = format(float(v), value_fmt or "")
+            except (TypeError, ValueError):
+                text = str(v)
+            labels.append((float(v), _lp_measure(text, font, "bold")[0]))
+        else:
+            labels.append(None)
+    if not any(labels):
+        return None, [False] * len(labels)
+    d_lo, d_hi = (fit[0], fit[1]) if fit is not None else _vega_nice_domain(lo, hi)
+    pinned = fit is not None
+    outside = [False] * len(labels)
+    for _ in range(4):
+        span = (d_hi - d_lo) or 1.0
+        outside = [
+            item is not None and item[1] + _HBAR_LABEL_INSET_PX > abs(item[0]) / span * width
+            for item in labels
+        ]
+        need = d_lo
+        for item, out in zip(labels, outside):
+            if out:
+                room = item[1] + 6.0
+                if room < width:
+                    need = min(need, (item[0] * width - room * d_hi) / (width - room))
+        if need >= d_lo:
+            break
+        d_lo, pinned = need, True
+    return ([d_lo, d_hi] if pinned else None), outside
 
 
 def _hbar_end_text_domain(
@@ -10591,9 +10727,11 @@ def _hbar_end_text(
         font = _bar_value_label_font(df[x_field], fmt, row_pitch, along_axis="y",
                                      base_font_size=max(8, min(11, y_label_font_size + 1)))
         if font is not None:
+            markers = mapping.get("_bar_end_marker_px") or {}
             for cat, v in zip(df[y_field], pd.to_numeric(df[x_field], errors="coerce")):
                 if pd.notna(v) and v >= 0 and str(cat) not in owned:
-                    out.append((float(v), _lp_measure(format(float(v), fmt or ""), font, "bold")[0] + 4))
+                    out.append((float(v), _lp_measure(format(float(v), fmt or ""), font, "bold")[0]
+                                + 4 + markers.get(str(cat), 0.0)))
     elif stack:
         values = pd.to_numeric(df[x_field], errors="coerce").fillna(0.0)
         totals = pd.DataFrame({"c": df[y_field].to_numpy(), "p": values.clip(lower=0).to_numpy(),
@@ -10615,6 +10753,46 @@ def _bar_labels_omitted_note(kind: str, n: int, pitch_px: float) -> str:
         f"label does not fit that pitch even at 8px, so the value axis carries "
         f"the numbers. Aggregate or split the categories if exact values matter."
     )
+
+
+def _colour_repeats_category(
+    df: pd.DataFrame, color_field: Any, category_field: Any,
+) -> bool:
+    """True when a bar's colour names the same categories as its axis, one to one.
+
+    Colouring bars by their own category is how a caller pins a colour per
+    bar (navy / red / navy). A legend for that colour repeats, entry for
+    entry, the names the axis already prints under each bar. A one-to-one
+    colour with names of its own ('2025' Actual, '2026' Projection) says
+    something the axis does not, so it keeps its legend.
+    """
+    if not (isinstance(color_field, str) and isinstance(category_field, str)):
+        return False
+    if color_field == category_field:
+        return True
+    if color_field not in df.columns or category_field not in df.columns:
+        return False
+    pairs = df[[category_field, color_field]].dropna().drop_duplicates()
+    same_text = pairs[category_field].map(_flat_label) == pairs[color_field].map(_flat_label)
+    return len(pairs) > 0 and bool(same_text.all())
+
+
+def _flat_label(value: Any) -> str:
+    """A label as one line: line breaks and runs of spaces become one space."""
+    return " ".join(str(value).split())
+
+
+def _mark_colour_repeating_axis(
+    df: pd.DataFrame, mapping: Dict[str, Any], color_field: Any, category_field: Any,
+) -> None:
+    """Drop the legend of a colour that repeats the bar axis, and say so."""
+    if mapping.get("_colour_repeats_axis") or not _colour_repeats_category(df, color_field, category_field):
+        return
+    mapping["_colour_repeats_axis"] = True
+    _note(mapping, (
+        f"No legend for mapping['color']={color_field!r}: it names the same categories as the "
+        f"axis, one to one, and the axis already labels every bar."
+    ))
 
 
 def _single_bar_per_category(
@@ -10701,18 +10879,20 @@ def _stack_total_layers(
     style = dict(fontSize=font, fontWeight="bold", color="#222222")
     if horizontal:
         return [
-            alt.Chart(rows)
-            .mark_text(align="left", baseline="middle", dx=4, **style)
+            alt.Chart(part)
+            .mark_text(align="left", baseline="middle", dx=4 + lift if lift else 4, **style)
             .encode(
                 y=alt.Y(category_field, type="nominal", sort=category_sort),
                 x=alt.X(_STACK_END_FIELD, type="quantitative"),
                 text=text,
             )
             .properties(width=width, height=height)
+            for part, lift in _bar_label_lifts(rows, category_field, mapping)
         ]
     layers: List[alt.Chart] = []
+    positive = _bar_label_lifts(rows[rows[value_field] >= 0], category_field, mapping)
     for part, baseline, dy in (
-        (rows[rows[value_field] >= 0], "bottom", -4),
+        *((p, "bottom", -(4 + lift) if lift else -4) for p, lift in positive),
         (rows[rows[value_field] < 0], "top", 4),
     ):
         if len(part):
@@ -10788,9 +10968,20 @@ def _grouped_bar_value_layers(
                 text=text_enc,
             )
         )
-        neg = (
+        inside = alt.datum[value_field] < 0
+        layers = [pos]
+        if _HBAR_NEG_OUTSIDE_FIELD in df_cells.columns:
+            # A negative label longer than its bar goes past the bar's end.
+            layers.append(
+                alt.Chart()
+                .transform_filter(alt.datum[_HBAR_NEG_OUTSIDE_FIELD])
+                .mark_text(align="right", baseline="middle", dx=-4, color="#222222", **text_kwargs)
+                .encode(y=cat_enc, x=alt.X(position_field, type="quantitative"), text=text_enc)
+            )
+            inside = inside & ~alt.datum[_HBAR_NEG_OUTSIDE_FIELD]
+        layers.append(
             alt.Chart()
-            .transform_filter(alt.datum[value_field] < 0)
+            .transform_filter(inside)
             .transform_calculate(_anchor_x="0")
             .mark_text(align="right", baseline="middle", dx=-4, color="white", **text_kwargs)
             .encode(
@@ -10799,7 +10990,7 @@ def _grouped_bar_value_layers(
                 text=text_enc,
             )
         )
-        return [pos, neg]
+        return layers
     cat_enc_x = alt.X(color_field, type="nominal", sort=color_sort)
     pos = (
         alt.Chart()
@@ -14047,6 +14238,23 @@ def render_annotations(
                     df[y_field], handle_outliers=False, prevent_zero_start=True,
                 )
                 clamped_domain = [float(d_lo), float(d_hi)]
+
+        # A caption stacked over a bar's value label needs that much room
+        # above the bar; without it the label solver pulls the caption back
+        # down onto the value it was lifted off.
+        height_px = float(chart_height or 350)
+        top_text = mapping.get("_bar_top_text") or []
+        if top_text and clamped_domain is not None and not builder_log_domain:
+            # Measured against the axis Vega draws: the bar layer's own domain
+            # (zero-based) unioned with this one.
+            lo, hi = float(clamped_domain[0]), float(clamped_domain[1])
+            drawn = mapping.get("_bar_value_domain")
+            if drawn:
+                lo, hi = min(lo, float(drawn[0])), max(hi, float(drawn[1]))
+            for end, px in top_text:
+                if px < height_px:
+                    hi = max(hi, (end * height_px - px * lo) / (height_px - px))
+            clamped_domain = [lo, hi]
 
         if (
             not is_dual_axis
@@ -17568,6 +17776,24 @@ def _heatmap_label_color_for_value(
 _HEATMAP_LABEL_COLOR_FIELD = "_hm_label_color"
 
 
+def _heatmap_missing_cells(
+    df: pd.DataFrame, x_field: str, y_field: str, value_field: str,
+) -> pd.DataFrame:
+    """Every (x, y) cell of the grid with no value, in row-major grid order.
+
+    A cell is missing when its row's value is NaN or when the frame has no
+    row for that pair at all -- a matrix with its diagonal dropped.
+    """
+    if x_field == y_field:
+        return pd.DataFrame(columns=[x_field, y_field])
+    xs = [v for v in pd.unique(df[x_field]) if pd.notna(v)]
+    ys = [v for v in pd.unique(df[y_field]) if pd.notna(v)]
+    valued = df[df[value_field].notna()]
+    have = set(zip(valued[x_field], valued[y_field]))
+    cells = [(x, y) for y in ys for x in xs if (x, y) not in have]
+    return pd.DataFrame(cells, columns=[x_field, y_field])
+
+
 def _smart_number_format(series_or_value: Any) -> str:
     """Pick a Vega-Lite number format string based on magnitude.
 
@@ -19980,8 +20206,10 @@ def _collect_legend_kwarg_findings(
             f"engine chooses between a colour legend and direct labels "
             f"itself, and line charts label each series at the end of its "
             f"line rather than drawing a legend. To suppress a legend, add a "
-            f"LastValueLabel annotation on a line chart, or drop "
-            f"mapping['color'] if the colour is not carrying information."
+            f"LastValueLabel annotation on a line chart; on a bar chart, colour "
+            f"the bars by their own category column (mapping['color'] = the "
+            f"category field, pinned with color_map), which draws no legend; "
+            f"or drop mapping['color'] if the colour is not carrying information."
         ))
     return findings
 
@@ -20366,6 +20594,14 @@ def _resolve_categorical_color_scale(
             )
         legend_order = sort_order if sort_order is not None else list(categories)
 
+        # A colour that repeats the bar axis has no legend, so it only says
+        # which bars the caller pinned: the rest take the plain bar colour
+        # rather than a palette slot that would mean nothing.
+        unpinned_hex = (
+            _resolve_single_series_color({"color_scheme": color_scheme}, skin_config)
+            if mapping.get("_colour_repeats_axis") else None
+        )
+
         # Per Design Principle #7: pinning slot K must NOT shift any
         # other slot's colour. Each un-pinned slot keeps the colour it
         # would have under the default palette at THAT slot index, not
@@ -20380,7 +20616,7 @@ def _resolve_categorical_color_scale(
             elif (slot_idx + 1) in color_map:
                 cat_to_hex[cat] = color_map[slot_idx + 1]
             else:
-                cat_to_hex[cat] = default_palette[
+                cat_to_hex[cat] = unpinned_hex or default_palette[
                     slot_idx % len(default_palette)
                 ]
 
@@ -20740,9 +20976,11 @@ def _encode_categorical_color_and_opacity(
     legend_kwargs: Optional[Dict[str, Any]] = None,
 ) -> alt.Chart:
     """Attach categorical ``color`` (+ optional ``opacity``) encodings."""
-    legend = _categorical_legend(
-        opacity_encoding, **(legend_kwargs or {}),
-    )
+    legend_kwargs = dict(legend_kwargs or {})
+    if mapping.get("color_title"):
+        legend_kwargs.setdefault("title", mapping["color_title"])
+    legend = (None if mapping.get("_colour_repeats_axis")
+              else _categorical_legend(opacity_encoding, **legend_kwargs))
     chart = chart.encode(
         color=alt.Color(
             color_field,
@@ -21099,6 +21337,10 @@ def _color_legend_will_render(
         chart_type in {"scatter", "scatter_multi"}
         and df is not None
         and _scatter_color_is_gradient(df, color_field)
+    ):
+        return False
+    if chart_type in {"bar", "bar_horizontal"} and df is not None and _colour_repeats_category(
+        df, color_field, _get_field(mapping, "y" if chart_type == "bar_horizontal" else "x"),
     ):
         return False
     if chart_type in {"multi_line", "timeseries", "area"}:
@@ -24872,6 +25114,7 @@ def _build_bar(
                 n_x_categories, n_color_categories,
                 n_x_categories * n_color_categories,
             )
+    _mark_colour_repeating_axis(df, mapping, color_field, x_field)
 
     # ---- x type detection (Issue-13 fix) --------------------------------
     if pd.api.types.is_datetime64_any_dtype(df[x_field]):
@@ -25022,6 +25265,7 @@ def _build_bar(
             y_min, y_max = float(stack_ends["neg"].min()), float(stack_ends["pos"].max())
         if color_field and stack and y_min >= 0:
             y_scale = alt.Scale(zero=True)
+            mapping["_bar_value_domain"] = [0.0, _vega_nice_max(0.0, y_max)]
         else:
             lo = min(0.0, y_min)
             hi = max(0.0, y_max)
@@ -25033,6 +25277,7 @@ def _build_bar(
                 ],
                 zero=True,
             )
+            mapping["_bar_value_domain"] = list(y_scale.domain)
     else:
         y_scale = alt.Scale()
 
@@ -25314,17 +25559,18 @@ def _build_bar(
                 )
                 chart = chart + zero_tick
 
-            if len(df_pos) > 0:
-                # Anchored on the position column, printing the value
-                # column: on a log axis those differ for zero rows, and the
-                # label is what tells the reader the mark at the floor is a
-                # zero and not a small number.
+            # Anchored on the position column, printing the value column: on
+            # a log axis those differ for zero rows, and the label is what
+            # tells the reader the mark at the floor is a zero and not a
+            # small number. A bar whose end carries a marker lifts its label
+            # clear of it.
+            for part, lift in (_bar_label_lifts(df_pos, x_field, mapping) if len(df_pos) else []):
                 pos_text = (
-                    alt.Chart(df_pos)
+                    alt.Chart(part)
                     .mark_text(
                         align="center",
                         baseline="bottom",
-                        dy=-4,
+                        dy=-(4 + lift) if lift else -4,
                         fontSize=value_label_fs,
                         fontWeight="bold",
                         color="#222222",
@@ -25640,6 +25886,7 @@ def _build_bar_horizontal(
         raise ValidationError(f"x_field '{x_field}' has no valid values.")
     if y_non_null == 0:
         raise ValidationError(f"y_field '{y_field}' has no valid values.")
+    _mark_colour_repeating_axis(df, mapping, color_field, y_field)
 
     # Publish the CATEGORY axis type so every annotation layer inherits it
     # via ``_annotation_y_axis_type``. This is the y-side counterpart of
@@ -25794,15 +26041,39 @@ def _build_bar_horizontal(
             _assign_stack_order(
                 df, color_field, stack_color_sort, horizontal=True,
             )
+        neg_outside: List[bool] = [False] * len(df)
         if not use_log:
+            value_lo, value_hi = _hbar_value_extent(df, y_field, x_field, color_field, stack)
             fit = _hbar_end_text_domain(
                 _hbar_end_text(df, y_field, x_field, color_field, stack, mapping,
                                height / max(n_unique_y, 1), h_y_label_font_size),
-                *_hbar_value_extent(df, y_field, x_field, color_field, stack),
+                value_lo, value_hi,
                 width,
             )
+            if value_lo == value_hi == 0.0:
+                # Every bar is zero-length: Vega collapses the axis to one point
+                # and prints its ticks on top of each other.
+                fit = [-1.0, 1.0]
+                _note(mapping, (
+                    f"Every {x_field!r} value is 0, so no bar has length; the value "
+                    f"axis is drawn from -1 to 1."
+                ))
+            elif not color_field or _single_bar_per_category(df, y_field, color_field, stack):
+                label_fmt = _smart_number_format(df[x_field])
+                label_font = _bar_value_label_font(
+                    df[x_field], label_fmt, height / max(n_unique_y, 1), along_axis="y",
+                    base_font_size=max(8, min(11, h_y_label_font_size + 1)),
+                )
+                if label_font is not None:
+                    seated, neg_outside = _hbar_negative_label_plan(
+                        df[x_field], label_fmt, label_font, width, value_lo, value_hi, fit,
+                    )
+                    fit = seated or fit
             if fit is not None:
                 x_scale = alt.Scale(domain=fit)
+        if any(neg_outside):
+            df = df.copy()
+            df[_HBAR_NEG_OUTSIDE_FIELD] = neg_outside
         chart = (
             alt.Chart(df)
             .mark_bar(
@@ -25953,18 +26224,39 @@ def _build_bar_horizontal(
                     )
             df_pos = df_for_labels[df_for_labels[x_field] >= 0]
             df_neg = df_for_labels[df_for_labels[x_field] < 0].copy()
+            df_neg_out = df_neg.iloc[0:0]
+            if _HBAR_NEG_OUTSIDE_FIELD in df_neg.columns:
+                df_neg_out = df_neg[df_neg[_HBAR_NEG_OUTSIDE_FIELD]]
+                df_neg = df_neg[~df_neg[_HBAR_NEG_OUTSIDE_FIELD]].copy()
 
-            if len(df_pos) > 0:
+            if len(df_neg_out) > 0:
+                # Too long for its bar: past the bar's negative end in dark
+                # ink, where the domain has been widened to seat it.
+                chart = chart + (
+                    alt.Chart(df_neg_out)
+                    .mark_text(
+                        align="right", baseline="middle", dx=-4,
+                        fontSize=value_label_fs, fontWeight="bold", color="#222222",
+                    )
+                    .encode(
+                        y=alt.Y(y_field, type="nominal", sort=mapping.get("y_sort")),
+                        x=alt.X(x_pos_field, type="quantitative"),
+                        text=value_text_enc,
+                    )
+                    .properties(width=width, height=height)
+                )
+
+            for part, lift in (_bar_label_lifts(df_pos, y_field, mapping) if len(df_pos) else []):
                 # Anchored on the position column, printing the value
                 # column: on a log axis those differ for zero rows, and the
                 # label is what tells the reader the mark at the floor is a
                 # zero and not a small number.
                 pos_text = (
-                    alt.Chart(df_pos)
+                    alt.Chart(part)
                     .mark_text(
                         align="left",
                         baseline="middle",
-                        dx=4,
+                        dx=4 + lift if lift else 4,
                         fontSize=value_label_fs,
                         fontWeight="bold",
                         color="#222222",
@@ -25984,7 +26276,8 @@ def _build_bar_horizontal(
             if len(df_neg) > 0:
                 # Anchor at x=0 (the open end) and let the original
                 # x_field column drive the displayed text. Text inside
-                # the fill sidesteps the y-axis gutter collision.
+                # the fill sidesteps the y-axis gutter collision; only bars
+                # long enough to hold their label get here.
                 df_neg["_anchor_x"] = 0.0
                 ink: Dict[str, Any] = {"color": "white"}
                 if color_field:
@@ -26140,6 +26433,21 @@ def _build_bar_horizontal(
         # facet, so the labels have to be inside the cell before the
         # facet is applied. Layers are data-less; the facet feeds them.
         color_sort = _resolve_color_sort(df, color_field, mapping.get("color_sort"))
+        if not use_log:
+            grouped_fmt = _smart_number_format(df[x_field])
+            grouped_font = _bar_value_label_font(
+                df[x_field], grouped_fmt, per_bar_px, along_axis="y",
+            )
+            if grouped_font is not None:
+                seated, grouped_outside = _hbar_negative_label_plan(
+                    df[x_field], grouped_fmt, grouped_font, width,
+                    *_hbar_value_extent(df, y_field, x_field, color_field, False), None,
+                )
+                if any(grouped_outside):
+                    df = df.copy()
+                    df[_HBAR_NEG_OUTSIDE_FIELD] = grouped_outside
+                if seated is not None:
+                    x_scale = alt.Scale(domain=seated)
         bars = (
             alt.Chart()
             .mark_bar(
@@ -27336,6 +27644,26 @@ def _build_heatmap(
     #               assumed quantitative; both shapes now work end-to-end.
     value_is_numeric = pd.api.types.is_numeric_dtype(df[value_field])
 
+    # A cell with no value -- a NaN row, or no row at all -- is painted the
+    # house neutral with no text. Left to Vega it gets no fill, which on a
+    # diverging scheme reads as zero, and its text mark prints "null".
+    missing_cells = _heatmap_missing_cells(df, x_field, y_field, value_field)
+    missing_layer = None
+    if len(missing_cells):
+        missing_layer = (
+            alt.Chart(missing_cells)
+            .mark_rect(color=_house.GS_RAMP_NEUTRAL, stroke=None, strokeWidth=0)
+            .encode(
+                x=alt.X(x_field, type="nominal", axis=x_axis, sort=x_sort_order),
+                y=alt.Y(y_field, type="nominal", axis=y_axis, sort=y_sort_order),
+            )
+        )
+        _note(mapping, (
+            f"Heatmap: {len(missing_cells)} cell(s) have no {value_field!r} value and are "
+            f"drawn blank in grey, e.g. {', '.join(f'{x}/{y}' for x, y in missing_cells.head(3).itertuples(index=False))}."
+        ))
+    valued = df[df[value_field].notna()]
+
     if value_is_numeric:
         # ---- color scheme selection (numeric path) ----------------------
         # If the value column crosses zero (correlation matrix, P&L
@@ -27353,6 +27681,12 @@ def _build_heatmap(
         if forced_scheme:
             scheme = forced_scheme
             scale_kwargs: Dict[str, Any] = {"scheme": scheme}
+            # A named diverging scheme is a sign request: its neutral sits on
+            # zero, exactly as the engine's own choice does, or a positive
+            # cell below the data's midrange is painted on the negative side.
+            sym = max(abs(v_min_full), abs(v_max_full))
+            if _house.GRADIENTS.get(str(scheme).strip().lower()) == "diverging" and sym > 0:
+                scale_kwargs.update(domain=[-sym, sym], domainMid=0.0)
         elif is_mixed_sign:
             scheme = skin_config.get("heatmap_diverging_scheme", "redblue")
             sym = max(abs(v_min_full), abs(v_max_full))
@@ -27415,8 +27749,11 @@ def _build_heatmap(
         label_pixel_budget = label_chars * cell_label_fontsize * 0.6 + 4
         cells_too_narrow = per_cell_w < label_pixel_budget
 
+        if missing_layer is not None:
+            chart = alt.layer(chart, missing_layer).properties(width=width, height=height)
+
         if skin_config.get("heatmap_labels", True) and not cells_too_narrow:
-            df = df.copy()
+            df = valued.copy()
             df[_HEATMAP_LABEL_COLOR_FIELD] = [
                 _heatmap_label_color_for_value(
                     v, scheme, scale_kwargs, v_min_full, v_max_full,
@@ -27492,7 +27829,19 @@ def _build_heatmap(
 
         # Coerce to string so Vega-Lite's nominal scale lines up with
         # the explicit sort domain. Categorical dtype with non-string
-        # categories would otherwise mismatch the sort list.
+        # categories would otherwise mismatch the sort list. A missing bin
+        # would coerce to the string 'nan' and be painted as a bin, so only
+        # valued rows are drawn; the grid keeps the order the frame gave it.
+        if missing_layer is not None:
+            if x_sort_order is None:
+                x_sort_order = [v for v in pd.unique(df[x_field]) if pd.notna(v)]
+            if y_sort_order is None:
+                y_sort_order = [v for v in pd.unique(df[y_field]) if pd.notna(v)]
+            missing_layer = missing_layer.encode(
+                x=alt.X(x_field, type="nominal", axis=x_axis, sort=x_sort_order),
+                y=alt.Y(y_field, type="nominal", axis=y_axis, sort=y_sort_order),
+            )
+            df = valued
         df = df.copy()
         df[value_field] = df[value_field].astype(str)
 
@@ -27524,6 +27873,8 @@ def _build_heatmap(
             )
             .properties(width=width, height=height)
         )
+        if missing_layer is not None:
+            chart = alt.layer(chart, missing_layer).properties(width=width, height=height)
 
         if skin_config.get("heatmap_labels", True):
             bin_fill = dict(zip(value_order, bin_colors))
@@ -29555,54 +29906,62 @@ def _apply_extra_layers(
 # MODULE: PRE-CHART TRANSFORMS (auto-melt, auto-downsample)
 # ===========================================================================
 
+# Mapping fields besides ``x`` that name a column the index can supply.
+_INDEX_PROMOTABLE_KEYS: Tuple[str, ...] = ("y", "color", "facet", "series", "size", "label", "theta")
+
+
 def _promote_index_to_x_column(
     df: pd.DataFrame,
     mapping: Dict[str, Any],
     chart_type: str,
     audit_trail: Optional[List[str]] = None,
 ) -> pd.DataFrame:
-    """Promote a meaningful pandas index to the ``mapping['x']`` column.
+    """Promote a meaningful pandas index to the mapping field that names it.
 
-    Fail-path-only absorption: fires ONLY when ``mapping['x']`` names a
-    field that is NOT a DataFrame column -- i.e. the call is otherwise
+    Fail-path-only absorption: fires ONLY when a mapping field names a
+    column the DataFrame does not have -- i.e. the call is otherwise
     headed for a missing-column ``ValidationError`` -- and the index can
     unambiguously supply it:
 
-      * the index name matches the x field (case-insensitive), any dtype
-        (``df.set_index('country')`` + ``mapping['x']='country'``), or
-      * the index is a ``DatetimeIndex`` / ``PeriodIndex`` (the canonical
-        data-pull shape: dates in the index, ``mapping['x']='date'``).
+      * the index name matches the field (case-insensitive), any dtype.
+        ``render_charts`` reads every CSV with its first column as the
+        index, so a category column arrives there: ``mapping['y']='name'``
+        on a horizontal bar, ``mapping['x']='country'``, a ``color`` or
+        ``facet`` field. ``mapping['x']`` is tried first; or
+      * for ``mapping['x']`` only, the index is a ``DatetimeIndex`` /
+        ``PeriodIndex`` (the canonical data-pull shape: dates in the
+        index, ``mapping['x']='date'``).
 
     ``PeriodIndex`` converts via ``to_timestamp()`` (period start).
     Heatmaps are excluded (``_auto_reshape_heatmap`` owns index recovery
     there); ``MultiIndex`` is ambiguous and falls through to the normal
-    missing-column error. Calls whose x already exists as a column are
+    missing-column error. Calls whose fields already exist as columns are
     returned untouched -- success paths never change.
     """
-    x_field = _get_field(mapping, "x")
-    if not x_field or not isinstance(x_field, str):
+    if chart_type == "heatmap" or isinstance(df.index, pd.MultiIndex):
         return df
-    if x_field in df.columns:
-        return df
-    if chart_type == "heatmap":
-        return df
-    if isinstance(df.index, pd.MultiIndex):
-        return df
-
     idx = df.index
-    name_match = (
-        idx.name is not None
-        and str(idx.name).strip().lower() == x_field.strip().lower()
-    )
-    datetime_like = isinstance(idx, (pd.DatetimeIndex, pd.PeriodIndex))
-    if not (name_match or datetime_like):
+    index_name = str(idx.name).strip().lower() if idx.name is not None else None
+
+    target_key, target = None, None
+    x_field = _get_field(mapping, "x")
+    if isinstance(x_field, str) and x_field and x_field not in df.columns:
+        if index_name == x_field.strip().lower() or isinstance(idx, (pd.DatetimeIndex, pd.PeriodIndex)):
+            target_key, target = "x", x_field
+    if target is None and index_name is not None:
+        for key in _INDEX_PROMOTABLE_KEYS:
+            field = mapping.get(key)
+            if isinstance(field, str) and field not in df.columns and field.strip().lower() == index_name:
+                target_key, target = key, field
+                break
+    if target is None:
         return df
 
     promoted = df.copy()
     if isinstance(promoted.index, pd.PeriodIndex):
         promoted.index = promoted.index.to_timestamp()
     index_kind = type(idx).__name__
-    promoted.index.name = x_field
+    promoted.index.name = target
     try:
         promoted = promoted.reset_index()
     except ValueError:
@@ -29611,8 +29970,8 @@ def _promote_index_to_x_column(
         return df
 
     note = (
-        f"AUTO-RECOVERED: mapping['x']={x_field!r} was not a DataFrame "
-        f"column; promoted the {index_kind} to a {x_field!r} column "
+        f"AUTO-RECOVERED: mapping[{target_key!r}]={target!r} was not a DataFrame "
+        f"column; promoted the {index_kind} to a {target!r} column "
         f"(df.reset_index())."
     )
     logger.info("[_promote_index_to_x_column] %s", note)
@@ -34249,6 +34608,7 @@ def _compute_shared_color_domain(
 def _inject_scale_domain_into_spec(
     spec: Dict[str, Any], encoding_key: str, domain: List[Any],
     field: Optional[str] = None,
+    colours: Optional[Dict[str, str]] = None,
 ) -> None:
     """Patch ``encoding[<encoding_key>].scale.domain = domain`` in-place.
 
@@ -34257,7 +34617,9 @@ def _inject_scale_domain_into_spec(
     responsible for sensible bounds. ``field`` limits the patch to channels
     encoding that field -- a series panel colours its lines by series and
     keys its groups on a second colour channel, and only the group channel
-    takes a group domain.
+    takes a group domain. ``colours`` is the grid-wide colour of every
+    category in ``domain``; without it, a panel that holds only some of the
+    categories has no colour of its own for the rest.
     """
     if not isinstance(spec, dict):
         return
@@ -34276,6 +34638,7 @@ def _inject_scale_domain_into_spec(
                     # An explicit colour pairing (``color_map``) is by value;
                     # reordering the domain alone would re-pair the colours.
                     by_value = {str(k): c for k, c in zip(old_domain, old_range)}
+                    by_value.update(colours or {})
                     spare = [c for c in old_range if c not in by_value.values()] or list(old_range)
                     scale["range"] = [
                         by_value.get(str(v), spare[i % len(spare)]) for i, v in enumerate(domain)
@@ -34285,7 +34648,7 @@ def _inject_scale_domain_into_spec(
         children = spec.get(child_key)
         if isinstance(children, list):
             for child in children:
-                _inject_scale_domain_into_spec(child, encoding_key, domain, field)
+                _inject_scale_domain_into_spec(child, encoding_key, domain, field, colours)
 
 
 def _strip_axis_labels_from_spec(
@@ -34489,34 +34852,58 @@ def _build_facet_legend_panel(
     skin_config: Dict[str, Any],
     width: int,
     color_range: Optional[List[str]] = None,
+    group_sizes: Optional[Sequence[int]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """A legend strip for the shared colour of a facet grid or pack.
+    """The one key under a facet grid or pack.
 
-    Panels carry no legends, so this strip is the only key. It must paint
-    each category with the colour the panels paint it with -- ``color_range``
-    is the panels' own range, aligned to ``color_domain`` -- and reads left to
+    Panels carry no legends, so this is the only key. It must paint each
+    category with the colour the panels paint it with -- ``color_range`` is
+    the panels' own range, aligned to ``color_domain`` -- and reads left to
     right as symbol + horizontal label pairs rather than spreading two names
     across the full grid width. Labels are measured with the real font and
     wrap onto further rows before they would overprint. Type is the skin's
     legend label size, the size every other chart's legend reads at beside
     its axis labels.
+
+    ``group_sizes`` splits ``color_domain`` into consecutive groups -- one per
+    colour field when a pack's cells are keyed by different fields. Groups
+    flow along the same rows, separated by twice the entry gap, and a group
+    that would straddle a row break starts the next row whole when it fits
+    on one. Rows keep one pitch whether they wrap inside a group or between
+    two, so several fields never stack into separate strips with dead space
+    between them.
     """
     if not color_domain:
         return None
     font = float(skin_config["config"]["legend"]["labelFontSize"])
     symbol_dx = round(font * 0.875)
     gap = 2 * font
-    labels = [str(v) for v in color_domain]
+    # One line per entry, measured as drawn: a category broken over two lines
+    # for its axis ('Keep\nfence') is one name in a key.
+    labels = [_flat_label(v) for v in color_domain]
+    sizes = [int(n) for n in (group_sizes or [len(labels)]) if int(n) > 0]
+    if sum(sizes) != len(labels):
+        sizes = [len(labels)]
+    widths = [symbol_dx + _lp_measure(label, int(font), "regular")[0] for label in labels]
     offsets: List[float] = []
     rows: List[int] = []
-    cursor, row = 0.0, 0
-    for label in labels:
-        entry = symbol_dx + _lp_measure(label, int(font), "regular")[0]
-        if cursor > 0 and cursor + entry > width:
-            cursor, row = 0.0, row + 1
-        offsets.append(cursor)
-        rows.append(row)
-        cursor += entry + gap
+    cursor, row, start = 0.0, 0, 0
+    for n in sizes:
+        group = widths[start:start + n]
+        span = sum(group) + gap * (n - 1)
+        if cursor > 0:
+            cursor += 2 * gap
+            if cursor + span > width and span <= width:
+                cursor, row = 0.0, row + 1
+        for i, entry in enumerate(group):
+            if i:
+                cursor += gap
+            if cursor > 0 and cursor + entry > width:
+                cursor, row = 0.0, row + 1
+            offsets.append(cursor)
+            rows.append(row)
+            cursor += entry
+        start += n
     n_rows = row + 1
     legend_df = pd.DataFrame({
         "_legend_label": labels,
@@ -34932,6 +35319,8 @@ def _render_facet_grid(
         share_color = (
             isinstance(color_field, str) and color_field in df.columns
             and not _is_gradient_color_column(df[color_field])
+            and not (chart_type in {"bar", "bar_horizontal"} and _colour_repeats_category(
+                df, color_field, y_field if chart_type == "bar_horizontal" else x_field))
         )
     if share_color and isinstance(color_field, str) and color_field in df.columns:
         if _is_gradient_color_column(df[color_field]):
@@ -34964,6 +35353,17 @@ def _render_facet_grid(
             warnings=warnings_list,
         )
     skin_config = get_skin(skin, intent)
+
+    # A pinned colour map resolves once over the whole grid. Each panel pairs
+    # colours only for the categories it holds, so the key and any panel
+    # missing a category would otherwise fall back to a colour it does hold.
+    shared_color_hex: Optional[Dict[str, str]] = None
+    if (shared_color_domain is not None and not series_panels
+            and isinstance(panel_mapping.get("color_map"), dict)):
+        grid_scale = _resolve_categorical_color_scale(panel_mapping, skin_config, color_field, df)
+        grid_domain, grid_range = grid_scale.domain, grid_scale.range
+        if isinstance(grid_domain, list) and isinstance(grid_range, list):
+            shared_color_hex = {str(d): c for d, c in zip(grid_domain, grid_range)}
 
     # ---- Build each panel (uses _build_single_chart for parity) ---------
     panel_specs: List[Dict[str, Any]] = []
@@ -35071,6 +35471,7 @@ def _render_facet_grid(
             _inject_scale_domain_into_spec(
                 spec_dict, "color", shared_color_domain,
                 field=color_field if series_panels else None,
+                colours=shared_color_hex,
             )
 
         # ---- Apply edge-only chrome reductions --------------------------
@@ -35198,6 +35599,7 @@ def _render_facet_grid(
             width=composite_outer_w,
             color_range=(
                 [series_group_hex[str(g)] for g in shared_color_domain] if series_group_hex
+                else [shared_color_hex[str(g)] for g in shared_color_domain] if shared_color_hex
                 else _first_color_range(panel_specs, color_field) if panel_specs else None
             ),
         )
@@ -35811,14 +36213,15 @@ def _pack_legend_strip(
     skin_config: Dict[str, Any],
     width: int,
 ) -> Dict[str, Any]:
-    """One legend strip under the pack for colours its cells share.
+    """One key under the pack for the colours its cells draw legends for.
 
     A group with any cell that draws a colour legend loses those legends and
-    gains one strip listing every category of the group, painted with the
-    shared colours. End-labelled cells draw no legend, so a pack of them is
-    left alone.
+    contributes every category of the group, painted with the shared colours,
+    to a single flowed key -- groups keyed by different fields share its rows
+    rather than stacking one strip each. End-labelled cells draw no legend,
+    so a pack of them is left alone.
     """
-    strips: List[Dict[str, Any]] = []
+    keyed: List[Tuple[List[str], List[str]]] = []
     for group in groups:
         if not group["strip"]:
             continue
@@ -35845,19 +36248,21 @@ def _pack_legend_strip(
             continue
         for colour in legends:
             colour["legend"] = None
-        strip = _build_facet_legend_panel(
-            group["order"], skin_config, width,
-            color_range=[group["hex"][c] for c in group["order"]],
-        )
-        if strip:
-            _strip_schema_and_config(strip)
-            _inline_named_datasets_in_spec(strip)
-            strips.append(strip)
-    if not strips:
+        keyed.append((list(group["order"]), [group["hex"][c] for c in group["order"]]))
+    if not keyed:
         return spec
+    strip = _build_facet_legend_panel(
+        [c for order, _ in keyed for c in order], skin_config, width,
+        color_range=[h for _, hexes in keyed for h in hexes],
+        group_sizes=[len(order) for order, _ in keyed],
+    )
+    if not strip:
+        return spec
+    _strip_schema_and_config(strip)
+    _inline_named_datasets_in_spec(strip)
     inner = {k: v for k, v in spec.items() if k not in _PACK_SPEC_TOP_LEVEL_KEYS}
     outer = {k: spec[k] for k in _PACK_SPEC_TOP_LEVEL_KEYS if k in spec}
-    outer["vconcat"] = [inner, *strips]
+    outer["vconcat"] = [inner, strip]
     outer["resolve"] = {"scale": {"color": "independent"}}
     return outer
 
@@ -37168,6 +37573,20 @@ _TBL_DATE_HINTS: Dict[str, str] = {
     "date_slash":     "%d/%m/%y",
     "date_time":      "%H:%M",
 }
+
+def _tbl_date_format(series: pd.Series) -> str:
+    """How a datetime column prints when no hint names a format.
+
+    A cell names its date in full, '29 Aug 2022', and adds the clock when any
+    stamp carries one. The axis-tick rule picks a precision from the span and
+    never prints day, month and year together -- right for a tick, whose
+    neighbours supply the rest, wrong for a cell that has to stand alone: ten
+    dates across four years printed '2022' four times.
+    """
+    stamps = pd.to_datetime(series.dropna())
+    timed = bool(len(stamps)) and bool(((stamps.dt.hour != 0) | (stamps.dt.minute != 0)).any())
+    return "%d %b %Y %H:%M" if timed else "%d %b %Y"
+
 
 # Every hint ``_tbl_smart_format`` recognises. Anything else falls through to
 # the magnitude-aware default, which renders plausible-looking but unrequested
@@ -39310,7 +39729,7 @@ def make_table(
     column_formats = dict(column_formats or {})
     for col in df.columns:
         if col not in column_formats and pd.api.types.is_datetime64_any_dtype(df[col]):
-            column_formats[col] = _temporal_house_strftime(df[col])
+            column_formats[col] = _tbl_date_format(df[col])
     column_aligns = dict(column_aligns or {})
     rag_thresholds = dict(rag_thresholds or {})
     highlight_columns = list(highlight_columns or [])
