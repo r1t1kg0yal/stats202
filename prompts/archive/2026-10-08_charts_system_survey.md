@@ -3,8 +3,11 @@ class: context-extraction
 topic: the whole production charts system as it is today -- inventory, entry points, briefing, delivery, studio, QC, runtime, tests, telemetry, measured behaviour
 expected_reply: ~100-150 KB; may be split across messages at section boundaries
 created_at: 2026-10-08
-sent: no
-status: OPEN
+sent: yes
+status: ANSWERED
+answered_at: 2026-10-11 (screenshots of PRISM's reply, folded the same day)
+follow_up: 2026-10-11_chart_parity_round2.md (sandbox-side namespace, delivery
+  placeholders, units.py, test_chart_characterization status)
 companion: 2026-10-08_chart_agent_loose_ends.md (byte parity of the agent pair,
   image promotion, the sub-agent deadline, 00-charts-system.md, the core.py
   offset). This prompt does not repeat those questions.

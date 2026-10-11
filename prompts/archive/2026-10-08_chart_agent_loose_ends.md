@@ -3,8 +3,11 @@ class: context-extraction
 topic: chart_agent pair after the seven October MRs -- byte parity, image promotion, deadline, Core Context, core.py offset
 expected_reply: ~80-120 KB (whole-file pastes on any parity miss, plus a def table for core.py)
 created_at: 2026-10-08
-sent: no
-status: OPEN
+sent: yes
+status: ANSWERED
+answered_at: 2026-10-11 (screenshots of PRISM's reply, folded the same day)
+follow_up: 2026-10-11_chart_parity_round2.md (chunk-hash parity for core.py and
+  the context files, the two inferred hashes, ADK plugin propagation)
 trigger: >
   Staging folded !1846 / !1887 / !1880 / !1896 / !1895 / !1939 / !2004 into
   projects/altair/altair-payload/ from review-page screenshots. Line counts
