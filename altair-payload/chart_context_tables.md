@@ -26,7 +26,7 @@ words as gaps. Do not `fillna` or `astype(str)` to protect them.
 result = make_table(
     df=macro,
     title="Macro Snapshot",
-    source="Haver",
+    source="BLS via Haver Analytics",
     column_formats={"GDP YoY (%)": "pct_signed", "CPI YoY (%)": "pct"},
     signed_columns=["GDP YoY (%)"],
     column_color_modes={"GDP YoY (%)": "rwg", "CPI YoY (%)": "bw"},
@@ -63,7 +63,7 @@ and raise if passed.
 | `columns` | Headers for tuple/list rows; order override for dict rows |
 | `title`, `subtitle` | Top labels. `title` is the finding; a figure id (`R15a`, `Exhibit 3`) is `subtitle`. Never splice an id into `title` |
 | `caption` | Italic note below the table |
-| `source` | Attribution; fills an unset caption as `Source: ...` |
+| `source` | Attribution, on every table; copied verbatim from the request, which names the publisher rather than the platform. Fills an unset caption as `Source: ...` |
 | `theme_overrides` | Override individual house-palette colours, e.g. `{'row_band_color': '#FFF4E5'}`; an unknown key raises listing all of them |
 | `column_formats` | `{column: format_hint}` |
 | `column_aligns` | `{column: 'left'|'center'|'right'}` |

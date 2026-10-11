@@ -126,8 +126,12 @@ result = make_chart(
 ```
 
 `title` should state the finding. `subtitle` adds context, never attribution.
-`source="Haver"` renders `Source: Haver` below the chart; an explicit
-`caption` wins. Never invent a source. `caption`, `side_left`, and
+`source="BLS via Haver Analytics"` renders that line below the chart. EVERY
+call -- `make_chart`, `make_table`, every composite -- carries `source=`,
+copied VERBATIM from the request: it names the publisher behind the data, not
+the platform that served it, and is never invented or shortened. The caption owns that one footer
+slot, so a visual taking both ends its `caption` with the same `Source: ...`
+line. `caption`, `side_left`, and
 `side_right` honour a newline or a list of strings as a forced line break
 (each line still wraps to the panel width). Use that for event keys and
 epoch-stat columns; do not join items with `|`. `intent` is `explore`

@@ -30230,6 +30230,10 @@ def _auto_melt_for_multiline(
         y_field = mapping.get("y")
         color_field = mapping.get("color")
 
+        # melt's id_vars see columns, and a session CSV is read back with x on the index.
+        if x_field and x_field not in df.columns and x_field == df.index.name:
+            df = df.reset_index()
+
         # Case 0: already long-format -- both y and color exist as columns.
         if isinstance(y_field, str) and y_field in df.columns:
             if color_field and color_field in df.columns:
@@ -31232,6 +31236,32 @@ def _generate_filename(
         parts.append(re.sub(r"[^A-Za-z0-9_-]+", "_", filename_suffix).strip("_"))
     parts.append(chart_type)
     return "_".join(p for p in parts if p)
+
+
+# PRISM finds a render to show by matching ``[[image: <key>]]`` with no whitespace
+# in the key, and the delivery block pastes the key into a markdown link, so a
+# space in a ``save_as`` leaf leaves a PNG that renders and that nobody sees.
+_SAVE_AS_IMAGE_EXTENSIONS = ("png", "jpg", "jpeg", "gif", "webp", "svg")
+
+
+def _safe_save_as(save_as: Optional[str]) -> Optional[str]:
+    """``save_as`` with its leaf slugged the way auto-names are, ending ``.png``.
+
+    The engine writes PNG bytes whatever the caller called the file, and
+    ``render_charts`` records an artifact only when its key ends ``.png`` --
+    ``chart.PNG`` or a bare ``chart`` was written and then reported as no
+    artifact at all, which spends a call on a chart that already exists. Only
+    the leaf changes, so a rooted prefix is still honoured. A leaf with nothing
+    sluggable left resolves to None, which is the auto-named path.
+    """
+    if not save_as:
+        return save_as
+    head, slash, leaf = save_as.rpartition("/")
+    stem, dot, extension = leaf.rpartition(".")
+    if not dot or extension.lower() not in _SAVE_AS_IMAGE_EXTENSIONS:
+        stem = leaf
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")
+    return f"{head}{slash}{stem}.png" if stem else None
 
 
 # Session subfolder holding the reopen artifacts written beside every
@@ -32614,6 +32644,7 @@ def _make_chart(
     filename_base = _generate_filename(
         title, chart_type, filename_prefix, filename_suffix
     )
+    save_as = _safe_save_as(save_as)
     if save_as:
         # Passthrough: if save_as is already rooted at a canonical S3
         # prefix, honour it exactly. Mirrors _tbl_resolve_path() and
@@ -35667,6 +35698,7 @@ def _render_facet_grid(
     filename_base = _generate_filename(
         title, f"{chart_type}_facet", filename_prefix, filename_suffix,
     )
+    save_as = _safe_save_as(save_as)
     if save_as:
         # Passthrough: if save_as is already rooted at a canonical S3
         # prefix, honour it exactly. Mirrors _tbl_resolve_path() and
@@ -36650,6 +36682,7 @@ def _make_composite(
         title, f"{layout}_composite",
         filename_prefix, filename_suffix,
     )
+    save_as = _safe_save_as(save_as)
     if save_as:
         # Passthrough: if save_as is already rooted at a canonical S3
         # prefix, honour it exactly (see make_chart for full rationale).
@@ -39518,6 +39551,7 @@ def _tbl_resolve_path(save_as: Optional[str], session_path: Optional[str],
     block counted the calls, so it reported one chart where two were asked for
     and nothing anywhere raised.
     """
+    save_as = _safe_save_as(save_as)
     if save_as:
         # Passthrough: if save_as is already rooted at a canonical S3
         # prefix, honour it exactly. This mirrors the convention used by
