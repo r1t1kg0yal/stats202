@@ -42,7 +42,7 @@ unknown names raise with the accepted alternatives.
 | Fade the second category | `opacity_map={2: 0.25}` |
 | Diverging heatmap | `color_scheme='redblue'` |
 | Sequential heatmap | `color_scheme='viridis'` or `'blues'` |
-| Shade lines as a sequence (vintages, event paths) | `color_scheme='blues'` on `multi_line` / `timeseries` — see §6.1 |
+| Shade lines as a sequence (vintages, event paths) | `color_scheme='blues'` on `multi_line` / `timeseries` -- see §6.1 |
 
 ```python
 mapping = {
@@ -74,7 +74,7 @@ plotting; do not rely on palette cycling.
 
 Dictionary keys may be:
 
-- category strings, as the data spells them — for a wide `y=[...]` list the
+- category strings, as the data spells them -- for a wide `y=[...]` list the
   column names work as well as the legend's display names, and a key that
   differs only in case or spacing is applied and noted on `warnings`; or
 - positive integers representing **1-indexed rendered legend slots**.
@@ -148,7 +148,7 @@ column and picks the ramp:
 |---|---|
 | Crosses zero (some negative, some positive) | House diverging, red below zero to navy above, with its neutral anchored on zero however lopsided the range is |
 | One-signed numeric | House sequential, light blue to navy |
-| Temporal | House sequential — dates are one-signed, so early-to-late reads in one direction |
+| Temporal | House sequential -- dates are one-signed, so early-to-late reads in one direction |
 
 Every ramp is interpolated in Lab and is monotone in lightness, so two dots
 can be ranked without consulting the bar. Say "colour by YTD excess" and stop;
@@ -168,7 +168,7 @@ apply to a continuous encoding.
 
 The colour bar labels itself: pass `color_title` for the authored English
 title (same placement and 28-character, one-line budget as `size_title`).
-The bar is ticked at round values in the data's own unit — `-10 / 0 / 10
+The bar is ticked at round values in the data's own unit -- `-10 / 0 / 10
 / 20` for percentage points, `0.02` steps for a decimal spread, calendar
 years or months for dates. Zero is always labelled on a ramp that
 crosses it. Nothing about the ticks is caller-settable, and nothing
@@ -178,15 +178,15 @@ needs to be.
 
 Forecast vintages, curves by quarter-end, or one path per event date read
 as one progression, not line by line. On `multi_line` / `timeseries` they
-draw as a ramp — oldest light, newest dark, one gradient key, no end
-labels — up to 12 lines:
+draw as a ramp -- oldest light, newest dark, one gradient key, no end
+labels -- up to 12 lines:
 
 - a sequential `color_scheme` (`blues`, `greens`, `reds`, `oranges`,
   `purples`, `greys`, `viridis`, `plasma`, `magma`, `inferno`, `cividis`,
   `turbo`) declares the lines a sequence at any count, ordered by
   `color_sort` or data order (`Today / 3M ago / 1Y ago` labels run oldest
   first on their own). The key is a gradient bar labelled with the first
-  and last names only — the lines between are placed by shade, not named;
+  and last names only -- the lines between are placed by shade, not named;
 - a date `color` column does so on its own past six lines, keyed by
   calendar ticks; six or fewer dated lines stay ordinary end-labelled lines;
 - so do labels that are one prefix plus consecutive numbers (`E01 .. E12`,
@@ -201,7 +201,7 @@ its panels with one key strip under the grid. Not with dual axes or
 
 - Heatmap rejects `color_map` / `opacity_map`.
 - `bullet`, `waterfall`, and `band` reject dictionary `color_map`; their
-  colours are engine-owned — keyed by `color_by`, by bar sign, and by the
+  colours are engine-owned -- keyed by `color_by`, by bar sign, and by the
   single series whose colour the ribbon inherits. A one-entry list may set
   the primary mark. `contribution` has a real per-component encoding, so the
   dictionary form works there.

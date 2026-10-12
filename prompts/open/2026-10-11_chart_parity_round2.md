@@ -1,7 +1,7 @@
 ---
 class: context-extraction
-topic: chart round 2 -- the sandbox render path, delivery placeholders, units.py, the 00-charts-system.md description, chart tests, what the NO_ARTIFACTS calls were
-expected_reply: ~25-40 KB (sandbox_rollout.py + chart_names.py + units.py whole, short verbatim excerpts, a NO_ARTIFACTS classification)
+topic: chart round 2 -- the sandbox render path, delivery placeholders, units.py, the 00-charts-system.md description, the render_charts trust gate, what the NO_ARTIFACTS calls were
+expected_reply: ~30-45 KB (sandbox_rollout.py + chart_names.py + units.py + tool_path_scope.py whole, short verbatim excerpts, a NO_ARTIFACTS classification)
 created_at: 2026-10-11
 sent: no
 status: OPEN
@@ -12,7 +12,7 @@ trigger: >
   carries, and PRISM's units.py are all unseen here, and 28.5% of production
   render_charts calls returned NO_ARTIFACTS.
 reply_folds_into:
-  - projects/altair/prism_mcp/tools/sandbox_rollout.py, prism_mcp/sandbox/chart_names.py, prism_mcp/chart_render/units.py (verbatim mirrors)
+  - projects/altair/prism_mcp/tools/sandbox_rollout.py, prism_mcp/sandbox/chart_names.py, prism_mcp/chart_render/units.py, core/configs/tool_path_scope.py (verbatim mirrors or signature-exact stubs)
   - projects/altair/dev/test_chart_exec.py (a 'sandbox' layer)
   - prism/subagents.md (§4 lifecycle, §8.1 what the NO_ARTIFACTS calls were), prism/code-sandbox.md, prism/codebase-tree.md
   - prism/_reference/00-charts-system.md (description line)
@@ -21,12 +21,17 @@ reply_folds_into:
 
 **Staging-side note -- do NOT paste this header into PRISM.**
 
-None of this blocks promoting the engine; that is
-`2026-10-11_altair_promotion_readiness.md`. Two earlier sections left this
-prompt: the chunk-hash parity check (PRISM's `old/` comparison answered it for
-`core.py`, and the readiness prompt covers the context files) and ADK plugin
-propagation (answered by the 2026-10-11 OKF reply §4.1; the runtime check is
-readiness §6).
+Send after the drop and after
+`staging/prompts/open/2026-10-12_altair_post_drop_verify.md`. None of this
+blocks the promotion, which the go/no-go reply
+(`staging/prompts/archive/2026-10-11_altair_promotion_readiness.md`) cleared.
+That reply also answered what this prompt used to ask about tests (no
+`test_chart_characterization.py`, no chart goldens; the chart test files and
+their counts are in `prism/codebase-tree.md` §8), about the sandbox fonts
+(`containers/prism-sandbox/Dockerfile:146` copies them), and about ADK plugin
+propagation (confirmed at runtime). §5 now asks for the trust gate
+`chart_exec.py` gained in `bd1ff5297`: the staging harness stubs
+`core.configs.tool_path_scope` from its one call site.
 
 Why this prompt exists.
 
@@ -83,9 +88,8 @@ divert, `render_charts` reads only `stdout`; `chart_paths` come back through
    sandbox side tell `render_charts` which PNGs it wrote (a stdout protocol, a
    manifest key, a listing); and what does `adopt` receive.
 4. Inside the sandbox image: does `chart_render.core.register_studio()` run, so
-   the editable-spec manifest is written? Is `web/backend_django/fonts` present,
-   or does `_gs_font_dir()` return None and fall to system fonts? Quote the
-   pins for `altair`, `numpy`, `pandas`, `pillow` and `vl-convert-python` from
+   the editable-spec manifest is written? Quote the pins for `altair`, `numpy`,
+   `pandas`, `pillow` and `vl-convert-python` from
    `requirements-sandbox-arm64.txt` (path and line).
 5. The chart-call records for 2026-09-10 to 2026-10-11 carried 1,654 artifact
    records over 1,746 calls, which does not fit "artifacts is empty on divert".
@@ -115,13 +119,19 @@ Paste `prism-core/prism_mcp/chart_render/units.py` **whole**.
 2. Does anything read this file other than the OKF floor in
    `prism-core/context/okf.py`? Cite each reader.
 
-### 5. Tests
+### 5. The `render_charts` trust gate
 
-1. Does `prism-core/tests/test_chart_characterization.py` exist? If yes, its
-   test count and the number of golden files under `tests/golden/chart_specs/`.
-2. List every test file that imports `prism_mcp.chart_render`,
-   `prism_mcp.utils.chart_functions` or `prism_mcp.tools.chart_exec`, with its
-   test count.
+`chart_exec.py` (`bd1ff5297`, 2026-10-12) calls
+`enforce_no_untrusted_content(file_path, tool='render_charts')` on every
+`data_files` key and reports `UntrustedContentDenied` as a FATAL load failure,
+logged through `get_service_logger("prism.security")`.
+
+1. Paste `core/configs/tool_path_scope.py` **whole**.
+2. Paste `get_service_logger` from `core/service_logging.py`, with its
+   `path:line`.
+3. Which prefixes does the register admit for a `render_charts` key today: the
+   session's own prefix only, or others (shared data buckets, other users'
+   sessions)? Cite the lines that decide it.
 
 ### 6. What the NO_ARTIFACTS calls were
 

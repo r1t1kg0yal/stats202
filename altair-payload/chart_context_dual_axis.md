@@ -21,7 +21,7 @@ ranges happen to overlap. The engine can detect magnitude mismatch; it cannot
 infer economic units.
 
 The x axis does not have to be time. A datetime x plots as a date axis, and a
-measured x — threshold sweep, tenor ladder, strike grid — keeps its own values
+measured x -- threshold sweep, tenor ladder, strike grid -- keeps its own values
 and takes its label from `mapping['x_title']`. Never convert a measured x with
 `pd.to_datetime()`: those values are read as nanoseconds and the chart is
 rejected.
@@ -100,8 +100,8 @@ and records the decision in `result.audit_trail`. Without that title, it raises
 and asks for explicit binding and both axis titles.
 
 Both gates only raise on a time axis, where colour separates different series
-and a flattened one has lost its shape. On a cross-section — a tenor, expiry,
-strike or rating axis — colour almost always separates snapshots of the same
+and a flattened one has lost its shape. On a cross-section -- a tenor, expiry,
+strike or rating axis -- colour almost always separates snapshots of the same
 measurement, so flat curves at separated levels are the finding rather than a
 defect: the engine renders and notes the compression in `result.warnings`.
 

@@ -10,7 +10,7 @@ grid is one `make_chart()` call whose facet-column values become panels.
 | Two, three or four panels making different points in one argument | `ChartSpec` pack; see *Altair composites and batch building* |
 | Two to 36 entities with the same chart shape | Facet grid |
 | Six panels as a tight argument | Either: `make_6pack_grid`, or a facet grid when the six need one shared scale |
-| One scale shared across panels, at any count | Facet grid with `same_scale=True` — packs always scale each panel independently |
+| One scale shared across panels, at any count | Facet grid with `same_scale=True` -- packs always scale each panel independently |
 | More than 36 entities or matrix-like comparison | Aggregate or use heatmap/table |
 
 The packs cover 2, 3, 4 and 6 cells, each built from its own `ChartSpec`; a
@@ -87,7 +87,7 @@ Keep the default independent scales when each panel's shape matters more than
 cross-panel level. Use `same_scale=True` when direct level/position comparison
 is the point.
 
-`share_color=True` is orthogonal — it locks the colour domain into one shared
+`share_color=True` is orthogonal -- it locks the colour domain into one shared
 legend and `same_scale` never sets it. For a temporal-colour phase grid whose
 colours must compare across panels, pass both.
 
@@ -121,7 +121,7 @@ The 10-category colour cap does not apply to a continuous ramp. See
 
 Facet grids remove end-of-line labels; panel headers identify entities. A
 panel header is a category name, so it takes the same 24-character cap as any
-other one (*Altair Charts & Tables* §5.1) — the facet values do the work the
+other one (*Altair Charts & Tables* §5.1) -- the facet values do the work the
 end-label names would have done, and the grid raises naming the offenders
 rather than truncating them. Unsupported annotations and other non-fatal
 adjustments appear in `result.warnings`.

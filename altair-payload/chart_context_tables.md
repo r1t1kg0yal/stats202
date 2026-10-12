@@ -92,10 +92,10 @@ and raise if passed.
 A figure-label instruction does not change this surface. `side_left` /
 `side_right` exist only on `make_chart` and `make_*pack_*`. Do not recover
 from that refusal by writing `title="R16a | Twenty Widest Bonds..."` or
-`title="R15a ;"` — keep `title` as the finding and put the id in `subtitle`.
+`title="R15a ;"` -- keep `title` as the finding and put the id in `subtitle`.
 
 A named index is data and shows as the table's first column (one per named
-level) — a CSV's first column arrives as one — so there is no need to
+level) -- a CSV's first column arrives as one -- so there is no need to
 `reset_index()` first. Pass `show_index=False` to hide it; an unnamed index
 never shows.
 
@@ -103,20 +103,20 @@ Canvas dimensions are content-driven. Text columns wrap, every row is kept,
 and the table is never truncated. Long identifiers, paths and code loci need
 no shortening: they break at their own separators (`/ _ . : -`), never inside
 a number. To reach the width that keeps body text at 6pt on a portrait page
-the engine spends five levers in order — wrap long text columns to their
+the engine spends five levers in order -- wrap long text columns to their
 floors, reflow multi-word headers onto a second line, give back the cosmetic
 per-column padding, grow the body font (a wider canvas at a bigger font prints
 larger, because padding does not scale), then wrap the short text columns too,
-prose before identifiers — and raises only when all five are exhausted. The
+prose before identifiers -- and raises only when all five are exhausted. The
 budget is about 140 characters across one row: the widest cell of each column,
 summed, less roughly 2.5 per column for padding.
 
 A refusal therefore means the content itself is too wide, and it names which
 columns are paying and whether each one's floor comes from its header or its
-values — shorten the header only where the error says "set by header". Reach
+values -- shorten the header only where the error says "set by header". Reach
 for `column_widths` / `row_height_scale` only to satisfy a stated layout
 request; the engine's own sizing is the default. For "wide enough not to
-wrap" pass `'auto'` rather than guessing a pixel count — the width depends on
+wrap" pass `'auto'` rather than guessing a pixel count -- the width depends on
 font metrics you cannot measure.
 
 **A square label-by-label numeric matrix is not a table.** A correlation
@@ -149,21 +149,21 @@ Inspect and surface material `result.warnings`.
 Session runs emit a self-contained HTML editor beside the PNG by default, in
 which the user can restyle, reformat, resize, restructure and retype the
 table directly and copy back a runnable `make_table(...)` call. Leave
-`interactive` alone. Never surface `editor_url` — the user opens the editor
+`interactive` alone. Never surface `editor_url` -- the user opens the editor
 by clicking the table in place, so when they ask to adjust it themselves say
 "you can edit the table by clicking on it". The editor is a per-table
-companion, not a dashboard — a request for live filtering, refresh, or
+companion, not a dashboard -- a request for live filtering, refresh, or
 cross-widget interaction is a `dashboards` task.
 
 Studio-generated code round-trips exactly and carries both halves of the
-edit — the kwargs and the data. Keep the whole block; dropping any kwarg it
+edit -- the kwargs and the data. Keep the whole block; dropping any kwarg it
 carries (`theme_overrides`, `column_widths`, `value_overrides`,
 `row_height_scale`) silently undoes the styling.
 
 The data half arrives one of two ways and the code says which. Where every
 edit was a rule, it emits the original frame followed by the pandas that
-reproduces them — a drop, a sort, a filter, a rename, a `df.insert` for a
-computed column — so replacing the literal with a fresh pull re-applies all
+reproduces them -- a drop, a sort, a filter, a rename, a `df.insert` for a
+computed column -- so replacing the literal with a fresh pull re-applies all
 of it. Where an edit typed a value or placed a row by hand, it emits the
 edited frame instead and states the reason in a comment above it; that one
 cannot be refreshed without redoing the edit.
@@ -328,7 +328,7 @@ accepted.
 | `date_time` | `14:30` |
 
 An unrecognised hint warns, names the closest match, and falls back to the
-default format rather than raising — so a typo produces plausible but
+default format rather than raising -- so a typo produces plausible but
 unrequested output unless `result.warnings` is read.
 
 ## 8. Common shapes

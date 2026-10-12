@@ -3,8 +3,8 @@ class: context-extraction
 topic: altair promotion go/no-go -- where production stands, the old/ copy's identity, core.py and the seven context files against production, imports across the engine boundary, CI with the payload swapped in, how a drop goes live in the sandbox image, OKF reaching chart_agent at runtime, and a gate-by-gate verdict with the drop manifest
 expected_reply: ~30-50 KB (state and identity tables, context-file diffs with production-only hunks verbatim, import tables, per-test results, deploy path, verdict table)
 created_at: 2026-10-11
-sent: no
-status: OPEN
+sent: 2026-10-12
+status: ANSWERED (2026-10-12, folded)
 trigger: >
   The last prompt before the canonical altair payload is dropped into PRISM.
   PRISM's old/ comparison (2026-10-11) found production core.py has nothing

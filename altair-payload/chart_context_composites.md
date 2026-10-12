@@ -110,19 +110,19 @@ fixed `save_as` path wins over generated naming, so `filename_prefix` /
 `filename_suffix` matter only when `save_as` is omitted.
 
 A heatmap panel is the one case where you should not think about the preset at
-all. Its minimum cell size is a pure function of the matrix — rows set the
-height, column count and the longest row label set the width — so the pack
+all. Its minimum cell size is a pure function of the matrix -- rows set the
+height, column count and the longest row label set the width -- so the pack
 computes it and upgrades to the smallest preset in the layout family that
 fits, overriding a smaller preset you named and reporting the override on
 `result.warnings`. When no preset in the family is large enough, the panel
 raises and the remedy is to give the matrix its own `make_chart` call or to
 cut the number of categories. **Shortening row labels never buys rows or
-columns** — see *Altair Charts & Tables* §5.2.
+columns** -- see *Altair Charts & Tables* §5.2.
 
 Each cell owns its mapping, axes, and annotations. Colour is shared: a
 category that appears in more than one cell takes one colour across the pack
-— a `color_map` pin in any cell applies to every cell, and two cells pinning
-one category differently each keep their pin with a note on `warnings` — and
+-- a `color_map` pin in any cell applies to every cell, and two cells pinning
+one category differently each keep their pin with a note on `warnings` -- and
 every cell that would draw a colour legend hands it to the one key under the
 pack, which spans the pack and wraps. Cells coloured by different fields share
 that key, each field's entries kept together; a dual-axis cell keeps its own. Line cells keep their end labels and draw no key; area and
@@ -136,10 +136,10 @@ aggressively; the engine raises with the exact offenders rather than
 truncating.
 
 The 24-character category cap from *Altair Charts & Tables* §5.1 is the same in a
-cell as standalone — it is an editorial limit, not a canvas one. A colour key
+cell as standalone -- it is an editorial limit, not a canvas one. A colour key
 under the pack needs only that cap. What changes in a cell is the *pixel*
-budget on text drawn inside it — axis category labels and end labels, about
-11 characters at 280px against roughly 28 at 700px — so a name that is
+budget on text drawn inside it -- axis category labels and end labels, about
+11 characters at 280px against roughly 28 at 700px -- so a name that is
 comfortably legal standalone can still be refused there. Write those labels to
 the 8–14 band and neither gate fires.
 
