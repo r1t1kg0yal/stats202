@@ -138,7 +138,11 @@ logged through `get_service_logger("prism.security")`.
 In the 2026-09-10 to 2026-10-11 chart-call records, 498 of 1,746 `render_charts`
 calls returned `NO_ARTIFACTS`, but only 1 of 807 invocations ended on it. So
 the sub-agent spends calls against `CHART_ATTEMPT_CEILING` on scripts that
-render nothing and then goes on to render.
+render nothing and then goes on to render. Those records predate the change
+that names a record by the invocation's call count (`ladder_attempt` beside
+it): in them `attempt_NN` is the ladder rung, so a revision after a clean
+render overwrote `attempt_01.py`. Count on that, and say where a sampled
+invocation shows it.
 
 1. Pick 10 `NO_ARTIFACTS` attempts from that window, spread across sessions,
    and for each give the `chart_calls/<agent_id>__<token>/attempt_NN.py` path,

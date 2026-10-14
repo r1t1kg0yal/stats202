@@ -1,6 +1,6 @@
 ---
 class: context-extraction
-topic: altair post-drop verification -- the 14 installed files against staging's bytes, nothing else touched, PRISM's chart and context tests on the dropped tree, a direct render smoke, and a merge verdict
+topic: altair post-drop verification -- the 14 installed files against staging's bytes, nothing else touched, the PRISM-owned mirrors' bytes after the 2026-10-13 change, PRISM's chart and context tests on the dropped tree, a direct render smoke, and a merge verdict
 expected_reply: ~10-20 KB (one hash table, git status, per-test counts, smoke results, verdict)
 created_at: 2026-10-12
 sent: no
@@ -13,6 +13,8 @@ trigger: >
   and the old/core.py PRISM compared on 2026-10-11 measured 8,276 bytes more
   than canonical. So the installed bytes are checked, not assumed.
 reply_folds_into:
+  - projects/altair/dev/test_chart_exec.py (TestOwnership.PRISM_MIRRORS, from §2.4)
+  - prism/subagents.md and prism/codebase-tree.md §8 (the 2026-10-13 mirror change, from §2.4)
   - staging/README.md and projects/altair/README.md (drag-and-drop status -> promoted)
   - .cursor/rules/viz-platforms.mdc (promotion status paragraph)
   - prism/codebase-tree.md §8 (inventory sizes, test counts)
@@ -91,6 +93,21 @@ line endings, encoding, truncation).
    and that nothing under `prism-core/prism_mcp/tools/` or `core/` changed.
 3. Count the em-dash characters (U+2014) in the seven installed context files.
    We expect zero.
+4. For each of these three PRISM files, give the byte count, sha256[:16], and
+   `git log -1 --format='%h %ad %s' --date=short` on it. Ours come from
+   applying the review diff of a change that adds `ladder_attempt` to
+   `record_render_call`, tags an explicit `save_as` in `_nonce_prelude`, and
+   strips `<thought>` blocks in `_image_transport_trailer`. If that change is
+   not on the branch you are reading, say so rather than marking DIFFER.
+
+   | Path | Bytes | sha256[:16] |
+   |---|---:|---|
+   | `prism-core/prism_mcp/tools/chart_exec.py` | 43,622 | `1dfc0b5e06a00d58` |
+   | `core/chart_agent_tool.py` | 13,532 | `0fccee122bfb5fee` |
+   | `prism-core/prism_mcp/utils/chart_call_log.py` | (not mirrored) | -- |
+
+   For `chart_call_log.py`, also quote the `record_render_call` signature
+   verbatim.
 
 ### 3. Tests on the dropped tree
 
