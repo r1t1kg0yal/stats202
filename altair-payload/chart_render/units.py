@@ -112,16 +112,19 @@ def guess_units_from_name(column_name: str) -> Optional[str]:
     - Percentage indicators: pct, percent, percentage, rate
     - Basis points: bps, bp, spread
     - Currency: usd, dollars, with scale modifiers (bil, mil)
-    - Volatility: vol (daily bps for rates, annualized % for equities and FX)
+    - Volatility: vol (daily bps for rates, annualized % for equities and FX,
+      bps when the name gives no asset)
     - Growth rates: yoy, qoq, mom
 
-    Only whole words count, so 'trade_volume' is not a vol, 'corporate_flows'
+    Words are matched whole, so 'trade_volume' is not a vol, 'corporate_flows'
     is not a rate and 't_bill_yield' is not in billions. Letters and digits
-    are separate words ('cpi_yoy3m', 'us_rate10y'), and 'pct' also counts at
-    the front of a word ('spx_pctchg'). A unit the name states beats one its
-    nouns imply, and 'rate' is the weakest hint of all: a rate vol is quoted
-    in bps, not %. A wrong unit on an axis is worse than none, so an
-    unrecognised vol convention returns None.
+    are separate words ('cpi_yoy3m', 'us_rate10y'). A unit word no ordinary
+    word begins or ends with also counts glued to one: pct, percent, bps, yoy
+    and qoq at either end ('spx_pctchg', 'x_percentchange', 'us_cpi_yoypct'),
+    mom and vol at the end ('spx_impliedvol'). A unit the name states beats
+    one its nouns imply, a stated percent with yoy / qoq / mom is that growth
+    rate, and 'rate' is the weakest hint of all: a rate vol is quoted in bps,
+    not %.
 
     Args:
         column_name: The column/symbol name to analyze
@@ -152,13 +155,22 @@ def guess_units_from_name(column_name: str) -> Optional[str]:
         spaced += ch
     words = set(spaced.split())
 
-    # Percentage patterns (most common in rates/macro data)
-    if words & {'percent', 'percentage'} or any(w.startswith('pct') for w in words):
-        return '%'
+    def said(whole, front=(), back=()):
+        return bool(words & whole) or any(w.startswith(front) or w.endswith(back) for w in words)
 
-    # Basis points (common in spreads, flies)
-    if words & {'bps', 'bp'}:
-        return 'bps'
+    # Year-over-year, quarter-over-quarter, month-over-month percentage change
+    if said({'yoy'}, ('yoy',), ('yoy',)):
+        growth = 'YoY %'
+    elif said({'qoq'}, ('qoq',), ('qoq',)):
+        growth = 'QoQ %'
+    elif said({'mom'}, (), ('mom',)):
+        growth = 'MoM %'
+    else:
+        growth = None
+
+    # Percentage patterns (most common in rates/macro data)
+    if said({'percent', 'percentage'}, ('pct', 'percent'), ('pct', 'percent')):
+        return growth or '%'
 
     # Vol in an explicit convention
     if 'dbps' in words:
@@ -166,24 +178,19 @@ def guess_units_from_name(column_name: str) -> Optional[str]:
     if 'abps' in words:
         return 'annualized bps'
 
+    # Basis points (common in spreads, flies)
+    if said({'bps', 'bp'}, ('bps',), ('bps',)):
+        return 'bps'
+
     # Spread typically in basis points
     if words & {'spread', 'spreads'}:
         return 'bps'
 
-    # Year-over-year percentage change
-    if 'yoy' in words:
-        return 'YoY %'
-
-    # Quarter-over-quarter percentage change
-    if 'qoq' in words:
-        return 'QoQ %'
-
-    # Month-over-month percentage change
-    if 'mom' in words:
-        return 'MoM %'
+    if growth:
+        return growth
 
     # Volatility - check for swaption vol (daily bps)
-    if words & {'vol', 'volatility'}:
+    if said({'vol', 'volatility'}, (), ('vol',)):
         # Swaption volatility (typically daily bps)
         if words & {'swaption', 'swpn'}:
             return 'daily bps'
@@ -198,7 +205,7 @@ def guess_units_from_name(column_name: str) -> Optional[str]:
                 'cnh', 'cny', 'mxn', 'brl', 'krw', 'inr', 'zar', 'try', 'hkd', 'sgd'}
         if 'fx' in words or any(len(w) == 6 and w[:3] in ccys and w[3:] in ccys for w in words):
             return 'annualized %'  # FX vol (eurusd, usdjpy) is quoted annualized %
-        return None  # realized_vol: could be either convention
+        return 'bps'  # Generic fallback: PRISM's vol coordinates are rates vol
 
     # Rate typically means percentage
     if words & {'rate', 'rates'}:

@@ -316,9 +316,10 @@ numeric unit before `make_table`.
 Omitted hints use magnitude-aware defaults.
 
 Datetime columns print the full date (`29 Aug 2022`, plus `14:30` when a stamp
-carries a time), or `Aug 2022` when every date is a month-end or a 1st and
-`2022` when every date is a year-end or Jan 1st; name a hint only to change
-that. A raw strftime string is also accepted.
+carries a time), `Aug 22` when every date is a month-end or a 1st, `2022` when
+every date is a year-end or Jan 1st, and `14:30` alone when every stamp falls
+on one day; name a hint only to change that. A raw strftime string is also
+accepted.
 
 | Hint | Output |
 |---|---|

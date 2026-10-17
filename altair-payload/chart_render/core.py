@@ -31036,7 +31036,7 @@ def _json_safe_spec_value(value: Any) -> Any:
         return pd.Timestamp(value).isoformat()
     if isinstance(value, pd.Timedelta):
         return value.isoformat()
-    if value is pd.NaT or (isinstance(value, float) and math.isnan(value)):
+    if value is pd.NaT or (isinstance(value, float) and not math.isfinite(value)):
         return None
     if isinstance(value, np.datetime64):
         return pd.Timestamp(value).isoformat()
@@ -31045,7 +31045,7 @@ def _json_safe_spec_value(value: Any) -> Any:
     if isinstance(value, np.integer):
         return int(value)
     if isinstance(value, np.floating):
-        return None if np.isnan(value) else float(value)
+        return float(value) if np.isfinite(value) else None
     if isinstance(value, np.ndarray):
         return [_json_safe_spec_value(v) for v in value.tolist()]
     return value
@@ -31253,20 +31253,23 @@ def _generate_filename(
 
 
 # PRISM finds a render to show by matching ``[[image: <key>]]`` with no whitespace
-# in the key, and the delivery block pastes the key into a markdown link, so a
-# space in a ``save_as`` leaf leaves a PNG that renders and that nobody sees.
+# or ``]`` in the key, so a space in a ``save_as`` leaf leaves a PNG that renders
+# and that nobody sees.
 _SAVE_AS_IMAGE_EXTENSIONS = ("png", "jpg", "jpeg", "gif", "webp", "svg")
+_SAVE_AS_UNSHOWABLE = r"\s\[\]"
 
 
 def _safe_save_as(save_as: Optional[str]) -> Optional[str]:
-    """``save_as`` with its leaf slugged the way auto-names are, ending ``.png``.
+    """``save_as`` with its leaf made a key PRISM can show, ending ``.png``.
 
     The engine writes PNG bytes whatever the caller called the file, and
     ``render_charts`` records an artifact only when its key ends ``.png`` --
     ``chart.PNG`` or a bare ``chart`` was written and then reported as no
-    artifact at all, which spends a call on a chart that already exists. Only
-    the leaf changes, so a rooted prefix is still honoured. A leaf with nothing
-    sluggable left resolves to None, which is the auto-named path.
+    artifact at all, which spends a call on a chart that already exists.
+    Whitespace and brackets become ``_``; every other character is kept,
+    because a caller may read the chart back by the name it asked for. Only
+    the leaf changes, so a rooted prefix is still honoured. A leaf with
+    nothing left resolves to None, which is the auto-named path.
     """
     if not save_as:
         return save_as
@@ -31274,8 +31277,23 @@ def _safe_save_as(save_as: Optional[str]) -> Optional[str]:
     stem, dot, extension = leaf.rpartition(".")
     if not dot or extension.lower() not in _SAVE_AS_IMAGE_EXTENSIONS:
         stem = leaf
-    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", stem).strip("_")
+    stem = re.sub(f"[{_SAVE_AS_UNSHOWABLE}]+", "_", re.sub(
+        f"^[{_SAVE_AS_UNSHOWABLE}]+|[{_SAVE_AS_UNSHOWABLE}]+$", "", stem))
     return f"{head}{slash}{stem}.png" if stem else None
+
+
+def _save_as_key(save_as: Optional[str], warnings: List[str]) -> Optional[str]:
+    """``_safe_save_as``, saying on ``warnings`` when the key is not the name asked for."""
+    key = _safe_save_as(save_as)
+    if save_as and key != save_as:
+        warnings.append(
+            f"save_as {save_as!r} was saved as {key!r}: an image PRISM can show has "
+            f"no spaces or brackets in its key and ends '.png'. Read the key from png_path."
+            if key else
+            f"save_as {save_as!r} names nothing once its spaces are removed, so the "
+            f"file was auto-named. Read the key from png_path."
+        )
+    return key
 
 
 # Session subfolder holding the reopen artifacts written beside every
@@ -31508,9 +31526,9 @@ def _emit_chart_studio(
     if _chart_studio is None or _compute_chart_id is None:
         return None, None, None
 
-    # The sidecar is a JSON file and JSON has no NaN, yet the line-gap rows
-    # carry one in every broken series. Vega-Lite breaks a line at null exactly
-    # as it does at NaN.
+    # The sidecar is a JSON file and JSON has no NaN or infinity, yet the
+    # line-gap rows carry a NaN in every broken series. Vega-Lite breaks a line
+    # at null exactly as it does at NaN.
     spec = _json_safe_spec_value(spec)
 
     want_interactive = (
@@ -32666,7 +32684,7 @@ def _make_chart(
     filename_base = _generate_filename(
         title, chart_type, filename_prefix, filename_suffix
     )
-    save_as = _safe_save_as(save_as)
+    save_as = _save_as_key(save_as, warnings)
     if save_as:
         # Passthrough: if save_as is already rooted at a canonical S3
         # prefix, honour it exactly. Mirrors _tbl_resolve_path() and
@@ -35723,7 +35741,7 @@ def _render_facet_grid(
     filename_base = _generate_filename(
         title, f"{chart_type}_facet", filename_prefix, filename_suffix,
     )
-    save_as = _safe_save_as(save_as)
+    save_as = _save_as_key(save_as, warnings_list)
     if save_as:
         # Passthrough: if save_as is already rooted at a canonical S3
         # prefix, honour it exactly. Mirrors _tbl_resolve_path() and
@@ -36722,7 +36740,7 @@ def _make_composite(
         title, f"{layout}_composite",
         filename_prefix, filename_suffix,
     )
-    save_as = _safe_save_as(save_as)
+    save_as = _save_as_key(save_as, warnings_list)
     if save_as:
         # Passthrough: if save_as is already rooted at a canonical S3
         # prefix, honour it exactly (see make_chart for full rationale).
@@ -37651,16 +37669,20 @@ def _tbl_date_format(series: pd.Series) -> str:
     """How a datetime column prints when no hint names a format.
 
     A cell names its date in full, '29 Aug 2022', and adds the clock when any
-    stamp carries one. It leaves out only a part no stamp uses: a column of
-    month-ends (calendar or business) or of 1sts prints 'Aug 2022', and one of
-    year-ends or Jan 1sts prints '2022', unless two dates would then print
-    alike. The axis-tick rule picks a precision from the span and never prints
-    day, month and year together -- right for a tick, whose neighbours supply
-    the rest, wrong for a cell that has to stand alone: ten dates across four
+    stamp carries one. It leaves out only a part no stamp uses or every stamp
+    shares: a column of month-ends (calendar or business) or of 1sts prints
+    'Aug 22', one of year-ends or Jan 1sts prints '2022', and clock times all
+    on one day print '09:30', unless two stamps would then print alike. The
+    axis-tick rule picks a precision from the span and never prints day,
+    month and year together -- right for a tick, whose neighbours supply the
+    rest, wrong for a cell that has to stand alone: ten dates across four
     years printed '2022' four times.
     """
     stamps = pd.DatetimeIndex(pd.to_datetime(series.dropna()))
     if len(stamps) and bool(((stamps.hour != 0) | (stamps.minute != 0)).any()):
+        if (len(stamps) >= 2 and stamps.normalize().nunique() == 1
+                and stamps.strftime("%H:%M").nunique() == stamps.nunique()):
+            return "%H:%M"
         return "%d %b %Y %H:%M"
     if len(stamps) >= 2:
         month_end = stamps.is_month_end | (stamps + pd.offsets.BMonthEnd(0) == stamps)
@@ -37668,7 +37690,7 @@ def _tbl_date_format(series: pd.Series) -> str:
         if bool((month_end & (stamps.month == 12)).all() or stamps.is_year_start.all()):
             shorter.append("%Y")
         if bool(month_end.all() or stamps.is_month_start.all()):
-            shorter.append("%b %Y")
+            shorter += ["%b %y", "%b %Y"]
         for fmt in shorter:
             if stamps.strftime(fmt).nunique() == stamps.nunique():
                 return fmt
@@ -40295,7 +40317,8 @@ def make_table(
     )
 
     buf = _tbl_png_bytes(img)
-    out_path = _tbl_resolve_path(save_as, session_path, df, title, filename_suffix)
+    out_path = _tbl_resolve_path(_save_as_key(save_as, warnings), session_path, df, title,
+                                 filename_suffix)
 
     written_path: Optional[str] = None
     presigned_url: Optional[str] = None
