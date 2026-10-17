@@ -1,7 +1,7 @@
 ---
 class: context-extraction
-topic: altair post-drop verification -- the 14 installed files against staging's bytes, nothing else touched, the PRISM-owned mirrors' bytes after the 2026-10-13 change, PRISM's chart and context tests on the dropped tree, a direct render smoke, and a merge verdict
-expected_reply: ~10-20 KB (one hash table, git status, per-test counts, smoke results, verdict)
+topic: altair post-drop verification -- the 14 installed files against staging's bytes, nothing else touched, the PRISM-owned mirrors' bytes after the 2026-10-13 change, PRISM's chart and context tests on the dropped tree, a direct render smoke, the sandbox image's interpreter, and a merge verdict
+expected_reply: ~10-20 KB (one hash table, git status, per-test counts, smoke results, interpreter versions, verdict)
 created_at: 2026-10-12
 sent: no
 status: OPEN
@@ -11,8 +11,13 @@ trigger: >
   staging copy was not in the checkout. The transfer path has also altered
   files before: the 2026-09-28 promotion landed with its em-dashes deleted,
   and the old/core.py PRISM compared on 2026-10-11 measured 8,276 bytes more
-  than canonical. So the installed bytes are checked, not assumed.
+  than canonical. So the installed bytes are checked, not assumed. Separately,
+  the staging venv moved to Python 3.10.18 on 2026-10-14 to match production,
+  but the prism-sandbox gateway image -- where attributed render_charts calls
+  execute -- has never had its interpreter measured (§5).
 reply_folds_into:
+  - .cursor/rules/prism.mdc § "The single virtualenv" and requirements.txt (sandbox interpreter, from §5)
+  - prism/codebase-tree.md (sandbox observed-vs-intended, from §5)
   - projects/altair/dev/test_chart_exec.py (TestOwnership.PRISM_MIRRORS, from §2.4)
   - prism/subagents.md and prism/codebase-tree.md §8 (the 2026-10-13 mirror change, from §2.4)
   - staging/README.md and projects/altair/README.md (drag-and-drop status -> promoted)
@@ -67,11 +72,11 @@ sha256[:16] beside ours, marking each row MATCH or DIFFER:
 | `prism-core/prism_mcp/chart_render/__init__.py` | 882 | `a2d6203351e2f500` |
 | `prism-core/prism_mcp/chart_render/chart_functions_studio.py` | 505,482 | `5122e0eb5257f113` |
 | `prism-core/prism_mcp/chart_render/chart_functions_studio_tables.py` | 243,262 | `29309f77d82d50a2` |
-| `prism-core/prism_mcp/chart_render/core.py` | 1,712,462 | `2f55d993cd7636f9` |
+| `prism-core/prism_mcp/chart_render/core.py` | 1,712,421 | `99705288444f8134` |
 | `prism-core/prism_mcp/chart_render/house_style.py` | 25,860 | `7a0f326a32cea63b` |
 | `prism-core/prism_mcp/utils/chart_functions.py` | 1,392 | `ca611351d5c03073` |
 | `prism-core/prism_mcp/utils/vega_node_check.py` | 3,899 | `1d9a5f18bf60b175` |
-| `prism-core/context/modules/static/tools/chart_context.md` | 41,828 | `0675e73eef9c9f9b` |
+| `prism-core/context/modules/static/tools/chart_context.md` | 42,534 | `376442dd3feef1c1` |
 | `prism-core/context/modules/static/tools/charts/chart_context_annotations.md` | 10,947 | `8ba22cf4e4f9f59e` |
 | `prism-core/context/modules/static/tools/charts/chart_context_colors.md` | 10,124 | `3f614b548d74c151` |
 | `prism-core/context/modules/static/tools/charts/chart_context_composites.md` | 8,979 | `c4aef463748510d1` |
@@ -152,7 +157,19 @@ that `core.register_studio()` and `_gs_font_dir()` resolve in that interpreter,
 and that every name `prism_mcp/sandbox/chart_names.py` lists in
 `WRAPPED_CHART_FUNCS` exists on the imported module.
 
-### 5. Verdict
+### 5. Interpreters
+
+1. Report `sys.version` for the interpreter §3 and §4 ran in.
+2. Find the Dockerfile for the prism-sandbox gateway image -- the one that
+   does `COPY prism-core/prism_mcp/chart_render /app/prism_mcp/chart_render`.
+   Quote its `FROM` line(s) verbatim with `path:line`, plus any line that
+   installs, pins or selects a Python version.
+3. If `requirements-sandbox-arm64.txt` carries a header naming the interpreter
+   it was compiled for, quote it.
+4. State which Python version the sandbox image runs, or say it cannot be
+   determined from source and what would settle it.
+
+### 6. Verdict
 
 **SAFE TO COMMIT** or **NOT** (name each problem). Then list the steps that
 remain before a user's chart runs this engine, per your go/no-go reply §7.2.

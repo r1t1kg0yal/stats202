@@ -427,7 +427,7 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | `color_sort` on `contribution` | Sets stack order as well as legend order -- first entry sits nearest the zero line |
 | `bins` / `maxbins`, `bin_extent` | Histogram bins and range |
 | `extent` | Boxplot whisker IQR multiplier; default 1.5 |
-| `scale_type` | `linear` / `log` on `multi_line`, `timeseries`, `area`, `scatter`, `bar`, `bar_horizontal`. Both values are honoured and override the default and auto-detection, so `linear` is how you turn an auto-log axis off. Pass the raw column -- never `np.log10` it yourself; the engine draws the axis in real units (`1 / 10 / 100 / 1,000`), labels each bar with its true value at its own precision (`432,000` beside `0.07` on one axis) and spaces end-of-line labels on the log axis. Lines and scatter need every y value > 0 and are refused otherwise; their axis runs from a labelled tick at or under the smallest value to one at or over the largest, on a complete `1 / 2 / 5` ladder (`2, 5, 10, 20, 50 ...`, powers of ten only past three decades), so no series sits below the lowest label. Bars accept zero: a zero row draws as a mark at the axis floor with its value labelled and is named on `warnings`; negatives are refused, and so are stacked colour bars (one bar per category with a colour is fine; `stack=False` groups). A log bar axis also needs the positive values to span at least one decade (a factor of 10 between the smallest positive and the largest) -- under that a linear axis reads better and the request is refused toward it, which also means a single-bar chart cannot take `log`. `area` with a colour column is refused on `log` -- a stacked total on a log axis is not a chart of any series; use `multi_line` with the same mapping. Any other chart type refuses the kwarg rather than ignoring it |
+| `scale_type` | `linear` / `log` on `multi_line`, `timeseries`, `area`, `scatter`, `bar`, `bar_horizontal`. It sets the value axis (x on `bar_horizontal`, y everywhere else); a scatter's x axis is always linear, so there is no log-log scatter. Lines, areas and bars are linear unless you pass `log`; `scatter` goes log on its own when every y is positive and the largest is over 100x the smallest, and `linear` keeps it linear. On a line or area, ask for `log` when the series spans orders of magnitude and the reader should see proportional moves (an equity index or nominal GDP across decades, a price that rose tenfold); keep rates, spreads and percentages linear even when they troughed near zero. Pass the raw column -- never `np.log10` it yourself; the engine draws the axis in real units (`1 / 10 / 100 / 1,000`), labels each bar with its true value at its own precision (`432,000` beside `0.07` on one axis) and spaces end-of-line labels on the log axis. Lines and scatter need every y value > 0 and are refused otherwise; their axis runs from a labelled tick at or under the smallest value to one at or over the largest, on a complete `1 / 2 / 5` ladder (`2, 5, 10, 20, 50 ...`, powers of ten only past three decades), so no series sits below the lowest label. Bars accept zero: a zero row draws as a mark at the axis floor with its value labelled and is named on `warnings`; negatives are refused, and so are stacked colour bars (one bar per category with a colour is fine; `stack=False` groups). A log bar axis also needs the positive values to span at least one decade (a factor of 10 between the smallest positive and the largest) -- under that a linear axis reads better and the request is refused toward it, which also means a single-bar chart cannot take `log`. `area` with a colour column is refused on `log` -- a stacked total on a log axis is not a chart of any series; use `multi_line` with the same mapping. Any other chart type refuses the kwarg rather than ignoring it |
 | `orientation` | `bar`: force `vertical` instead of automatic horizontal routing |
 | `x_low`, `x_high`, `color_by`, `label`, `marker_size` | Bullet range, marker colour metric, optional label, marker area (default 200) |
 | `dual_axis_series`, `dual_axis_bind`, `invert_right_axis` | See *Altair dual-axis and lead-lag charts*; `dual_axis_config` is engine-managed |
@@ -466,11 +466,14 @@ become nanoseconds after 1970 and the axis renders as a clock.
   individual bars (highlight one; navy / red / navy), set `color` to the
   bar's own category column and pin a `color_map` dict: no legend is drawn,
   since the axis names every bar, and bars you leave unpinned keep the plain
-  bar colour. Values spanning orders of magnitude (1 day
-  beside 1,500; 14 beside 87,910) take `scale_type='log'` on the raw
-  column: real-unit ticks, each label at its own precision, zero rows
-  marked at the axis floor and reported. Values inside one decade stay
-  linear -- `log` is refused there. A single-category vertical bar drops the
+  bar colour. When the smallest bar would be under 2% of the largest
+  on a linear axis -- a sliver (1 day beside 1,500; 14 beside 87,910) --
+  take `scale_type='log'` on the raw column: real-unit ticks, each label at
+  its own precision, zero rows marked at the axis floor and reported. Above
+  that, bars stay linear even across a decade, so a ranking still reads as
+  how far the leader is ahead (bank assets, $150bn to $3.9tn: the smallest
+  is 4% of the largest). Values inside one decade stay linear -- `log` is
+  refused there. A single-category vertical bar drops the
   derived x-axis title, which would otherwise stack under the lone tick
   and read as one two-line label; pass `x_title` if you want it.
 - `heatmap` accepts tidy long data, an unambiguous wide frame, or a meaningful

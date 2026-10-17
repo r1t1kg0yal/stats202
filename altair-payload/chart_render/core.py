@@ -5727,10 +5727,10 @@ def _validate_y_scale_homogeneity(
 
     # Flatness is a property of the axis that renders. When the caller
     # chose a log axis a series running 0.2 .. 0.4 climbs exactly as far
-    # as one running 100 .. 200, so spans are measured in decades. Only an
-    # explicit request counts: an auto-detected log (equity index beside a
-    # yield) must still be measured linearly so the refusal below can hand
-    # the chart to the dual-axis auto-recovery, which renders linear.
+    # as one running 100 .. 200, so spans are measured in decades. A line
+    # is log only on request, so an equity index beside a yield with no
+    # ``scale_type`` is measured linearly and the refusal below can hand
+    # the chart to the dual-axis auto-recovery.
     on_log_axis = mapping.get("scale_type") == "log"
     span_unit = " decades" if on_log_axis else ""
 
@@ -12854,8 +12854,8 @@ class _LabelCanvas:
         self._clamped = clamped_domain
         self.is_dual = bool(self._dual)
 
-        # Whichever stage decided on a log value axis (bar builders, the
-        # timeseries auto-log, the annotation compositor for an explicit
+        # Whichever stage decided on a log value axis (bar builders,
+        # ``_build_timeseries``, the annotation compositor for an explicit
         # request) publishes its domain so captions project through the
         # same scale the marks use. Which axis carries the value follows
         # the published category axis type: nominal y means the value is x.
@@ -14175,7 +14175,7 @@ def render_annotations(
         # both reuse the builders' own helpers and the base chart is left
         # untouched below.
         # A builder that already pinned a log scale (bars via
-        # ``_bar_log_axis_plan``, the timeseries auto-log) publishes its
+        # ``_bar_log_axis_plan``, ``_build_timeseries``) publishes its
         # domain: the padded linear domain below would hand a log scale a
         # negative lower bound and blank the panel, or silently demote the
         # axis back to linear.
@@ -20072,7 +20072,7 @@ def _line_log_axis_plan(values: pd.Series) -> _LineLogAxisPlan:
     """Plan a log value axis for lines and points: floor, ceiling, ticks.
 
     One planner for every place a line-family log axis is decided --
-    ``_build_timeseries`` (auto-log and explicit), ``_build_scatter``, the
+    ``_build_timeseries``, ``_build_scatter``, the
     annotation compositor and ``get_axis_beautification`` -- so they agree
     on the axis and none of them leaves data below the lowest label.
 
@@ -22573,26 +22573,19 @@ def _build_timeseries(
         "[_build_timeseries] y-axis domain: [%.4f, %.4f]", y_min, y_max
     )
 
-    # ---- auto log-scale detection --------------------------------------
-    # When max/min ratio > 100 and all values are positive, a linear
-    # y-axis squashes the early portion of the series against zero. Apply
-    # a log scale so order-of-magnitude moves stay readable. Caller can
-    # force linear by passing mapping['scale_type'] = 'linear'.
-    scale_override = mapping.get("scale_type")
-    use_log = (
-        scale_override == "log"
-        or (scale_override is None and should_use_log_scale(df[y_field]))
-    )
+    # ---- log y-scale: only on request ----------------------------------
+    # The line family is linear unless the caller names the scale. A
+    # max/min ratio cannot tell an equity index across decades from a rate
+    # whose trough sat near zero, and a log axis on the second spends most
+    # of the plot on the stretch below 1%.
+    use_log = mapping.get("scale_type") == "log"
     if zero_fill and use_log:
         raise ValidationError(
             "mapping['zero_fill']=True is incompatible with log y-scale."
         )
     y_axis_kwargs: Dict[str, Any] = {}
     if use_log:
-        logger.info(
-            "[_build_timeseries] applying log y-scale (%s)",
-            "explicit" if scale_override == "log" else "auto, max/min > 100",
-        )
+        logger.info("[_build_timeseries] applying log y-scale (explicit)")
         # The line-family planner owns the floor, ceiling and ticks so the
         # smallest series has a labelled tick beneath it and the labels
         # read as one 1 / 2 / 5 cadence. Published so the annotation
@@ -31370,7 +31363,9 @@ def _persist_editable_spec(
         "created_at": stamp,
     }
 
-    s3_manager.put(json.dumps(spec, default=str).encode("utf-8"), spec_key)
+    s3_manager.put(
+        json.dumps(spec, default=str, allow_nan=False).encode("utf-8"), spec_key,
+    )
     s3_manager.put(
         json.dumps(meta, indent=2, default=str).encode("utf-8"),
         f"{prefix}/{chart_id}.meta.json",
@@ -31491,6 +31486,11 @@ def _emit_chart_studio(
     # trusted-side editor.
     if _chart_studio is None or _compute_chart_id is None:
         return None, None, None
+
+    # The sidecar is a JSON file and JSON has no NaN, yet the line-gap rows
+    # carry one in every broken series. Vega-Lite breaks a line at null exactly
+    # as it does at NaN.
+    spec = _json_safe_spec_value(spec)
 
     want_interactive = (
         _chart_studio.CHART_STUDIO_ENABLED if interactive is None
@@ -31733,8 +31733,9 @@ def _make_chart(
     # path. An explicit caption is more specific and always wins; source
     # only fills an unset caption. Nothing is auto-derived, so there is no
     # wrong-source-binding / fabricated-attribution failure mode.
+    source = _bare_source(source)
     if source and caption is None:
-        caption = f"Source: {source}"
+        caption = _source_caption(source)
 
     # ---- Promote a meaningful index to the x column (fail-path only) ----
     # Data pulls routinely land with dates in the index; without this the
@@ -33001,9 +33002,10 @@ class ChartSpec:
         # make_chart / make_table. Track provenance so composite layouts
         # can compact repeated source captions without ever deleting a
         # caller-authored caption that happens to start with "Source:".
+        source = _bare_source(source)
         self._caption_from_source = bool(source and caption is None)
         if self._caption_from_source:
-            caption = f"Source: {source}"
+            caption = _source_caption(source)
         self.caption = caption
         self.source = source
         self.side_left = side_left
@@ -35891,21 +35893,36 @@ def _summarize_chart_errors(
     return scope + ":\n" + "\n".join(lines)
 
 
+_SOURCE_PREFIX = re.compile(r'^\s*(?:sources?\s*:\s*)+', re.IGNORECASE)
+
+
+def _bare_source(source) -> Optional[str]:
+    """The attribution without any leading `Source:`; None when nothing is left to attribute."""
+    if source is None:
+        return None
+    return _SOURCE_PREFIX.sub('', str(source)).strip() or None
+
+
+def _source_caption(source) -> str:
+    """The exhibit's `Source:` line, prefixed once whether or not the caller wrote the prefix."""
+    return f"Source: {_bare_source(source)}"
+
+
 def _normalized_source_attribution(
     source: Optional[str],
 ) -> Optional[Tuple[str, str]]:
     """Return ``(display, comparison_key)`` for a source attribution.
 
-    Comparison is deliberately conservative: trim/collapse whitespace and
-    case-fold, but do not reinterpret punctuation, separators, or words such
-    as "via". The first panel's spelling remains the rendered spelling when
-    otherwise-equivalent sources compact to one footer.
+    Comparison is deliberately conservative: drop a leading ``Source:``,
+    trim/collapse whitespace and case-fold, but do not reinterpret
+    punctuation, separators, or words such as "via". The first panel's
+    spelling remains the rendered spelling when otherwise-equivalent sources
+    compact to one footer.
     """
-    if source is None:
+    bare = _bare_source(source)
+    if bare is None:
         return None
-    display = " ".join(str(source).split())
-    if not display:
-        return None
+    display = " ".join(bare.split())
     return display, display.casefold()
 
 
@@ -35992,7 +36009,7 @@ def _resolve_composite_source_attribution(
                 f"Pack source {pack_source[0]!r} was suppressed in favour of "
                 f"the unanimous panel source {canonical[0]!r}."
             )
-        return resolved_charts, f"Source: {canonical[0]}", audit
+        return resolved_charts, _source_caption(canonical[0]), audit
 
     # Differing or incomplete sources must stay panel-local. A pack source is
     # inherited only by panels with a genuinely free caption slot; it is never
@@ -36005,7 +36022,7 @@ def _resolve_composite_source_attribution(
                 continue
             resolved = copy.copy(spec)
             resolved.source = pack_source[0]
-            resolved.caption = f"Source: {pack_source[0]}"
+            resolved.caption = _source_caption(pack_source[0])
             resolved._caption_from_source = True
             resolved_charts[i] = resolved
             inherited += 1
@@ -39233,7 +39250,7 @@ def _tbl_studio_kwargs(*, df: pd.DataFrame, **kw: Any) -> Dict[str, Any]:
     # so the derived caption is dropped and source= alone reproduces it.
     caption = kw.get("caption")
     source = kw.get("source")
-    if source and caption == f"Source: {source}":
+    if source and caption == _source_caption(source):
         caption = None
 
     def cell_key(key: Any) -> str:
@@ -39532,7 +39549,7 @@ def _tbl_png_bytes(img: Image.Image) -> bytes:
 
 _PASSTHROUGH_PREFIXES = (
     "sessions/", "users/", "threads/", "secondary/", "primary/",
-    "development/", "context_cache/", "subprocess_logs/",
+    "development/", "subprocess_logs/",
     "tickets/", "indexes/",
 )
 
@@ -39704,8 +39721,9 @@ def make_table(
     # ---- Source attribution -> caption (same uniform rule as make_chart)
     # Caller-stated, source-agnostic; explicit caption wins, source only
     # fills an unset caption. No auto-derivation.
+    source = _bare_source(source)
     if source and caption is None:
-        caption = f"Source: {source}"
+        caption = _source_caption(source)
 
     if df is None or len(df.columns) == 0:
         return TableResult(success=False, error_message="DataFrame has no columns")
