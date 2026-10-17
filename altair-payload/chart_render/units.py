@@ -112,12 +112,16 @@ def guess_units_from_name(column_name: str) -> Optional[str]:
     - Percentage indicators: pct, percent, percentage, rate
     - Basis points: bps, bp, spread
     - Currency: usd, dollars, with scale modifiers (bil, mil)
-    - Volatility: vol (daily bps for swaptions)
+    - Volatility: vol (daily bps for rates, annualized % for equities and FX)
     - Growth rates: yoy, qoq, mom
 
     Only whole words count, so 'trade_volume' is not a vol, 'corporate_flows'
-    is not a rate and 't_bill_yield' is not in billions. A wrong unit on an
-    axis is worse than none, so an unrecognised vol convention returns None.
+    is not a rate and 't_bill_yield' is not in billions. Letters and digits
+    are separate words ('cpi_yoy3m', 'us_rate10y'), and 'pct' also counts at
+    the front of a word ('spx_pctchg'). A unit the name states beats one its
+    nouns imply, and 'rate' is the weakest hint of all: a rate vol is quoted
+    in bps, not %. A wrong unit on an axis is worse than none, so an
+    unrecognised vol convention returns None.
 
     Args:
         column_name: The column/symbol name to analyze
@@ -132,24 +136,35 @@ def guess_units_from_name(column_name: str) -> Optional[str]:
         'bps'
         >>> guess_units_from_name("usd_swaption_vol")
         'daily bps'
+        >>> guess_units_from_name("eurusd_vol")
+        'annualized %'
     """
     if not column_name:
         return None
 
     name_lower = column_name.lower()
-    words = set(''.join(ch if ch.isalnum() else ' ' for ch in name_lower).split())
+    spaced = ''
+    for prev, ch in zip(' ' + name_lower, name_lower):
+        if not ch.isalnum():
+            ch = ' '
+        elif prev.isalnum() and prev.isdigit() != ch.isdigit():
+            ch = ' ' + ch
+        spaced += ch
+    words = set(spaced.split())
 
     # Percentage patterns (most common in rates/macro data)
-    if words & {'pct', 'percent', 'percentage'}:
-        return '%'
-
-    # Rate typically means percentage
-    if words & {'rate', 'rates'}:
+    if words & {'percent', 'percentage'} or any(w.startswith('pct') for w in words):
         return '%'
 
     # Basis points (common in spreads, flies)
     if words & {'bps', 'bp'}:
         return 'bps'
+
+    # Vol in an explicit convention
+    if 'dbps' in words:
+        return 'daily bps'
+    if 'abps' in words:
+        return 'annualized bps'
 
     # Spread typically in basis points
     if words & {'spread', 'spreads'}:
@@ -169,22 +184,25 @@ def guess_units_from_name(column_name: str) -> Optional[str]:
 
     # Volatility - check for swaption vol (daily bps)
     if words & {'vol', 'volatility'}:
-        # Explicit conventions (a bare bps / pct word already returned above)
-        if 'dbps' in words:
-            return 'daily bps'
-        if 'abps' in words:
-            return 'annualized bps'
-
         # Swaption volatility (typically daily bps)
         if words & {'swaption', 'swpn'}:
             return 'daily bps'
 
-        # Default volatility (assume daily bps for rates, annualized % for equities)
-        if words & {'swap', 'treasury', 'bond', 'yield'}:
+        # Default volatility (assume daily bps for rates, annualized % for equities and FX)
+        if words & {'swap', 'swaps', 'treasury', 'treasuries', 'ust', 'tsy', 'bond', 'bonds',
+                    'yield', 'yields', 'rate', 'rates'}:
             return 'daily bps'  # Rates vol typically daily bps
-        if words & {'equity', 'stock', 'index', 'spx', 'ndx'}:
+        if words & {'equity', 'equities', 'stock', 'stocks', 'index', 'spx', 'ndx'}:
             return 'annualized %'  # Equity vol typically annualized %
-        return None  # FX vol is annualized %, rates vol daily bps: no safe default
+        ccys = {'usd', 'eur', 'jpy', 'gbp', 'chf', 'aud', 'nzd', 'cad', 'sek', 'nok',
+                'cnh', 'cny', 'mxn', 'brl', 'krw', 'inr', 'zar', 'try', 'hkd', 'sgd'}
+        if 'fx' in words or any(len(w) == 6 and w[:3] in ccys and w[3:] in ccys for w in words):
+            return 'annualized %'  # FX vol (eurusd, usdjpy) is quoted annualized %
+        return None  # realized_vol: could be either convention
+
+    # Rate typically means percentage
+    if words & {'rate', 'rates'}:
+        return '%'
 
     # Currency - billions
     if words & {'bil', 'billion', 'billions'}:

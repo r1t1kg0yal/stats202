@@ -37651,14 +37651,28 @@ def _tbl_date_format(series: pd.Series) -> str:
     """How a datetime column prints when no hint names a format.
 
     A cell names its date in full, '29 Aug 2022', and adds the clock when any
-    stamp carries one. The axis-tick rule picks a precision from the span and
-    never prints day, month and year together -- right for a tick, whose
-    neighbours supply the rest, wrong for a cell that has to stand alone: ten
-    dates across four years printed '2022' four times.
+    stamp carries one. It leaves out only a part no stamp uses: a column of
+    month-ends (calendar or business) or of 1sts prints 'Aug 2022', and one of
+    year-ends or Jan 1sts prints '2022', unless two dates would then print
+    alike. The axis-tick rule picks a precision from the span and never prints
+    day, month and year together -- right for a tick, whose neighbours supply
+    the rest, wrong for a cell that has to stand alone: ten dates across four
+    years printed '2022' four times.
     """
-    stamps = pd.to_datetime(series.dropna())
-    timed = bool(len(stamps)) and bool(((stamps.dt.hour != 0) | (stamps.dt.minute != 0)).any())
-    return "%d %b %Y %H:%M" if timed else "%d %b %Y"
+    stamps = pd.DatetimeIndex(pd.to_datetime(series.dropna()))
+    if len(stamps) and bool(((stamps.hour != 0) | (stamps.minute != 0)).any()):
+        return "%d %b %Y %H:%M"
+    if len(stamps) >= 2:
+        month_end = stamps.is_month_end | (stamps + pd.offsets.BMonthEnd(0) == stamps)
+        shorter = []
+        if bool((month_end & (stamps.month == 12)).all() or stamps.is_year_start.all()):
+            shorter.append("%Y")
+        if bool(month_end.all() or stamps.is_month_start.all()):
+            shorter.append("%b %Y")
+        for fmt in shorter:
+            if stamps.strftime(fmt).nunique() == stamps.nunique():
+                return fmt
+    return "%d %b %Y"
 
 
 # Every hint ``_tbl_smart_format`` recognises. Anything else falls through to

@@ -73,9 +73,9 @@ sha256[:16] beside ours, marking each row MATCH or DIFFER:
 | `prism-core/prism_mcp/chart_render/__init__.py` | 882 | `a2d6203351e2f500` |
 | `prism-core/prism_mcp/chart_render/chart_functions_studio.py` | 505,482 | `5122e0eb5257f113` |
 | `prism-core/prism_mcp/chart_render/chart_functions_studio_tables.py` | 243,262 | `29309f77d82d50a2` |
-| `prism-core/prism_mcp/chart_render/core.py` | 1,714,230 | `15d238a3d94d86a4` |
+| `prism-core/prism_mcp/chart_render/core.py` | 1,714,929 | `05b39cb019fbea66` |
 | `prism-core/prism_mcp/chart_render/house_style.py` | 25,860 | `7a0f326a32cea63b` |
-| `prism-core/prism_mcp/chart_render/units.py` | 7,415 | `490253389d91dc6a` |
+| `prism-core/prism_mcp/chart_render/units.py` | 8,399 | `78a7205caa72d877` |
 | `prism-core/prism_mcp/utils/chart_functions.py` | 1,392 | `ca611351d5c03073` |
 | `prism-core/prism_mcp/utils/vega_node_check.py` | 3,899 | `1d9a5f18bf60b175` |
 | `prism-core/context/modules/static/tools/chart_context.md` | 42,837 | `c0f418fafbc337d5` |
@@ -84,7 +84,7 @@ sha256[:16] beside ours, marking each row MATCH or DIFFER:
 | `prism-core/context/modules/static/tools/charts/chart_context_composites.md` | 8,979 | `c4aef463748510d1` |
 | `prism-core/context/modules/static/tools/charts/chart_context_dual_axis.md` | 7,617 | `e1ab6fb1c6affcf5` |
 | `prism-core/context/modules/static/tools/charts/chart_context_grids.md` | 5,154 | `9ef35755cd392cde` |
-| `prism-core/context/modules/static/tools/charts/chart_context_tables.md` | 15,257 | `f1919cb8f49ed446` |
+| `prism-core/context/modules/static/tools/charts/chart_context_tables.md` | 15,365 | `5eee9ea14596a8ac` |
 
 For each DIFFER, give the unified diff against what we expect if you can infer
 it (up to 60 lines), and say what kind of change it is (characters deleted,
