@@ -1,18 +1,18 @@
 ---
 class: context-extraction
-topic: chart round 2 -- the sandbox render path, delivery placeholders, units.py, the 00-charts-system.md description, the render_charts trust gate, what the NO_ARTIFACTS calls were
-expected_reply: ~30-45 KB (sandbox_rollout.py + chart_names.py + units.py + tool_path_scope.py whole, short verbatim excerpts, a NO_ARTIFACTS classification)
+topic: chart round 2 -- the sandbox render path, delivery placeholders, the 00-charts-system.md description, the render_charts trust gate, what the NO_ARTIFACTS calls were
+expected_reply: ~25-40 KB (sandbox_rollout.py + chart_names.py + tool_path_scope.py whole, short verbatim excerpts, a NO_ARTIFACTS classification)
 created_at: 2026-10-11
 sent: no
 status: OPEN
 trigger: >
   Production diverts every attributed render_charts call to the prism-sandbox
   gateway, and the staging harness only runs the in-process path. The sandbox
-  side of a diverted call, the placeholder references the delivery block
-  carries, and PRISM's units.py are all unseen here, and 28.5% of production
+  side of a diverted call and the placeholder references the delivery block
+  carries are both unseen here, and 28.5% of production
   render_charts calls returned NO_ARTIFACTS.
 reply_folds_into:
-  - projects/altair/prism_mcp/tools/sandbox_rollout.py, prism_mcp/sandbox/chart_names.py, prism_mcp/chart_render/units.py, core/configs/tool_path_scope.py (verbatim mirrors or signature-exact stubs)
+  - projects/altair/prism_mcp/tools/sandbox_rollout.py, prism_mcp/sandbox/chart_names.py, core/configs/tool_path_scope.py (verbatim mirrors or signature-exact stubs)
   - projects/altair/dev/test_chart_exec.py (a 'sandbox' layer)
   - prism/subagents.md (§4 lifecycle, §8.1 what the NO_ARTIFACTS calls were), prism/code-sandbox.md, prism/codebase-tree.md
   - prism/_reference/00-charts-system.md (description line)
@@ -29,9 +29,11 @@ That reply also answered what this prompt used to ask about tests (no
 `test_chart_characterization.py`, no chart goldens; the chart test files and
 their counts are in `prism/codebase-tree.md` §8), about the sandbox fonts
 (`containers/prism-sandbox/Dockerfile:146` copies them), and about ADK plugin
-propagation (confirmed at runtime). §5 now asks for the trust gate
+propagation (confirmed at runtime). §4 now asks for the trust gate
 `chart_exec.py` gained in `bd1ff5297`: the staging harness stubs
-`core.configs.tool_path_scope` from its one call site.
+`core.configs.tool_path_scope` from its one call site. Screenshots of
+`units.py` (2026-10-17) answered what this prompt asked about it, and staging
+now owns that file.
 
 Why this prompt exists.
 
@@ -43,7 +45,7 @@ Why this prompt exists.
    PRISM's marker regex cannot match one. §2.4 checks whether the Composer
    rewrite path has the same blind spot.
 3. **NO_ARTIFACTS is 28.5% of production calls** and almost never the final
-   status. §6 asks what those scripts were, to decide between a contract fix
+   status. §5 asks what those scripts were, to decide between a contract fix
    (stop probing through `render_charts`), an engine fix, or a PRISM-side
    change to what counts against the ceiling.
 
@@ -108,18 +110,14 @@ divert, `render_charts` reads only `stdout`; `chart_paths` come back through
    does `_rewrite_answer_chart_imgs` still resolve `![title](<reference>)` for
    it? Answer from the regexes.
 
-### 3. `units.py`
-
-Paste `prism-core/prism_mcp/chart_render/units.py` **whole**.
-
-### 4. `00-charts-system.md`
+### 3. `00-charts-system.md`
 
 1. Quote the full `description:` value from the front matter of
    `prism-core/context/modules/static/core/charts_system/00-charts-system.md`.
 2. Does anything read this file other than the OKF floor in
    `prism-core/context/okf.py`? Cite each reader.
 
-### 5. The `render_charts` trust gate
+### 4. The `render_charts` trust gate
 
 `chart_exec.py` (`bd1ff5297`, 2026-10-12) calls
 `enforce_no_untrusted_content(file_path, tool='render_charts')` on every
@@ -133,7 +131,7 @@ logged through `get_service_logger("prism.security")`.
    session's own prefix only, or others (shared data buckets, other users'
    sessions)? Cite the lines that decide it.
 
-### 6. What the NO_ARTIFACTS calls were
+### 5. What the NO_ARTIFACTS calls were
 
 In the 2026-09-10 to 2026-10-11 chart-call records, 498 of 1,746 `render_charts`
 calls returned `NO_ARTIFACTS`, but only 1 of 807 invocations ended on it. So

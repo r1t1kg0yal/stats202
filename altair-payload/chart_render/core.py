@@ -6603,6 +6603,23 @@ def _format_label(raw_label: str, mapping: Dict[str, Any], key: str) -> str:
     if not raw_label:
         return ""
 
+    result_words = _humanize_label(raw_label).split()
+    formatted_label = " ".join(result_words)
+
+    # Only the unit words the name has not already said: 'cpi_yoy' reads
+    # "CPI YoY (%)", not "CPI YoY (YoY %)".
+    guessed_units = guess_units_from_name(raw_label)
+    if guessed_units:
+        said = {word.casefold() for word in result_words}
+        unsaid = " ".join(w for w in guessed_units.split() if w.casefold() not in said)
+        if unsaid:
+            formatted_label = f"{formatted_label} ({unsaid})"
+
+    return _dedup_axis_title(formatted_label)
+
+
+def _humanize_label(raw_label: str) -> str:
+    """A column name as words, with no unit added: the series-name form."""
     formatted = raw_label.replace("_", " ")
     words = formatted.split()
     result_words: List[str] = []
@@ -6620,13 +6637,7 @@ def _format_label(raw_label: str, mapping: Dict[str, Any], key: str) -> str:
             result_words.append(word)
         else:
             result_words.append(word.title())
-    formatted_label = " ".join(result_words)
-
-    guessed_units = guess_units_from_name(raw_label)
-    if guessed_units and guessed_units not in formatted_label:
-        formatted_label = f"{formatted_label} ({guessed_units})"
-
-    return _dedup_axis_title(formatted_label)
+    return " ".join(result_words)
 
 
 # ===========================================================================
@@ -30275,8 +30286,10 @@ def _auto_melt_for_multiline(
                 return df, new_mapping
 
             preserve_y_name = mapping.get("y_title", "value")
+            id_vars = [c for c in (x_field, mapping.get("facet"))
+                       if isinstance(c, str) and c in df.columns and c not in value_cols]
             df_long = df.melt(
-                id_vars=[x_field] if x_field else None,
+                id_vars=id_vars or None,
                 value_vars=value_cols,
                 var_name="series",
                 value_name=preserve_y_name,
@@ -30284,13 +30297,19 @@ def _auto_melt_for_multiline(
             # Auto-friendlify underscore column names ("cpi_yoy_pct" ->
             # "CPI YoY %") so the legend doesn't expose raw field names.
             # Names that already look human (contain spaces or %, or are
-            # short ALL CAPS) are kept verbatim.
+            # short ALL CAPS) are kept verbatim. A unit every column implies
+            # belongs to the axis, so it leaves the names and titles an axis
+            # the caller left untitled.
+            implied = {guess_units_from_name(str(c)) for c in value_cols}
+            shared_unit = next(iter(implied)) if len(implied) == 1 else None
+
             def _friendly(name: str) -> str:
                 s = str(name)
                 if " " in s or "%" in s:
                     return s
                 if "_" in s:
-                    return _format_label(s, {}, "color")
+                    return (_humanize_label(s) if shared_unit
+                            else _format_label(s, {}, "color"))
                 return s
             friendly_map = {c: _friendly(c) for c in value_cols}
             df_long["series"] = df_long["series"].map(friendly_map)
@@ -30299,6 +30318,8 @@ def _auto_melt_for_multiline(
             new_mapping["color"] = "series"
             if "y_title" in mapping:
                 new_mapping["y_title"] = mapping["y_title"]
+            elif shared_unit:
+                new_mapping["y_title"] = shared_unit
             # Maps and a legend order keyed by the caller's own column names
             # follow the rename; display-name keys already match.
             _rekey_series_maps(new_mapping, friendly_map)
@@ -35278,7 +35299,9 @@ def _render_facet_grid(
     # the per-panel build will. This mirrors make_chart's standard flow.
     if chart_type in {"multi_line", "area"} and isinstance(y_field, list):
         try:
-            df, panel_mapping = _auto_melt_for_multiline(df, panel_mapping)
+            df, panel_mapping = _auto_melt_for_multiline(
+                df, {**panel_mapping, "facet": facet_col})
+            panel_mapping.pop("facet", None)
             # Refresh field handles after melt.
             x_field = panel_mapping.get("x")
             y_field = panel_mapping.get("y")
@@ -35472,12 +35495,12 @@ def _render_facet_grid(
         # (e.g. CPI vs GDP) -- the y-title is needed so the reader knows
         # which axis is which. Keep it.
         #
-        # An EXPLICIT ``mapping['y_title']`` is the exception: a facet grid
-        # carries no axis title at all otherwise, so it is the only place the
-        # caller can state a unit, and stripping it silently deleted stated
-        # intent. It survives here and is reduced to the left column by the
+        # An EXPLICIT ``mapping['y_title']`` is the exception, and so is the
+        # unit every column of a ``y`` list shares: a facet grid carries no
+        # axis title at all otherwise, so it is the only place a unit can be
+        # stated, and stripping it silently deleted stated intent. It survives here and is reduced to the left column by the
         # edge-chrome block below, which is where a shared axis label belongs.
-        explicit_y_title = bool(mapping.get("y_title"))
+        explicit_y_title = bool(panel_mapping.get("y_title"))
         if chart_type not in {"scatter", "scatter_multi"} and not explicit_y_title:
             _strip_axis_title_from_spec(spec_dict, "y")
 

@@ -405,7 +405,7 @@ become nanoseconds after 1970 and the axis renders as a clock.
 | Mapping key | Meaning |
 |---|---|
 | `x`, `y`, `color` | Primary fields; `y` may be a list for line/area auto-melt, or for `band` to join actuals and forecast into one path |
-| `x_title`, `y_title`, `y_title_right` | Semantic axis title, including unit |
+| `x_title`, `y_title`, `y_title_right` | Semantic axis title, including unit; renders as written. Left unset, the title is the column name plus any unit the name implies: `_rate` / `_pct` add `(%)`, `_spread` / `_bps` add `(bps)`, `_yoy` adds `(%)` after `YoY`. When every column of a `y` list implies one unit, the legend names drop it and an unset axis title is that unit alone |
 | `color_title`, `size_title` | Authored legend title for the colour / size channel, including unit. 28 characters on one line. A size legend prints the column name unless `size_title` is set |
 | `x_sort`, `y_sort`, `color_sort`, `value_sort` | Explicit display order; use `color_sort` as the canonical legend/category order |
 | `x_type` | Force ordinal for genuine categories such as tenors; on a datetime column the engine materialises house-style date labels on evenly spaced bands. Ordinal puts every date on the axis as a named category, so a long series can exceed the category-label budget and be refused -- leave a date axis temporal unless the even band spacing is the point. A date `bar` is already one band per period, so the key changes nothing there |

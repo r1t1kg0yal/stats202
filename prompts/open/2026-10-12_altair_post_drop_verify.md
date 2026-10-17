@@ -1,6 +1,6 @@
 ---
 class: context-extraction
-topic: altair post-drop verification -- the 14 installed files against staging's bytes, nothing else touched, the PRISM-owned mirrors' bytes after the 2026-10-13 change, PRISM's chart and context tests on the dropped tree, a direct render smoke, the sandbox image's interpreter, and a merge verdict
+topic: altair post-drop verification -- the 15 installed files against staging's bytes, nothing else touched, the PRISM-owned mirrors' bytes after the 2026-10-13 change, PRISM's chart and context tests on the dropped tree, a direct render smoke, the sandbox image's interpreter, and a merge verdict
 expected_reply: ~10-20 KB (one hash table, git status, per-test counts, smoke results, interpreter versions, verdict)
 created_at: 2026-10-12
 sent: no
@@ -28,7 +28,7 @@ reply_folds_into:
 
 **Staging-side note -- do NOT paste this header into PRISM.**
 
-Send this after copying the 14 files from `staging/altair-payload/` over their
+Send this after copying the 15 files from `staging/altair-payload/` over their
 install paths in the prism-main working tree, and before committing, merging or
 tagging. `test_prompts/` does not ship. The install paths:
 
@@ -39,8 +39,9 @@ staging/altair-payload/chart_context.md    ->  prism-core/context/modules/static
 staging/altair-payload/chart_context_*.md  ->  prism-core/context/modules/static/tools/charts/
 ```
 
-Six of the 14 are already byte-identical to production, so only `core.py` and
-the seven context files should show up as modified. If §1 reports a DIFFER, the
+Six of the 15 are already byte-identical to production, so only `core.py`,
+`units.py` and the seven context files should show up as modified. `units.py`
+is staging's since 2026-10-17 and replaces production's 8,004-byte copy. If §1 reports a DIFFER, the
 transfer altered the file; re-copy it rather than editing it in PRISM.
 
 ---
@@ -72,11 +73,12 @@ sha256[:16] beside ours, marking each row MATCH or DIFFER:
 | `prism-core/prism_mcp/chart_render/__init__.py` | 882 | `a2d6203351e2f500` |
 | `prism-core/prism_mcp/chart_render/chart_functions_studio.py` | 505,482 | `5122e0eb5257f113` |
 | `prism-core/prism_mcp/chart_render/chart_functions_studio_tables.py` | 243,262 | `29309f77d82d50a2` |
-| `prism-core/prism_mcp/chart_render/core.py` | 1,712,421 | `99705288444f8134` |
+| `prism-core/prism_mcp/chart_render/core.py` | 1,714,230 | `15d238a3d94d86a4` |
 | `prism-core/prism_mcp/chart_render/house_style.py` | 25,860 | `7a0f326a32cea63b` |
+| `prism-core/prism_mcp/chart_render/units.py` | 7,415 | `490253389d91dc6a` |
 | `prism-core/prism_mcp/utils/chart_functions.py` | 1,392 | `ca611351d5c03073` |
 | `prism-core/prism_mcp/utils/vega_node_check.py` | 3,899 | `1d9a5f18bf60b175` |
-| `prism-core/context/modules/static/tools/chart_context.md` | 42,534 | `376442dd3feef1c1` |
+| `prism-core/context/modules/static/tools/chart_context.md` | 42,837 | `c0f418fafbc337d5` |
 | `prism-core/context/modules/static/tools/charts/chart_context_annotations.md` | 10,947 | `8ba22cf4e4f9f59e` |
 | `prism-core/context/modules/static/tools/charts/chart_context_colors.md` | 10,124 | `3f614b548d74c151` |
 | `prism-core/context/modules/static/tools/charts/chart_context_composites.md` | 8,979 | `c4aef463748510d1` |
@@ -91,11 +93,11 @@ line endings, encoding, truncation).
 ### 2. Nothing else moved
 
 1. `git status --short` for the whole tree. List every modified, added or
-   deleted path. We expect exactly `core.py` and the seven context files,
+   deleted path. We expect exactly `core.py`, `units.py` and the seven context files,
    plus the two unrelated dirty files your last reply saw
    (`core/config/environments/local/common.yaml`, `core/configs/model_catalog.py`).
-2. Confirm `prism-core/prism_mcp/chart_render/units.py` is still 8,004 bytes,
-   and that nothing under `prism-core/prism_mcp/tools/` or `core/` changed.
+2. Confirm that nothing under `prism-core/prism_mcp/tools/`,
+   `prism-core/prism_mcp/sandbox/` or `core/` changed.
 3. Count the em-dash characters (U+2014) in the seven installed context files.
    We expect zero.
 4. For each of these three PRISM files, give the byte count, sha256[:16], and
